@@ -96,6 +96,15 @@ pub struct SchemaModel {
     pub schemas: Vec<SchemaInfo>,
 }
 
+/// A foreign-key relationship (for the ERD).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForeignKey {
+    pub from_table: String,
+    pub from_column: String,
+    pub to_table: String,
+    pub to_column: String,
+}
+
 /// Result of a one-shot query (the batch is held server-side; meta returns to the UI).
 pub struct QueryResult {
     pub batch: arrow::record_batch::RecordBatch,
@@ -153,6 +162,11 @@ pub trait SqlDriver: Send + Sync {
     /// Return the query plan as JSON text (engine-specific). Default: unsupported.
     async fn explain_json(&self, _sql: &str) -> DResult<String> {
         Err(DriverError::NotImplemented)
+    }
+
+    /// Foreign-key edges for the ERD. Default: none.
+    async fn foreign_keys(&self) -> DResult<Vec<ForeignKey>> {
+        Ok(Vec::new())
     }
 }
 

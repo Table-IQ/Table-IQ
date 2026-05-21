@@ -2,7 +2,7 @@ import { create } from "zustand";
 
 export interface Tab {
   key: string;
-  kind: "table" | "query";
+  kind: "table" | "query" | "erd";
   title: string;
   schema?: string;
   table?: string;
@@ -14,6 +14,7 @@ interface TabsState {
   queryCount: number;
   openTable: (schema: string, table: string) => void;
   openQuery: () => void;
+  openErd: () => void;
   close: (key: string) => void;
   setActive: (key: string) => void;
   reset: () => void;
@@ -41,6 +42,12 @@ export const useTabs = create<TabsState>((set) => ({
         activeKey: key,
         queryCount: n,
       };
+    }),
+  openErd: () =>
+    set((s) => {
+      const key = "erd";
+      if (s.tabs.some((t) => t.key === key)) return { activeKey: key };
+      return { tabs: [...s.tabs, { key, kind: "erd", title: "Schema diagram" }], activeKey: key };
     }),
   close: (key) =>
     set((s) => {

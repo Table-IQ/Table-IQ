@@ -299,6 +299,15 @@ pub async fn run_script(
     Ok(ScriptResult { rows_affected })
 }
 
+#[tauri::command]
+pub async fn foreign_keys(
+    state: State<'_, ConnState>,
+    id: String,
+) -> Result<Vec<crate::drivers::ForeignKey>, String> {
+    let drv = state.session(&id)?;
+    drv.foreign_keys().await.map_err(|e| e.to_string())
+}
+
 /// Query plan as JSON text (frontend renders the tree). Postgres for now.
 #[tauri::command]
 pub async fn explain_query(

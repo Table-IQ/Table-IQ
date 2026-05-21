@@ -364,6 +364,32 @@ impl SqlDriver for PgDriver {
         Ok(sqlx::raw_sql(sql).execute(&self.pool).await.map_err(db)?.rows_affected())
     }
 
+    async fn foreign_keys(&self) -> DResult<Vec<super::ForeignKey>> {
+        let rows = sqlx::query(
+            "SELECT tc.table_name AS from_table, kcu.column_name AS from_column, \
+                    ccu.table_name AS to_table, ccu.column_name AS to_column \
+             FROM information_schema.table_constraints tc \
+             JOIN information_schema.key_column_usage kcu \
+               ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema \
+             JOIN information_schema.constraint_column_usage ccu \
+               ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema \
+             WHERE tc.constraint_type = 'FOREIGN KEY' \
+               AND tc.table_schema NOT IN ('pg_catalog', 'information_schema')",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(rows
+            .iter()
+            .map(|r| super::ForeignKey {
+                from_table: r.get("from_table"),
+                from_column: r.get("from_column"),
+                to_table: r.get("to_table"),
+                to_column: r.get("to_column"),
+            })
+            .collect())
+    }
+
     async fn explain_json(&self, sql: &str) -> DResult<String> {
         // EXPLAIN (FORMAT JSON) returns one row with a json column (the plan array).
         let v: serde_json::Value =

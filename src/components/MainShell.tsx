@@ -3,6 +3,7 @@ import { ThemeToggle } from "./ThemeToggle";
 import { ObjectTree } from "./ObjectTree";
 import { TableView } from "./TableView";
 import { QueryView } from "./QueryView";
+import { ErdView } from "./ErdView";
 import { useConnections } from "../state/connectionStore";
 import { useTabs } from "../state/tabsStore";
 import { disconnect, type ObjectInfo } from "../lib/commands";
@@ -18,7 +19,8 @@ function findObject(
 
 export function MainShell() {
   const { active, schema, setActive, setSchema } = useConnections();
-  const { tabs, activeKey, openTable, openQuery, close, setActive: setActiveTab, reset } = useTabs();
+  const { tabs, activeKey, openTable, openQuery, openErd, close, setActive: setActiveTab, reset } =
+    useTabs();
 
   if (!active || !schema) return null;
 
@@ -40,6 +42,7 @@ export function MainShell() {
       );
     }
     if (activeTab.kind === "query") return <QueryView connId={active.id} />;
+    if (activeTab.kind === "erd") return <ErdView connId={active.id} schema={schema} />;
     const obj = findObject(schema, activeTab.schema!, activeTab.table!);
     return obj ? (
       <TableView connId={active.id} schema={activeTab.schema!} object={obj} />
@@ -104,6 +107,13 @@ export function MainShell() {
               title="New query"
             >
               + Query
+            </button>
+            <button
+              onClick={openErd}
+              className="rounded-md px-2 py-1 text-xs text-primary hover:bg-surface"
+              title="Schema diagram (ERD)"
+            >
+              + ERD
             </button>
           </div>
           <div className="min-h-0 flex-1">{renderActive()}</div>

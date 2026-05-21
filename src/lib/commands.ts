@@ -248,6 +248,19 @@ export async function runScript(id: string, sql: string): Promise<{ rowsAffected
   return { rowsAffected: r.rows_affected };
 }
 
+export interface ForeignKey {
+  from_table: string;
+  from_column: string;
+  to_table: string;
+  to_column: string;
+}
+
+export async function foreignKeys(id: string): Promise<ForeignKey[]> {
+  if (!inTauri())
+    return [{ from_table: "wide", from_column: "nullable_int", to_table: "users", to_column: "id" }];
+  return invoke<ForeignKey[]>("foreign_keys", { id });
+}
+
 export async function explainQuery(id: string, sql: string): Promise<string> {
   if (!inTauri())
     return JSON.stringify([
