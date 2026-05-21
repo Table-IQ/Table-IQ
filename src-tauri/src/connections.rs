@@ -14,9 +14,11 @@ pub struct ConnConfig {
     pub name: String,
     #[serde(default)]
     pub color: Option<String>,
+    #[serde(default = "default_engine")]
+    pub engine: String, // "postgres" | "mysql" | "sqlite"
     pub host: String,
     pub port: u16,
-    pub database: String,
+    pub database: String, // for sqlite: the file path
     pub username: String,
     #[serde(default = "default_sslmode")]
     pub sslmode: String,
@@ -25,19 +27,33 @@ pub struct ConnConfig {
 fn default_sslmode() -> String {
     "prefer".into()
 }
+fn default_engine() -> String {
+    "postgres".into()
+}
 
 impl ConnConfig {
-    /// libpq-style URL (no password — that comes from the keychain at connect time).
+    /// Engine-specific connection URL (no password for sqlite; password from keychain otherwise).
     pub fn url_with_password(&self, password: &str) -> String {
-        format!(
-            "postgres://{}:{}@{}:{}/{}?sslmode={}",
-            urlencode(&self.username),
-            urlencode(password),
-            self.host,
-            self.port,
-            urlencode(&self.database),
-            self.sslmode
-        )
+        match self.engine.as_str() {
+            "sqlite" => self.database.clone(), // file path; SqliteDriver builds the sqlite:// url
+            "mysql" => format!(
+                "mysql://{}:{}@{}:{}/{}",
+                urlencode(&self.username),
+                urlencode(password),
+                self.host,
+                self.port,
+                urlencode(&self.database),
+            ),
+            _ => format!(
+                "postgres://{}:{}@{}:{}/{}?sslmode={}",
+                urlencode(&self.username),
+                urlencode(password),
+                self.host,
+                self.port,
+                urlencode(&self.database),
+                self.sslmode
+            ),
+        }
     }
 }
 
@@ -126,6 +142,7 @@ mod tests {
             id: "abc".into(),
             name: "Local PG".into(),
             color: Some("#4f46e5".into()),
+            engine: "postgres".into(),
             host: "127.0.0.1".into(),
             port: 5432,
             database: "app".into(),
@@ -146,6 +163,7 @@ mod tests {
             id: "x".into(),
             name: "x".into(),
             color: None,
+            engine: "postgres".into(),
             host: "h".into(),
             port: 5432,
             database: "d".into(),
@@ -164,6 +182,7 @@ mod tests {
             id: "1".into(),
             name: "A".into(),
             color: None,
+            engine: "postgres".into(),
             host: "h".into(),
             port: 5432,
             database: "d".into(),

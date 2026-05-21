@@ -2,10 +2,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { synthWindowIpc, MOCK_TOTAL_ROWS } from "./mockSource";
 
 // ── shared types (mirror the Rust serde shapes) ──────────────────────────
+export type Engine = "postgres" | "mysql" | "sqlite";
 export interface ConnConfig {
   id: string;
   name: string;
   color?: string | null;
+  engine: Engine;
   host: string;
   port: number;
   database: string;
@@ -46,6 +48,7 @@ const mockStore: ConnConfig[] = [
     id: "mock-local",
     name: "Local Postgres",
     color: "#4f46e5",
+    engine: "postgres",
     host: "127.0.0.1",
     port: 55432,
     database: "tableiq",

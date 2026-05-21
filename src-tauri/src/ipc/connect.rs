@@ -11,14 +11,27 @@ use tauri::State;
 use arrow::record_batch::RecordBatch;
 
 use crate::connections::{self, ConnConfig, ConnStore};
-use crate::drivers::{postgres::PgDriver, EditSpec, SchemaModel, SqlDriver};
+use crate::drivers::{
+    mysql::MySqlDriver, postgres::PgDriver, sqlite::SqliteDriver, EditSpec, SchemaModel, SqlDriver,
+};
 
 const QUERY_CAP: usize = 50_000;
 
 pub struct ConnState {
     store: Mutex<ConnStore>,
-    sessions: Mutex<HashMap<String, Arc<PgDriver>>>,
+    sessions: Mutex<HashMap<String, Arc<dyn SqlDriver>>>,
     results: Mutex<HashMap<String, Arc<RecordBatch>>>,
+}
+
+/// Build the right driver for an engine. `pw` is unused for sqlite.
+async fn open_driver(cfg: &ConnConfig, pw: &str) -> Result<Arc<dyn SqlDriver>, String> {
+    let url = cfg.url_with_password(pw);
+    let drv: Arc<dyn SqlDriver> = match cfg.engine.as_str() {
+        "sqlite" => Arc::new(SqliteDriver::connect(&url).await.map_err(|e| e.to_string())?),
+        "mysql" => Arc::new(MySqlDriver::connect(&url).await.map_err(|e| e.to_string())?),
+        _ => Arc::new(PgDriver::connect(&url).await.map_err(|e| e.to_string())?),
+    };
+    Ok(drv)
 }
 
 impl ConnState {
@@ -30,7 +43,7 @@ impl ConnState {
         }
     }
 
-    fn session(&self, id: &str) -> Result<Arc<PgDriver>, String> {
+    fn session(&self, id: &str) -> Result<Arc<dyn SqlDriver>, String> {
         self.sessions
             .lock()
             .unwrap()
@@ -89,8 +102,7 @@ pub fn delete_connection(state: State<ConnState>, id: String) -> Result<(), Stri
 
 #[tauri::command]
 pub async fn test_connection(cfg: ConnConfig, password: String) -> Result<(), String> {
-    let url = cfg.url_with_password(&password);
-    PgDriver::connect(&url).await.map(|_| ()).map_err(|e| e.to_string())
+    open_driver(&cfg, &password).await.map(|_| ())
 }
 
 #[tauri::command]
@@ -104,10 +116,14 @@ pub async fn connect(state: State<'_, ConnState>, id: String) -> Result<Connecte
             .cloned()
             .ok_or_else(|| "unknown connection".to_string())?
     };
-    let password = connections::get_password(&id)?;
-    let url = cfg.url_with_password(&password);
-    let drv = PgDriver::connect(&url).await.map_err(|e| e.to_string())?;
-    state.sessions.lock().unwrap().insert(id.clone(), Arc::new(drv));
+    // sqlite needs no keychain password; others read it.
+    let password = if cfg.engine == "sqlite" {
+        String::new()
+    } else {
+        connections::get_password(&id)?
+    };
+    let drv = open_driver(&cfg, &password).await?;
+    state.sessions.lock().unwrap().insert(id.clone(), drv);
     Ok(ConnectedInfo {
         id,
         name: cfg.name,

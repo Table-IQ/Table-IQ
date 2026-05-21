@@ -8,14 +8,18 @@ import {
   saveConnection,
   testConnection,
   type ConnConfig,
+  type Engine,
 } from "../lib/commands";
 import { useConnections } from "../state/connectionStore";
+
+const DEFAULT_PORT: Record<string, number> = { postgres: 5432, mysql: 3306, sqlite: 0 };
 
 function blankConfig(): ConnConfig {
   return {
     id: crypto.randomUUID(),
     name: "",
     color: "#4f46e5",
+    engine: "postgres",
     host: "127.0.0.1",
     port: 5432,
     database: "",
@@ -117,7 +121,8 @@ export function ConnectionManager() {
                 <span className="min-w-0 flex-1 truncate">
                   <span className="text-text">{c.name || "(unnamed)"}</span>
                   <span className="block truncate text-xs text-muted">
-                    {c.host}:{c.port}/{c.database}
+                    {c.engine} ·{" "}
+                    {c.engine === "sqlite" ? c.database || "(file)" : `${c.host}:${c.port}/${c.database}`}
                   </span>
                 </span>
               </button>
@@ -127,40 +132,70 @@ export function ConnectionManager() {
 
         {/* form */}
         <div className="min-w-0 flex-1">
-          <div className="mb-3 text-sm font-semibold">Postgres connection</div>
+          <div className="mb-3 flex items-center gap-3">
+            <span className="text-sm font-semibold">Connection</span>
+            <select
+              className={`${field} w-auto`}
+              value={form.engine}
+              onChange={(e) => {
+                const eng = e.target.value as Engine;
+                setForm((f) => ({ ...f, engine: eng, port: DEFAULT_PORT[eng] ?? f.port }));
+              }}
+            >
+              <option value="postgres">PostgreSQL</option>
+              <option value="mysql">MySQL / MariaDB</option>
+              <option value="sqlite">SQLite</option>
+            </select>
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <label className="col-span-2 text-xs text-muted">
               Name
               <input className={field} value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="My database" />
             </label>
-            <label className="text-xs text-muted">
-              Host
-              <input className={field} value={form.host} onChange={(e) => set("host", e.target.value)} />
-            </label>
-            <label className="text-xs text-muted">
-              Port
-              <input className={field} type="number" value={form.port} onChange={(e) => set("port", Number(e.target.value))} />
-            </label>
-            <label className="text-xs text-muted">
-              Database
-              <input className={field} value={form.database} onChange={(e) => set("database", e.target.value)} />
-            </label>
-            <label className="text-xs text-muted">
-              User
-              <input className={field} value={form.username} onChange={(e) => set("username", e.target.value)} />
-            </label>
-            <label className="text-xs text-muted">
-              Password
-              <input className={field} type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="•••••••• (stored in keychain)" />
-            </label>
-            <label className="text-xs text-muted">
-              SSL mode
-              <select className={field} value={form.sslmode} onChange={(e) => set("sslmode", e.target.value)}>
-                <option value="disable">disable</option>
-                <option value="prefer">prefer</option>
-                <option value="require">require</option>
-              </select>
-            </label>
+            {form.engine === "sqlite" ? (
+              <label className="col-span-2 text-xs text-muted">
+                Database file
+                <input
+                  className={field}
+                  value={form.database}
+                  onChange={(e) => set("database", e.target.value)}
+                  placeholder="/path/to/database.db"
+                />
+              </label>
+            ) : (
+              <>
+                <label className="text-xs text-muted">
+                  Host
+                  <input className={field} value={form.host} onChange={(e) => set("host", e.target.value)} />
+                </label>
+                <label className="text-xs text-muted">
+                  Port
+                  <input className={field} type="number" value={form.port} onChange={(e) => set("port", Number(e.target.value))} />
+                </label>
+                <label className="text-xs text-muted">
+                  Database
+                  <input className={field} value={form.database} onChange={(e) => set("database", e.target.value)} />
+                </label>
+                <label className="text-xs text-muted">
+                  User
+                  <input className={field} value={form.username} onChange={(e) => set("username", e.target.value)} />
+                </label>
+                <label className="text-xs text-muted">
+                  Password
+                  <input className={field} type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="•••••••• (stored in keychain)" />
+                </label>
+                {form.engine === "postgres" && (
+                  <label className="text-xs text-muted">
+                    SSL mode
+                    <select className={field} value={form.sslmode} onChange={(e) => set("sslmode", e.target.value)}>
+                      <option value="disable">disable</option>
+                      <option value="prefer">prefer</option>
+                      <option value="require">require</option>
+                    </select>
+                  </label>
+                )}
+              </>
+            )}
           </div>
 
           <div className="mt-4 flex items-center gap-2">

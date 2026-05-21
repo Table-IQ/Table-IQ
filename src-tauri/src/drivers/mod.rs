@@ -7,7 +7,9 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+pub mod mysql;
 pub mod postgres;
+pub mod sqlite;
 
 /// How a result is paged from the database into Rust (plan spec #2).
 #[derive(Debug, Clone, Serialize, Deserialize)]
