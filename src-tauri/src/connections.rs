@@ -6,6 +6,9 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::ssh::SshConfig;
+pub use crate::ssh::ssh_secret_account;
+
 const KEYRING_SERVICE: &str = "ai.rhobots.tableiq";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -22,6 +25,11 @@ pub struct ConnConfig {
     pub username: String,
     #[serde(default = "default_sslmode")]
     pub sslmode: String,
+    /// Optional SSH bastion. `#[serde(default)]` keeps legacy `connections.json` (no `ssh`
+    /// field) deserializing as `None`. Carries no secret — the key passphrase / bastion
+    /// password live in the keychain under `ssh:<conn_id>`.
+    #[serde(default)]
+    pub ssh: Option<SshConfig>,
 }
 
 fn default_sslmode() -> String {
@@ -32,6 +40,15 @@ fn default_engine() -> String {
 }
 
 impl ConnConfig {
+    /// A clone with `host`/`port` replaced — used to retarget the driver URL at an SSH tunnel's
+    /// local forward (`127.0.0.1:<ephemeral>`) instead of the remote bastion-side address.
+    pub fn with_host_port(&self, host: &str, port: u16) -> ConnConfig {
+        let mut c = self.clone();
+        c.host = host.to_string();
+        c.port = port;
+        c
+    }
+
     /// Engine-specific connection URL (no password for sqlite; password from keychain otherwise).
     pub fn url_with_password(&self, password: &str) -> String {
         match self.engine.as_str() {
@@ -181,6 +198,7 @@ mod tests {
             database: "app".into(),
             username: "postgres".into(),
             sslmode: "prefer".into(),
+            ssh: None,
         };
         let store = ConnStore {
             connections: vec![cfg.clone()],
@@ -202,6 +220,7 @@ mod tests {
             database: "d".into(),
             username: "u".into(),
             sslmode: "require".into(),
+            ssh: None,
         };
         let url = cfg.url_with_password("p@ss/word");
         assert!(url.contains("p%40ss%2Fword"));
@@ -221,6 +240,7 @@ mod tests {
             database: "d".into(),
             username: "u".into(),
             sslmode: "prefer".into(),
+            ssh: None,
         });
         let bundle = store.export_bundle().unwrap();
         // No password field exists on ConnConfig, so a bundle can never carry secrets.
@@ -229,6 +249,108 @@ mod tests {
         let mut other = ConnStore::default();
         assert_eq!(other.import_bundle(&bundle).unwrap(), 1);
         assert_eq!(other.connections[0].name, "PG");
+    }
+
+    #[test]
+    fn legacy_json_without_ssh_field_deserializes_as_none() {
+        // Saved files predating Slice 5 have no `ssh` key — must still load.
+        let json = r#"{
+            "id": "old",
+            "name": "Legacy",
+            "engine": "postgres",
+            "host": "h",
+            "port": 5432,
+            "database": "d",
+            "username": "u"
+        }"#;
+        let cfg: ConnConfig = serde_json::from_str(json).unwrap();
+        assert!(cfg.ssh.is_none());
+        assert_eq!(cfg.sslmode, "prefer"); // existing defaults still apply
+    }
+
+    #[test]
+    fn with_host_port_retargets_url_to_local_forward_postgres() {
+        let cfg = ConnConfig {
+            id: "x".into(),
+            name: "x".into(),
+            color: None,
+            engine: "postgres".into(),
+            host: "db.internal".into(),
+            port: 5432,
+            database: "app".into(),
+            username: "u".into(),
+            sslmode: "prefer".into(),
+            ssh: Some(crate::ssh::SshConfig {
+                enabled: true,
+                host: "bastion".into(),
+                port: 22,
+                username: "deploy".into(),
+                auth: crate::ssh::SshAuth::Agent,
+            }),
+        };
+        // Through a tunnel the driver must target 127.0.0.1:<local>, never the remote host.
+        let url = cfg.with_host_port("127.0.0.1", 54999).url_with_password("pw");
+        assert!(url.contains("127.0.0.1:54999"), "url was: {url}");
+        assert!(!url.contains("db.internal"), "url leaked remote host: {url}");
+    }
+
+    #[test]
+    fn with_host_port_retargets_url_to_local_forward_mysql() {
+        let cfg = ConnConfig {
+            id: "x".into(),
+            name: "x".into(),
+            color: None,
+            engine: "mysql".into(),
+            host: "db.internal".into(),
+            port: 3306,
+            database: "app".into(),
+            username: "u".into(),
+            sslmode: "prefer".into(),
+            ssh: None,
+        };
+        let url = cfg.with_host_port("127.0.0.1", 60001).url_with_password("pw");
+        assert!(url.starts_with("mysql://"));
+        assert!(url.contains("127.0.0.1:60001"), "url was: {url}");
+        assert!(!url.contains("db.internal"));
+    }
+
+    #[test]
+    fn bundle_stays_secret_free_with_ssh_config_present() {
+        let mut store = ConnStore::default();
+        store.upsert(ConnConfig {
+            id: "1".into(),
+            name: "PG via SSH".into(),
+            color: None,
+            engine: "postgres".into(),
+            host: "db.internal".into(),
+            port: 5432,
+            database: "app".into(),
+            username: "u".into(),
+            sslmode: "prefer".into(),
+            ssh: Some(crate::ssh::SshConfig {
+                enabled: true,
+                host: "bastion".into(),
+                port: 22,
+                username: "deploy".into(),
+                // KeyFile path is fine to share; passphrase is None and never serialized.
+                auth: crate::ssh::SshAuth::KeyFile {
+                    path: "~/.ssh/id_ed25519".into(),
+                    passphrase: None,
+                },
+            }),
+        });
+        let bundle = store.export_bundle().unwrap().to_lowercase();
+        assert!(!bundle.contains("passphrase"), "bundle leaked passphrase field: {bundle}");
+        assert!(!bundle.contains("password"), "bundle leaked password: {bundle}");
+        // Re-import works and preserves the (secret-free) ssh config.
+        let mut other = ConnStore::default();
+        assert_eq!(other.import_bundle(&store.export_bundle().unwrap()).unwrap(), 1);
+        assert!(other.connections[0].ssh.as_ref().unwrap().enabled);
+    }
+
+    #[test]
+    fn ssh_secret_account_derivation() {
+        assert_eq!(ssh_secret_account("conn-9"), "ssh:conn-9");
     }
 
     #[test]
@@ -244,6 +366,7 @@ mod tests {
             database: "d".into(),
             username: "u".into(),
             sslmode: "prefer".into(),
+            ssh: None,
         };
         store.upsert(cfg.clone());
         cfg.name = "B".into();
