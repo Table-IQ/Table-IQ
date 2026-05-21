@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { DataGrid, type GridSource } from "./DataGrid";
-import { applyEdit, fetchTableWindow, openTable, primaryKey, type ObjectInfo } from "../lib/commands";
+import {
+  applyEdit,
+  downloadText,
+  exportTable,
+  fetchTableWindow,
+  openTable,
+  primaryKey,
+  type ExportFormat,
+  type ObjectInfo,
+} from "../lib/commands";
 import { buildEdit } from "../lib/edit";
 
 interface Props {
@@ -83,6 +92,20 @@ export function TableView({ connId, schema, object }: Props) {
           {editable ? "editable" : "read-only" + (pk && pk.length === 0 ? " · no PK" : "")}
         </span>
         {notice && <span className="text-amber-500">{notice}</span>}
+        <div className="ml-auto flex items-center gap-1">
+          {(["csv", "json"] as ExportFormat[]).map((fmt) => (
+            <button
+              key={fmt}
+              onClick={async () => {
+                const text = await exportTable(connId, schema, object.name, fmt);
+                downloadText(`${object.name}.${fmt}`, text, fmt === "json" ? "application/json" : "text/csv");
+              }}
+              className="rounded border border-border px-2 py-0.5 text-[10px] text-muted hover:text-text"
+            >
+              Export {fmt.toUpperCase()}
+            </button>
+          ))}
+        </div>
       </div>
       <div className="min-h-0 flex-1">
         <DataGrid source={source} onEdit={editable ? onEdit : undefined} />

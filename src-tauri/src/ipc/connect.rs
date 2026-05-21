@@ -241,6 +241,64 @@ pub async fn primary_key(
     drv.primary_key(&schema, &table).await.map_err(|e| e.to_string())
 }
 
+fn encode_export(batch: &RecordBatch, format: &str) -> String {
+    if format == "json" {
+        crate::query::export::batch_to_json(batch)
+    } else {
+        crate::query::export::batch_to_csv(batch)
+    }
+}
+
+#[tauri::command]
+pub fn export_result(
+    state: State<ConnState>,
+    result_id: String,
+    format: String,
+) -> Result<String, String> {
+    let batch = state
+        .results
+        .lock()
+        .unwrap()
+        .get(&result_id)
+        .cloned()
+        .ok_or_else(|| "no such result".to_string())?;
+    Ok(encode_export(&batch, &format))
+}
+
+#[tauri::command]
+pub async fn export_table(
+    state: State<'_, ConnState>,
+    id: String,
+    schema: String,
+    table: String,
+    format: String,
+) -> Result<String, String> {
+    let drv = state.session(&id)?;
+    // Export up to the same cap as queries (bounded).
+    let batch = drv
+        .open_window(&schema, &table, 0, QUERY_CAP)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(encode_export(&batch, &format))
+}
+
+#[derive(Serialize)]
+pub struct ScriptResult {
+    pub rows_affected: u64,
+}
+
+/// Execute a raw script (used by the SQL editor's "Run in transaction": BEGIN; …; COMMIT).
+#[tauri::command]
+pub async fn run_script(
+    state: State<'_, ConnState>,
+    id: String,
+    sql: String,
+) -> Result<ScriptResult, String> {
+    let drv = state.session(&id)?;
+    let rows_affected = drv.run_script(&sql).await.map_err(|e| e.to_string())?;
+    Ok(ScriptResult { rows_affected })
+}
+
 #[derive(Serialize)]
 pub struct EditResult {
     pub rows_affected: u64,

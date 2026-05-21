@@ -213,4 +213,8 @@ impl SqlDriver for MySqlDriver {
         q = q.bind(edit.orig_value.clone());
         Ok(q.execute(&self.pool).await.map_err(db)?.rows_affected())
     }
+
+    async fn run_script(&self, sql: &str) -> DResult<u64> {
+        Ok(sqlx::raw_sql(sql).execute(&self.pool).await.map_err(db)?.rows_affected())
+    }
 }

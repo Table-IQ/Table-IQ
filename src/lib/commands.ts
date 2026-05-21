@@ -223,3 +223,37 @@ export async function applyEdit(
   const r = await invoke<{ rows_affected: number }>("apply_edit", { id, schema, table, edit });
   return { rowsAffected: r.rows_affected };
 }
+
+// ── export & transactions ─────────────────────────────────────────────────
+export type ExportFormat = "csv" | "json";
+
+export async function exportResult(resultId: string, format: ExportFormat): Promise<string> {
+  if (!inTauri()) return format === "json" ? '[{"id":"1","demo":"true"}]' : "id,demo\n1,true\n";
+  return invoke<string>("export_result", { resultId, format });
+}
+
+export async function exportTable(
+  id: string,
+  schema: string,
+  table: string,
+  format: ExportFormat,
+): Promise<string> {
+  if (!inTauri()) return format === "json" ? '[{"id":"1"}]' : "id\n1\n";
+  return invoke<string>("export_table", { id, schema, table, format });
+}
+
+export async function runScript(id: string, sql: string): Promise<{ rowsAffected: number }> {
+  if (!inTauri()) return { rowsAffected: 0 };
+  const r = await invoke<{ rows_affected: number }>("run_script", { id, sql });
+  return { rowsAffected: r.rows_affected };
+}
+
+/** Save text to a file (Blob download — works in the WebView and the browser). */
+export function downloadText(filename: string, text: string, mime = "text/plain") {
+  const blob = new Blob([text], { type: mime });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}

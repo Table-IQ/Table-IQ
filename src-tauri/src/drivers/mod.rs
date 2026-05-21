@@ -146,6 +146,9 @@ pub trait SqlDriver: Send + Sync {
     async fn primary_key(&self, schema: &str, table: &str) -> DResult<Vec<String>>;
     /// Apply a single-cell edit; returns rows affected (0 ⇒ optimistic-concurrency conflict).
     async fn apply_edit(&self, schema: &str, table: &str, edit: &EditSpec) -> DResult<u64>;
+
+    /// Execute a raw (possibly multi-statement) script — used for `BEGIN; …; COMMIT/ROLLBACK`.
+    async fn run_script(&self, sql: &str) -> DResult<u64>;
 }
 
 /// Document stores (MongoDB). Defined for the architecture; stubbed in Phase 0.

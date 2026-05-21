@@ -359,6 +359,10 @@ impl SqlDriver for PgDriver {
         let res = q.execute(&self.pool).await.map_err(db)?;
         Ok(res.rows_affected())
     }
+
+    async fn run_script(&self, sql: &str) -> DResult<u64> {
+        Ok(sqlx::raw_sql(sql).execute(&self.pool).await.map_err(db)?.rows_affected())
+    }
 }
 
 #[cfg(test)]
