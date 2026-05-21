@@ -1,0 +1,132 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap');
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: Inter, system-ui, sans-serif; background:#eef0f3; color:#0b0f17; padding:32px; }
+  h1 { font-size:22px; font-weight:700; letter-spacing:-0.02em; margin-bottom:4px; }
+  .sub { color:#6b7280; font-size:13px; margin-bottom:24px; }
+  .row { display:flex; gap:20px; flex-wrap:wrap; margin-bottom:28px; }
+  .card { border-radius:14px; padding:22px; flex:1; min-width:300px; }
+  .light { background:#ffffff; border:1px solid #e5e7eb; }
+  .dark  { background:#0b0f17; border:1px solid #1f2937; color:#e5e7eb; }
+  .label { font-size:11px; text-transform:uppercase; letter-spacing:0.12em; color:#9ca3af; margin-bottom:14px; }
+  .marks { display:flex; align-items:center; gap:26px; }
+  .markwrap { text-align:center; }
+  .markname { font-size:11px; color:#9ca3af; margin-top:8px; }
+  .swatches { display:flex; gap:10px; flex-wrap:wrap; }
+  .sw { width:84px; height:56px; border-radius:8px; display:flex; align-items:flex-end; padding:6px; font-size:10px; color:#fff; font-family:'JetBrains Mono',monospace; }
+  .word { display:flex; align-items:center; gap:12px; font-weight:600; font-size:30px; letter-spacing:-0.02em; }
+  .small { font-size:13px; }
+  .typerow { font-size:14px; margin:3px 0; }
+  .mono { font-family:'JetBrains Mono', monospace; }
+</style>
+</head>
+<body>
+  <h1>TableIQ — brand exploration</h1>
+  <div class="sub">T + IQ monogram · indigo (light-first) · 3 mark concepts shown on light & dark, large + small</div>
+
+  <!-- SVG symbol defs -->
+  <svg width="0" height="0" style="position:absolute">
+    <defs>
+      <linearGradient id="ind" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#6366f1"/><stop offset="1" stop-color="#7c3aed"/>
+      </linearGradient>
+
+      <!-- A: tile + segmented-T (table cells) + spark -->
+      <symbol id="markA" viewBox="0 0 100 100">
+        <rect x="6" y="6" width="88" height="88" rx="22" fill="url(#ind)"/>
+        <rect x="26" y="30" width="14" height="11" rx="2" fill="#fff"/>
+        <rect x="43" y="30" width="14" height="11" rx="2" fill="#fff"/>
+        <rect x="60" y="30" width="14" height="11" rx="2" fill="#fff"/>
+        <rect x="44" y="41" width="12" height="33" rx="3" fill="#fff"/>
+        <circle cx="74" cy="26" r="6" fill="#c4b5fd"/>
+      </symbol>
+
+      <!-- B: tile + clean T + orbiting spark node -->
+      <symbol id="markB" viewBox="0 0 100 100">
+        <rect x="6" y="6" width="88" height="88" rx="22" fill="url(#ind)"/>
+        <rect x="24" y="30" width="52" height="12" rx="3" fill="#fff"/>
+        <rect x="44" y="30" width="12" height="44" rx="3" fill="#fff"/>
+        <circle cx="70" cy="62" r="7" fill="none" stroke="#c4b5fd" stroke-width="3"/>
+        <circle cx="70" cy="62" r="2.5" fill="#fff"/>
+      </symbol>
+
+      <!-- C: glyph only, currentColor (adapts to light/dark) -->
+      <symbol id="markC" viewBox="0 0 100 100">
+        <rect x="20" y="26" width="16" height="13" rx="2.5" fill="currentColor"/>
+        <rect x="42" y="26" width="16" height="13" rx="2.5" fill="currentColor"/>
+        <rect x="64" y="26" width="16" height="13" rx="2.5" fill="currentColor"/>
+        <rect x="42" y="39" width="16" height="38" rx="3" fill="currentColor"/>
+        <circle cx="78" cy="22" r="6" fill="#7c3aed"/>
+      </symbol>
+    </defs>
+  </svg>
+
+  <div class="row">
+    <div class="card light">
+      <div class="label">On light</div>
+      <div class="marks">
+        <div class="markwrap"><svg width="72" height="72"><use href="#markA"/></svg><svg width="28" height="28"><use href="#markA"/></svg><div class="markname">A · cells-T + spark</div></div>
+        <div class="markwrap"><svg width="72" height="72"><use href="#markB"/></svg><svg width="28" height="28"><use href="#markB"/></svg><div class="markname">B · T + node</div></div>
+        <div class="markwrap" style="color:#4f46e5"><svg width="72" height="72"><use href="#markC"/></svg><svg width="28" height="28"><use href="#markC"/></svg><div class="markname">C · glyph (no tile)</div></div>
+      </div>
+    </div>
+    <div class="card dark">
+      <div class="label">On dark</div>
+      <div class="marks">
+        <div class="markwrap"><svg width="72" height="72"><use href="#markA"/></svg><svg width="28" height="28"><use href="#markA"/></svg><div class="markname">A</div></div>
+        <div class="markwrap"><svg width="72" height="72"><use href="#markB"/></svg><svg width="28" height="28"><use href="#markB"/></svg><div class="markname">B</div></div>
+        <div class="markwrap" style="color:#a5b4fc"><svg width="72" height="72"><use href="#markC"/></svg><svg width="28" height="28"><use href="#markC"/></svg><div class="markname">C</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="card light">
+      <div class="label">Wordmark · light</div>
+      <div class="word"><svg width="36" height="36"><use href="#markA"/></svg><span>Table<span style="color:#4f46e5">IQ</span></span></div>
+      <div class="word small" style="margin-top:10px"><svg width="20" height="20"><use href="#markA"/></svg><span>Table<span style="color:#4f46e5">IQ</span></span></div>
+    </div>
+    <div class="card dark">
+      <div class="label">Wordmark · dark</div>
+      <div class="word"><svg width="36" height="36"><use href="#markA"/></svg><span>Table<span style="color:#a5b4fc">IQ</span></span></div>
+      <div class="word small" style="margin-top:10px"><svg width="20" height="20"><use href="#markA"/></svg><span>Table<span style="color:#a5b4fc">IQ</span></span></div>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="card light">
+      <div class="label">Palette · light</div>
+      <div class="swatches">
+        <div class="sw" style="background:#ffffff;color:#0b0f17;border:1px solid #e5e7eb">bg #fff</div>
+        <div class="sw" style="background:#f7f8fa;color:#0b0f17">surf #f7f8fa</div>
+        <div class="sw" style="background:#4f46e5">#4f46e5</div>
+        <div class="sw" style="background:#7c3aed">#7c3aed</div>
+        <div class="sw" style="background:#0b0f17">text #0b0f17</div>
+        <div class="sw" style="background:#6b7280">muted</div>
+      </div>
+    </div>
+    <div class="card dark">
+      <div class="label">Palette · dark</div>
+      <div class="swatches">
+        <div class="sw" style="background:#0b0f17;border:1px solid #1f2937">bg #0b0f17</div>
+        <div class="sw" style="background:#111726">surf #111726</div>
+        <div class="sw" style="background:#6366f1">#6366f1</div>
+        <div class="sw" style="background:#8b5cf6">#8b5cf6</div>
+        <div class="sw" style="background:#e5e7eb;color:#0b0f17">text</div>
+        <div class="sw" style="background:#9ca3af;color:#0b0f17">muted</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card light">
+    <div class="label">Typography</div>
+    <div class="typerow" style="font-weight:700;font-size:20px;letter-spacing:-0.02em">Inter — UI & headings</div>
+    <div class="typerow">Inter Regular — body text, the workhorse for the app shell.</div>
+    <div class="typerow mono">JetBrains Mono — SQL editor, data cells, IDs</div>
+  </div>
+</body>
+</html>
