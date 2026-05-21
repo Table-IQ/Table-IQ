@@ -29,8 +29,8 @@ export interface DataGridHandle {
 interface Props {
   transport: TransportKind;
   totalRows: number;
-  /** Reports each window-fetch round-trip latency (ms) to the bench harness. */
-  onWindowFetched?: (ms: number) => void;
+  /** Reports each window-fetch round-trip latency (ms) + the transport it used. */
+  onWindowFetched?: (ms: number, kind: TransportKind) => void;
 }
 
 /**
@@ -48,6 +48,13 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   const [columns, setColumns] = useState<GridColumn[]>([]);
   const colNames = useRef<string[]>([]);
   const [, setVersion] = useState(0);
+
+  // Held in a ref so changing the callback never rebuilds ensurePage/getCellContent
+  // (which would re-fire the first-page effect and thrash fetches).
+  const onFetchedRef = useRef(onWindowFetched);
+  useEffect(() => {
+    onFetchedRef.current = onWindowFetched;
+  }, [onWindowFetched]);
 
   // Reset the cache whenever the transport or dataset changes.
   useEffect(() => {
@@ -70,12 +77,12 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
             colNames.current = win.columns;
             setColumns(win.columns.map((c) => ({ title: c, width: COL_WIDTH })));
           }
-          onWindowFetched?.(ms);
+          onFetchedRef.current?.(ms, transport);
           setVersion((v) => v + 1);
         })
         .finally(() => inflight.current.delete(page));
     },
-    [transport, onWindowFetched],
+    [transport],
   );
 
   // Kick off the first page so columns get established.

@@ -9,6 +9,8 @@ const RUN_MS = 5000;
 export function BenchView() {
   const gridRef = useRef<DataGridHandle>(null);
   const latencies = useRef<number[]>([]);
+  const collecting = useRef(false);
+  const activeTransport = useRef<TransportKind>("response");
   const { transport, totalRows, results, running, setTransport, setTotalRows, setRunning, addResult } =
     useBench();
   const [status, setStatus] = useState("idle");
@@ -19,16 +21,21 @@ export function BenchView() {
       .catch((e) => setStatus(`meta error: ${e}`));
   }, [setTotalRows]);
 
-  const onWindowFetched = useCallback((ms: number) => {
-    latencies.current.push(ms);
+  // Only count fetches issued by the active transport while collecting, so a
+  // previous transport's late-resolving in-flight fetches don't pollute this run's p99.
+  const onWindowFetched = useCallback((ms: number, kind: TransportKind) => {
+    if (collecting.current && kind === activeTransport.current) latencies.current.push(ms);
   }, []);
 
   const runOne = useCallback(
     async (kind: TransportKind): Promise<BenchResult> => {
+      activeTransport.current = kind;
+      collecting.current = false; // ignore fetches during cache reset / settle
       setTransport(kind);
-      // let the grid reset its cache for the new transport
-      await new Promise((r) => setTimeout(r, 250));
+      // let the grid reset its cache and drain prior in-flight fetches
+      await new Promise((r) => setTimeout(r, 400));
       latencies.current = [];
+      collecting.current = true;
 
       const start = performance.now();
       let last = start;
@@ -53,6 +60,7 @@ export function BenchView() {
         requestAnimationFrame(frame);
       });
 
+      collecting.current = false;
       const elapsed = (performance.now() - start) / 1000;
       const fps = deltas.length ? 1000 / (deltas.reduce((a, b) => a + b, 0) / deltas.length) : 0;
       const result: BenchResult = {
