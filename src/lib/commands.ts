@@ -248,6 +248,33 @@ export async function runScript(id: string, sql: string): Promise<{ rowsAffected
   return { rowsAffected: r.rows_affected };
 }
 
+// ── AI (BYOK NL→SQL) ───────────────────────────────────────────────────────
+export interface AiConfig {
+  provider: string;
+  model: string;
+}
+
+export async function getAiConfig(): Promise<AiConfig> {
+  if (!inTauri()) return { provider: "anthropic", model: "claude-sonnet-4-6" };
+  return invoke<AiConfig>("get_ai_config");
+}
+
+export async function saveAiConfig(provider: string, model: string, apiKey?: string): Promise<void> {
+  if (!inTauri()) return;
+  await invoke("save_ai_config", { provider, model, apiKey: apiKey ?? null });
+}
+
+export async function aiEgressPreview(id: string): Promise<string> {
+  if (!inTauri())
+    return "public.wide (id bigint NOT NULL, amount_numeric numeric NOT NULL, blob_text text NOT NULL, nullable_int bigint)";
+  return invoke<string>("ai_egress_preview", { id });
+}
+
+export async function aiGenerateSql(id: string, prompt: string): Promise<string> {
+  if (!inTauri()) return "SELECT id, amount_numeric\nFROM wide\nORDER BY amount_numeric DESC\nLIMIT 10;";
+  return invoke<string>("ai_generate_sql", { id, prompt });
+}
+
 /** Save text to a file (Blob download — works in the WebView and the browser). */
 export function downloadText(filename: string, text: string, mime = "text/plain") {
   const blob = new Blob([text], { type: mime });

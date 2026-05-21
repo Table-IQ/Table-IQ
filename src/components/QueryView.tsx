@@ -1,7 +1,10 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import { DataGrid, type GridSource } from "./DataGrid";
-import { SqlEditor } from "./SqlEditor";
+import { SqlEditor, type SqlEditorHandle } from "./SqlEditor";
+import { AiSettings } from "./AiSettings";
 import {
+  aiEgressPreview,
+  aiGenerateSql,
   downloadText,
   exportResult,
   fetchResultWindow,
@@ -13,10 +16,35 @@ import {
 
 export function QueryView({ connId }: { connId: string }) {
   const sqlRef = useRef("SELECT * FROM information_schema.tables LIMIT 100;");
+  const editorRef = useRef<SqlEditorHandle>(null);
   const [meta, setMeta] = useState<QueryResultMeta | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [txStatus, setTxStatus] = useState<string | null>(null);
+  // AI
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [aiBusy, setAiBusy] = useState(false);
+  const [egress, setEgress] = useState<string | null>(null);
+  const [showAiSettings, setShowAiSettings] = useState(false);
+
+  const aiPreview = useCallback(async () => {
+    setEgress(await aiEgressPreview(connId).catch((e) => `error: ${e}`));
+  }, [connId]);
+
+  const aiGenerate = useCallback(async () => {
+    if (!aiPrompt.trim()) return;
+    setAiBusy(true);
+    setError(null);
+    try {
+      const generated = await aiGenerateSql(connId, aiPrompt);
+      sqlRef.current = generated;
+      editorRef.current?.setText(generated);
+    } catch (e) {
+      setError(`AI: ${e}`);
+    } finally {
+      setAiBusy(false);
+    }
+  }, [connId, aiPrompt]);
 
   const run = useCallback(async () => {
     setRunning(true);
@@ -117,9 +145,53 @@ export function QueryView({ connId }: { connId: string }) {
           )}
         </div>
       </div>
-      <div className="h-44 shrink-0 border-b border-border">
-        <SqlEditor initial={sqlRef.current} onChange={(v) => (sqlRef.current = v)} onRun={run} />
+      {/* AI NL→SQL bar */}
+      <div className="flex items-center gap-2 border-b border-border px-4 py-1.5">
+        <span className="text-xs font-medium text-accent">AI</span>
+        <input
+          value={aiPrompt}
+          onChange={(e) => setAiPrompt(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && aiGenerate()}
+          placeholder="Describe the query in plain English…"
+          className="min-w-0 flex-1 rounded-md border border-border bg-bg px-2 py-1 text-xs text-text placeholder:text-muted focus:border-accent focus:outline-none"
+        />
+        <button
+          onClick={aiPreview}
+          className="rounded-md border border-border px-2 py-1 text-xs text-muted hover:text-text"
+          title="Show exactly what schema text gets sent to the provider"
+        >
+          What gets sent
+        </button>
+        <button
+          onClick={aiGenerate}
+          disabled={aiBusy}
+          className="rounded-md bg-accent px-2.5 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+        >
+          {aiBusy ? "Generating…" : "Generate SQL"}
+        </button>
+        <button
+          onClick={() => setShowAiSettings(true)}
+          className="rounded-md border border-border px-2 py-1 text-xs text-muted hover:text-text"
+          title="AI settings"
+        >
+          ⚙
+        </button>
       </div>
+      {egress !== null && (
+        <div className="border-b border-border bg-surface px-4 py-2 text-xs">
+          <div className="mb-1 flex items-center justify-between text-muted">
+            <span className="text-[10px] uppercase tracking-widest">Egress preview · sent to the provider</span>
+            <button onClick={() => setEgress(null)} className="hover:text-text">
+              ×
+            </button>
+          </div>
+          <pre className="max-h-24 overflow-auto whitespace-pre-wrap font-mono text-[11px] text-text">{egress}</pre>
+        </div>
+      )}
+      <div className="h-44 shrink-0 border-b border-border">
+        <SqlEditor ref={editorRef} initial={sqlRef.current} onChange={(v) => (sqlRef.current = v)} onRun={run} />
+      </div>
+      {showAiSettings && <AiSettings onClose={() => setShowAiSettings(false)} />}
       <div className="min-h-0 flex-1">
         {source ? (
           <DataGrid source={source} />

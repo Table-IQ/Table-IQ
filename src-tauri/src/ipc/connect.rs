@@ -319,3 +319,55 @@ pub async fn apply_edit(
         .map_err(|e| e.to_string())?;
     Ok(EditResult { rows_affected })
 }
+
+// ── AI (BYOK NL→SQL) ───────────────────────────────────────────────────────
+use crate::ai;
+
+#[tauri::command]
+pub fn get_ai_config() -> ai::AiConfig {
+    ai::load_config()
+}
+
+#[tauri::command]
+pub fn save_ai_config(
+    provider: String,
+    model: String,
+    api_key: Option<String>,
+) -> Result<(), String> {
+    ai::save_config(&ai::AiConfig { provider: provider.clone(), model })?;
+    if let Some(k) = api_key {
+        if !k.is_empty() {
+            connections::set_password(&ai::key_account(&provider), &k)?;
+        }
+    }
+    Ok(())
+}
+
+/// Exactly the text that would be sent to the provider (the "what gets sent" control).
+#[tauri::command]
+pub async fn ai_egress_preview(state: State<'_, ConnState>, id: String) -> Result<String, String> {
+    let drv = state.session(&id)?;
+    let model = drv.introspect().await.map_err(|e| e.to_string())?;
+    Ok(ai::schema_card(&model))
+}
+
+/// Generate SQL from natural language. Returns SQL only — the UI inserts it into the editor
+/// for the user to review and run (generate-not-execute).
+#[tauri::command]
+pub async fn ai_generate_sql(
+    state: State<'_, ConnState>,
+    id: String,
+    prompt: String,
+) -> Result<String, String> {
+    let cfg = ai::load_config();
+    let key = connections::get_password(&ai::key_account(&cfg.provider))
+        .map_err(|_| "No AI API key configured. Add one in AI settings.".to_string())?;
+    let drv = state.session(&id)?;
+    let schema = drv.introspect().await.map_err(|e| e.to_string())?;
+    let card = ai::schema_card(&schema);
+    let (system, user) = ai::build_prompt(&card, &prompt);
+    let provider = ai::provider::ByokProvider::new(&cfg.provider, &cfg.model, &key);
+    use ai::provider::LlmProvider;
+    let raw = provider.complete(&system, &user).await?;
+    Ok(ai::extract_sql(&raw))
+}
