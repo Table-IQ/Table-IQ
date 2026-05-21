@@ -114,6 +114,21 @@ pub fn save_connection(
     Ok(())
 }
 
+/// Export saved connections as a shareable, secret-free JSON bundle.
+#[tauri::command]
+pub fn export_connections(state: State<ConnState>) -> Result<String, String> {
+    state.store.lock().unwrap().export_bundle()
+}
+
+/// Import a connection bundle (merge by id); recipients re-enter passwords.
+#[tauri::command]
+pub fn import_connections(state: State<ConnState>, json: String) -> Result<usize, String> {
+    let mut store = state.store.lock().unwrap();
+    let n = store.import_bundle(&json)?;
+    store.save()?;
+    Ok(n)
+}
+
 #[tauri::command]
 pub fn delete_connection(state: State<ConnState>, id: String) -> Result<(), String> {
     {

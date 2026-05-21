@@ -125,6 +125,22 @@ impl ConnStore {
     pub fn remove(&mut self, id: &str) {
         self.connections.retain(|c| c.id != id);
     }
+
+    /// Export connections as a shareable JSON bundle. Secret-free by construction —
+    /// passwords live in the keychain, never in `ConnConfig`, so a recipient re-enters them.
+    pub fn export_bundle(&self) -> Result<String, String> {
+        serde_json::to_string_pretty(&self.connections).map_err(|e| e.to_string())
+    }
+
+    /// Merge a bundle into the store (upsert by id). Returns how many were imported.
+    pub fn import_bundle(&mut self, json: &str) -> Result<usize, String> {
+        let incoming: Vec<ConnConfig> = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        let n = incoming.len();
+        for c in incoming {
+            self.upsert(c);
+        }
+        Ok(n)
+    }
 }
 
 // ── keychain ────────────────────────────────────────────────────────────
@@ -190,6 +206,29 @@ mod tests {
         let url = cfg.url_with_password("p@ss/word");
         assert!(url.contains("p%40ss%2Fword"));
         assert!(url.contains("sslmode=require"));
+    }
+
+    #[test]
+    fn bundle_export_import_roundtrip_is_secret_free() {
+        let mut store = ConnStore::default();
+        store.upsert(ConnConfig {
+            id: "1".into(),
+            name: "PG".into(),
+            color: None,
+            engine: "postgres".into(),
+            host: "h".into(),
+            port: 5432,
+            database: "d".into(),
+            username: "u".into(),
+            sslmode: "prefer".into(),
+        });
+        let bundle = store.export_bundle().unwrap();
+        // No password field exists on ConnConfig, so a bundle can never carry secrets.
+        assert!(!bundle.to_lowercase().contains("password"));
+
+        let mut other = ConnStore::default();
+        assert_eq!(other.import_bundle(&bundle).unwrap(), 1);
+        assert_eq!(other.connections[0].name, "PG");
     }
 
     #[test]

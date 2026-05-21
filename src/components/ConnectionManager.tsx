@@ -3,6 +3,9 @@ import { Wordmark } from "./Brand";
 import { ThemeToggle } from "./ThemeToggle";
 import {
   connect,
+  downloadText,
+  exportConnections,
+  importConnections,
   listConnections,
   listObjects,
   saveConnection,
@@ -114,6 +117,29 @@ export function ConnectionManager() {
             <button onClick={() => loadInto(blankConfig())} className="text-xs text-primary hover:underline">
               + New
             </button>
+          </div>
+          <div className="mb-2 flex items-center gap-2 text-[11px]">
+            <button
+              onClick={async () => downloadText("tableiq-connections.json", await exportConnections(), "application/json")}
+              className="text-muted hover:text-text"
+              title="Export saved connections (no passwords) to share"
+            >
+              ⤓ Export
+            </button>
+            <label className="cursor-pointer text-muted hover:text-text" title="Import a connection bundle">
+              ⤒ Import
+              <input
+                type="file"
+                accept="application/json"
+                className="hidden"
+                onChange={async (e) => {
+                  const f = e.target.files?.[0];
+                  if (!f) return;
+                  await importConnections(await f.text());
+                  refresh();
+                }}
+              />
+            </label>
           </div>
           <div className="space-y-1">
             {saved.length === 0 && <div className="text-xs text-muted">No saved connections.</div>}

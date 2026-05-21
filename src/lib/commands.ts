@@ -129,6 +129,24 @@ export async function saveConnection(cfg: ConnConfig, password?: string): Promis
   await invoke("save_connection", { cfg, password: password ?? null });
 }
 
+export async function exportConnections(): Promise<string> {
+  if (!inTauri()) return JSON.stringify(mockStore, null, 2);
+  return invoke<string>("export_connections");
+}
+
+export async function importConnections(json: string): Promise<number> {
+  if (!inTauri()) {
+    const incoming = JSON.parse(json) as ConnConfig[];
+    for (const c of incoming) {
+      const i = mockStore.findIndex((x) => x.id === c.id);
+      if (i >= 0) mockStore[i] = c;
+      else mockStore.push(c);
+    }
+    return incoming.length;
+  }
+  return invoke<number>("import_connections", { json });
+}
+
 export async function deleteConnection(id: string): Promise<void> {
   if (!inTauri()) {
     const i = mockStore.findIndex((c) => c.id === id);
