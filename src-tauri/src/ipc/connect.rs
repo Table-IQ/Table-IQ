@@ -16,6 +16,8 @@ use crate::drivers::{
     sqlite::SqliteDriver, DocumentDriver, EditSpec, KeyInfo, KvDriver, KvValue, SchemaModel,
     SqlDriver,
 };
+use crate::ssh::tunnel::{RemoteTarget, Tunnel};
+use crate::ssh::SshAuth;
 
 const QUERY_CAP: usize = 50_000;
 
@@ -25,6 +27,37 @@ pub struct ConnState {
     kv_sessions: Mutex<HashMap<String, Arc<dyn KvDriver>>>,
     doc_sessions: Mutex<HashMap<String, Arc<dyn DocumentDriver>>>,
     results: Mutex<HashMap<String, Arc<RecordBatch>>>,
+    /// Live SSH tunnels keyed by conn id. Dropping a `Tunnel` (on disconnect/delete) tears it down.
+    tunnels: Mutex<HashMap<String, Tunnel>>,
+}
+
+/// If `cfg` has SSH enabled, open a tunnel to the bastion forwarding to the remote DB and return
+/// it alongside a `ConnConfig` whose host/port point at the local forward. Otherwise returns the
+/// config unchanged and no tunnel. sqlite (a file engine) ignores SSH.
+///
+/// `conn_id` is used to read the SSH secret (key passphrase / bastion password) from the keychain
+/// under `ssh:<conn_id>`.
+async fn maybe_open_tunnel(
+    cfg: &ConnConfig,
+    conn_id: &str,
+) -> Result<(ConnConfig, Option<Tunnel>), String> {
+    let ssh = match &cfg.ssh {
+        Some(s) if s.enabled && cfg.engine != "sqlite" => s,
+        _ => return Ok((cfg.clone(), None)),
+    };
+    // Agent auth needs no stored secret; password/keyfile read the keychain (may be empty).
+    let secret = match ssh.auth {
+        SshAuth::Agent => String::new(),
+        _ => connections::get_password(&connections::ssh_secret_account(conn_id)).unwrap_or_default(),
+    };
+    let target = RemoteTarget {
+        host: cfg.host.clone(),
+        port: cfg.port,
+    };
+    let tunnel = Tunnel::connect(ssh, &secret, target).await?;
+    let local = tunnel.local_addr();
+    let rewritten = cfg.with_host_port(&local.ip().to_string(), local.port());
+    Ok((rewritten, Some(tunnel)))
 }
 
 /// Build the right driver for an engine. `pw` is unused for sqlite.
@@ -46,6 +79,7 @@ impl ConnState {
             kv_sessions: Mutex::new(HashMap::new()),
             doc_sessions: Mutex::new(HashMap::new()),
             results: Mutex::new(HashMap::new()),
+            tunnels: Mutex::new(HashMap::new()),
         }
     }
 
@@ -100,6 +134,7 @@ pub fn save_connection(
     state: State<ConnState>,
     cfg: ConnConfig,
     password: Option<String>,
+    ssh_secret: Option<String>,
 ) -> Result<(), String> {
     {
         let mut store = state.store.lock().unwrap();
@@ -109,6 +144,12 @@ pub fn save_connection(
     if let Some(pw) = password {
         if !pw.is_empty() {
             connections::set_password(&cfg.id, &pw)?;
+        }
+    }
+    // SSH key passphrase / bastion password — stored under ssh:<id>, never on disk / in the bundle.
+    if let Some(s) = ssh_secret {
+        if !s.is_empty() {
+            connections::set_password(&connections::ssh_secret_account(&cfg.id), &s)?;
         }
     }
     Ok(())
@@ -137,6 +178,11 @@ pub fn delete_connection(state: State<ConnState>, id: String) -> Result<(), Stri
         store.save()?;
     }
     state.sessions.lock().unwrap().remove(&id);
+    state.kv_sessions.lock().unwrap().remove(&id);
+    state.doc_sessions.lock().unwrap().remove(&id);
+    state.tunnels.lock().unwrap().remove(&id);
+    // Remove both the DB password and any SSH secret for this connection.
+    let _ = connections::delete_password(&connections::ssh_secret_account(&id));
     connections::delete_password(&id)
 }
 
@@ -172,17 +218,34 @@ pub async fn connect(state: State<'_, ConnState>, id: String) -> Result<Connecte
         connections::get_password(&id).unwrap_or_default()
     };
 
-    if cfg.engine == "redis" {
-        let drv = RedisDriver::connect(&cfg.url_with_password(&password)).await.map_err(|e| e.to_string())?;
-        state.kv_sessions.lock().unwrap().insert(id.clone(), Arc::new(drv));
-    } else if cfg.engine == "mongodb" {
-        let drv = MongoDriver::connect(&cfg.url_with_password(&password), &cfg.database)
-            .await
-            .map_err(|e| e.to_string())?;
-        state.doc_sessions.lock().unwrap().insert(id.clone(), Arc::new(drv));
-    } else {
-        let drv = open_driver(&cfg, &password).await?;
-        state.sessions.lock().unwrap().insert(id.clone(), drv);
+    // Open the SSH tunnel (if enabled) before the driver, then connect against the local forward.
+    // `eff` is the connection config with host/port rewritten to 127.0.0.1:<ephemeral> when tunneled.
+    let (eff, tunnel) = maybe_open_tunnel(&cfg, &id).await?;
+
+    let result: Result<(), String> = async {
+        if eff.engine == "redis" {
+            let drv = RedisDriver::connect(&eff.url_with_password(&password))
+                .await
+                .map_err(|e| e.to_string())?;
+            state.kv_sessions.lock().unwrap().insert(id.clone(), Arc::new(drv));
+        } else if eff.engine == "mongodb" {
+            let drv = MongoDriver::connect(&eff.url_with_password(&password), &eff.database)
+                .await
+                .map_err(|e| e.to_string())?;
+            state.doc_sessions.lock().unwrap().insert(id.clone(), Arc::new(drv));
+        } else {
+            let drv = open_driver(&eff, &password).await?;
+            state.sessions.lock().unwrap().insert(id.clone(), drv);
+        }
+        Ok(())
+    }
+    .await;
+
+    // On driver failure the tunnel is dropped here (closed). On success, keep it alive in state
+    // so disconnect tears it down.
+    result?;
+    if let Some(t) = tunnel {
+        state.tunnels.lock().unwrap().insert(id.clone(), t);
     }
     Ok(ConnectedInfo {
         id,
@@ -197,6 +260,8 @@ pub fn disconnect(state: State<ConnState>, id: String) {
     state.sessions.lock().unwrap().remove(&id);
     state.kv_sessions.lock().unwrap().remove(&id);
     state.doc_sessions.lock().unwrap().remove(&id);
+    // Dropping the Tunnel aborts its listener task and disconnects the SSH session.
+    state.tunnels.lock().unwrap().remove(&id);
 }
 
 // ── MongoDB document browse ────────────────────────────────────────────────

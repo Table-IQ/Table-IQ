@@ -1,5 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { synthWindowIpc, MOCK_TOTAL_ROWS } from "./mockSource";
+import type { SshConfig } from "./ssh";
+
+export type { SshConfig, SshAuth, SshAuthMode } from "./ssh";
 
 // ── shared types (mirror the Rust serde shapes) ──────────────────────────
 export type Engine = "postgres" | "mysql" | "sqlite" | "redis" | "mongodb";
@@ -13,6 +16,8 @@ export interface ConnConfig {
   database: string;
   username: string;
   sslmode: string;
+  /** Optional SSH bastion. Omitted/undefined ⇒ direct connection (matches Rust Option<SshConfig>). */
+  ssh?: SshConfig | null;
 }
 export interface ColumnInfo {
   name: string;
@@ -89,6 +94,24 @@ const mockStore: ConnConfig[] = [
     username: "",
     sslmode: "disable",
   },
+  {
+    id: "mock-ssh-pg",
+    name: "PG via Bastion",
+    color: "#d97706",
+    engine: "postgres",
+    host: "db.internal",
+    port: 5432,
+    database: "tableiq",
+    username: "postgres",
+    sslmode: "require",
+    ssh: {
+      enabled: true,
+      host: "bastion.example.com",
+      port: 22,
+      username: "deploy",
+      auth: { mode: "keyfile", path: "~/.ssh/id_ed25519" },
+    },
+  },
 ];
 const mockSchema: SchemaModel = {
   schemas: [
@@ -119,14 +142,22 @@ export async function listConnections(): Promise<ConnConfig[]> {
   return invoke<ConnConfig[]>("list_connections");
 }
 
-export async function saveConnection(cfg: ConnConfig, password?: string): Promise<void> {
+export async function saveConnection(
+  cfg: ConnConfig,
+  password?: string,
+  sshSecret?: string,
+): Promise<void> {
   if (!inTauri()) {
     const i = mockStore.findIndex((c) => c.id === cfg.id);
     if (i >= 0) mockStore[i] = cfg;
     else mockStore.push(cfg);
     return;
   }
-  await invoke("save_connection", { cfg, password: password ?? null });
+  await invoke("save_connection", {
+    cfg,
+    password: password ?? null,
+    sshSecret: sshSecret ?? null,
+  });
 }
 
 export async function exportConnections(): Promise<string> {

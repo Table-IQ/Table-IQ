@@ -5,6 +5,7 @@ pub mod connections;
 pub mod drivers;
 pub mod ipc;
 pub mod query;
+pub mod ssh;
 
 use ipc::connect::{
     ai_egress_preview, ai_generate_sql, apply_edit, connect, delete_connection, disconnect,

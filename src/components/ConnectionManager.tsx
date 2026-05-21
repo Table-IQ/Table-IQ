@@ -13,6 +13,7 @@ import {
   type ConnConfig,
   type Engine,
 } from "../lib/commands";
+import { defaultSshConfig, type SshAuthMode, type SshConfig } from "../lib/ssh";
 import { useConnections } from "../state/connectionStore";
 
 const DEFAULT_PORT: Record<string, number> = {
@@ -41,10 +42,18 @@ export function ConnectionManager() {
   const { saved, setSaved, setActive, setSchema } = useConnections();
   const [form, setForm] = useState<ConnConfig>(blankConfig);
   const [password, setPassword] = useState("");
+  // SSH key passphrase / bastion password — sent separately to the keychain, never persisted in form.
+  const [sshSecret, setSshSecret] = useState("");
   const [status, setStatus] = useState<{ kind: "idle" | "busy" | "ok" | "err"; msg: string }>({
     kind: "idle",
     msg: "",
   });
+
+  const ssh: SshConfig = form.ssh ?? defaultSshConfig();
+  const setSsh = (next: Partial<SshConfig>) =>
+    setForm((f) => ({ ...f, ssh: { ...(f.ssh ?? defaultSshConfig()), ...next } }));
+  const setSshAuthMode = (mode: SshAuthMode) =>
+    setSsh({ auth: mode === "keyfile" ? { mode, path: "" } : { mode } });
 
   useEffect(() => {
     listConnections().then(setSaved).catch(() => {});
@@ -57,6 +66,7 @@ export function ConnectionManager() {
   const loadInto = (c: ConnConfig) => {
     setForm(c);
     setPassword("");
+    setSshSecret("");
     setStatus({ kind: "idle", msg: "" });
   };
 
@@ -73,7 +83,7 @@ export function ConnectionManager() {
   const doSave = async () => {
     setStatus({ kind: "busy", msg: "Saving…" });
     try {
-      await saveConnection(form, password || undefined);
+      await saveConnection(form, password || undefined, sshSecret || undefined);
       await refresh();
       setStatus({ kind: "ok", msg: "Saved" });
     } catch (e) {
@@ -84,7 +94,7 @@ export function ConnectionManager() {
   const doConnect = async (cfg: ConnConfig, pw?: string) => {
     setStatus({ kind: "busy", msg: "Connecting…" });
     try {
-      if (pw !== undefined) await saveConnection(cfg, pw || undefined);
+      if (pw !== undefined) await saveConnection(cfg, pw || undefined, sshSecret || undefined);
       const info = await connect(cfg.id);
       // Non-SQL engines (redis/mongodb) have no SQL schema tree; their shells browse on their own.
       if (info.engine !== "redis" && info.engine !== "mongodb") {
@@ -252,6 +262,117 @@ export function ConnectionManager() {
               </>
             )}
           </div>
+
+          {/* SSH Tunnel — not applicable to the file-based sqlite engine */}
+          {form.engine !== "sqlite" && (
+            <details className="mt-4 rounded-md border border-border" open={ssh.enabled}>
+              <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-xs font-medium text-text">
+                <span>SSH Tunnel</span>
+                {ssh.enabled && (
+                  <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] text-primary">enabled</span>
+                )}
+                <span className="ml-auto text-[10px] font-normal text-muted">
+                  Reach a DB behind a bastion
+                </span>
+              </summary>
+              <div className="border-t border-border p-3">
+                <label className="flex items-center gap-2 text-xs text-text">
+                  <input
+                    type="checkbox"
+                    checked={ssh.enabled}
+                    onChange={(e) => setSsh({ enabled: e.target.checked })}
+                  />
+                  Tunnel this connection through an SSH bastion
+                </label>
+                {ssh.enabled && (
+                  <>
+                    <div className="mt-3 grid grid-cols-2 gap-3">
+                      <label className="text-xs text-muted">
+                        Bastion host
+                        <input
+                          className={field}
+                          value={ssh.host}
+                          onChange={(e) => setSsh({ host: e.target.value })}
+                          placeholder="bastion.example.com (or ~/.ssh/config alias)"
+                        />
+                      </label>
+                      <label className="text-xs text-muted">
+                        Bastion port
+                        <input
+                          className={field}
+                          type="number"
+                          value={ssh.port}
+                          onChange={(e) => setSsh({ port: Number(e.target.value) })}
+                        />
+                      </label>
+                      <label className="text-xs text-muted">
+                        SSH user
+                        <input
+                          className={field}
+                          value={ssh.username}
+                          onChange={(e) => setSsh({ username: e.target.value })}
+                          placeholder="deploy"
+                        />
+                      </label>
+                      <label className="text-xs text-muted">
+                        Auth
+                        <select
+                          className={field}
+                          value={ssh.auth.mode}
+                          onChange={(e) => setSshAuthMode(e.target.value as SshAuthMode)}
+                        >
+                          <option value="agent">SSH agent</option>
+                          <option value="keyfile">Private key file</option>
+                          <option value="password">Password</option>
+                        </select>
+                      </label>
+                      {ssh.auth.mode === "keyfile" && (
+                        <>
+                          <label className="col-span-2 text-xs text-muted">
+                            Private key path
+                            <input
+                              className={field}
+                              value={ssh.auth.path}
+                              onChange={(e) =>
+                                setSsh({ auth: { mode: "keyfile", path: e.target.value } })
+                              }
+                              placeholder="~/.ssh/id_ed25519"
+                            />
+                          </label>
+                          <label className="col-span-2 text-xs text-muted">
+                            Key passphrase (optional)
+                            <input
+                              className={field}
+                              type="password"
+                              value={sshSecret}
+                              onChange={(e) => setSshSecret(e.target.value)}
+                              placeholder="•••• (stored in keychain)"
+                            />
+                          </label>
+                        </>
+                      )}
+                      {ssh.auth.mode === "password" && (
+                        <label className="col-span-2 text-xs text-muted">
+                          SSH password
+                          <input
+                            className={field}
+                            type="password"
+                            value={sshSecret}
+                            onChange={(e) => setSshSecret(e.target.value)}
+                            placeholder="•••••••• (stored in keychain)"
+                          />
+                        </label>
+                      )}
+                    </div>
+                    <p className="mt-2 text-[10px] leading-snug text-muted">
+                      The DB driver connects to a local forward (127.0.0.1) over this tunnel. Host
+                      keys are accepted on first use (v1) — the fingerprint is logged.
+                    </p>
+                  </>
+                )}
+              </div>
+            </details>
+          )}
 
           <div className="mt-4 flex items-center gap-2">
             <button onClick={() => doConnect(form, password)} className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white hover:bg-primary-hover">
