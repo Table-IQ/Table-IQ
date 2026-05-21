@@ -1,15 +1,19 @@
 import { create } from "zustand";
 
-export interface TableTab {
-  key: string; // `${schema}.${table}`
-  schema: string;
-  table: string;
+export interface Tab {
+  key: string;
+  kind: "table" | "query";
+  title: string;
+  schema?: string;
+  table?: string;
 }
 
 interface TabsState {
-  tabs: TableTab[];
+  tabs: Tab[];
   activeKey: string | null;
-  open: (schema: string, table: string) => void;
+  queryCount: number;
+  openTable: (schema: string, table: string) => void;
+  openQuery: () => void;
   close: (key: string) => void;
   setActive: (key: string) => void;
   reset: () => void;
@@ -18,11 +22,25 @@ interface TabsState {
 export const useTabs = create<TabsState>((set) => ({
   tabs: [],
   activeKey: null,
-  open: (schema, table) =>
+  queryCount: 0,
+  openTable: (schema, table) =>
     set((s) => {
-      const key = `${schema}.${table}`;
+      const key = `table:${schema}.${table}`;
       if (s.tabs.some((t) => t.key === key)) return { activeKey: key };
-      return { tabs: [...s.tabs, { key, schema, table }], activeKey: key };
+      return {
+        tabs: [...s.tabs, { key, kind: "table", title: table, schema, table }],
+        activeKey: key,
+      };
+    }),
+  openQuery: () =>
+    set((s) => {
+      const n = s.queryCount + 1;
+      const key = `query:${n}`;
+      return {
+        tabs: [...s.tabs, { key, kind: "query", title: `Query ${n}` }],
+        activeKey: key,
+        queryCount: n,
+      };
     }),
   close: (key) =>
     set((s) => {
@@ -32,5 +50,5 @@ export const useTabs = create<TabsState>((set) => ({
       return { tabs, activeKey };
     }),
   setActive: (key) => set({ activeKey: key }),
-  reset: () => set({ tabs: [], activeKey: null }),
+  reset: () => set({ tabs: [], activeKey: null, queryCount: 0 }),
 }));

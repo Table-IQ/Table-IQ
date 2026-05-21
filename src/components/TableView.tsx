@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { DataGrid, type GridSource } from "./DataGrid";
-import { fetchTableWindow, openTable, type ObjectInfo } from "../lib/commands";
+import { applyEdit, fetchTableWindow, openTable, primaryKey, type ObjectInfo } from "../lib/commands";
+import { buildEdit } from "../lib/edit";
 
 interface Props {
   connId: string;
@@ -10,19 +11,51 @@ interface Props {
 
 export function TableView({ connId, schema, object }: Props) {
   const [rowEstimate, setRowEstimate] = useState<number | null>(null);
+  const [pk, setPk] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setRowEstimate(null);
+    setPk(null);
     setError(null);
+    setNotice(null);
     openTable(connId, schema, object.name)
       .then((info) => !cancelled && setRowEstimate(info.rowEstimate))
       .catch((e) => !cancelled && setError(String(e)));
+    primaryKey(connId, schema, object.name)
+      .then((cols) => !cancelled && setPk(cols))
+      .catch(() => !cancelled && setPk([]));
     return () => {
       cancelled = true;
     };
   }, [connId, schema, object.name]);
+
+  const editable = object.kind === "Table" && !!pk && pk.length > 0;
+
+  const onEdit = useCallback(
+    async (
+      _row: number,
+      col: string,
+      newValue: string,
+      getOriginal: (c: string) => string | null,
+    ): Promise<boolean> => {
+      if (!pk || pk.length === 0) return false;
+      setNotice(null);
+      const edit = buildEdit(pk, getOriginal, col, newValue);
+      try {
+        const { rowsAffected } = await applyEdit(connId, schema, object.name, edit);
+        if (rowsAffected === 1) return true;
+        setNotice("Edit conflict: the row changed underneath you. Reverted.");
+        return false;
+      } catch (e) {
+        setNotice(`Update failed: ${e}`);
+        return false;
+      }
+    },
+    [connId, schema, object.name, pk],
+  );
 
   const source = useMemo<GridSource | null>(() => {
     if (rowEstimate === null) return null;
@@ -46,9 +79,13 @@ export function TableView({ connId, schema, object }: Props) {
         <span className="text-muted">
           {object.kind} · {object.columns.length} cols · ~{source.totalRows.toLocaleString()} rows
         </span>
+        <span className={`rounded px-1.5 py-0.5 text-[10px] ${editable ? "bg-primary/10 text-primary" : "bg-surface text-muted"}`}>
+          {editable ? "editable" : "read-only" + (pk && pk.length === 0 ? " · no PK" : "")}
+        </span>
+        {notice && <span className="text-amber-500">{notice}</span>}
       </div>
       <div className="min-h-0 flex-1">
-        <DataGrid source={source} />
+        <DataGrid source={source} onEdit={editable ? onEdit : undefined} />
       </div>
     </div>
   );

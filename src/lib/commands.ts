@@ -148,3 +148,75 @@ export async function fetchTableWindow(
   const ab = await invoke<ArrayBuffer>("get_table_window", { id, schema, table, offset, len });
   return { bytes: new Uint8Array(ab), ms: performance.now() - t0 };
 }
+
+// ── query & edit ─────────────────────────────────────────────────────────
+export interface QueryResultMeta {
+  resultId: string;
+  columns: string[];
+  rowCount: number;
+  truncated: boolean;
+  execMs: number;
+}
+
+/** RowKey round-trip payload (mirrors Rust EditSpec). */
+export interface EditSpec {
+  pk: [string, string | null][];
+  column: string;
+  new_value: string | null;
+  orig_value: string | null;
+}
+
+export async function runQuery(id: string, sql: string): Promise<QueryResultMeta> {
+  if (!inTauri()) {
+    return {
+      resultId: "mock-q",
+      columns: ["id", "amount_numeric", "blob_text"],
+      rowCount: 50,
+      truncated: false,
+      execMs: 3,
+    };
+  }
+  const m = await invoke<{
+    result_id: string;
+    columns: string[];
+    row_count: number;
+    truncated: boolean;
+    exec_ms: number;
+  }>("run_query", { id, sql });
+  return {
+    resultId: m.result_id,
+    columns: m.columns,
+    rowCount: m.row_count,
+    truncated: m.truncated,
+    execMs: m.exec_ms,
+  };
+}
+
+export async function fetchResultWindow(
+  resultId: string,
+  offset: number,
+  len: number,
+): Promise<{ bytes: Uint8Array; ms: number }> {
+  const t0 = performance.now();
+  if (!inTauri()) {
+    return { bytes: synthWindowIpc(offset, len), ms: performance.now() - t0 };
+  }
+  const ab = await invoke<ArrayBuffer>("get_result_window", { resultId, offset, len });
+  return { bytes: new Uint8Array(ab), ms: performance.now() - t0 };
+}
+
+export async function primaryKey(id: string, schema: string, table: string): Promise<string[]> {
+  if (!inTauri()) return ["id"];
+  return invoke<string[]>("primary_key", { id, schema, table });
+}
+
+export async function applyEdit(
+  id: string,
+  schema: string,
+  table: string,
+  edit: EditSpec,
+): Promise<{ rowsAffected: number }> {
+  if (!inTauri()) return { rowsAffected: 1 };
+  const r = await invoke<{ rows_affected: number }>("apply_edit", { id, schema, table, edit });
+  return { rowsAffected: r.rows_affected };
+}

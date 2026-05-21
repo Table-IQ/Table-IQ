@@ -12,12 +12,46 @@ use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use sqlx::postgres::{PgPoolOptions, PgRow};
-use sqlx::{Pool, Postgres, Row};
+use sqlx::{Column, Executor, Pool, Postgres, Row};
 
 use super::{
-    ColumnInfo, CursorId, DResult, DriverError, ObjectInfo, ObjectKind, SchemaInfo, SchemaModel,
-    SqlDriver,
+    ColumnInfo, CursorId, DResult, DriverError, EditSpec, ObjectInfo, ObjectKind, QueryResult,
+    SchemaInfo, SchemaModel, SqlDriver,
 };
+
+/// Build a parameterized, identifier-safe optimistic-concurrency UPDATE.
+/// Params: $1 = new value; $2.. = pk values (in `pk` order); last = original cell value.
+fn build_update_sql(
+    schema: &str,
+    table: &str,
+    set_col: &str,
+    set_udt: &str,
+    pk: &[(String, String)], // (name, udt)
+    match_udt: &str,
+) -> String {
+    let mut p = 1;
+    let set = format!("{} = ${}::{}", quote_ident(set_col), p, set_udt);
+    p += 1;
+    let mut wheres = Vec::new();
+    for (name, udt) in pk {
+        wheres.push(format!("{} = ${}::{}", quote_ident(name), p, udt));
+        p += 1;
+    }
+    // NULL-safe optimistic match on the original cell value.
+    wheres.push(format!(
+        "{} IS NOT DISTINCT FROM ${}::{}",
+        quote_ident(set_col),
+        p,
+        match_udt
+    ));
+    format!(
+        "UPDATE {}.{} SET {} WHERE {}",
+        quote_ident(schema),
+        quote_ident(table),
+        set,
+        wheres.join(" AND ")
+    )
+}
 
 fn db(e: sqlx::Error) -> DriverError {
     DriverError::Db(e.to_string())
@@ -241,6 +275,125 @@ impl SqlDriver for PgDriver {
             .map_err(db)?;
 
         text_rows_to_batch(&cols, &rows)
+    }
+
+    async fn run_query(&self, sql: &str, cap: usize) -> DResult<QueryResult> {
+        let start = std::time::Instant::now();
+        let wrapped = format!("SELECT * FROM ({sql}) AS _q");
+        // Column names (in order) without executing the full query.
+        let described = self.pool.describe(wrapped.as_str()).await.map_err(db)?;
+        let names: Vec<String> = described.columns().iter().map(|c| c.name().to_string()).collect();
+        if names.is_empty() {
+            let empty = text_rows_to_batch(&[], &[])?;
+            return Ok(QueryResult {
+                batch: empty,
+                truncated: false,
+                exec_ms: start.elapsed().as_millis() as u64,
+            });
+        }
+        let select_list = names
+            .iter()
+            .map(|c| format!("{0}::text AS {0}", quote_ident(c)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let q = format!("SELECT {select_list} FROM ({sql}) AS _q LIMIT $1");
+        let mut rows = sqlx::query(&q)
+            .bind(cap as i64 + 1)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db)?;
+        let truncated = rows.len() > cap;
+        if truncated {
+            rows.truncate(cap);
+        }
+        let batch = text_rows_to_batch(&names, &rows)?;
+        Ok(QueryResult {
+            batch,
+            truncated,
+            exec_ms: start.elapsed().as_millis() as u64,
+        })
+    }
+
+    async fn primary_key(&self, schema: &str, table: &str) -> DResult<Vec<String>> {
+        let qualified = format!("{}.{}", quote_ident(schema), quote_ident(table));
+        let cols: Vec<String> = sqlx::query_scalar(
+            "SELECT a.attname FROM pg_index i \
+             JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) \
+             WHERE i.indrelid = $1::regclass AND i.indisprimary \
+             ORDER BY array_position(i.indkey, a.attnum)",
+        )
+        .bind(qualified)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(cols)
+    }
+
+    async fn apply_edit(&self, schema: &str, table: &str, edit: &EditSpec) -> DResult<u64> {
+        // udt_name per column (valid cast targets: int8, numeric, timestamptz, …).
+        let udts: std::collections::HashMap<String, String> = sqlx::query(
+            "SELECT column_name, udt_name FROM information_schema.columns \
+             WHERE table_schema = $1 AND table_name = $2",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?
+        .into_iter()
+        .map(|r| (r.get::<String, _>("column_name"), r.get::<String, _>("udt_name")))
+        .collect();
+
+        let udt = |c: &str| udts.get(c).cloned().unwrap_or_else(|| "text".into());
+        let set_udt = udt(&edit.column);
+        let pk_with_udt: Vec<(String, String)> =
+            edit.pk.iter().map(|(n, _)| (n.clone(), udt(n))).collect();
+
+        let sql = build_update_sql(schema, table, &edit.column, &set_udt, &pk_with_udt, &set_udt);
+
+        let mut q = sqlx::query(&sql).bind(edit.new_value.clone());
+        for (_, v) in &edit.pk {
+            q = q.bind(v.clone());
+        }
+        q = q.bind(edit.orig_value.clone());
+        let res = q.execute(&self.pool).await.map_err(db)?;
+        Ok(res.rows_affected())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_update_sql;
+
+    #[test]
+    fn update_sql_is_parameterized_and_quoted() {
+        let sql = build_update_sql(
+            "public",
+            "edit_demo",
+            "name",
+            "text",
+            &[("id".into(), "int4".into())],
+            "text",
+        );
+        assert_eq!(
+            sql,
+            "UPDATE \"public\".\"edit_demo\" SET \"name\" = $1::text \
+             WHERE \"id\" = $2::int4 AND \"name\" IS NOT DISTINCT FROM $3::text"
+        );
+    }
+
+    #[test]
+    fn update_sql_handles_composite_pk() {
+        let sql = build_update_sql(
+            "s",
+            "t",
+            "v",
+            "int8",
+            &[("a".into(), "int4".into()), ("b".into(), "text".into())],
+            "int8",
+        );
+        assert!(sql.contains("\"a\" = $2::int4 AND \"b\" = $3::text"));
+        assert!(sql.ends_with("\"v\" IS NOT DISTINCT FROM $4::int8"));
     }
 }
 

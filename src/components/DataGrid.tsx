@@ -1,6 +1,7 @@
 import {
   DataEditor,
   GridCellKind,
+  type EditableGridCell,
   type GridCell,
   type GridColumn,
   type Item,
@@ -38,6 +39,13 @@ export interface DataGridHandle {
 interface Props {
   source: GridSource;
   onWindowFetched?: (ms: number) => void;
+  /** When set, cells are editable; return false to revert (e.g. on conflict). */
+  onEdit?: (
+    row: number,
+    col: string,
+    newValue: string,
+    getOriginal: (c: string) => string | null,
+  ) => Promise<boolean>;
 }
 
 /**
@@ -46,12 +54,14 @@ interface Props {
  * ever resident, so memory does not grow with total row count.
  */
 export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
-  { source, onWindowFetched },
+  { source, onWindowFetched, onEdit },
   ref,
 ) {
   const { resolved } = useTheme();
+  const editable = !!onEdit;
   const gridRef = useRef<DataEditorRef>(null);
   const cacheRef = useRef(new WindowCache(PAGE, MAX_PAGES));
+  const overlay = useRef(new Map<string, string>()); // optimistic edits: `${row}:${col}` → value
   const inflight = useRef(new Set<number>());
   const [columns, setColumns] = useState<GridColumn[]>([]);
   const colNames = useRef<string[]>([]);
@@ -65,6 +75,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   // Reset cache + columns whenever the source changes.
   useEffect(() => {
     cacheRef.current = new WindowCache(PAGE, MAX_PAGES);
+    overlay.current.clear();
     inflight.current.clear();
     if (source.columns && source.columns.length > 0) {
       colNames.current = source.columns;
@@ -105,16 +116,42 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   const getCellContent = useCallback(
     ([col, row]: Item): GridCell => {
       const name = colNames.current[col];
-      const value = name ? cacheRef.current.getCell(row, name) : undefined;
+      const ov = name ? overlay.current.get(`${row}:${name}`) : undefined;
+      const value = ov ?? (name ? cacheRef.current.getCell(row, name) : undefined);
       if (value === undefined) {
         const page = Math.floor(row / PAGE);
         ensurePage(page);
         ensurePage(page + 1);
         return { kind: GridCellKind.Loading, allowOverlay: false };
       }
-      return { kind: GridCellKind.Text, data: value, displayData: value, allowOverlay: false };
+      return {
+        kind: GridCellKind.Text,
+        data: value,
+        displayData: value,
+        allowOverlay: editable,
+        readonly: !editable,
+      };
     },
-    [ensurePage],
+    [ensurePage, editable],
+  );
+
+  const onCellEdited = useCallback(
+    ([col, row]: Item, newCell: EditableGridCell) => {
+      if (!onEdit || newCell.kind !== GridCellKind.Text) return;
+      const name = colNames.current[col];
+      if (!name) return;
+      const newValue = String(newCell.data);
+      const getOriginal = (c: string) => cacheRef.current.getCell(row, c) ?? null;
+      overlay.current.set(`${row}:${name}`, newValue);
+      setVersion((v) => v + 1);
+      void onEdit(row, name, newValue, getOriginal).then((keep) => {
+        if (!keep) {
+          overlay.current.delete(`${row}:${name}`);
+          setVersion((v) => v + 1);
+        }
+      });
+    },
+    [onEdit],
   );
 
   useImperativeHandle(ref, () => ({
@@ -131,6 +168,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
       columns={columns}
       rows={source.totalRows}
       getCellContent={getCellContent}
+      onCellEdited={editable ? onCellEdited : undefined}
       rowMarkers="number"
       smoothScrollX
       smoothScrollY

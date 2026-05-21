@@ -94,6 +94,23 @@ pub struct SchemaModel {
     pub schemas: Vec<SchemaInfo>,
 }
 
+/// Result of a one-shot query (the batch is held server-side; meta returns to the UI).
+pub struct QueryResult {
+    pub batch: arrow::record_batch::RecordBatch,
+    pub truncated: bool,
+    pub exec_ms: u64,
+}
+
+/// An inline cell edit with the identity + original values needed for a safe UPDATE (plan spec #3).
+#[derive(Debug, Clone, Deserialize)]
+pub struct EditSpec {
+    /// Primary-key columns and their original text values, identifying the row.
+    pub pk: Vec<(String, Option<String>)>,
+    pub column: String,
+    pub new_value: Option<String>,
+    pub orig_value: Option<String>,
+}
+
 /// SQL engines (PG/MySQL/MariaDB/SQLite/SQL Server). Results stream as Arrow.
 #[async_trait]
 pub trait SqlDriver: Send + Sync {
@@ -120,6 +137,13 @@ pub trait SqlDriver: Send + Sync {
         offset: usize,
         len: usize,
     ) -> DResult<arrow::record_batch::RecordBatch>;
+
+    /// Run a one-shot query (single statement), capped, as an Arrow result.
+    async fn run_query(&self, sql: &str, cap: usize) -> DResult<QueryResult>;
+    /// Primary-key column names for a table (empty if none).
+    async fn primary_key(&self, schema: &str, table: &str) -> DResult<Vec<String>>;
+    /// Apply a single-cell edit; returns rows affected (0 ⇒ optimistic-concurrency conflict).
+    async fn apply_edit(&self, schema: &str, table: &str, edit: &EditSpec) -> DResult<u64>;
 }
 
 /// Document stores (MongoDB). Defined for the architecture; stubbed in Phase 0.

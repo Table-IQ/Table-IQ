@@ -8,12 +8,17 @@ use serde::Serialize;
 use tauri::ipc::Response;
 use tauri::State;
 
+use arrow::record_batch::RecordBatch;
+
 use crate::connections::{self, ConnConfig, ConnStore};
-use crate::drivers::{postgres::PgDriver, SchemaModel, SqlDriver};
+use crate::drivers::{postgres::PgDriver, EditSpec, SchemaModel, SqlDriver};
+
+const QUERY_CAP: usize = 50_000;
 
 pub struct ConnState {
     store: Mutex<ConnStore>,
     sessions: Mutex<HashMap<String, Arc<PgDriver>>>,
+    results: Mutex<HashMap<String, Arc<RecordBatch>>>,
 }
 
 impl ConnState {
@@ -21,6 +26,7 @@ impl ConnState {
         Self {
             store: Mutex::new(ConnStore::load()),
             sessions: Mutex::new(HashMap::new()),
+            results: Mutex::new(HashMap::new()),
         }
     }
 
@@ -148,4 +154,94 @@ pub async fn get_table_window(
         .map_err(|e| e.to_string())?;
     let bytes = crate::query::window::encode_ipc(&batch).map_err(|e| e.to_string())?;
     Ok(Response::new(bytes))
+}
+
+#[derive(Serialize)]
+pub struct QueryResultMeta {
+    pub result_id: String,
+    pub columns: Vec<String>,
+    pub row_count: usize,
+    pub truncated: bool,
+    pub exec_ms: u64,
+}
+
+#[tauri::command]
+pub async fn run_query(
+    state: State<'_, ConnState>,
+    id: String,
+    sql: String,
+) -> Result<QueryResultMeta, String> {
+    let drv = state.session(&id)?;
+    let qr = drv.run_query(&sql, QUERY_CAP).await.map_err(|e| e.to_string())?;
+    let columns = qr.batch.schema().fields().iter().map(|f| f.name().clone()).collect();
+    let row_count = qr.batch.num_rows();
+    let result_id = uuid::Uuid::new_v4().to_string();
+    state
+        .results
+        .lock()
+        .unwrap()
+        .insert(result_id.clone(), Arc::new(qr.batch));
+    Ok(QueryResultMeta {
+        result_id,
+        columns,
+        row_count,
+        truncated: qr.truncated,
+        exec_ms: qr.exec_ms,
+    })
+}
+
+#[tauri::command]
+pub fn get_result_window(
+    state: State<ConnState>,
+    result_id: String,
+    offset: usize,
+    len: usize,
+) -> Result<Response, String> {
+    let batch = state
+        .results
+        .lock()
+        .unwrap()
+        .get(&result_id)
+        .cloned()
+        .ok_or_else(|| "no such result".to_string())?;
+    let total = batch.num_rows();
+    let win = if offset >= total {
+        batch.slice(0, 0)
+    } else {
+        batch.slice(offset, len.min(total - offset))
+    };
+    let bytes = crate::query::window::encode_ipc(&win).map_err(|e| e.to_string())?;
+    Ok(Response::new(bytes))
+}
+
+#[tauri::command]
+pub async fn primary_key(
+    state: State<'_, ConnState>,
+    id: String,
+    schema: String,
+    table: String,
+) -> Result<Vec<String>, String> {
+    let drv = state.session(&id)?;
+    drv.primary_key(&schema, &table).await.map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+pub struct EditResult {
+    pub rows_affected: u64,
+}
+
+#[tauri::command]
+pub async fn apply_edit(
+    state: State<'_, ConnState>,
+    id: String,
+    schema: String,
+    table: String,
+    edit: EditSpec,
+) -> Result<EditResult, String> {
+    let drv = state.session(&id)?;
+    let rows_affected = drv
+        .apply_edit(&schema, &table, &edit)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(EditResult { rows_affected })
 }

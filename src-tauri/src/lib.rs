@@ -6,8 +6,9 @@ pub mod ipc;
 pub mod query;
 
 use ipc::connect::{
-    connect, delete_connection, disconnect, get_table_window, list_connections, list_objects,
-    open_table, save_connection, test_connection, ConnState,
+    apply_edit, connect, delete_connection, disconnect, get_result_window, get_table_window,
+    list_connections, list_objects, open_table, primary_key, run_query, save_connection,
+    test_connection, ConnState,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -25,6 +26,10 @@ pub fn run() {
             list_objects,
             open_table,
             get_table_window,
+            run_query,
+            get_result_window,
+            primary_key,
+            apply_edit,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
