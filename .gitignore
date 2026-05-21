@@ -1,0 +1,26 @@
+# Rust / Cargo
+/src-tauri/target/
+**/*.rs.bk
+
+# Node
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Tauri
+/src-tauri/gen/
+
+# Editor / OS
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# Rudy's workflow (never commit credentials or local stage tracking)
+.claude/finalize-creds.json
+.claude/finalize-stages.json
+
+# Benchmark artifacts (large)
+/bench/data/
+*.bench.json
