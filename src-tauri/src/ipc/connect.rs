@@ -12,7 +12,8 @@ use arrow::record_batch::RecordBatch;
 
 use crate::connections::{self, ConnConfig, ConnStore};
 use crate::drivers::{
-    mysql::MySqlDriver, postgres::PgDriver, sqlite::SqliteDriver, EditSpec, SchemaModel, SqlDriver,
+    kv_redis::RedisDriver, mysql::MySqlDriver, postgres::PgDriver, sqlite::SqliteDriver, EditSpec,
+    KeyInfo, KvDriver, KvValue, SchemaModel, SqlDriver,
 };
 
 const QUERY_CAP: usize = 50_000;
@@ -20,6 +21,7 @@ const QUERY_CAP: usize = 50_000;
 pub struct ConnState {
     store: Mutex<ConnStore>,
     sessions: Mutex<HashMap<String, Arc<dyn SqlDriver>>>,
+    kv_sessions: Mutex<HashMap<String, Arc<dyn KvDriver>>>,
     results: Mutex<HashMap<String, Arc<RecordBatch>>>,
 }
 
@@ -39,6 +41,7 @@ impl ConnState {
         Self {
             store: Mutex::new(ConnStore::load()),
             sessions: Mutex::new(HashMap::new()),
+            kv_sessions: Mutex::new(HashMap::new()),
             results: Mutex::new(HashMap::new()),
         }
     }
@@ -49,7 +52,16 @@ impl ConnState {
             .unwrap()
             .get(id)
             .cloned()
-            .ok_or_else(|| "not connected".to_string())
+            .ok_or_else(|| "not connected (or not a SQL connection)".to_string())
+    }
+
+    fn kv_session(&self, id: &str) -> Result<Arc<dyn KvDriver>, String> {
+        self.kv_sessions
+            .lock()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| "not connected (or not a key-value connection)".to_string())
     }
 }
 
@@ -58,6 +70,7 @@ pub struct ConnectedInfo {
     pub id: String,
     pub name: String,
     pub database: String,
+    pub engine: String,
 }
 
 #[derive(Serialize)]
@@ -102,7 +115,11 @@ pub fn delete_connection(state: State<ConnState>, id: String) -> Result<(), Stri
 
 #[tauri::command]
 pub async fn test_connection(cfg: ConnConfig, password: String) -> Result<(), String> {
-    open_driver(&cfg, &password).await.map(|_| ())
+    if cfg.engine == "redis" {
+        RedisDriver::connect(&cfg.url_with_password(&password)).await.map(|_| ()).map_err(|e| e.to_string())
+    } else {
+        open_driver(&cfg, &password).await.map(|_| ())
+    }
 }
 
 #[tauri::command]
@@ -116,24 +133,49 @@ pub async fn connect(state: State<'_, ConnState>, id: String) -> Result<Connecte
             .cloned()
             .ok_or_else(|| "unknown connection".to_string())?
     };
-    // sqlite needs no keychain password; others read it.
+    // sqlite needs no keychain password; others read it (redis password optional).
     let password = if cfg.engine == "sqlite" {
         String::new()
     } else {
-        connections::get_password(&id)?
+        connections::get_password(&id).unwrap_or_default()
     };
-    let drv = open_driver(&cfg, &password).await?;
-    state.sessions.lock().unwrap().insert(id.clone(), drv);
+
+    if cfg.engine == "redis" {
+        let drv = RedisDriver::connect(&cfg.url_with_password(&password)).await.map_err(|e| e.to_string())?;
+        state.kv_sessions.lock().unwrap().insert(id.clone(), Arc::new(drv));
+    } else {
+        let drv = open_driver(&cfg, &password).await?;
+        state.sessions.lock().unwrap().insert(id.clone(), drv);
+    }
     Ok(ConnectedInfo {
         id,
         name: cfg.name,
         database: cfg.database,
+        engine: cfg.engine,
     })
 }
 
 #[tauri::command]
 pub fn disconnect(state: State<ConnState>, id: String) {
     state.sessions.lock().unwrap().remove(&id);
+    state.kv_sessions.lock().unwrap().remove(&id);
+}
+
+// ── Redis key browse ───────────────────────────────────────────────────────
+#[tauri::command]
+pub async fn kv_scan(
+    state: State<'_, ConnState>,
+    id: String,
+    pattern: String,
+) -> Result<Vec<KeyInfo>, String> {
+    let drv = state.kv_session(&id)?;
+    drv.scan(&pattern, 500).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn kv_get(state: State<'_, ConnState>, id: String, key: String) -> Result<KvValue, String> {
+    let drv = state.kv_session(&id)?;
+    drv.get(&key).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]

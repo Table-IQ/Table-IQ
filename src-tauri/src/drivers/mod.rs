@@ -7,6 +7,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+pub mod kv_redis;
 pub mod mysql;
 pub mod postgres;
 pub mod sqlite;
@@ -178,12 +179,27 @@ pub trait DocumentDriver: Send + Sync {
     }
 }
 
-/// Key-value stores (Redis). Defined for the architecture; stubbed in Phase 0.
+/// A Redis key with its type + TTL (seconds; -1 = no expiry).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeyInfo {
+    pub key: String,
+    pub kind: String,
+    pub ttl: i64,
+}
+
+/// A key's value rendered as display rows (shape depends on `kind`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KvValue {
+    pub kind: String,
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<String>>,
+}
+
+/// Key-value stores (Redis). The second data-model trait (plan spec #1).
 #[async_trait]
 pub trait KvDriver: Send + Sync {
-    async fn scan(&self, _pattern: &str) -> DResult<Vec<String>> {
-        Err(DriverError::NotImplemented)
-    }
+    async fn scan(&self, pattern: &str, limit: usize) -> DResult<Vec<KeyInfo>>;
+    async fn get(&self, key: &str) -> DResult<KvValue>;
 }
 
 #[cfg(test)]

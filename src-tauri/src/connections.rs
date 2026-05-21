@@ -36,6 +36,15 @@ impl ConnConfig {
     pub fn url_with_password(&self, password: &str) -> String {
         match self.engine.as_str() {
             "sqlite" => self.database.clone(), // file path; SqliteDriver builds the sqlite:// url
+            "redis" => {
+                let auth = if password.is_empty() {
+                    String::new()
+                } else {
+                    format!(":{}@", urlencode(password))
+                };
+                let dbn = if self.database.is_empty() { "0" } else { &self.database };
+                format!("redis://{auth}{}:{}/{}", self.host, self.port, dbn)
+            }
             "mysql" => format!(
                 "mysql://{}:{}@{}:{}/{}",
                 urlencode(&self.username),

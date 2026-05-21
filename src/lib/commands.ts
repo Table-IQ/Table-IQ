@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { synthWindowIpc, MOCK_TOTAL_ROWS } from "./mockSource";
 
 // ── shared types (mirror the Rust serde shapes) ──────────────────────────
-export type Engine = "postgres" | "mysql" | "sqlite";
+export type Engine = "postgres" | "mysql" | "sqlite" | "redis";
 export interface ConnConfig {
   id: string;
   name: string;
@@ -36,6 +36,18 @@ export interface ConnectedInfo {
   id: string;
   name: string;
   database: string;
+  engine: string;
+}
+
+export interface KeyInfo {
+  key: string;
+  kind: string;
+  ttl: number;
+}
+export interface KvValue {
+  kind: string;
+  columns: string[];
+  rows: string[][];
 }
 
 function inTauri(): boolean {
@@ -54,6 +66,17 @@ const mockStore: ConnConfig[] = [
     database: "tableiq",
     username: "postgres",
     sslmode: "prefer",
+  },
+  {
+    id: "mock-redis",
+    name: "Local Redis",
+    color: "#dc2626",
+    engine: "redis",
+    host: "127.0.0.1",
+    port: 56379,
+    database: "0",
+    username: "",
+    sslmode: "disable",
   },
 ];
 const mockSchema: SchemaModel = {
@@ -112,9 +135,27 @@ export async function testConnection(cfg: ConnConfig, password: string): Promise
 export async function connect(id: string): Promise<ConnectedInfo> {
   if (!inTauri()) {
     const c = mockStore.find((x) => x.id === id) ?? mockStore[0];
-    return { id: c.id, name: c.name, database: c.database };
+    return { id: c.id, name: c.name, database: c.database, engine: c.engine };
   }
   return invoke<ConnectedInfo>("connect", { id });
+}
+
+export async function kvScan(id: string, pattern: string): Promise<KeyInfo[]> {
+  if (!inTauri())
+    return [
+      { key: "demo:1", kind: "string", ttl: -1 },
+      { key: "demo:2", kind: "string", ttl: 3600 },
+      { key: "list:a", kind: "list", ttl: -1 },
+    ];
+  return invoke<KeyInfo[]>("kv_scan", { id, pattern });
+}
+
+export async function kvGet(id: string, key: string): Promise<KvValue> {
+  if (!inTauri())
+    return key === "list:a"
+      ? { kind: "list", columns: ["#", "value"], rows: [["0", "x"], ["1", "y"], ["2", "z"]] }
+      : { kind: "string", columns: ["value"], rows: [["hello"]] };
+  return invoke<KvValue>("kv_get", { id, key });
 }
 
 export async function disconnect(id: string): Promise<void> {

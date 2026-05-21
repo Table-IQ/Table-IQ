@@ -12,7 +12,7 @@ import {
 } from "../lib/commands";
 import { useConnections } from "../state/connectionStore";
 
-const DEFAULT_PORT: Record<string, number> = { postgres: 5432, mysql: 3306, sqlite: 0 };
+const DEFAULT_PORT: Record<string, number> = { postgres: 5432, mysql: 3306, sqlite: 0, redis: 6379 };
 
 function blankConfig(): ConnConfig {
   return {
@@ -77,9 +77,11 @@ export function ConnectionManager() {
     try {
       if (pw !== undefined) await saveConnection(cfg, pw || undefined);
       const info = await connect(cfg.id);
-      const schema = await listObjects(cfg.id);
+      // Redis (key-value) has no SQL schema tree; its shell scans keys itself.
+      if (info.engine !== "redis") {
+        setSchema(await listObjects(cfg.id));
+      }
       setActive(info);
-      setSchema(schema);
     } catch (e) {
       setStatus({ kind: "err", msg: String(e) });
     }
@@ -145,6 +147,7 @@ export function ConnectionManager() {
               <option value="postgres">PostgreSQL</option>
               <option value="mysql">MySQL / MariaDB</option>
               <option value="sqlite">SQLite</option>
+              <option value="redis">Redis</option>
             </select>
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -162,6 +165,25 @@ export function ConnectionManager() {
                   placeholder="/path/to/database.db"
                 />
               </label>
+            ) : form.engine === "redis" ? (
+              <>
+                <label className="text-xs text-muted">
+                  Host
+                  <input className={field} value={form.host} onChange={(e) => set("host", e.target.value)} />
+                </label>
+                <label className="text-xs text-muted">
+                  Port
+                  <input className={field} type="number" value={form.port} onChange={(e) => set("port", Number(e.target.value))} />
+                </label>
+                <label className="text-xs text-muted">
+                  DB number
+                  <input className={field} value={form.database} onChange={(e) => set("database", e.target.value)} placeholder="0" />
+                </label>
+                <label className="text-xs text-muted">
+                  Password (optional)
+                  <input className={field} type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="•••• (keychain)" />
+                </label>
+              </>
             ) : (
               <>
                 <label className="text-xs text-muted">
