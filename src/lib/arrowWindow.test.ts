@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { makeTable, tableToIPC, vectorFromArray, Int64, Utf8 } from "apache-arrow";
+import { Table, tableToIPC, vectorFromArray, Int64, Utf8, type Vector } from "apache-arrow";
 import { decodeWindow, WindowCache } from "./arrowWindow";
 
-function ipcOf(...args: Parameters<typeof makeTable>) {
-  return tableToIPC(makeTable(...args), "stream");
+function ipcOf(cols: Record<string, Vector>): Uint8Array {
+  return tableToIPC(new Table(cols), "stream");
 }
 
 describe("decodeWindow", () => {
