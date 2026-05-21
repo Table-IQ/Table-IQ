@@ -7,6 +7,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+pub mod doc_mongo;
 pub mod kv_redis;
 pub mod mysql;
 pub mod postgres;
@@ -171,12 +172,12 @@ pub trait SqlDriver: Send + Sync {
     }
 }
 
-/// Document stores (MongoDB). Defined for the architecture; stubbed in Phase 0.
+/// Document stores (MongoDB). The third data-model trait (plan spec #1).
 #[async_trait]
 pub trait DocumentDriver: Send + Sync {
-    async fn list_collections(&self) -> DResult<Vec<String>> {
-        Err(DriverError::NotImplemented)
-    }
+    async fn list_collections(&self) -> DResult<Vec<String>>;
+    /// Return up to `limit` documents from a collection as pretty JSON strings.
+    async fn find(&self, collection: &str, limit: i64) -> DResult<Vec<String>>;
 }
 
 /// A Redis key with its type + TTL (seconds; -1 = no expiry).

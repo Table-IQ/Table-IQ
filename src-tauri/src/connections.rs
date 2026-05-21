@@ -45,6 +45,14 @@ impl ConnConfig {
                 let dbn = if self.database.is_empty() { "0" } else { &self.database };
                 format!("redis://{auth}{}:{}/{}", self.host, self.port, dbn)
             }
+            "mongodb" => {
+                let auth = if self.username.is_empty() {
+                    String::new()
+                } else {
+                    format!("{}:{}@", urlencode(&self.username), urlencode(password))
+                };
+                format!("mongodb://{auth}{}:{}", self.host, self.port)
+            }
             "mysql" => format!(
                 "mysql://{}:{}@{}:{}/{}",
                 urlencode(&self.username),

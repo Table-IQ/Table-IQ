@@ -9,9 +9,9 @@ pub mod query;
 use ipc::connect::{
     ai_egress_preview, ai_generate_sql, apply_edit, connect, delete_connection, disconnect,
     export_result, export_table, get_ai_config, get_result_window, get_table_window,
-    explain_query, foreign_keys, kv_get, kv_scan, list_connections, list_objects,
-    local_llm_available, open_table, primary_key, run_query, run_script, save_ai_config,
-    save_connection, test_connection, ConnState,
+    doc_collections, doc_find, explain_query, foreign_keys, kv_get, kv_scan, list_connections,
+    list_objects, local_llm_available, open_table, primary_key, run_query, run_script,
+    save_ai_config, save_connection, test_connection, ConnState,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -45,6 +45,8 @@ pub fn run() {
             local_llm_available,
             kv_scan,
             kv_get,
+            doc_collections,
+            doc_find,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

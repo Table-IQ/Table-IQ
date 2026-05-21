@@ -12,7 +12,13 @@ import {
 } from "../lib/commands";
 import { useConnections } from "../state/connectionStore";
 
-const DEFAULT_PORT: Record<string, number> = { postgres: 5432, mysql: 3306, sqlite: 0, redis: 6379 };
+const DEFAULT_PORT: Record<string, number> = {
+  postgres: 5432,
+  mysql: 3306,
+  sqlite: 0,
+  redis: 6379,
+  mongodb: 27017,
+};
 
 function blankConfig(): ConnConfig {
   return {
@@ -77,8 +83,8 @@ export function ConnectionManager() {
     try {
       if (pw !== undefined) await saveConnection(cfg, pw || undefined);
       const info = await connect(cfg.id);
-      // Redis (key-value) has no SQL schema tree; its shell scans keys itself.
-      if (info.engine !== "redis") {
+      // Non-SQL engines (redis/mongodb) have no SQL schema tree; their shells browse on their own.
+      if (info.engine !== "redis" && info.engine !== "mongodb") {
         setSchema(await listObjects(cfg.id));
       }
       setActive(info);
@@ -148,6 +154,7 @@ export function ConnectionManager() {
               <option value="mysql">MySQL / MariaDB</option>
               <option value="sqlite">SQLite</option>
               <option value="redis">Redis</option>
+              <option value="mongodb">MongoDB</option>
             </select>
           </div>
           <div className="grid grid-cols-2 gap-3">

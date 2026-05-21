@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { synthWindowIpc, MOCK_TOTAL_ROWS } from "./mockSource";
 
 // ── shared types (mirror the Rust serde shapes) ──────────────────────────
-export type Engine = "postgres" | "mysql" | "sqlite" | "redis";
+export type Engine = "postgres" | "mysql" | "sqlite" | "redis" | "mongodb";
 export interface ConnConfig {
   id: string;
   name: string;
@@ -78,6 +78,17 @@ const mockStore: ConnConfig[] = [
     username: "",
     sslmode: "disable",
   },
+  {
+    id: "mock-mongo",
+    name: "Local Mongo",
+    color: "#059669",
+    engine: "mongodb",
+    host: "127.0.0.1",
+    port: 57017,
+    database: "tableiq",
+    username: "",
+    sslmode: "disable",
+  },
 ];
 const mockSchema: SchemaModel = {
   schemas: [
@@ -148,6 +159,19 @@ export async function kvScan(id: string, pattern: string): Promise<KeyInfo[]> {
       { key: "list:a", kind: "list", ttl: -1 },
     ];
   return invoke<KeyInfo[]>("kv_scan", { id, pattern });
+}
+
+export async function docCollections(id: string): Promise<string[]> {
+  if (!inTauri()) return ["users", "orders"];
+  return invoke<string[]>("doc_collections", { id });
+}
+
+export async function docFind(id: string, collection: string): Promise<string[]> {
+  if (!inTauri())
+    return collection === "orders"
+      ? ['{\n  "_id": "65f…",\n  "total": 99.5\n}']
+      : ['{\n  "_id": "65a…",\n  "name": "Ada",\n  "age": 36\n}', '{\n  "_id": "65b…",\n  "name": "Linus",\n  "age": 54\n}'];
+  return invoke<string[]>("doc_find", { id, collection });
 }
 
 export async function kvGet(id: string, key: string): Promise<KvValue> {

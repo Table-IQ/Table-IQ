@@ -12,8 +12,9 @@ use arrow::record_batch::RecordBatch;
 
 use crate::connections::{self, ConnConfig, ConnStore};
 use crate::drivers::{
-    kv_redis::RedisDriver, mysql::MySqlDriver, postgres::PgDriver, sqlite::SqliteDriver, EditSpec,
-    KeyInfo, KvDriver, KvValue, SchemaModel, SqlDriver,
+    doc_mongo::MongoDriver, kv_redis::RedisDriver, mysql::MySqlDriver, postgres::PgDriver,
+    sqlite::SqliteDriver, DocumentDriver, EditSpec, KeyInfo, KvDriver, KvValue, SchemaModel,
+    SqlDriver,
 };
 
 const QUERY_CAP: usize = 50_000;
@@ -22,6 +23,7 @@ pub struct ConnState {
     store: Mutex<ConnStore>,
     sessions: Mutex<HashMap<String, Arc<dyn SqlDriver>>>,
     kv_sessions: Mutex<HashMap<String, Arc<dyn KvDriver>>>,
+    doc_sessions: Mutex<HashMap<String, Arc<dyn DocumentDriver>>>,
     results: Mutex<HashMap<String, Arc<RecordBatch>>>,
 }
 
@@ -42,6 +44,7 @@ impl ConnState {
             store: Mutex::new(ConnStore::load()),
             sessions: Mutex::new(HashMap::new()),
             kv_sessions: Mutex::new(HashMap::new()),
+            doc_sessions: Mutex::new(HashMap::new()),
             results: Mutex::new(HashMap::new()),
         }
     }
@@ -62,6 +65,15 @@ impl ConnState {
             .get(id)
             .cloned()
             .ok_or_else(|| "not connected (or not a key-value connection)".to_string())
+    }
+
+    fn doc_session(&self, id: &str) -> Result<Arc<dyn DocumentDriver>, String> {
+        self.doc_sessions
+            .lock()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| "not connected (or not a document connection)".to_string())
     }
 }
 
@@ -117,6 +129,11 @@ pub fn delete_connection(state: State<ConnState>, id: String) -> Result<(), Stri
 pub async fn test_connection(cfg: ConnConfig, password: String) -> Result<(), String> {
     if cfg.engine == "redis" {
         RedisDriver::connect(&cfg.url_with_password(&password)).await.map(|_| ()).map_err(|e| e.to_string())
+    } else if cfg.engine == "mongodb" {
+        MongoDriver::connect(&cfg.url_with_password(&password), &cfg.database)
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     } else {
         open_driver(&cfg, &password).await.map(|_| ())
     }
@@ -143,6 +160,11 @@ pub async fn connect(state: State<'_, ConnState>, id: String) -> Result<Connecte
     if cfg.engine == "redis" {
         let drv = RedisDriver::connect(&cfg.url_with_password(&password)).await.map_err(|e| e.to_string())?;
         state.kv_sessions.lock().unwrap().insert(id.clone(), Arc::new(drv));
+    } else if cfg.engine == "mongodb" {
+        let drv = MongoDriver::connect(&cfg.url_with_password(&password), &cfg.database)
+            .await
+            .map_err(|e| e.to_string())?;
+        state.doc_sessions.lock().unwrap().insert(id.clone(), Arc::new(drv));
     } else {
         let drv = open_driver(&cfg, &password).await?;
         state.sessions.lock().unwrap().insert(id.clone(), drv);
@@ -159,6 +181,24 @@ pub async fn connect(state: State<'_, ConnState>, id: String) -> Result<Connecte
 pub fn disconnect(state: State<ConnState>, id: String) {
     state.sessions.lock().unwrap().remove(&id);
     state.kv_sessions.lock().unwrap().remove(&id);
+    state.doc_sessions.lock().unwrap().remove(&id);
+}
+
+// ── MongoDB document browse ────────────────────────────────────────────────
+#[tauri::command]
+pub async fn doc_collections(state: State<'_, ConnState>, id: String) -> Result<Vec<String>, String> {
+    let drv = state.doc_session(&id)?;
+    drv.list_collections().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn doc_find(
+    state: State<'_, ConnState>,
+    id: String,
+    collection: String,
+) -> Result<Vec<String>, String> {
+    let drv = state.doc_session(&id)?;
+    drv.find(&collection, 200).await.map_err(|e| e.to_string())
 }
 
 // ── Redis key browse ───────────────────────────────────────────────────────
