@@ -3,6 +3,8 @@ import { DataGrid, type DataGridHandle } from "./DataGrid";
 import { fetchWindowMeta, TRANSPORTS, type TransportKind } from "../lib/transport";
 import { useBench, p99, type BenchResult } from "../state/benchStore";
 import { useEffect } from "react";
+import { Wordmark } from "./Brand";
+import { ThemeToggle } from "./ThemeToggle";
 
 const RUN_MS = 5000;
 
@@ -134,10 +136,12 @@ export function BenchView() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex items-center gap-4 border-b border-gray-800 px-6 py-3">
-        <h1 className="text-xl font-semibold tracking-tight">Table-IQ · Phase 0 spike</h1>
-        <span className="text-xs text-gray-400">{totalRows.toLocaleString()} rows</span>
+      <header className="flex items-center gap-4 border-b border-border px-6 py-3">
+        <Wordmark className="text-base" />
+        <span className="text-xs text-muted">Phase 0 · {totalRows.toLocaleString()} rows</span>
         <div className="ml-auto flex items-center gap-2">
+          <ThemeToggle />
+          <span className="mx-1 h-5 w-px bg-border" />
           {TRANSPORTS.map((k) => (
             <button
               key={k}
@@ -145,8 +149,8 @@ export function BenchView() {
               disabled={running}
               className={`rounded-md px-3 py-1 text-xs transition-colors duration-200 ${
                 transport === k
-                  ? "bg-indigo-500/20 text-indigo-300 ring-1 ring-indigo-500/40"
-                  : "text-gray-400 hover:bg-white/5"
+                  ? "bg-primary/15 text-primary ring-1 ring-primary/30"
+                  : "text-muted hover:bg-surface"
               }`}
             >
               {k}
@@ -155,21 +159,21 @@ export function BenchView() {
           <button
             onClick={runSelected}
             disabled={running}
-            className="rounded-md bg-indigo-500 px-3 py-1 text-xs font-medium text-white disabled:opacity-50"
+            className="rounded-md bg-primary px-3 py-1 text-xs font-medium text-white hover:bg-primary-hover disabled:opacity-50"
           >
             Run
           </button>
           <button
             onClick={runAll}
             disabled={running}
-            className="rounded-md bg-white/10 px-3 py-1 text-xs hover:bg-white/15 disabled:opacity-50"
+            className="rounded-md bg-surface px-3 py-1 text-xs hover:bg-border disabled:opacity-50"
           >
             Run all
           </button>
           <button
             onClick={downloadJson}
             disabled={results.length === 0}
-            className="rounded-md px-3 py-1 text-xs text-gray-400 hover:bg-white/5 disabled:opacity-30"
+            className="rounded-md px-3 py-1 text-xs text-muted hover:bg-surface disabled:opacity-30"
           >
             Export
           </button>
@@ -180,16 +184,16 @@ export function BenchView() {
         {totalRows > 0 ? (
           <DataGrid ref={gridRef} transport={transport} totalRows={totalRows} onWindowFetched={onWindowFetched} />
         ) : (
-          <div className="p-6 text-sm text-gray-400">Connecting to backend…</div>
+          <div className="p-6 text-sm text-muted">Connecting to backend…</div>
         )}
       </div>
 
-      <footer className="border-t border-gray-800 px-6 py-3">
-        <div className="mb-2 text-[10px] uppercase tracking-widest text-gray-500">
+      <footer className="border-t border-border px-6 py-3">
+        <div className="mb-2 text-[10px] uppercase tracking-widest text-muted">
           Results · {status}
         </div>
         <table className="w-full text-xs">
-          <thead className="text-gray-500">
+          <thead className="text-muted">
             <tr className="text-left">
               <th className="py-1 pr-4 font-medium">Transport</th>
               <th className="py-1 pr-4 font-medium">FPS</th>
@@ -199,16 +203,16 @@ export function BenchView() {
               <th className="py-1 pr-4 font-medium">Win/s</th>
             </tr>
           </thead>
-          <tbody className="text-gray-200">
+          <tbody className="text-text">
             {results.length === 0 ? (
               <tr>
-                <td colSpan={6} className="py-2 text-gray-500">
+                <td colSpan={6} className="py-2 text-muted">
                   Run a benchmark to see numbers.
                 </td>
               </tr>
             ) : (
               results.map((r) => (
-                <tr key={r.transport} className="border-t border-gray-900">
+                <tr key={r.transport} className="border-t border-border">
                   <td className="py-1 pr-4">{r.transport}</td>
                   <td className="py-1 pr-4">{r.fps}</td>
                   <td className="py-1 pr-4">{r.heapMB ?? "n/a (WKWebView)"}</td>

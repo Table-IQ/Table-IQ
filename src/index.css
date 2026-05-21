@@ -1,10 +1,58 @@
 @import "tailwindcss";
 
+/* ── TableIQ design tokens ───────────────────────────────────────────────
+   Light is the default (:root); dark overrides via [data-theme="dark"].
+   The @theme inline block exposes them as Tailwind utilities (bg-bg,
+   text-text, text-muted, bg-primary, border-border, …) that switch with
+   the active theme. See DESIGN.md for the source of truth. */
+
 :root {
-  color-scheme: dark;
+  --bg: #ffffff;
+  --surface: #f7f8fa;
+  --border: #e5e7eb;
+  --text: #0b0f17;
+  --muted: #6b7280;
+  --primary: #4f46e5;
+  --primary-hover: #4338ca;
+  --accent: #7c3aed;
+
+  --font-sans: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-html, body, #root {
+[data-theme="dark"] {
+  --bg: #0b0f17;
+  --surface: #111726;
+  --border: #1f2937;
+  --text: #e5e7eb;
+  --muted: #9ca3af;
+  --primary: #6366f1;
+  --primary-hover: #818cf8;
+  --accent: #8b5cf6;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-border: var(--border);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-accent: var(--accent);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+}
+
+html,
+body,
+#root {
   height: 100%;
   margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
 }

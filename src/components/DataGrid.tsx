@@ -17,6 +17,8 @@ import {
 } from "react";
 import { decodeWindow, WindowCache } from "../lib/arrowWindow";
 import { fetchWindow, type TransportKind } from "../lib/transport";
+import { gridTheme } from "../lib/theme";
+import { useTheme } from "../theme/ThemeProvider";
 
 const PAGE = 200; // rows per fetched window
 const MAX_PAGES = 12; // LRU bound → JS heap stays bounded regardless of total rows
@@ -42,6 +44,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   { transport, totalRows, onWindowFetched },
   ref,
 ) {
+  const { resolved } = useTheme();
   const gridRef = useRef<DataEditorRef>(null);
   const cacheRef = useRef(new WindowCache(PAGE, MAX_PAGES));
   const inflight = useRef(new Set<number>());
@@ -128,14 +131,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
       smoothScrollY
       width="100%"
       height="100%"
-      theme={{
-        bgCell: "#0b0f17",
-        bgHeader: "#0b0f17",
-        textDark: "#e5e7eb",
-        textHeader: "#9ca3af",
-        borderColor: "#1f2937",
-        accentColor: "#6366f1",
-      }}
+      theme={gridTheme(resolved)}
     />
   );
 });

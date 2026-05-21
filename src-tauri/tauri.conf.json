@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "tableiq",
+  "productName": "TableIQ",
   "version": "0.1.0",
   "identifier": "ai.rhobots.tableiq",
   "build": {
@@ -12,9 +12,9 @@
   "app": {
     "windows": [
       {
-        "title": "tableiq",
-        "width": 800,
-        "height": 600
+        "title": "TableIQ",
+        "width": 1280,
+        "height": 800
       }
     ],
     "security": {
