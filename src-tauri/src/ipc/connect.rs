@@ -299,6 +299,17 @@ pub async fn run_script(
     Ok(ScriptResult { rows_affected })
 }
 
+/// Query plan as JSON text (frontend renders the tree). Postgres for now.
+#[tauri::command]
+pub async fn explain_query(
+    state: State<'_, ConnState>,
+    id: String,
+    sql: String,
+) -> Result<String, String> {
+    let drv = state.session(&id)?;
+    drv.explain_json(&sql).await.map_err(|e| e.to_string())
+}
+
 #[derive(Serialize)]
 pub struct EditResult {
     pub rows_affected: u64,

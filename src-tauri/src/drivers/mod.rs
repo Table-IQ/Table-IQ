@@ -149,6 +149,11 @@ pub trait SqlDriver: Send + Sync {
 
     /// Execute a raw (possibly multi-statement) script — used for `BEGIN; …; COMMIT/ROLLBACK`.
     async fn run_script(&self, sql: &str) -> DResult<u64>;
+
+    /// Return the query plan as JSON text (engine-specific). Default: unsupported.
+    async fn explain_json(&self, _sql: &str) -> DResult<String> {
+        Err(DriverError::NotImplemented)
+    }
 }
 
 /// Document stores (MongoDB). Defined for the architecture; stubbed in Phase 0.

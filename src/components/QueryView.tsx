@@ -2,10 +2,12 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import { DataGrid, type GridSource } from "./DataGrid";
 import { SqlEditor, type SqlEditorHandle } from "./SqlEditor";
 import { AiSettings } from "./AiSettings";
+import { PlanView } from "./PlanView";
 import {
   aiEgressPreview,
   aiGenerateSql,
   downloadText,
+  explainQuery,
   exportResult,
   fetchResultWindow,
   runQuery,
@@ -21,6 +23,7 @@ export function QueryView({ connId }: { connId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [txStatus, setTxStatus] = useState<string | null>(null);
+  const [plan, setPlan] = useState<string | null>(null);
   // AI
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
@@ -50,6 +53,7 @@ export function QueryView({ connId }: { connId: string }) {
     setRunning(true);
     setError(null);
     setTxStatus(null);
+    setPlan(null);
     try {
       const m = await runQuery(connId, sqlRef.current);
       setMeta(m);
@@ -71,6 +75,18 @@ export function QueryView({ connId }: { connId: string }) {
       setTxStatus(`committed · ${rowsAffected} rows affected`);
     } catch (e) {
       setError(`transaction rolled back: ${e}`);
+    } finally {
+      setRunning(false);
+    }
+  }, [connId]);
+
+  const explain = useCallback(async () => {
+    setRunning(true);
+    setError(null);
+    try {
+      setPlan(await explainQuery(connId, sqlRef.current));
+    } catch (e) {
+      setError(`EXPLAIN: ${e}`);
     } finally {
       setRunning(false);
     }
@@ -116,6 +132,14 @@ export function QueryView({ connId }: { connId: string }) {
           title="Wrap the script in BEGIN…COMMIT"
         >
           Run in tx
+        </button>
+        <button
+          onClick={explain}
+          disabled={running}
+          className="rounded-md border border-border px-2 py-1 text-xs hover:bg-surface disabled:opacity-50"
+          title="Visualize the query plan (EXPLAIN)"
+        >
+          Explain
         </button>
         {meta && (
           <span className="flex items-center gap-1">
@@ -193,7 +217,19 @@ export function QueryView({ connId }: { connId: string }) {
       </div>
       {showAiSettings && <AiSettings onClose={() => setShowAiSettings(false)} />}
       <div className="min-h-0 flex-1">
-        {source ? (
+        {plan !== null ? (
+          <div className="flex h-full flex-col">
+            <div className="flex items-center justify-between border-b border-border px-3 py-1 text-[10px] uppercase tracking-widest text-muted">
+              <span>Query plan</span>
+              <button onClick={() => setPlan(null)} className="hover:text-text">
+                × close
+              </button>
+            </div>
+            <div className="min-h-0 flex-1">
+              <PlanView json={plan} />
+            </div>
+          </div>
+        ) : source ? (
           <DataGrid source={source} />
         ) : (
           <div className="flex h-full items-center justify-center text-sm text-muted">

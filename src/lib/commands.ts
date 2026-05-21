@@ -248,6 +248,28 @@ export async function runScript(id: string, sql: string): Promise<{ rowsAffected
   return { rowsAffected: r.rows_affected };
 }
 
+export async function explainQuery(id: string, sql: string): Promise<string> {
+  if (!inTauri())
+    return JSON.stringify([
+      {
+        Plan: {
+          "Node Type": "Limit",
+          "Total Cost": 12.5,
+          "Plan Rows": 10,
+          Plans: [
+            {
+              "Node Type": "Seq Scan",
+              "Total Cost": 1840.0,
+              "Plan Rows": 1000000,
+              "Relation Name": "wide",
+            },
+          ],
+        },
+      },
+    ]);
+  return invoke<string>("explain_query", { id, sql });
+}
+
 // ── AI (BYOK NL→SQL) ───────────────────────────────────────────────────────
 export interface AiConfig {
   provider: string;

@@ -363,6 +363,16 @@ impl SqlDriver for PgDriver {
     async fn run_script(&self, sql: &str) -> DResult<u64> {
         Ok(sqlx::raw_sql(sql).execute(&self.pool).await.map_err(db)?.rows_affected())
     }
+
+    async fn explain_json(&self, sql: &str) -> DResult<String> {
+        // EXPLAIN (FORMAT JSON) returns one row with a json column (the plan array).
+        let v: serde_json::Value =
+            sqlx::query_scalar(&format!("EXPLAIN (FORMAT JSON) {sql}"))
+                .fetch_one(&self.pool)
+                .await
+                .map_err(db)?;
+        Ok(v.to_string())
+    }
 }
 
 #[cfg(test)]
