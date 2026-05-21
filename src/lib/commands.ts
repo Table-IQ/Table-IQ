@@ -294,6 +294,11 @@ export async function getAiConfig(): Promise<AiConfig> {
   return invoke<AiConfig>("get_ai_config");
 }
 
+export async function localLlmAvailable(): Promise<boolean> {
+  if (!inTauri()) return false;
+  return invoke<boolean>("local_llm_available");
+}
+
 export async function saveAiConfig(provider: string, model: string, apiKey?: string): Promise<void> {
   if (!inTauri()) return;
   await invoke("save_ai_config", { provider, model, apiKey: apiKey ?? null });

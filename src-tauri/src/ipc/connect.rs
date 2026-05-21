@@ -348,6 +348,12 @@ pub fn get_ai_config() -> ai::AiConfig {
     ai::load_config()
 }
 
+/// Whether a local Ollama server is reachable (for the zero-egress AI path).
+#[tauri::command]
+pub async fn local_llm_available() -> bool {
+    ai::provider::ollama_available().await
+}
+
 #[tauri::command]
 pub fn save_ai_config(
     provider: String,
@@ -380,8 +386,13 @@ pub async fn ai_generate_sql(
     prompt: String,
 ) -> Result<String, String> {
     let cfg = ai::load_config();
-    let key = connections::get_password(&ai::key_account(&cfg.provider))
-        .map_err(|_| "No AI API key configured. Add one in AI settings.".to_string())?;
+    // Ollama is local and needs no key; cloud providers read the keychain.
+    let key = if cfg.provider == "ollama" {
+        String::new()
+    } else {
+        connections::get_password(&ai::key_account(&cfg.provider))
+            .map_err(|_| "No AI API key configured. Add one in AI settings.".to_string())?
+    };
     let drv = state.session(&id)?;
     let schema = drv.introspect().await.map_err(|e| e.to_string())?;
     let card = ai::schema_card(&schema);
