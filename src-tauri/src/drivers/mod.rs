@@ -59,6 +59,41 @@ pub enum DriverError {
 
 pub type DResult<T> = Result<T, DriverError>;
 
+/// A column within a table/view.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ColumnInfo {
+    pub name: String,
+    pub data_type: String,
+    pub nullable: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ObjectKind {
+    Table,
+    View,
+}
+
+/// A table or view with its columns.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ObjectInfo {
+    pub name: String,
+    pub kind: ObjectKind,
+    pub columns: Vec<ColumnInfo>,
+}
+
+/// A schema (namespace) and its objects.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchemaInfo {
+    pub name: String,
+    pub objects: Vec<ObjectInfo>,
+}
+
+/// The browsable structure of a connection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchemaModel {
+    pub schemas: Vec<SchemaInfo>,
+}
+
 /// SQL engines (PG/MySQL/MariaDB/SQLite/SQL Server). Results stream as Arrow.
 #[async_trait]
 pub trait SqlDriver: Send + Sync {
@@ -72,6 +107,19 @@ pub trait SqlDriver: Send + Sync {
     ) -> DResult<arrow::record_batch::RecordBatch>;
     /// Release a cursor's server/client resources.
     async fn close_cursor(&self, cursor: &CursorId) -> DResult<()>;
+
+    /// Browse the connection's schemas → tables/views → columns.
+    async fn introspect(&self) -> DResult<SchemaModel>;
+    /// Fast (approximate) row count for a table.
+    async fn row_estimate(&self, schema: &str, table: &str) -> DResult<i64>;
+    /// Read a window of rows from a table as Arrow (read-only browse).
+    async fn open_window(
+        &self,
+        schema: &str,
+        table: &str,
+        offset: usize,
+        len: usize,
+    ) -> DResult<arrow::record_batch::RecordBatch>;
 }
 
 /// Document stores (MongoDB). Defined for the architecture; stubbed in Phase 0.

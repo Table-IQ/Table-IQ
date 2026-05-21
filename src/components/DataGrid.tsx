@@ -16,32 +16,37 @@ import {
   useState,
 } from "react";
 import { decodeWindow, WindowCache } from "../lib/arrowWindow";
-import { fetchWindow, type TransportKind } from "../lib/transport";
 import { gridTheme } from "../lib/theme";
 import { useTheme } from "../theme/ThemeProvider";
 
 const PAGE = 200; // rows per fetched window
 const MAX_PAGES = 12; // LRU bound → JS heap stays bounded regardless of total rows
-const COL_WIDTH = 150;
+const COL_WIDTH = 160;
+
+/** A windowed data source the grid pages over. `key` identity resets the cache. */
+export interface GridSource {
+  key: string;
+  totalRows: number;
+  columns?: string[];
+  fetch: (offset: number, len: number) => Promise<{ bytes: Uint8Array; ms: number }>;
+}
 
 export interface DataGridHandle {
   scrollToRow: (row: number) => void;
 }
 
 interface Props {
-  transport: TransportKind;
-  totalRows: number;
-  /** Reports each window-fetch round-trip latency (ms) + the transport it used. */
-  onWindowFetched?: (ms: number, kind: TransportKind) => void;
+  source: GridSource;
+  onWindowFetched?: (ms: number) => void;
 }
 
 /**
- * A glide-data-grid bound to a windowed Arrow source. Cells are read from an LRU
- * page cache; misses trigger a background fetch + re-render. Only ~MAX_PAGES pages
- * are ever resident, so memory does not grow with total row count.
+ * glide-data-grid bound to a windowed Arrow source. Cells read from an LRU page
+ * cache; misses trigger a background fetch + re-render. Only ~MAX_PAGES pages are
+ * ever resident, so memory does not grow with total row count.
  */
 export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
-  { transport, totalRows, onWindowFetched },
+  { source, onWindowFetched },
   ref,
 ) {
   const { resolved } = useTheme();
@@ -52,27 +57,31 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   const colNames = useRef<string[]>([]);
   const [, setVersion] = useState(0);
 
-  // Held in a ref so changing the callback never rebuilds ensurePage/getCellContent
-  // (which would re-fire the first-page effect and thrash fetches).
   const onFetchedRef = useRef(onWindowFetched);
   useEffect(() => {
     onFetchedRef.current = onWindowFetched;
   }, [onWindowFetched]);
 
-  // Reset the cache whenever the transport or dataset changes.
+  // Reset cache + columns whenever the source changes.
   useEffect(() => {
     cacheRef.current = new WindowCache(PAGE, MAX_PAGES);
     inflight.current.clear();
-    setColumns([]);
-    colNames.current = [];
+    if (source.columns && source.columns.length > 0) {
+      colNames.current = source.columns;
+      setColumns(source.columns.map((c) => ({ title: c, width: COL_WIDTH })));
+    } else {
+      colNames.current = [];
+      setColumns([]);
+    }
     setVersion((v) => v + 1);
-  }, [transport, totalRows]);
+  }, [source.key, source.columns]);
 
   const ensurePage = useCallback(
     (page: number) => {
       if (page < 0 || cacheRef.current.has(page) || inflight.current.has(page)) return;
       inflight.current.add(page);
-      fetchWindow(transport, page * PAGE, PAGE)
+      source
+        .fetch(page * PAGE, PAGE)
         .then(({ bytes, ms }) => {
           const win = decodeWindow(bytes);
           cacheRef.current.put(page, win);
@@ -80,18 +89,18 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
             colNames.current = win.columns;
             setColumns(win.columns.map((c) => ({ title: c, width: COL_WIDTH })));
           }
-          onFetchedRef.current?.(ms, transport);
+          onFetchedRef.current?.(ms);
           setVersion((v) => v + 1);
         })
+        .catch(() => {})
         .finally(() => inflight.current.delete(page));
     },
-    [transport],
+    [source],
   );
 
-  // Kick off the first page so columns get established.
   useEffect(() => {
-    if (totalRows > 0) ensurePage(0);
-  }, [totalRows, ensurePage]);
+    if (source.totalRows > 0) ensurePage(0);
+  }, [source.totalRows, ensurePage]);
 
   const getCellContent = useCallback(
     ([col, row]: Item): GridCell => {
@@ -100,15 +109,10 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
       if (value === undefined) {
         const page = Math.floor(row / PAGE);
         ensurePage(page);
-        ensurePage(page + 1); // prefetch
+        ensurePage(page + 1);
         return { kind: GridCellKind.Loading, allowOverlay: false };
       }
-      return {
-        kind: GridCellKind.Text,
-        data: value,
-        displayData: value,
-        allowOverlay: false,
-      };
+      return { kind: GridCellKind.Text, data: value, displayData: value, allowOverlay: false };
     },
     [ensurePage],
   );
@@ -118,15 +122,16 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   }));
 
   if (columns.length === 0) {
-    return <div className="p-6 text-sm text-gray-400">Loading schema…</div>;
+    return <div className="p-6 text-sm text-muted">Loading…</div>;
   }
 
   return (
     <DataEditor
       ref={gridRef}
       columns={columns}
-      rows={totalRows}
+      rows={source.totalRows}
       getCellContent={getCellContent}
+      rowMarkers="number"
       smoothScrollX
       smoothScrollY
       width="100%"

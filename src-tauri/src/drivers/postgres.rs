@@ -14,7 +14,19 @@ use async_trait::async_trait;
 use sqlx::postgres::{PgPoolOptions, PgRow};
 use sqlx::{Pool, Postgres, Row};
 
-use super::{CursorId, DResult, DriverError, SqlDriver};
+use super::{
+    ColumnInfo, CursorId, DResult, DriverError, ObjectInfo, ObjectKind, SchemaInfo, SchemaModel,
+    SqlDriver,
+};
+
+fn db(e: sqlx::Error) -> DriverError {
+    DriverError::Db(e.to_string())
+}
+
+/// Quote a SQL identifier safely (double-quote, escape embedded quotes).
+fn quote_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
 
 pub struct PgDriver {
     pool: Pool<Postgres>,
@@ -102,6 +114,150 @@ impl SqlDriver for PgDriver {
         self.cursors.lock().unwrap().remove(&cursor.0);
         Ok(())
     }
+
+    async fn introspect(&self) -> DResult<SchemaModel> {
+        let tables = sqlx::query(
+            "SELECT table_schema, table_name, table_type \
+             FROM information_schema.tables \
+             WHERE table_schema NOT IN ('pg_catalog', 'information_schema') \
+             ORDER BY table_schema, table_name",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+
+        let columns = sqlx::query(
+            "SELECT table_schema, table_name, column_name, data_type, is_nullable \
+             FROM information_schema.columns \
+             WHERE table_schema NOT IN ('pg_catalog', 'information_schema') \
+             ORDER BY table_schema, table_name, ordinal_position",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+
+        // schema name -> (object name -> ObjectInfo), preserving insertion order.
+        use std::collections::BTreeMap;
+        let mut schemas: BTreeMap<String, Vec<ObjectInfo>> = BTreeMap::new();
+        let mut index: std::collections::HashMap<(String, String), (usize, usize)> =
+            std::collections::HashMap::new();
+
+        for r in &tables {
+            let schema: String = r.get("table_schema");
+            let name: String = r.get("table_name");
+            let ttype: String = r.get("table_type");
+            let kind = if ttype == "VIEW" {
+                ObjectKind::View
+            } else {
+                ObjectKind::Table
+            };
+            let list = schemas.entry(schema.clone()).or_default();
+            index.insert((schema, name.clone()), (0, list.len()));
+            list.push(ObjectInfo {
+                name,
+                kind,
+                columns: Vec::new(),
+            });
+        }
+
+        for r in &columns {
+            let schema: String = r.get("table_schema");
+            let table: String = r.get("table_name");
+            if let Some(list) = schemas.get_mut(&schema) {
+                if let Some(obj) = list.iter_mut().find(|o| o.name == table) {
+                    obj.columns.push(ColumnInfo {
+                        name: r.get("column_name"),
+                        data_type: r.get("data_type"),
+                        nullable: r.get::<String, _>("is_nullable") == "YES",
+                    });
+                }
+            }
+        }
+
+        Ok(SchemaModel {
+            schemas: schemas
+                .into_iter()
+                .map(|(name, objects)| SchemaInfo { name, objects })
+                .collect(),
+        })
+    }
+
+    async fn row_estimate(&self, schema: &str, table: &str) -> DResult<i64> {
+        let est: Option<f32> = sqlx::query_scalar(
+            "SELECT reltuples FROM pg_class c \
+             JOIN pg_namespace n ON n.oid = c.relnamespace \
+             WHERE n.nspname = $1 AND c.relname = $2",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?
+        .flatten();
+        Ok(est.map(|f| f as i64).unwrap_or(0).max(0))
+    }
+
+    async fn open_window(
+        &self,
+        schema: &str,
+        table: &str,
+        offset: usize,
+        len: usize,
+    ) -> DResult<RecordBatch> {
+        // Column order from the catalog (also validates the table exists).
+        let cols: Vec<String> = sqlx::query_scalar(
+            "SELECT column_name FROM information_schema.columns \
+             WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        if cols.is_empty() {
+            return Err(DriverError::Db(format!("no such table {schema}.{table}")));
+        }
+
+        // Display-first browse: cast every column to text (lossless string view,
+        // consistent with the decimal-as-text rule). Identifiers are quoted.
+        let select_list = cols
+            .iter()
+            .map(|c| format!("{0}::text AS {0}", quote_ident(c)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        // Order on the REAL first column (numeric/native) in a subquery, THEN cast to
+        // text — ordering by the text cast would sort numbers lexicographically.
+        let q = format!(
+            "SELECT {select_list} FROM \
+             (SELECT * FROM {}.{} ORDER BY 1 OFFSET $1 LIMIT $2) AS _w",
+            quote_ident(schema),
+            quote_ident(table)
+        );
+        let rows = sqlx::query(&q)
+            .bind(offset as i64)
+            .bind(len as i64)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db)?;
+
+        text_rows_to_batch(&cols, &rows)
+    }
+}
+
+/// Build an all-Utf8 (nullable) Arrow batch from text-cast rows.
+fn text_rows_to_batch(cols: &[String], rows: &[PgRow]) -> DResult<RecordBatch> {
+    let mut fields = Vec::with_capacity(cols.len());
+    let mut arrays: Vec<arrow::array::ArrayRef> = Vec::with_capacity(cols.len());
+    for c in cols {
+        fields.push(arrow::datatypes::Field::new(c, DataType::Utf8, true));
+        let col: StringArray = rows
+            .iter()
+            .map(|r| r.get::<Option<String>, _>(c.as_str()))
+            .collect();
+        arrays.push(std::sync::Arc::new(col));
+    }
+    RecordBatch::try_new(std::sync::Arc::new(arrow::datatypes::Schema::new(fields)), arrays)
+        .map_err(|e| DriverError::Db(e.to_string()))
 }
 
 fn rows_to_batch(rows: &[PgRow]) -> DResult<RecordBatch> {
