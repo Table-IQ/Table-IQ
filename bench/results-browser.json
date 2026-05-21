@@ -1,0 +1,32 @@
+{
+  "measuredAt": "2026-05-21T10:41:18.475Z",
+  "mode": "browser-mock (Chromium headless)",
+  "totalRows": 1000000,
+  "note": "fps+heap gate measured here; 3-way IPC transport comparison must run in the Tauri app",
+  "results": [
+    {
+      "transport": "response",
+      "fps": 60,
+      "heapMB": 14,
+      "fetchP99Ms": 4.9,
+      "fetchCount": 593,
+      "windowsPerSec": 118
+    },
+    {
+      "transport": "channel",
+      "fps": 60,
+      "heapMB": 14,
+      "fetchP99Ms": 3.1,
+      "fetchCount": 586,
+      "windowsPerSec": 117
+    },
+    {
+      "transport": "protocol",
+      "fps": 60,
+      "heapMB": 14,
+      "fetchP99Ms": 5.6,
+      "fetchCount": 585,
+      "windowsPerSec": 117
+    }
+  ]
+}

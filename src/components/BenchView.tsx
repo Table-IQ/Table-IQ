@@ -69,6 +69,33 @@ export function BenchView() {
     [setTransport, totalRows, addResult],
   );
 
+  // Headless automation hook: lets /browse run the scripted scroll and read metrics.
+  // Results are also collected on window.__benchResults so a poller can read them
+  // without awaiting the long-running scroll inside a single eval.
+  useEffect(() => {
+    const w = window as unknown as {
+      __runBench?: (k: TransportKind) => Promise<BenchResult>;
+      __runAll?: () => Promise<BenchResult[]>;
+      __benchResults?: BenchResult[];
+      __benchReady?: boolean;
+      __benchBusy?: boolean;
+    };
+    w.__benchResults = w.__benchResults ?? [];
+    w.__runBench = async (k) => {
+      w.__benchBusy = true;
+      const r = await runOne(k);
+      w.__benchResults!.push(r);
+      w.__benchBusy = false;
+      return r;
+    };
+    w.__runAll = async () => {
+      w.__benchResults = [];
+      for (const k of TRANSPORTS) await w.__runBench!(k);
+      return w.__benchResults!;
+    };
+    w.__benchReady = totalRows > 0;
+  }, [runOne, totalRows]);
+
   const runSelected = useCallback(async () => {
     setRunning(true);
     setStatus(`running ${transport}…`);

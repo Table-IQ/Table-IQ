@@ -1,9 +1,15 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
+import { MOCK_TOTAL_ROWS, synthWindowIpc } from "./mockSource";
 
 /** The three Rust→UI window transports being benchmarked. */
 export type TransportKind = "response" | "channel" | "protocol";
 
 export const TRANSPORTS: TransportKind[] = ["response", "channel", "protocol"];
+
+/** True only when running inside the Tauri runtime (vs a plain browser for headless QA). */
+function inTauri(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
 
 export interface WindowResult {
   bytes: Uint8Array;
@@ -18,6 +24,7 @@ function toU8(x: ArrayBuffer | Uint8Array | number[]): Uint8Array {
 
 /** Total rows in the active source (for grid sizing). */
 export async function fetchWindowMeta(): Promise<{ totalRows: number }> {
+  if (!inTauri()) return { totalRows: MOCK_TOTAL_ROWS };
   return await invoke<{ total_rows: number }>("window_meta").then((m) => ({
     totalRows: m.total_rows,
   }));
@@ -31,6 +38,12 @@ export async function fetchWindow(
 ): Promise<WindowResult> {
   const t0 = performance.now();
   let bytes: Uint8Array;
+
+  if (!inTauri()) {
+    // Browser/headless mode: synthesize the window client-side (exercises decode+grid+scroll).
+    bytes = synthWindowIpc(offset, len);
+    return { bytes, ms: performance.now() - t0 };
+  }
 
   if (kind === "response") {
     const ab = await invoke<ArrayBuffer>("get_window_response", { offset, len });
