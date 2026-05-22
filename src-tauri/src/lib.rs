@@ -8,8 +8,8 @@ pub mod query;
 pub mod ssh;
 
 use ipc::connect::{
-    ai_egress_preview, ai_generate_sql, apply_edit, connect, delete_connection, disconnect,
-    export_result, export_table, get_ai_config, get_result_window, get_table_window,
+    ai_egress_preview, ai_generate_sql, apply_edit, cancel_query, connect, delete_connection,
+    disconnect, export_result, export_table, get_ai_config, get_result_window, get_table_window,
     doc_collections, doc_find, explain_query, export_connections, foreign_keys, import_connections,
     kv_get, kv_scan, list_connections, list_objects, local_llm_available, open_table, primary_key,
     run_query, run_script, save_ai_config, save_connection, test_connection, ConnState,
@@ -31,6 +31,7 @@ pub fn run() {
             open_table,
             get_table_window,
             run_query,
+            cancel_query,
             get_result_window,
             primary_key,
             apply_edit,

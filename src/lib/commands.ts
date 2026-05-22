@@ -283,7 +283,11 @@ export interface EditSpec {
   orig_value: string | null;
 }
 
-export async function runQuery(id: string, sql: string): Promise<QueryResultMeta> {
+export async function runQuery(
+  id: string,
+  sql: string,
+  queryId: string,
+): Promise<QueryResultMeta> {
   if (!inTauri()) {
     return {
       resultId: "mock-q",
@@ -299,7 +303,7 @@ export async function runQuery(id: string, sql: string): Promise<QueryResultMeta
     row_count: number;
     truncated: boolean;
     exec_ms: number;
-  }>("run_query", { id, sql });
+  }>("run_query", { id, sql, queryId });
   return {
     resultId: m.result_id,
     columns: m.columns,
@@ -307,6 +311,12 @@ export async function runQuery(id: string, sql: string): Promise<QueryResultMeta
     truncated: m.truncated,
     execMs: m.exec_ms,
   };
+}
+
+/** Cancel an in-flight query (server-side) by the same `queryId` passed to runQuery. */
+export async function cancelQuery(id: string, queryId: string): Promise<void> {
+  if (!inTauri()) return;
+  await invoke("cancel_query", { id, queryId });
 }
 
 export async function fetchResultWindow(

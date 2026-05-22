@@ -4,6 +4,8 @@
 //! return JSON/tree, key-value stores return typed values. Phase 0 implements only
 //! the SQL cursor path (Postgres); the other traits are defined but stubbed.
 
+use std::sync::{Arc, Mutex};
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -45,9 +47,28 @@ pub struct RowKey {
     pub original: Vec<RawCell>,
 }
 
-/// Opaque per-engine cancellation handle (plan spec #6). Phase 0 placeholder.
-#[derive(Debug, Clone, Default)]
-pub struct CancelToken;
+/// Per-engine cancellation handle (plan spec #6). Carries the server-side identifier
+/// (Postgres backend PID / MySQL connection id) that a *second* connection uses to cancel
+/// the in-flight query. The id is recorded by `run_query_cancellable` once the query's
+/// connection is known, then read by `cancel`.
+#[derive(Clone, Default)]
+pub struct CancelToken {
+    backend_id: Arc<Mutex<Option<i64>>>,
+}
+
+impl CancelToken {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// Record the server-side id (PG backend PID / MySQL connection id) for this query.
+    pub fn set_backend_id(&self, id: i64) {
+        *self.backend_id.lock().unwrap() = Some(id);
+    }
+    /// The recorded server-side id, or `None` if the query hasn't started yet.
+    pub fn backend_id(&self) -> Option<i64> {
+        *self.backend_id.lock().unwrap()
+    }
+}
 
 /// A live cursor over a SQL result, paged by [`SqlDriver::fetch_next`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -57,6 +78,8 @@ pub struct CursorId(pub String);
 pub enum DriverError {
     #[error("db error: {0}")]
     Db(String),
+    #[error("query cancelled")]
+    Cancelled,
     #[error("not implemented")]
     NotImplemented,
 }
@@ -153,6 +176,24 @@ pub trait SqlDriver: Send + Sync {
 
     /// Run a one-shot query (single statement), capped, as an Arrow result.
     async fn run_query(&self, sql: &str, cap: usize) -> DResult<QueryResult>;
+
+    /// Run a query that can be cancelled mid-flight via [`SqlDriver::cancel`] using `token`.
+    /// The implementation should record the server-side id into `token` before the work
+    /// begins. Default: ignore cancellation and delegate to [`SqlDriver::run_query`].
+    async fn run_query_cancellable(
+        &self,
+        sql: &str,
+        cap: usize,
+        _token: &CancelToken,
+    ) -> DResult<QueryResult> {
+        self.run_query(sql, cap).await
+    }
+
+    /// Cancel the running query identified by `token` (server-side, via a second
+    /// connection). Default: unsupported for this engine.
+    async fn cancel(&self, _token: &CancelToken) -> DResult<()> {
+        Err(DriverError::NotImplemented)
+    }
     /// Primary-key column names for a table (empty if none).
     async fn primary_key(&self, schema: &str, table: &str) -> DResult<Vec<String>>;
     /// Apply a single-cell edit; returns rows affected (0 ⇒ optimistic-concurrency conflict).
@@ -216,6 +257,16 @@ mod tests {
         let c = FetchWindow::Cursor { page_size: 10_000 };
         assert!(matches!(m, FetchWindow::Materialize { .. }));
         assert!(matches!(c, FetchWindow::Cursor { .. }));
+    }
+
+    #[test]
+    fn cancel_token_records_backend_id() {
+        let t = CancelToken::new();
+        assert_eq!(t.backend_id(), None);
+        // A clone shares the same slot, so the IPC layer and driver see the same id.
+        let t2 = t.clone();
+        t2.set_backend_id(4242);
+        assert_eq!(t.backend_id(), Some(4242));
     }
 
     #[test]
