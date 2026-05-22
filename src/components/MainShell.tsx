@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Wordmark } from "./Brand";
 import { ThemeToggle } from "./ThemeToggle";
 import { ObjectTree } from "./ObjectTree";
@@ -6,6 +6,7 @@ import { TableView } from "./TableView";
 import { QueryView } from "./QueryView";
 import { ErdView } from "./ErdView";
 import { StructureEditor } from "./StructureEditor";
+import { CommandPalette, type Command } from "./CommandPalette";
 import { useConnections } from "../state/connectionStore";
 import { useTabs } from "../state/tabsStore";
 import { disconnect, type Engine, type ObjectInfo } from "../lib/commands";
@@ -24,6 +25,40 @@ export function MainShell() {
   const { tabs, activeKey, openTable, openQuery, openErd, close, setActive: setActiveTab, reset } =
     useTabs();
   const [showStructure, setShowStructure] = useState(false);
+  const [showPalette, setShowPalette] = useState(false);
+
+  // Cmd-K / Ctrl-K toggles the command palette.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setShowPalette((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Palette commands: jump to any table/view, plus the tab actions.
+  const commands = useMemo<Command[]>(() => {
+    const list: Command[] = [];
+    for (const s of schema?.schemas ?? []) {
+      for (const o of s.objects) {
+        list.push({
+          id: `tbl:${s.name}.${o.name}`,
+          label: `${s.name}.${o.name}`,
+          hint: o.kind,
+          run: () => openTable(s.name, o.name),
+        });
+      }
+    }
+    list.push(
+      { id: "act:query", label: "New Query", hint: "action", run: openQuery },
+      { id: "act:erd", label: "Schema diagram (ERD)", hint: "action", run: openErd },
+      { id: "act:table", label: "New Table", hint: "action", run: () => setShowStructure(true) },
+    );
+    return list;
+  }, [schema, openTable, openQuery, openErd]);
 
   if (!active || !schema) return null;
 
@@ -63,6 +98,13 @@ export function MainShell() {
           {active.name} · {active.database}
         </span>
         <div className="ml-auto flex items-center gap-2">
+          <button
+            onClick={() => setShowPalette(true)}
+            className="rounded-md border border-border px-2 py-1 text-xs text-muted hover:text-text"
+            title="Command palette"
+          >
+            Search <span className="ml-1 text-[10px]">⌘K</span>
+          </button>
           <ThemeToggle />
           <button
             onClick={onDisconnect}
@@ -137,6 +179,7 @@ export function MainShell() {
           onClose={() => setShowStructure(false)}
         />
       )}
+      {showPalette && <CommandPalette commands={commands} onClose={() => setShowPalette(false)} />}
     </div>
   );
 }
