@@ -10,11 +10,28 @@ use sqlx::mysql::{MySqlPoolOptions, MySqlRow};
 use sqlx::{Column, Executor, MySql, Pool, Row};
 
 use super::{
-    ColumnInfo, CursorId, DResult, DriverError, EditSpec, ObjectInfo, ObjectKind, QueryResult,
-    SchemaInfo, SchemaModel, SqlDriver,
+    CancelToken, ColumnInfo, CursorId, DResult, DriverError, EditSpec, ObjectInfo, ObjectKind,
+    QueryResult, SchemaInfo, SchemaModel, SqlDriver,
 };
 
 fn db(e: sqlx::Error) -> DriverError {
+    DriverError::Db(e.to_string())
+}
+
+/// `KILL QUERY <id>` issued from a second connection to stop a running statement.
+/// `id` comes from `CONNECTION_ID()` (trusted, numeric).
+fn kill_query_sql(connection_id: u64) -> String {
+    format!("KILL QUERY {connection_id}")
+}
+
+/// Recognise a KILL QUERY interruption (SQLSTATE 70100 / ER_QUERY_INTERRUPTED) as a
+/// clean cancellation rather than a generic DB error.
+fn map_query_err(e: sqlx::Error) -> DriverError {
+    if let sqlx::Error::Database(ref dbe) = e {
+        if dbe.code().as_deref() == Some("70100") || dbe.message().contains("interrupted") {
+            return DriverError::Cancelled;
+        }
+    }
     DriverError::Db(e.to_string())
 }
 
@@ -177,6 +194,61 @@ impl SqlDriver for MySqlDriver {
         Ok(QueryResult { batch, truncated, exec_ms: start.elapsed().as_millis() as u64 })
     }
 
+    async fn run_query_cancellable(
+        &self,
+        sql: &str,
+        cap: usize,
+        token: &CancelToken,
+    ) -> DResult<QueryResult> {
+        let start = std::time::Instant::now();
+        // Pin one pooled connection so KILL QUERY can target its CONNECTION_ID().
+        let mut conn = self.pool.acquire().await.map_err(db)?;
+        let cid: u64 = sqlx::query_scalar("SELECT CONNECTION_ID()")
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(db)?;
+        token.set_backend_id(cid as i64);
+
+        let wrapped = format!("SELECT * FROM ({sql}) AS _q");
+        let described = (&mut *conn).describe(wrapped.as_str()).await.map_err(map_query_err)?;
+        let names: Vec<String> = described.columns().iter().map(|c| c.name().to_string()).collect();
+        if names.is_empty() {
+            return Ok(QueryResult {
+                batch: text_rows_to_batch(&[], &[])?,
+                truncated: false,
+                exec_ms: start.elapsed().as_millis() as u64,
+            });
+        }
+        let select_list = names
+            .iter()
+            .map(|c| format!("CAST({0} AS CHAR) AS {0}", quote_ident(c)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let q = format!("SELECT {select_list} FROM ({sql}) AS _q LIMIT ?");
+        let mut rows = sqlx::query(&q)
+            .bind(cap as i64 + 1)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(map_query_err)?;
+        let truncated = rows.len() > cap;
+        if truncated {
+            rows.truncate(cap);
+        }
+        let batch = text_rows_to_batch(&names, &rows)?;
+        Ok(QueryResult { batch, truncated, exec_ms: start.elapsed().as_millis() as u64 })
+    }
+
+    async fn cancel(&self, token: &CancelToken) -> DResult<()> {
+        let Some(cid) = token.backend_id() else {
+            return Ok(());
+        };
+        sqlx::raw_sql(&kill_query_sql(cid as u64))
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
+
     async fn primary_key(&self, schema: &str, table: &str) -> DResult<Vec<String>> {
         let cols: Vec<String> = sqlx::query_scalar(
             "SELECT column_name FROM information_schema.key_column_usage \
@@ -216,5 +288,15 @@ impl SqlDriver for MySqlDriver {
 
     async fn run_script(&self, sql: &str) -> DResult<u64> {
         Ok(sqlx::raw_sql(sql).execute(&self.pool).await.map_err(db)?.rows_affected())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::kill_query_sql;
+
+    #[test]
+    fn kill_query_sql_targets_connection_id() {
+        assert_eq!(kill_query_sql(4242), "KILL QUERY 4242");
     }
 }

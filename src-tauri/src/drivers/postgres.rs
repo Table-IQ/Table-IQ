@@ -15,9 +15,20 @@ use sqlx::postgres::{PgPoolOptions, PgRow};
 use sqlx::{Column, Executor, Pool, Postgres, Row};
 
 use super::{
-    ColumnInfo, CursorId, DResult, DriverError, EditSpec, ObjectInfo, ObjectKind, QueryResult,
-    SchemaInfo, SchemaModel, SqlDriver,
+    CancelToken, ColumnInfo, CursorId, DResult, DriverError, EditSpec, ObjectInfo, ObjectKind,
+    QueryResult, SchemaInfo, SchemaModel, SqlDriver,
 };
+
+/// Map a query error, recognising Postgres' "canceling statement due to user request"
+/// (SQLSTATE 57014) as a clean cancellation rather than a generic DB error.
+fn map_query_err(e: sqlx::Error) -> DriverError {
+    if let sqlx::Error::Database(ref dbe) = e {
+        if dbe.code().as_deref() == Some("57014") {
+            return DriverError::Cancelled;
+        }
+    }
+    DriverError::Db(e.to_string())
+}
 
 /// Build a parameterized, identifier-safe optimistic-concurrency UPDATE.
 /// Params: $1 = new value; $2.. = pk values (in `pk` order); last = original cell value.
@@ -312,6 +323,68 @@ impl SqlDriver for PgDriver {
             truncated,
             exec_ms: start.elapsed().as_millis() as u64,
         })
+    }
+
+    async fn run_query_cancellable(
+        &self,
+        sql: &str,
+        cap: usize,
+        token: &CancelToken,
+    ) -> DResult<QueryResult> {
+        let start = std::time::Instant::now();
+        // Pin one pooled connection for the whole query so we can target it by backend PID.
+        let mut conn = self.pool.acquire().await.map_err(db)?;
+        let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(db)?;
+        token.set_backend_id(pid as i64);
+
+        let wrapped = format!("SELECT * FROM ({sql}) AS _q");
+        let described = (&mut *conn).describe(wrapped.as_str()).await.map_err(map_query_err)?;
+        let names: Vec<String> = described.columns().iter().map(|c| c.name().to_string()).collect();
+        if names.is_empty() {
+            return Ok(QueryResult {
+                batch: text_rows_to_batch(&[], &[])?,
+                truncated: false,
+                exec_ms: start.elapsed().as_millis() as u64,
+            });
+        }
+        let select_list = names
+            .iter()
+            .map(|c| format!("{0}::text AS {0}", quote_ident(c)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let q = format!("SELECT {select_list} FROM ({sql}) AS _q LIMIT $1");
+        let mut rows = sqlx::query(&q)
+            .bind(cap as i64 + 1)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(map_query_err)?;
+        let truncated = rows.len() > cap;
+        if truncated {
+            rows.truncate(cap);
+        }
+        let batch = text_rows_to_batch(&names, &rows)?;
+        Ok(QueryResult {
+            batch,
+            truncated,
+            exec_ms: start.elapsed().as_millis() as u64,
+        })
+    }
+
+    async fn cancel(&self, token: &CancelToken) -> DResult<()> {
+        // No backend id yet means the query hasn't reached the server — nothing to cancel.
+        let Some(pid) = token.backend_id() else {
+            return Ok(());
+        };
+        // The cancel request must come from a *second* connection (plan spec #6).
+        sqlx::query("SELECT pg_cancel_backend($1)")
+            .bind(pid as i32)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(())
     }
 
     async fn primary_key(&self, schema: &str, table: &str) -> DResult<Vec<String>> {

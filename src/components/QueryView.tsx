@@ -6,6 +6,7 @@ import { PlanView } from "./PlanView";
 import {
   aiEgressPreview,
   aiGenerateSql,
+  cancelQuery,
   downloadText,
   explainQuery,
   exportResult,
@@ -22,6 +23,8 @@ export function QueryView({ connId }: { connId: string }) {
   const [meta, setMeta] = useState<QueryResultMeta | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  // Id of the in-flight query, so the Cancel button can target it server-side.
+  const runningQueryId = useRef<string | null>(null);
   const [txStatus, setTxStatus] = useState<string | null>(null);
   const [plan, setPlan] = useState<string | null>(null);
   // AI
@@ -54,14 +57,27 @@ export function QueryView({ connId }: { connId: string }) {
     setError(null);
     setTxStatus(null);
     setPlan(null);
+    const queryId = crypto.randomUUID();
+    runningQueryId.current = queryId;
     try {
-      const m = await runQuery(connId, sqlRef.current);
+      const m = await runQuery(connId, sqlRef.current, queryId);
       setMeta(m);
     } catch (e) {
       setError(String(e));
       setMeta(null);
     } finally {
       setRunning(false);
+      runningQueryId.current = null;
+    }
+  }, [connId]);
+
+  const cancel = useCallback(async () => {
+    const queryId = runningQueryId.current;
+    if (!queryId) return;
+    try {
+      await cancelQuery(connId, queryId);
+    } catch (e) {
+      setError(String(e));
     }
   }, [connId]);
 
@@ -124,6 +140,15 @@ export function QueryView({ connId }: { connId: string }) {
         >
           {running ? "Running…" : "Run"}
         </button>
+        {running && (
+          <button
+            onClick={cancel}
+            className="rounded-md border border-red-400/50 px-2 py-1 text-xs text-red-400 hover:bg-red-400/10"
+            title="Cancel the running query (server-side)"
+          >
+            Cancel
+          </button>
+        )}
         <span className="text-[10px] text-muted">⌘↵</span>
         <button
           onClick={runInTx}

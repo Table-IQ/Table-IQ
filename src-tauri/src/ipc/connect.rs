@@ -13,8 +13,8 @@ use arrow::record_batch::RecordBatch;
 use crate::connections::{self, ConnConfig, ConnStore};
 use crate::drivers::{
     doc_mongo::MongoDriver, kv_redis::RedisDriver, mysql::MySqlDriver, postgres::PgDriver,
-    sqlite::SqliteDriver, DocumentDriver, EditSpec, KeyInfo, KvDriver, KvValue, SchemaModel,
-    SqlDriver,
+    sqlite::SqliteDriver, CancelToken, DocumentDriver, DriverError, EditSpec, KeyInfo, KvDriver,
+    KvValue, SchemaModel, SqlDriver,
 };
 use crate::ssh::tunnel::{RemoteTarget, Tunnel};
 use crate::ssh::SshAuth;
@@ -29,6 +29,8 @@ pub struct ConnState {
     results: Mutex<HashMap<String, Arc<RecordBatch>>>,
     /// Live SSH tunnels keyed by conn id. Dropping a `Tunnel` (on disconnect/delete) tears it down.
     tunnels: Mutex<HashMap<String, Tunnel>>,
+    /// In-flight query cancel tokens keyed by client-supplied query id (plan spec #6).
+    cancels: Mutex<HashMap<String, CancelToken>>,
 }
 
 /// If `cfg` has SSH enabled, open a tunnel to the bastion forwarding to the remote DB and return
@@ -80,6 +82,7 @@ impl ConnState {
             doc_sessions: Mutex::new(HashMap::new()),
             results: Mutex::new(HashMap::new()),
             tunnels: Mutex::new(HashMap::new()),
+            cancels: Mutex::new(HashMap::new()),
         }
     }
 
@@ -348,9 +351,18 @@ pub async fn run_query(
     state: State<'_, ConnState>,
     id: String,
     sql: String,
+    query_id: String,
 ) -> Result<QueryResultMeta, String> {
     let drv = state.session(&id)?;
-    let qr = drv.run_query(&sql, QUERY_CAP).await.map_err(|e| e.to_string())?;
+    // Register a cancel token before the (possibly long) query so `cancel_query` can find it.
+    let token = CancelToken::new();
+    state.cancels.lock().unwrap().insert(query_id.clone(), token.clone());
+    let res = drv.run_query_cancellable(&sql, QUERY_CAP, &token).await;
+    state.cancels.lock().unwrap().remove(&query_id);
+    let qr = res.map_err(|e| match e {
+        DriverError::Cancelled => "Query cancelled".to_string(),
+        other => other.to_string(),
+    })?;
     let columns = qr.batch.schema().fields().iter().map(|f| f.name().clone()).collect();
     let row_count = qr.batch.num_rows();
     let result_id = uuid::Uuid::new_v4().to_string();
@@ -366,6 +378,28 @@ pub async fn run_query(
         truncated: qr.truncated,
         exec_ms: qr.exec_ms,
     })
+}
+
+/// Cancel a running query (server-side) by the client-supplied `query_id`. A no-op if the
+/// query already finished. Engines without cancellation support surface a clear message.
+#[tauri::command]
+pub async fn cancel_query(
+    state: State<'_, ConnState>,
+    id: String,
+    query_id: String,
+) -> Result<(), String> {
+    let token = state.cancels.lock().unwrap().get(&query_id).cloned();
+    let Some(token) = token else {
+        return Ok(()); // already completed/removed
+    };
+    let drv = state.session(&id)?;
+    match drv.cancel(&token).await {
+        Ok(()) => Ok(()),
+        Err(DriverError::NotImplemented) => {
+            Err("Cancellation is not supported for this engine.".to_string())
+        }
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 #[tauri::command]
