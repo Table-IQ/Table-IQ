@@ -515,6 +515,13 @@ pub async fn explain_query(
     drv.explain_json(&sql).await.map_err(|e| e.to_string())
 }
 
+/// Generate migration SQL for a structure-editor operation (preview-then-apply). Returns the
+/// exact SQL the user reviews before running it via `run_script`. Pure — no DB round-trip.
+#[tauri::command]
+pub fn generate_ddl(engine: String, req: crate::query::ddl::DdlRequest) -> String {
+    crate::query::ddl::generate(&req, crate::query::ddl::Dialect::from_engine(&engine))
+}
+
 #[derive(Serialize)]
 pub struct EditResult {
     pub rows_affected: u64,
