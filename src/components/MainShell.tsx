@@ -1,12 +1,14 @@
+import { useState } from "react";
 import { Wordmark } from "./Brand";
 import { ThemeToggle } from "./ThemeToggle";
 import { ObjectTree } from "./ObjectTree";
 import { TableView } from "./TableView";
 import { QueryView } from "./QueryView";
 import { ErdView } from "./ErdView";
+import { StructureEditor } from "./StructureEditor";
 import { useConnections } from "../state/connectionStore";
 import { useTabs } from "../state/tabsStore";
-import { disconnect, type ObjectInfo } from "../lib/commands";
+import { disconnect, type Engine, type ObjectInfo } from "../lib/commands";
 
 function findObject(
   schema: ReturnType<typeof useConnections.getState>["schema"],
@@ -21,6 +23,7 @@ export function MainShell() {
   const { active, schema, setActive, setSchema } = useConnections();
   const { tabs, activeKey, openTable, openQuery, openErd, close, setActive: setActiveTab, reset } =
     useTabs();
+  const [showStructure, setShowStructure] = useState(false);
 
   if (!active || !schema) return null;
 
@@ -115,10 +118,25 @@ export function MainShell() {
             >
               + ERD
             </button>
+            <button
+              onClick={() => setShowStructure(true)}
+              className="rounded-md px-2 py-1 text-xs text-primary hover:bg-surface"
+              title="Create a table (structure editor)"
+            >
+              + Table
+            </button>
           </div>
           <div className="min-h-0 flex-1">{renderActive()}</div>
         </main>
       </div>
+      {showStructure && (
+        <StructureEditor
+          connId={active.id}
+          engine={active.engine as Engine}
+          schema={schema}
+          onClose={() => setShowStructure(false)}
+        />
+      )}
     </div>
   );
 }

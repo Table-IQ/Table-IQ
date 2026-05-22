@@ -372,6 +372,51 @@ export async function runScript(id: string, sql: string): Promise<{ rowsAffected
   return { rowsAffected: r.rows_affected };
 }
 
+// ── Structure editor (DDL with migration preview) ──────────────────────────
+export interface ColumnSpec {
+  name: string;
+  data_type: string;
+  nullable: boolean;
+  default: string | null;
+  primary_key: boolean;
+}
+
+export interface TableSpec {
+  schema: string | null;
+  name: string;
+  columns: ColumnSpec[];
+}
+
+/** Mirrors the Rust `DdlRequest` (serde tag = "op"). */
+export type DdlRequest =
+  | { op: "create_table"; table: TableSpec }
+  | { op: "drop_table"; schema: string | null; name: string }
+  | { op: "add_column"; schema: string | null; table: string; column: ColumnSpec }
+  | { op: "drop_column"; schema: string | null; table: string; column: string };
+
+/** Generate the migration SQL for a structure-editor op (preview before applying). */
+export async function generateDdl(engine: Engine, req: DdlRequest): Promise<string> {
+  if (!inTauri()) {
+    // Browser-mode preview so /browse can QA the editor without a backend.
+    if (req.op === "create_table") {
+      const cols = req.table.columns
+        .map(
+          (c) =>
+            `  "${c.name}" ${c.data_type}${c.nullable ? "" : " NOT NULL"}${
+              c.default ? ` DEFAULT ${c.default}` : ""
+            }`,
+        )
+        .join(",\n");
+      const pks = req.table.columns.filter((c) => c.primary_key).map((c) => `"${c.name}"`);
+      const pkLine = pks.length ? `,\n  PRIMARY KEY (${pks.join(", ")})` : "";
+      return `CREATE TABLE "${req.table.name}" (\n${cols}${pkLine}\n);`;
+    }
+    if (req.op === "drop_table") return `DROP TABLE "${req.name}";`;
+    return "-- preview";
+  }
+  return invoke<string>("generate_ddl", { engine, req });
+}
+
 export interface ForeignKey {
   from_table: string;
   from_column: string;
