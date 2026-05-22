@@ -5,12 +5,16 @@ import {
   downloadText,
   exportTable,
   fetchTableWindow,
+  foreignKeys,
   openTable,
   primaryKey,
   type ExportFormat,
+  type ForeignKey,
   type ObjectInfo,
 } from "../lib/commands";
 import { buildEdit } from "../lib/edit";
+import { outgoingForeignKeys } from "../lib/fk";
+import { useTabs } from "../state/tabsStore";
 
 interface Props {
   connId: string;
@@ -23,6 +27,8 @@ export function TableView({ connId, schema, object }: Props) {
   const [pk, setPk] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [fks, setFks] = useState<ForeignKey[]>([]);
+  const openTab = useTabs((s) => s.openTable);
 
   useEffect(() => {
     let cancelled = false;
@@ -36,6 +42,9 @@ export function TableView({ connId, schema, object }: Props) {
     primaryKey(connId, schema, object.name)
       .then((cols) => !cancelled && setPk(cols))
       .catch(() => !cancelled && setPk([]));
+    foreignKeys(connId)
+      .then((all) => !cancelled && setFks(outgoingForeignKeys(all, object.name)))
+      .catch(() => !cancelled && setFks([]));
     return () => {
       cancelled = true;
     };
@@ -92,6 +101,21 @@ export function TableView({ connId, schema, object }: Props) {
           {editable ? "editable" : "read-only" + (pk && pk.length === 0 ? " · no PK" : "")}
         </span>
         {notice && <span className="text-amber-500">{notice}</span>}
+        {fks.length > 0 && (
+          <span className="flex items-center gap-1">
+            <span className="text-[10px] uppercase tracking-widest text-muted">refs</span>
+            {fks.map((fk) => (
+              <button
+                key={`${fk.from_column}->${fk.to_table}`}
+                onClick={() => openTab(schema, fk.to_table)}
+                className="rounded border border-border px-1.5 py-0.5 text-[10px] text-primary hover:bg-primary/10"
+                title={`${fk.from_column} → ${fk.to_table}.${fk.to_column}`}
+              >
+                → {fk.to_table}
+              </button>
+            ))}
+          </span>
+        )}
         <div className="ml-auto flex items-center gap-1">
           {(["csv", "json"] as ExportFormat[]).map((fmt) => (
             <button
