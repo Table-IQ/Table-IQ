@@ -1,0 +1,15 @@
+[package]
+name = "markdown-export"
+version = "0.1.0"
+edition = "2021"
+description = "TableIQ sample plugin: result set → Markdown table (Extism PDK)"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+extism-pdk = "1"
+serde_json = "1"
+
+# Standalone — not part of the src-tauri build (compiles to wasm32).
+[workspace]

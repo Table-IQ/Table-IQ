@@ -5,6 +5,7 @@ import { AiSettings } from "./AiSettings";
 import { PlanView } from "./PlanView";
 import { QueryLibraryPanel } from "./QueryLibraryPanel";
 import { ChartView } from "./ChartView";
+import { PluginsPanel } from "./PluginsPanel";
 import {
   aiEgressPreview,
   aiGenerateSql,
@@ -31,6 +32,7 @@ export function QueryView({ connId }: { connId: string }) {
   const [plan, setPlan] = useState<string | null>(null);
   const [showLibrary, setShowLibrary] = useState(false);
   const [showChart, setShowChart] = useState(false);
+  const [showPlugins, setShowPlugins] = useState(false);
   // AI
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
@@ -190,6 +192,15 @@ export function QueryView({ connId }: { connId: string }) {
           </button>
         )}
         {meta && (
+          <button
+            onClick={() => setShowPlugins(true)}
+            className="rounded-md border border-border px-2 py-1 text-xs hover:bg-surface"
+            title="Run a WASM plugin over this result"
+          >
+            Plugins
+          </button>
+        )}
+        {meta && (
           <span className="flex items-center gap-1">
             {(["csv", "json"] as ExportFormat[]).map((fmt) => (
               <button
@@ -273,6 +284,9 @@ export function QueryView({ connId }: { connId: string }) {
           }}
           onClose={() => setShowLibrary(false)}
         />
+      )}
+      {showPlugins && meta && (
+        <PluginsPanel resultId={meta.resultId} onClose={() => setShowPlugins(false)} />
       )}
       <div className="min-h-0 flex-1">
         {plan !== null ? (

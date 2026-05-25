@@ -372,6 +372,32 @@ export async function runScript(id: string, sql: string): Promise<{ rowsAffected
   return { rowsAffected: r.rows_affected };
 }
 
+// ── WASM plugins (Extism) ──────────────────────────────────────────────────
+export interface PluginInfo {
+  id: string;
+  name: string;
+  description: string;
+  kind: string;
+}
+
+export async function listPlugins(): Promise<PluginInfo[]> {
+  if (!inTauri())
+    return [
+      { id: "markdown-export.wasm", name: "Markdown export", description: "Result set → Markdown table", kind: "exporter" },
+    ];
+  return invoke<PluginInfo[]>("list_plugins");
+}
+
+export async function installSamplePlugin(): Promise<string> {
+  if (!inTauri()) return "(browser mock) markdown-export.wasm";
+  return invoke<string>("install_sample_plugin");
+}
+
+export async function runPluginOnResult(pluginId: string, resultId: string): Promise<string> {
+  if (!inTauri()) return "| id | name |\n| --- | --- |\n| 1 | Ada |\n| 2 | Lin |";
+  return invoke<string>("run_plugin_on_result", { pluginId, resultId });
+}
+
 // ── Schema / result diff ───────────────────────────────────────────────────
 export interface ColumnChange {
   column: string;
