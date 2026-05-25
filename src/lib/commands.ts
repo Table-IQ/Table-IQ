@@ -655,6 +655,25 @@ export async function aiGenerateSql(id: string, prompt: string): Promise<string>
   return invoke<string>("ai_generate_sql", { id, prompt });
 }
 
+/** Explain a query in plain English (returns prose). */
+export async function aiExplainSql(id: string, sql: string): Promise<string> {
+  if (!inTauri())
+    return "This query returns all rows, ordered by amount descending, limited to 10. (mock explanation)";
+  return invoke<string>("ai_explain_sql", { id, sql });
+}
+
+/** Suggest an optimized equivalent query (returns SQL). */
+export async function aiOptimizeSql(id: string, sql: string): Promise<string> {
+  if (!inTauri()) return `${sql.trim()}\n-- optimized (mock)`;
+  return invoke<string>("ai_optimize_sql", { id, sql });
+}
+
+/** Fix a failing query given its error (returns corrected SQL). */
+export async function aiFixSql(id: string, sql: string, error: string): Promise<string> {
+  if (!inTauri()) return "SELECT 1; -- fixed (mock)";
+  return invoke<string>("ai_fix_sql", { id, sql, error });
+}
+
 /** Save text to a file (Blob download — works in the WebView and the browser). */
 export function downloadText(filename: string, text: string, mime = "text/plain") {
   const blob = new Blob([text], { type: mime });

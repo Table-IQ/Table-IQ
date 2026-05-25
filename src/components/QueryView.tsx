@@ -11,7 +11,10 @@ import { useResults } from "../state/resultsStore";
 import { oneLine } from "../lib/history";
 import {
   aiEgressPreview,
+  aiExplainSql,
+  aiFixSql,
   aiGenerateSql,
+  aiOptimizeSql,
   cancelQuery,
   downloadText,
   explainQuery,
@@ -43,6 +46,7 @@ export function QueryView({ connId }: { connId: string }) {
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
   const [egress, setEgress] = useState<string | null>(null);
+  const [explanation, setExplanation] = useState<string | null>(null);
   const [showAiSettings, setShowAiSettings] = useState(false);
 
   const aiPreview = useCallback(async () => {
@@ -63,6 +67,35 @@ export function QueryView({ connId }: { connId: string }) {
       setAiBusy(false);
     }
   }, [connId, aiPrompt]);
+
+  // AI actions over the current editor SQL. Explain → prose panel; optimize/fix → insert SQL.
+  const aiAction = useCallback(
+    async (kind: "explain" | "optimize" | "fix") => {
+      const sql = sqlRef.current;
+      if (!sql.trim()) return;
+      setAiBusy(true);
+      setError(null);
+      setExplanation(null);
+      try {
+        if (kind === "explain") {
+          setExplanation(await aiExplainSql(connId, sql));
+        } else if (kind === "optimize") {
+          const out = await aiOptimizeSql(connId, sql);
+          sqlRef.current = out;
+          editorRef.current?.setText(out);
+        } else {
+          const out = await aiFixSql(connId, sql, error ?? "");
+          sqlRef.current = out;
+          editorRef.current?.setText(out);
+        }
+      } catch (e) {
+        setError(`AI: ${e}`);
+      } finally {
+        setAiBusy(false);
+      }
+    },
+    [connId, error],
+  );
 
   const run = useCallback(async () => {
     setRunning(true);
@@ -269,6 +302,30 @@ export function QueryView({ connId }: { connId: string }) {
           {aiBusy ? "Generating…" : "Generate SQL"}
         </button>
         <button
+          onClick={() => aiAction("explain")}
+          disabled={aiBusy}
+          className="rounded-md border border-border px-2 py-1 text-xs text-muted hover:text-text disabled:opacity-50"
+          title="Explain the editor SQL in plain English"
+        >
+          Explain
+        </button>
+        <button
+          onClick={() => aiAction("optimize")}
+          disabled={aiBusy}
+          className="rounded-md border border-border px-2 py-1 text-xs text-muted hover:text-text disabled:opacity-50"
+          title="Suggest an optimized rewrite (inserts SQL)"
+        >
+          Optimize
+        </button>
+        <button
+          onClick={() => aiAction("fix")}
+          disabled={aiBusy || !error}
+          className="rounded-md border border-border px-2 py-1 text-xs text-muted hover:text-text disabled:opacity-50"
+          title="Fix the last error (inserts corrected SQL)"
+        >
+          Fix
+        </button>
+        <button
           onClick={() => setShowAiSettings(true)}
           className="rounded-md border border-border px-2 py-1 text-xs text-muted hover:text-text"
           title="AI settings"
@@ -276,6 +333,17 @@ export function QueryView({ connId }: { connId: string }) {
           ⚙
         </button>
       </div>
+      {explanation !== null && (
+        <div className="border-b border-border bg-surface px-4 py-2 text-xs">
+          <div className="mb-1 flex items-center justify-between text-muted">
+            <span className="text-[10px] uppercase tracking-widest">AI explanation</span>
+            <button onClick={() => setExplanation(null)} className="hover:text-text">
+              ×
+            </button>
+          </div>
+          <div className="max-h-32 overflow-auto whitespace-pre-wrap text-[12px] text-text">{explanation}</div>
+        </div>
+      )}
       {egress !== null && (
         <div className="border-b border-border bg-surface px-4 py-2 text-xs">
           <div className="mb-1 flex items-center justify-between text-muted">

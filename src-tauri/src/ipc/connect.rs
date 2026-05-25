@@ -877,3 +877,50 @@ pub async fn ai_generate_sql(
     let raw = provider.complete(&system, &user).await?;
     Ok(ai::extract_sql(&raw))
 }
+
+/// Shared setup for AI actions: resolve provider + key (Ollama needs none) and build the schema card.
+async fn ai_setup(state: &ConnState, id: &str) -> Result<(ai::provider::ByokProvider, String), String> {
+    let cfg = ai::load_config();
+    let key = if cfg.provider == "ollama" {
+        String::new()
+    } else {
+        connections::get_password(&ai::key_account(&cfg.provider))
+            .map_err(|_| "No AI API key configured. Add one in AI settings.".to_string())?
+    };
+    let drv = state.session(id)?;
+    let schema = drv.introspect().await.map_err(|e| e.to_string())?;
+    let card = ai::schema_card(&schema);
+    Ok((ai::provider::ByokProvider::new(&cfg.provider, &cfg.model, &key), card))
+}
+
+/// Explain a SQL query in plain English (returns prose).
+#[tauri::command]
+pub async fn ai_explain_sql(state: State<'_, ConnState>, id: String, sql: String) -> Result<String, String> {
+    use ai::provider::LlmProvider;
+    let (provider, card) = ai_setup(&state, &id).await?;
+    let (system, user) = ai::build_explain_prompt(&card, &sql);
+    provider.complete(&system, &user).await
+}
+
+/// Suggest an optimized, equivalent query (returns SQL for the user to review/run).
+#[tauri::command]
+pub async fn ai_optimize_sql(state: State<'_, ConnState>, id: String, sql: String) -> Result<String, String> {
+    use ai::provider::LlmProvider;
+    let (provider, card) = ai_setup(&state, &id).await?;
+    let (system, user) = ai::build_optimize_prompt(&card, &sql);
+    Ok(ai::extract_sql(&provider.complete(&system, &user).await?))
+}
+
+/// Fix a failing query given its error (returns corrected SQL for the user to review/run).
+#[tauri::command]
+pub async fn ai_fix_sql(
+    state: State<'_, ConnState>,
+    id: String,
+    sql: String,
+    error: String,
+) -> Result<String, String> {
+    use ai::provider::LlmProvider;
+    let (provider, card) = ai_setup(&state, &id).await?;
+    let (system, user) = ai::build_fix_prompt(&card, &sql, &error);
+    Ok(ai::extract_sql(&provider.complete(&system, &user).await?))
+}

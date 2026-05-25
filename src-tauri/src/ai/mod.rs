@@ -35,6 +35,36 @@ pub fn build_prompt(card: &str, nl: &str) -> (String, String) {
     (SYSTEM_PROMPT.to_string(), user)
 }
 
+pub const EXPLAIN_SYSTEM: &str =
+    "You are a SQL expert. Explain what the given SQL query does in clear, plain English for a \
+     developer. Be concise. Do not return SQL.";
+
+/// (system, user) for explain-in-plain-English. Pure — unit-tested.
+pub fn build_explain_prompt(card: &str, sql: &str) -> (String, String) {
+    (EXPLAIN_SYSTEM.to_string(), format!("Schema:\n{card}\n\nExplain this query:\n{sql}"))
+}
+
+pub const OPTIMIZE_SYSTEM: &str =
+    "You are a SQL performance expert. Given a schema and a query, return an optimized, equivalent \
+     SQL query that returns the same result set. Return only SQL — no prose, no markdown fences.";
+
+/// (system, user) for optimize/rewrite. Pure — unit-tested.
+pub fn build_optimize_prompt(card: &str, sql: &str) -> (String, String) {
+    (OPTIMIZE_SYSTEM.to_string(), format!("Schema:\n{card}\n\nOptimize this query:\n{sql}\n\nSQL:"))
+}
+
+pub const FIX_SYSTEM: &str =
+    "You are a SQL expert. Given a schema, a failing query, and its error message, return a \
+     corrected SQL query. Return only SQL — no prose, no markdown fences.";
+
+/// (system, user) for fix-this-error. Pure — unit-tested.
+pub fn build_fix_prompt(card: &str, sql: &str, error: &str) -> (String, String) {
+    (
+        FIX_SYSTEM.to_string(),
+        format!("Schema:\n{card}\n\nThis query failed:\n{sql}\n\nError:\n{error}\n\nCorrected SQL:"),
+    )
+}
+
 /// Strip ```sql fences / surrounding prose the model may add, returning bare SQL.
 pub fn extract_sql(raw: &str) -> String {
     let t = raw.trim();
@@ -123,6 +153,22 @@ mod tests {
         assert!(sys.contains("SQL expert"));
         assert!(user.contains("public.users"));
         assert!(user.contains("all users"));
+    }
+
+    #[test]
+    fn explain_optimize_fix_prompts_carry_context() {
+        let card = schema_card(&model());
+        let (es, eu) = build_explain_prompt(&card, "SELECT 1");
+        assert!(es.contains("plain English"));
+        assert!(eu.contains("public.users") && eu.contains("SELECT 1"));
+
+        let (os, ou) = build_optimize_prompt(&card, "SELECT * FROM users");
+        assert!(os.contains("performance"));
+        assert!(ou.contains("Optimize this query") && ou.contains("SELECT * FROM users"));
+
+        let (fs, fu) = build_fix_prompt(&card, "SELCT 1", "syntax error at SELCT");
+        assert!(fs.contains("corrected SQL") || fs.contains("corrected"));
+        assert!(fu.contains("SELCT 1") && fu.contains("syntax error at SELCT"));
     }
 
     #[test]
