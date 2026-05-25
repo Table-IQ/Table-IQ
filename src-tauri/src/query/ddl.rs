@@ -24,7 +24,7 @@ impl Dialect {
     }
 
     /// Quote a SQL identifier (backticks for MySQL, double-quotes elsewhere).
-    fn quote(&self, ident: &str) -> String {
+    pub fn quote(&self, ident: &str) -> String {
         match self {
             Dialect::MySql => format!("`{}`", ident.replace('`', "``")),
             _ => format!("\"{}\"", ident.replace('"', "\"\"")),
@@ -32,7 +32,7 @@ impl Dialect {
     }
 
     /// Qualify `name` with `schema` when the dialect supports schemas (SQLite does not).
-    fn qualified(&self, schema: Option<&str>, name: &str) -> String {
+    pub fn qualified(&self, schema: Option<&str>, name: &str) -> String {
         match (self, schema) {
             (Dialect::Sqlite, _) => self.quote(name),
             (_, Some(s)) if !s.is_empty() => format!("{}.{}", self.quote(s), self.quote(name)),

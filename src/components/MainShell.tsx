@@ -6,6 +6,7 @@ import { TableView } from "./TableView";
 import { QueryView } from "./QueryView";
 import { ErdView } from "./ErdView";
 import { StructureEditor } from "./StructureEditor";
+import { ImportDialog } from "./ImportDialog";
 import { CommandPalette, type Command } from "./CommandPalette";
 import { useConnections } from "../state/connectionStore";
 import { useTabs } from "../state/tabsStore";
@@ -25,6 +26,7 @@ export function MainShell() {
   const { tabs, activeKey, openTable, openQuery, openErd, close, setActive: setActiveTab, reset } =
     useTabs();
   const [showStructure, setShowStructure] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
 
   // Cmd-K / Ctrl-K toggles the command palette.
@@ -167,6 +169,13 @@ export function MainShell() {
             >
               + Table
             </button>
+            <button
+              onClick={() => setShowImport(true)}
+              className="rounded-md px-2 py-1 text-xs text-primary hover:bg-surface"
+              title="Import CSV/JSON into a table"
+            >
+              + Import
+            </button>
           </div>
           <div className="min-h-0 flex-1">{renderActive()}</div>
         </main>
@@ -177,6 +186,14 @@ export function MainShell() {
           engine={active.engine as Engine}
           schema={schema}
           onClose={() => setShowStructure(false)}
+        />
+      )}
+      {showImport && (
+        <ImportDialog
+          connId={active.id}
+          engine={active.engine as Engine}
+          schema={schema}
+          onClose={() => setShowImport(false)}
         />
       )}
       {showPalette && <CommandPalette commands={commands} onClose={() => setShowPalette(false)} />}

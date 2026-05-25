@@ -535,6 +535,58 @@ pub fn generate_ddl(engine: String, req: crate::query::ddl::DdlRequest) -> Strin
     crate::query::ddl::generate(&req, crate::query::ddl::Dialect::from_engine(&engine))
 }
 
+// ── CSV/JSON import ────────────────────────────────────────────────────────
+#[derive(Serialize)]
+pub struct ImportPreview {
+    pub columns: Vec<String>,
+    pub types: Vec<String>,
+    pub rows: Vec<Vec<Option<String>>>,
+}
+
+/// Parse CSV/JSON text into columns + inferred types + rows (for the mapping UI). Pure.
+#[tauri::command]
+pub fn parse_import(text: String, format: String) -> Result<ImportPreview, String> {
+    use crate::query::import;
+    let parsed = match format.as_str() {
+        "json" => import::parse_json(&text)?,
+        _ => import::parse_csv(&text),
+    };
+    let types = (0..parsed.columns.len())
+        .map(|i| {
+            let col: Vec<Option<String>> = parsed.rows.iter().map(|r| r.get(i).cloned().flatten()).collect();
+            import::infer_type(&col).to_string()
+        })
+        .collect();
+    Ok(ImportPreview { columns: parsed.columns, types, rows: parsed.rows })
+}
+
+#[derive(Serialize)]
+pub struct ImportResult {
+    pub inserted: u64,
+}
+
+/// Insert mapped rows into a target table. `columns` are the target column names aligned to each
+/// row in `rows`. The INSERT SQL is built server-side and run via the session driver.
+#[tauri::command]
+pub async fn import_rows(
+    state: State<'_, ConnState>,
+    id: String,
+    engine: String,
+    schema: Option<String>,
+    table: String,
+    columns: Vec<String>,
+    rows: Vec<Vec<Option<String>>>,
+) -> Result<ImportResult, String> {
+    let drv = state.session(&id)?;
+    let dialect = crate::query::ddl::Dialect::from_engine(&engine);
+    let sql = crate::query::import::build_insert_sql(schema.as_deref(), &table, &columns, &rows, dialect);
+    if sql.is_empty() {
+        return Ok(ImportResult { inserted: 0 });
+    }
+    let inserted = drv.run_script(&sql).await.map_err(|e| e.to_string())?;
+    Ok(ImportResult { inserted })
+}
+
 // ── Saved queries + history ────────────────────────────────────────────────
 use crate::library::{HistoryEntry, SavedQuery};
 
