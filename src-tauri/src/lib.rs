@@ -4,6 +4,7 @@ pub mod bench;
 pub mod connections;
 pub mod drivers;
 pub mod ipc;
+pub mod library;
 pub mod query;
 pub mod ssh;
 
@@ -12,8 +13,9 @@ use ipc::connect::{
     disconnect, export_result, export_table, generate_ddl, get_ai_config, get_result_window,
     get_table_window,
     doc_collections, doc_find, explain_query, export_connections, foreign_keys, import_connections,
-    kv_get, kv_scan, list_connections, list_objects, local_llm_available, open_table, primary_key,
-    run_query, run_script, save_ai_config, save_connection, test_connection, ConnState,
+    kv_get, kv_scan, list_connections, list_objects, list_saved_queries, local_llm_available,
+    open_table, primary_key, query_history, run_query, run_script, save_ai_config, save_connection,
+    save_query, delete_saved_query, test_connection, ConnState,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -40,6 +42,10 @@ pub fn run() {
             export_table,
             run_script,
             generate_ddl,
+            list_saved_queries,
+            save_query,
+            delete_saved_query,
+            query_history,
             get_ai_config,
             save_ai_config,
             ai_egress_preview,

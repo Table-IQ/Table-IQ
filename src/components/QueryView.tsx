@@ -3,6 +3,7 @@ import { DataGrid, type GridSource } from "./DataGrid";
 import { SqlEditor, type SqlEditorHandle } from "./SqlEditor";
 import { AiSettings } from "./AiSettings";
 import { PlanView } from "./PlanView";
+import { QueryLibraryPanel } from "./QueryLibraryPanel";
 import {
   aiEgressPreview,
   aiGenerateSql,
@@ -27,6 +28,7 @@ export function QueryView({ connId }: { connId: string }) {
   const runningQueryId = useRef<string | null>(null);
   const [txStatus, setTxStatus] = useState<string | null>(null);
   const [plan, setPlan] = useState<string | null>(null);
+  const [showLibrary, setShowLibrary] = useState(false);
   // AI
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
@@ -166,6 +168,14 @@ export function QueryView({ connId }: { connId: string }) {
         >
           Explain
         </button>
+        <button
+          onClick={() => setShowLibrary(true)}
+          disabled={running}
+          className="rounded-md border border-border px-2 py-1 text-xs hover:bg-surface disabled:opacity-50"
+          title="Saved queries & history"
+        >
+          Saved
+        </button>
         {meta && (
           <span className="flex items-center gap-1">
             {(["csv", "json"] as ExportFormat[]).map((fmt) => (
@@ -241,6 +251,16 @@ export function QueryView({ connId }: { connId: string }) {
         <SqlEditor ref={editorRef} initial={sqlRef.current} onChange={(v) => (sqlRef.current = v)} onRun={run} />
       </div>
       {showAiSettings && <AiSettings onClose={() => setShowAiSettings(false)} />}
+      {showLibrary && (
+        <QueryLibraryPanel
+          currentSql={sqlRef.current}
+          onLoad={(sql) => {
+            sqlRef.current = sql;
+            editorRef.current?.setText(sql);
+          }}
+          onClose={() => setShowLibrary(false)}
+        />
+      )}
       <div className="min-h-0 flex-1">
         {plan !== null ? (
           <div className="flex h-full flex-col">

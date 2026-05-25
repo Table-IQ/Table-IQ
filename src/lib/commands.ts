@@ -372,6 +372,41 @@ export async function runScript(id: string, sql: string): Promise<{ rowsAffected
   return { rowsAffected: r.rows_affected };
 }
 
+// ── Saved queries + history ────────────────────────────────────────────────
+export interface SavedQuery {
+  id: string;
+  name: string;
+  sql: string;
+}
+
+export interface HistoryEntry {
+  sql: string;
+  conn_id: string;
+  ts: number;
+}
+
+export async function listSavedQueries(): Promise<SavedQuery[]> {
+  if (!inTauri())
+    return [{ id: "m1", name: "Recent users", sql: "SELECT * FROM users LIMIT 100;" }];
+  return invoke<SavedQuery[]>("list_saved_queries");
+}
+
+export async function saveQuery(name: string, sql: string, id?: string): Promise<SavedQuery> {
+  if (!inTauri()) return { id: id ?? "m", name, sql };
+  return invoke<SavedQuery>("save_query", { id: id ?? null, name, sql });
+}
+
+export async function deleteSavedQuery(id: string): Promise<void> {
+  if (!inTauri()) return;
+  await invoke("delete_saved_query", { id });
+}
+
+export async function queryHistory(search?: string): Promise<HistoryEntry[]> {
+  if (!inTauri())
+    return [{ sql: "SELECT 1;", conn_id: "m", ts: Math.floor(Date.now() / 1000) }];
+  return invoke<HistoryEntry[]>("query_history", { search: search ?? null });
+}
+
 // ── Structure editor (DDL with migration preview) ──────────────────────────
 export interface ColumnSpec {
   name: string;
