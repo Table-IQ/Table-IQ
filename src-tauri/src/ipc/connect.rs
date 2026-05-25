@@ -13,8 +13,8 @@ use arrow::record_batch::RecordBatch;
 use crate::connections::{self, ConnConfig, ConnStore};
 use crate::drivers::{
     doc_mongo::MongoDriver, kv_redis::RedisDriver, mysql::MySqlDriver, postgres::PgDriver,
-    sqlite::SqliteDriver, CancelToken, DocumentDriver, DriverError, EditSpec, KeyInfo, KvDriver,
-    KvValue, SchemaModel, SqlDriver,
+    sqlite::SqliteDriver, sqlserver::SqlServerDriver, CancelToken, DocumentDriver, DriverError,
+    EditSpec, KeyInfo, KvDriver, KvValue, SchemaModel, SqlDriver,
 };
 use crate::ssh::tunnel::{RemoteTarget, Tunnel};
 use crate::ssh::SshAuth;
@@ -70,6 +70,7 @@ async fn open_driver(cfg: &ConnConfig, pw: &str) -> Result<Arc<dyn SqlDriver>, S
     let drv: Arc<dyn SqlDriver> = match cfg.engine.as_str() {
         "sqlite" => Arc::new(SqliteDriver::connect(&url).await.map_err(|e| e.to_string())?),
         "mysql" => Arc::new(MySqlDriver::connect(&url).await.map_err(|e| e.to_string())?),
+        "sqlserver" => Arc::new(SqlServerDriver::connect(&url).await.map_err(|e| e.to_string())?),
         _ => Arc::new(PgDriver::connect(&url).await.map_err(|e| e.to_string())?),
     };
     Ok(drv)

@@ -5,7 +5,7 @@ import type { SshConfig } from "./ssh";
 export type { SshConfig, SshAuth, SshAuthMode } from "./ssh";
 
 // ── shared types (mirror the Rust serde shapes) ──────────────────────────
-export type Engine = "postgres" | "mysql" | "sqlite" | "redis" | "mongodb";
+export type Engine = "postgres" | "mysql" | "sqlite" | "redis" | "mongodb" | "sqlserver";
 export interface ConnConfig {
   id: string;
   name: string;

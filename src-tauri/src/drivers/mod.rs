@@ -14,6 +14,7 @@ pub mod kv_redis;
 pub mod mysql;
 pub mod postgres;
 pub mod sqlite;
+pub mod sqlserver;
 
 /// How a result is paged from the database into Rust (plan spec #2).
 #[derive(Debug, Clone, Serialize, Deserialize)]
