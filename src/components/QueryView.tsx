@@ -6,6 +6,9 @@ import { PlanView } from "./PlanView";
 import { QueryLibraryPanel } from "./QueryLibraryPanel";
 import { ChartView } from "./ChartView";
 import { PluginsPanel } from "./PluginsPanel";
+import { DiffResultsView } from "./DiffResultsView";
+import { useResults } from "../state/resultsStore";
+import { oneLine } from "../lib/history";
 import {
   aiEgressPreview,
   aiGenerateSql,
@@ -33,6 +36,9 @@ export function QueryView({ connId }: { connId: string }) {
   const [showLibrary, setShowLibrary] = useState(false);
   const [showChart, setShowChart] = useState(false);
   const [showPlugins, setShowPlugins] = useState(false);
+  const [showResultDiff, setShowResultDiff] = useState(false);
+  const recordResult = useResults((s) => s.record);
+  const recentCount = useResults((s) => s.recents.length);
   // AI
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
@@ -68,6 +74,7 @@ export function QueryView({ connId }: { connId: string }) {
     try {
       const m = await runQuery(connId, sqlRef.current, queryId);
       setMeta(m);
+      recordResult({ resultId: m.resultId, label: oneLine(sqlRef.current, 50), ts: Date.now() / 1000 });
     } catch (e) {
       setError(String(e));
       setMeta(null);
@@ -75,7 +82,7 @@ export function QueryView({ connId }: { connId: string }) {
       setRunning(false);
       runningQueryId.current = null;
     }
-  }, [connId]);
+  }, [connId, recordResult]);
 
   const cancel = useCallback(async () => {
     const queryId = runningQueryId.current;
@@ -200,6 +207,15 @@ export function QueryView({ connId }: { connId: string }) {
             Plugins
           </button>
         )}
+        {recentCount >= 2 && (
+          <button
+            onClick={() => setShowResultDiff(true)}
+            className="rounded-md border border-border px-2 py-1 text-xs hover:bg-surface"
+            title="Diff two recent query results"
+          >
+            Diff results
+          </button>
+        )}
         {meta && (
           <span className="flex items-center gap-1">
             {(["csv", "json"] as ExportFormat[]).map((fmt) => (
@@ -288,6 +304,7 @@ export function QueryView({ connId }: { connId: string }) {
       {showPlugins && meta && (
         <PluginsPanel resultId={meta.resultId} onClose={() => setShowPlugins(false)} />
       )}
+      {showResultDiff && <DiffResultsView onClose={() => setShowResultDiff(false)} />}
       <div className="min-h-0 flex-1">
         {plan !== null ? (
           <div className="flex h-full flex-col">

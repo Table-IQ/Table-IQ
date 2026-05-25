@@ -17,6 +17,7 @@ import { outgoingForeignKeys } from "../lib/fk";
 import { useTabs } from "../state/tabsStore";
 import { useConnections } from "../state/connectionStore";
 import { ColumnProfilePanel } from "./ColumnProfilePanel";
+import { AlterTablePanel } from "./AlterTablePanel";
 import type { Engine } from "../lib/commands";
 
 interface Props {
@@ -32,6 +33,7 @@ export function TableView({ connId, schema, object }: Props) {
   const [notice, setNotice] = useState<string | null>(null);
   const [fks, setFks] = useState<ForeignKey[]>([]);
   const [showProfile, setShowProfile] = useState(false);
+  const [showAlter, setShowAlter] = useState(false);
   const openTab = useTabs((s) => s.openTable);
   const engine = useConnections((s) => s.active?.engine ?? "postgres") as Engine;
 
@@ -129,6 +131,15 @@ export function TableView({ connId, schema, object }: Props) {
           >
             Profile
           </button>
+          {object.kind === "Table" && (
+            <button
+              onClick={() => setShowAlter(true)}
+              className="rounded border border-border px-2 py-0.5 text-[10px] text-muted hover:text-text"
+              title="Alter table structure (add/drop columns)"
+            >
+              Structure
+            </button>
+          )}
           {(["csv", "json"] as ExportFormat[]).map((fmt) => (
             <button
               key={fmt}
@@ -154,6 +165,16 @@ export function TableView({ connId, schema, object }: Props) {
           table={object.name}
           columns={object.columns.map((c) => c.name)}
           onClose={() => setShowProfile(false)}
+        />
+      )}
+      {showAlter && (
+        <AlterTablePanel
+          connId={connId}
+          engine={engine}
+          schema={schema}
+          table={object.name}
+          columns={object.columns}
+          onClose={() => setShowAlter(false)}
         />
       )}
     </div>
