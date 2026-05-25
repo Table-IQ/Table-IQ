@@ -536,6 +536,39 @@ pub fn generate_ddl(engine: String, req: crate::query::ddl::DdlRequest) -> Strin
     crate::query::ddl::generate(&req, crate::query::ddl::Dialect::from_engine(&engine))
 }
 
+// ── WASM plugins (Extism) ──────────────────────────────────────────────────
+/// List installed plugins (`.wasm` in the plugins dir).
+#[tauri::command]
+pub fn list_plugins() -> Vec<crate::plugins::PluginInfo> {
+    crate::plugins::list()
+}
+
+/// Install the bundled sample plugin; returns its path.
+#[tauri::command]
+pub fn install_sample_plugin() -> Result<String, String> {
+    crate::plugins::install_sample().map(|p| p.to_string_lossy().to_string())
+}
+
+/// Run a plugin's `transform` over a stored result set; returns the plugin's string output.
+#[tauri::command]
+pub fn run_plugin_on_result(
+    state: State<ConnState>,
+    plugin_id: String,
+    result_id: String,
+) -> Result<String, String> {
+    let batch = state
+        .results
+        .lock()
+        .unwrap()
+        .get(&result_id)
+        .cloned()
+        .ok_or_else(|| "no such result".to_string())?;
+    let columns: Vec<String> = batch.schema().fields().iter().map(|f| f.name().clone()).collect();
+    let rows = batch_to_rows(&batch);
+    let input = serde_json::json!({ "columns": columns, "rows": rows }).to_string();
+    crate::plugins::run(&plugin_id, &input)
+}
+
 // ── Schema / result diff ───────────────────────────────────────────────────
 /// Introspect a connection using its live session if connected, else a transient SQL connection
 /// (saved config + keychain password; no SSH). SQL engines only.

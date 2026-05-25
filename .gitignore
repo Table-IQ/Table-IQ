@@ -25,3 +25,6 @@ dist-ssr/
 /bench/data/
 *.bench.json
 .gstack/
+
+# WASM plugin build artifacts
+plugins/*/target/
