@@ -372,6 +372,38 @@ export async function runScript(id: string, sql: string): Promise<{ rowsAffected
   return { rowsAffected: r.rows_affected };
 }
 
+// ── CSV/JSON import ────────────────────────────────────────────────────────
+export interface ImportPreview {
+  columns: string[];
+  types: string[];
+  rows: (string | null)[][];
+}
+
+export async function parseImport(text: string, format: "csv" | "json"): Promise<ImportPreview> {
+  if (!inTauri())
+    return {
+      columns: ["id", "name"],
+      types: ["bigint", "text"],
+      rows: [
+        ["1", "Ada"],
+        ["2", null],
+      ],
+    };
+  return invoke<ImportPreview>("parse_import", { text, format });
+}
+
+export async function importRows(
+  id: string,
+  engine: Engine,
+  schema: string | null,
+  table: string,
+  columns: string[],
+  rows: (string | null)[][],
+): Promise<{ inserted: number }> {
+  if (!inTauri()) return { inserted: rows.length };
+  return invoke<{ inserted: number }>("import_rows", { id, engine, schema, table, columns, rows });
+}
+
 // ── Saved queries + history ────────────────────────────────────────────────
 export interface SavedQuery {
   id: string;
