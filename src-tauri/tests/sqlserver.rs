@@ -1,13 +1,14 @@
-//! Slice 14 integration: SQL Server (tiberius) driver against a live azure-sql-edge container.
-//! Gated on TIQ_MSSQL_URL (an ADO connection string):
+//! Slice 14/15 integration: SQL Server (tiberius) driver against a live azure-sql-edge container.
+//! Browse/query/introspect/PK/row-estimate + inline-edit round-trip, in one sequential test (the
+//! two halves do DDL on the same DB, so they must not run concurrently). Gated on TIQ_MSSQL_URL:
 //!   TIQ_MSSQL_URL="Server=tcp:127.0.0.1,51433;User Id=sa;Password=TableIQ_pw1;Database=master;TrustServerCertificate=true;Encrypt=false" \
 //!     cargo test --test sqlserver -- --nocapture
 
 use arrow::array::StringArray;
-use tableiq_lib::drivers::{sqlserver::SqlServerDriver, SqlDriver};
+use tableiq_lib::drivers::{sqlserver::SqlServerDriver, EditSpec, SqlDriver};
 
 #[tokio::test]
-async fn sqlserver_browse_and_query() {
+async fn sqlserver_driver_browse_query_edit() {
     let Ok(ado) = std::env::var("TIQ_MSSQL_URL") else {
         eprintln!("skip: no TIQ_MSSQL_URL");
         return;
@@ -56,6 +57,28 @@ async fn sqlserver_browse_and_query() {
     // Row estimate from sys.partitions.
     let est = drv.row_estimate("dbo", "tiq_demo").await.expect("estimate");
     assert!(est >= 3, "estimate {est} should be >= 3");
+
+    // ── Inline-edit round-trip (Slice 15) ──
+    // Optimistic edit: name 'Ada' → 'Grace' for id=1.
+    let edit = EditSpec {
+        pk: vec![("id".into(), Some("1".into()))],
+        column: "name".into(),
+        new_value: Some("Grace".into()),
+        orig_value: Some("Ada".into()),
+    };
+    assert_eq!(drv.apply_edit("dbo", "tiq_demo", &edit).await.expect("edit"), 1, "one row updated");
+    let after = drv.run_query("SELECT name FROM dbo.tiq_demo WHERE id = 1", 10).await.expect("read");
+    let n2 = after.batch.column(0).as_any().downcast_ref::<StringArray>().unwrap();
+    assert_eq!(n2.value(0), "Grace");
+
+    // Stale original value matches nothing (optimistic-concurrency conflict → 0 rows).
+    let stale = EditSpec {
+        pk: vec![("id".into(), Some("1".into()))],
+        column: "name".into(),
+        new_value: Some("X".into()),
+        orig_value: Some("Ada".into()), // already 'Grace' now
+    };
+    assert_eq!(drv.apply_edit("dbo", "tiq_demo", &stale).await.expect("stale"), 0, "stale edit = conflict");
 
     drv.run_script("DROP TABLE dbo.tiq_demo;").await.ok();
 }
