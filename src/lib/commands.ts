@@ -372,6 +372,39 @@ export async function runScript(id: string, sql: string): Promise<{ rowsAffected
   return { rowsAffected: r.rows_affected };
 }
 
+// ── Column profiling ───────────────────────────────────────────────────────
+export interface ColumnProfile {
+  total: number;
+  nulls: number;
+  distinct: number;
+  min: string | null;
+  max: string | null;
+  histogram: [string | null, number][];
+}
+
+export async function profileColumn(
+  id: string,
+  engine: Engine,
+  schema: string | null,
+  table: string,
+  column: string,
+): Promise<ColumnProfile> {
+  if (!inTauri())
+    return {
+      total: 100,
+      nulls: 5,
+      distinct: 80,
+      min: "1",
+      max: "100",
+      histogram: [
+        ["alpha", 30],
+        ["beta", 20],
+        [null, 5],
+      ],
+    };
+  return invoke<ColumnProfile>("profile_column", { id, engine, schema, table, column });
+}
+
 // ── CSV/JSON import ────────────────────────────────────────────────────────
 export interface ImportPreview {
   columns: string[];

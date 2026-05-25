@@ -15,6 +15,9 @@ import {
 import { buildEdit } from "../lib/edit";
 import { outgoingForeignKeys } from "../lib/fk";
 import { useTabs } from "../state/tabsStore";
+import { useConnections } from "../state/connectionStore";
+import { ColumnProfilePanel } from "./ColumnProfilePanel";
+import type { Engine } from "../lib/commands";
 
 interface Props {
   connId: string;
@@ -28,7 +31,9 @@ export function TableView({ connId, schema, object }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [fks, setFks] = useState<ForeignKey[]>([]);
+  const [showProfile, setShowProfile] = useState(false);
   const openTab = useTabs((s) => s.openTable);
+  const engine = useConnections((s) => s.active?.engine ?? "postgres") as Engine;
 
   useEffect(() => {
     let cancelled = false;
@@ -117,6 +122,13 @@ export function TableView({ connId, schema, object }: Props) {
           </span>
         )}
         <div className="ml-auto flex items-center gap-1">
+          <button
+            onClick={() => setShowProfile(true)}
+            className="rounded border border-border px-2 py-0.5 text-[10px] text-muted hover:text-text"
+            title="Profile a column (counts, distinct, min/max, histogram)"
+          >
+            Profile
+          </button>
           {(["csv", "json"] as ExportFormat[]).map((fmt) => (
             <button
               key={fmt}
@@ -134,6 +146,16 @@ export function TableView({ connId, schema, object }: Props) {
       <div className="min-h-0 flex-1">
         <DataGrid source={source} onEdit={editable ? onEdit : undefined} />
       </div>
+      {showProfile && (
+        <ColumnProfilePanel
+          connId={connId}
+          engine={engine}
+          schema={schema}
+          table={object.name}
+          columns={object.columns.map((c) => c.name)}
+          onClose={() => setShowProfile(false)}
+        />
+      )}
     </div>
   );
 }
