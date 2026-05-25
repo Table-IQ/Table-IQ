@@ -535,6 +535,67 @@ pub fn generate_ddl(engine: String, req: crate::query::ddl::DdlRequest) -> Strin
     crate::query::ddl::generate(&req, crate::query::ddl::Dialect::from_engine(&engine))
 }
 
+// ── Column profiling ───────────────────────────────────────────────────────
+/// Read one cell from an all-Utf8 result batch (the shape `run_query` returns).
+fn text_cell(batch: &RecordBatch, col: &str, row: usize) -> Option<String> {
+    use arrow::array::{Array, StringArray};
+    let idx = batch.schema().index_of(col).ok()?;
+    let arr = batch.column(idx).as_any().downcast_ref::<StringArray>()?;
+    if row >= arr.len() || arr.is_null(row) {
+        None
+    } else {
+        Some(arr.value(row).to_string())
+    }
+}
+
+#[derive(Serialize)]
+pub struct ColumnProfile {
+    pub total: i64,
+    pub nulls: i64,
+    pub distinct: i64,
+    pub min: Option<String>,
+    pub max: Option<String>,
+    /// Top values by frequency: (value-or-null, count). `null` value = SQL NULL group.
+    pub histogram: Vec<(Option<String>, i64)>,
+}
+
+/// Profile a column: counts, distinct, min/max, and a top-value histogram.
+#[tauri::command]
+pub async fn profile_column(
+    state: State<'_, ConnState>,
+    id: String,
+    engine: String,
+    schema: Option<String>,
+    table: String,
+    column: String,
+) -> Result<ColumnProfile, String> {
+    let drv = state.session(&id)?;
+    let d = crate::query::ddl::Dialect::from_engine(&engine);
+    let (agg_sql, hist_sql) = crate::query::profile::build(d, schema.as_deref(), &table, &column);
+
+    let agg = drv.run_query(&agg_sql, 1).await.map_err(|e| e.to_string())?;
+    let to_i64 = |b: &RecordBatch, c: &str| text_cell(b, c, 0).and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+    let total = to_i64(&agg.batch, "total");
+    let non_null = to_i64(&agg.batch, "non_null");
+
+    let hist_qr = drv.run_query(&hist_sql, 50).await.map_err(|e| e.to_string())?;
+    let mut histogram = Vec::new();
+    for r in 0..hist_qr.batch.num_rows() {
+        let value = text_cell(&hist_qr.batch, "value", r);
+        let freq = text_cell(&hist_qr.batch, "freq", r).and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+        histogram.push((value, freq));
+    }
+
+    Ok(ColumnProfile {
+        total,
+        nulls: total - non_null,
+        distinct: to_i64(&agg.batch, "distinct_count"),
+        min: text_cell(&agg.batch, "min_val", 0),
+        max: text_cell(&agg.batch, "max_val", 0),
+        histogram,
+    })
+}
+
 // ── CSV/JSON import ────────────────────────────────────────────────────────
 #[derive(Serialize)]
 pub struct ImportPreview {

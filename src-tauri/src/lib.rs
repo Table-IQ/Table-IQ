@@ -14,9 +14,9 @@ use ipc::connect::{
     get_table_window,
     doc_collections, doc_find, explain_query, export_connections, foreign_keys, import_connections,
     import_rows, kv_get, kv_scan, list_connections, list_objects, list_saved_queries,
-    local_llm_available, open_table, parse_import, primary_key, query_history, run_query,
-    run_script, save_ai_config, save_connection, save_query, delete_saved_query, test_connection,
-    ConnState,
+    local_llm_available, open_table, parse_import, primary_key, profile_column, query_history,
+    run_query, run_script, save_ai_config, save_connection, save_query, delete_saved_query,
+    test_connection, ConnState,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -49,6 +49,7 @@ pub fn run() {
             query_history,
             parse_import,
             import_rows,
+            profile_column,
             get_ai_config,
             save_ai_config,
             ai_egress_preview,
