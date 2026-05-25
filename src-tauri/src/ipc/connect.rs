@@ -31,6 +31,8 @@ pub struct ConnState {
     tunnels: Mutex<HashMap<String, Tunnel>>,
     /// In-flight query cancel tokens keyed by client-supplied query id (plan spec #6).
     cancels: Mutex<HashMap<String, CancelToken>>,
+    /// Saved queries + searchable run history (persisted JSON).
+    library: Mutex<crate::library::QueryLibrary>,
 }
 
 /// If `cfg` has SSH enabled, open a tunnel to the bastion forwarding to the remote DB and return
@@ -83,6 +85,7 @@ impl ConnState {
             results: Mutex::new(HashMap::new()),
             tunnels: Mutex::new(HashMap::new()),
             cancels: Mutex::new(HashMap::new()),
+            library: Mutex::new(crate::library::QueryLibrary::load()),
         }
     }
 
@@ -363,6 +366,16 @@ pub async fn run_query(
         DriverError::Cancelled => "Query cancelled".to_string(),
         other => other.to_string(),
     })?;
+    // Record the successful run in searchable history (best-effort persist).
+    {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let mut lib = state.library.lock().unwrap();
+        lib.record(crate::library::HistoryEntry { sql: sql.clone(), conn_id: id.clone(), ts });
+        let _ = lib.save();
+    }
     let columns = qr.batch.schema().fields().iter().map(|f| f.name().clone()).collect();
     let row_count = qr.batch.num_rows();
     let result_id = uuid::Uuid::new_v4().to_string();
@@ -520,6 +533,46 @@ pub async fn explain_query(
 #[tauri::command]
 pub fn generate_ddl(engine: String, req: crate::query::ddl::DdlRequest) -> String {
     crate::query::ddl::generate(&req, crate::query::ddl::Dialect::from_engine(&engine))
+}
+
+// ── Saved queries + history ────────────────────────────────────────────────
+use crate::library::{HistoryEntry, SavedQuery};
+
+#[tauri::command]
+pub fn list_saved_queries(state: State<ConnState>) -> Vec<SavedQuery> {
+    state.library.lock().unwrap().saved.clone()
+}
+
+/// Save (or update) a named query. Empty `id` mints a new one.
+#[tauri::command]
+pub fn save_query(
+    state: State<ConnState>,
+    id: Option<String>,
+    name: String,
+    sql: String,
+) -> Result<SavedQuery, String> {
+    let q = SavedQuery {
+        id: id.filter(|s| !s.is_empty()).unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+        name,
+        sql,
+    };
+    let mut lib = state.library.lock().unwrap();
+    lib.upsert_saved(q.clone());
+    lib.save()?;
+    Ok(q)
+}
+
+#[tauri::command]
+pub fn delete_saved_query(state: State<ConnState>, id: String) -> Result<(), String> {
+    let mut lib = state.library.lock().unwrap();
+    lib.remove_saved(&id);
+    lib.save()
+}
+
+/// Searchable run history (case-insensitive substring, newest first; empty = all).
+#[tauri::command]
+pub fn query_history(state: State<ConnState>, search: Option<String>) -> Vec<HistoryEntry> {
+    state.library.lock().unwrap().search_history(&search.unwrap_or_default())
 }
 
 #[derive(Serialize)]
