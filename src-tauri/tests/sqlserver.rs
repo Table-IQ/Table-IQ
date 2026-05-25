@@ -80,5 +80,12 @@ async fn sqlserver_driver_browse_query_edit() {
     };
     assert_eq!(drv.apply_edit("dbo", "tiq_demo", &stale).await.expect("stale"), 0, "stale edit = conflict");
 
+    // ── Windowed cursor (Slice 19): page 3 rows at 2/page → 2, 1, 0 ──
+    let cur = drv.open_cursor("SELECT * FROM dbo.tiq_demo", 2).await.expect("open_cursor");
+    assert_eq!(drv.fetch_next(&cur, 2).await.expect("page1").num_rows(), 2);
+    assert_eq!(drv.fetch_next(&cur, 2).await.expect("page2").num_rows(), 1);
+    assert_eq!(drv.fetch_next(&cur, 2).await.expect("page3").num_rows(), 0);
+    drv.close_cursor(&cur).await.expect("close_cursor");
+
     drv.run_script("DROP TABLE dbo.tiq_demo;").await.ok();
 }
