@@ -22,6 +22,7 @@ const DEFAULT_PORT: Record<string, number> = {
   sqlite: 0,
   redis: 6379,
   mongodb: 27017,
+  sqlserver: 1433,
 };
 
 function blankConfig(): ConnConfig {
@@ -188,6 +189,7 @@ export function ConnectionManager() {
             >
               <option value="postgres">PostgreSQL</option>
               <option value="mysql">MySQL / MariaDB</option>
+              <option value="sqlserver">SQL Server</option>
               <option value="sqlite">SQLite</option>
               <option value="redis">Redis</option>
               <option value="mongodb">MongoDB</option>
