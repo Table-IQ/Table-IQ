@@ -4,6 +4,7 @@ import { SqlEditor, type SqlEditorHandle } from "./SqlEditor";
 import { AiSettings } from "./AiSettings";
 import { PlanView } from "./PlanView";
 import { QueryLibraryPanel } from "./QueryLibraryPanel";
+import { ChartView } from "./ChartView";
 import {
   aiEgressPreview,
   aiGenerateSql,
@@ -29,6 +30,7 @@ export function QueryView({ connId }: { connId: string }) {
   const [txStatus, setTxStatus] = useState<string | null>(null);
   const [plan, setPlan] = useState<string | null>(null);
   const [showLibrary, setShowLibrary] = useState(false);
+  const [showChart, setShowChart] = useState(false);
   // AI
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
@@ -177,6 +179,17 @@ export function QueryView({ connId }: { connId: string }) {
           Saved
         </button>
         {meta && (
+          <button
+            onClick={() => setShowChart((v) => !v)}
+            className={`rounded-md border px-2 py-1 text-xs hover:bg-surface ${
+              showChart ? "border-primary text-primary" : "border-border"
+            }`}
+            title="Quick chart of the result"
+          >
+            Chart
+          </button>
+        )}
+        {meta && (
           <span className="flex items-center gap-1">
             {(["csv", "json"] as ExportFormat[]).map((fmt) => (
               <button
@@ -274,6 +287,8 @@ export function QueryView({ connId }: { connId: string }) {
               <PlanView json={plan} />
             </div>
           </div>
+        ) : showChart && meta && source ? (
+          <ChartView resultId={meta.resultId} columns={meta.columns} totalRows={meta.rowCount} />
         ) : source ? (
           <DataGrid source={source} />
         ) : (
