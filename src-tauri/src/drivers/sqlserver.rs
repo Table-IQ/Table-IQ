@@ -207,8 +207,38 @@ impl SqlDriver for SqlServerDriver {
         Ok(rows.iter().filter_map(|r| r.get::<&str, _>(0).map(|s| s.to_string())).collect())
     }
 
-    async fn apply_edit(&self, _schema: &str, _table: &str, _edit: &EditSpec) -> DResult<u64> {
-        Err(DriverError::NotImplemented)
+    async fn apply_edit(&self, schema: &str, table: &str, edit: &EditSpec) -> DResult<u64> {
+        // Optimistic-concurrency UPDATE: SET col = @P1 WHERE pk = … AND null-safe(col, orig).
+        // SQL Server has no IS NOT DISTINCT FROM, so use the (= OR both-NULL) idiom.
+        let col = quote_ident(&edit.column);
+        let mut wheres: Vec<std::string::String> = Vec::new();
+        let mut p = 2; // @P1 is the new value
+        for (name, _) in &edit.pk {
+            wheres.push(format!("{} = @P{}", quote_ident(name), p));
+            p += 1;
+        }
+        wheres.push(format!("({col} = @P{p} OR ({col} IS NULL AND @P{p} IS NULL))"));
+        let sql = format!(
+            "UPDATE {}.{} SET {} = @P1 WHERE {}",
+            quote_ident(schema),
+            quote_ident(table),
+            col,
+            wheres.join(" AND ")
+        );
+
+        // Params in @P order: new_value, pk values…, orig_value. Values carried as text;
+        // SQL Server implicitly converts to the target column type (display-first design).
+        let mut owned: Vec<Option<std::string::String>> = Vec::new();
+        owned.push(edit.new_value.clone());
+        for (_, v) in &edit.pk {
+            owned.push(v.clone());
+        }
+        owned.push(edit.orig_value.clone());
+        let params: Vec<&dyn tiberius::ToSql> = owned.iter().map(|o| o as &dyn tiberius::ToSql).collect();
+
+        let mut c = self.client.lock().await;
+        let res = c.execute(sql, &params).await.map_err(db)?;
+        Ok(res.total())
     }
 
     async fn run_script(&self, sql: &str) -> DResult<u64> {
