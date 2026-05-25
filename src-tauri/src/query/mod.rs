@@ -1,4 +1,5 @@
 pub mod ddl;
+pub mod diff;
 pub mod export;
 pub mod import;
 pub mod profile;

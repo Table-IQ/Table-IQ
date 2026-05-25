@@ -372,6 +372,51 @@ export async function runScript(id: string, sql: string): Promise<{ rowsAffected
   return { rowsAffected: r.rows_affected };
 }
 
+// ── Schema / result diff ───────────────────────────────────────────────────
+export interface ColumnChange {
+  column: string;
+  from: string;
+  to: string;
+}
+export interface TableDiff {
+  table: string;
+  added_columns: string[];
+  removed_columns: string[];
+  changed_columns: ColumnChange[];
+}
+export interface SchemaDiff {
+  added_tables: string[];
+  removed_tables: string[];
+  changed_tables: TableDiff[];
+}
+
+export async function diffSchemas(idA: string, idB: string): Promise<SchemaDiff> {
+  if (!inTauri())
+    return {
+      added_tables: ["public.orders"],
+      removed_tables: ["public.legacy"],
+      changed_tables: [
+        {
+          table: "public.users",
+          added_columns: ["email text NOT NULL"],
+          removed_columns: [],
+          changed_columns: [{ column: "id", from: "int NOT NULL", to: "bigint NOT NULL" }],
+        },
+      ],
+    };
+  return invoke<SchemaDiff>("diff_schemas", { idA, idB });
+}
+
+export interface RowDiff {
+  added: (string | null)[][];
+  removed: (string | null)[][];
+}
+
+export async function diffResults(resultA: string, resultB: string): Promise<RowDiff> {
+  if (!inTauri()) return { added: [["3", "new"]], removed: [["1", "old"]] };
+  return invoke<RowDiff>("diff_results", { resultA, resultB });
+}
+
 // ── Column profiling ───────────────────────────────────────────────────────
 export interface ColumnProfile {
   total: number;

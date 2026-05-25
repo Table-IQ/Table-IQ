@@ -535,6 +535,78 @@ pub fn generate_ddl(engine: String, req: crate::query::ddl::DdlRequest) -> Strin
     crate::query::ddl::generate(&req, crate::query::ddl::Dialect::from_engine(&engine))
 }
 
+// ── Schema / result diff ───────────────────────────────────────────────────
+/// Introspect a connection using its live session if connected, else a transient SQL connection
+/// (saved config + keychain password; no SSH). SQL engines only.
+async fn introspect_any(state: &ConnState, id: &str) -> Result<SchemaModel, String> {
+    if let Ok(drv) = state.session(id) {
+        return drv.introspect().await.map_err(|e| e.to_string());
+    }
+    let cfg = state
+        .store
+        .lock()
+        .unwrap()
+        .connections
+        .iter()
+        .find(|c| c.id == id)
+        .cloned()
+        .ok_or_else(|| "unknown connection".to_string())?;
+    if matches!(cfg.engine.as_str(), "redis" | "mongodb") {
+        return Err("schema diff supports SQL connections only".into());
+    }
+    let pw = if cfg.engine == "sqlite" {
+        String::new()
+    } else {
+        connections::get_password(id).unwrap_or_default()
+    };
+    let drv = open_driver(&cfg, &pw).await?;
+    drv.introspect().await.map_err(|e| e.to_string())
+}
+
+/// Diff two connections' schemas (a = left/old, b = right/new).
+#[tauri::command]
+pub async fn diff_schemas(
+    state: State<'_, ConnState>,
+    id_a: String,
+    id_b: String,
+) -> Result<crate::query::diff::SchemaDiff, String> {
+    let a = introspect_any(&state, &id_a).await?;
+    let b = introspect_any(&state, &id_b).await?;
+    Ok(crate::query::diff::diff_schema(&a, &b))
+}
+
+/// Convert an all-Utf8 result batch to nullable string rows.
+fn batch_to_rows(batch: &RecordBatch) -> Vec<Vec<Option<String>>> {
+    use arrow::array::{Array, StringArray};
+    let cols: Vec<Option<&StringArray>> = (0..batch.num_columns())
+        .map(|i| batch.column(i).as_any().downcast_ref::<StringArray>())
+        .collect();
+    (0..batch.num_rows())
+        .map(|r| {
+            cols.iter()
+                .map(|a| a.and_then(|arr| if arr.is_null(r) { None } else { Some(arr.value(r).to_string()) }))
+                .collect()
+        })
+        .collect()
+}
+
+/// Diff two stored result sets by full-row equality.
+#[tauri::command]
+pub fn diff_results(
+    state: State<ConnState>,
+    result_a: String,
+    result_b: String,
+) -> Result<crate::query::diff::RowDiff, String> {
+    let (a, b) = {
+        let r = state.results.lock().unwrap();
+        (
+            r.get(&result_a).cloned().ok_or_else(|| "no such result A".to_string())?,
+            r.get(&result_b).cloned().ok_or_else(|| "no such result B".to_string())?,
+        )
+    };
+    Ok(crate::query::diff::diff_rows(&batch_to_rows(&a), &batch_to_rows(&b)))
+}
+
 // ── Column profiling ───────────────────────────────────────────────────────
 /// Read one cell from an all-Utf8 result batch (the shape `run_query` returns).
 fn text_cell(batch: &RecordBatch, col: &str, row: usize) -> Option<String> {
