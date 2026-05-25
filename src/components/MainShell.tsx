@@ -7,6 +7,7 @@ import { QueryView } from "./QueryView";
 import { ErdView } from "./ErdView";
 import { StructureEditor } from "./StructureEditor";
 import { ImportDialog } from "./ImportDialog";
+import { DiffView } from "./DiffView";
 import { CommandPalette, type Command } from "./CommandPalette";
 import { useConnections } from "../state/connectionStore";
 import { useTabs } from "../state/tabsStore";
@@ -27,6 +28,7 @@ export function MainShell() {
     useTabs();
   const [showStructure, setShowStructure] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [showDiff, setShowDiff] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
 
   // Cmd-K / Ctrl-K toggles the command palette.
@@ -176,6 +178,13 @@ export function MainShell() {
             >
               + Import
             </button>
+            <button
+              onClick={() => setShowDiff(true)}
+              className="rounded-md px-2 py-1 text-xs text-primary hover:bg-surface"
+              title="Compare this schema against another connection"
+            >
+              + Diff
+            </button>
           </div>
           <div className="min-h-0 flex-1">{renderActive()}</div>
         </main>
@@ -195,6 +204,9 @@ export function MainShell() {
           schema={schema}
           onClose={() => setShowImport(false)}
         />
+      )}
+      {showDiff && (
+        <DiffView connId={active.id} connName={active.name} onClose={() => setShowDiff(false)} />
       )}
       {showPalette && <CommandPalette commands={commands} onClose={() => setShowPalette(false)} />}
     </div>
