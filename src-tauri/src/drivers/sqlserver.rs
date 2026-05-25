@@ -2,7 +2,9 @@
 //! Utf8 (consistent with the other drivers). A single pinned connection behind an async mutex —
 //! pooling/cancellation are follow-ups. Inline edit is not yet implemented (browse + query + DDL).
 
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 
 use arrow::array::{ArrayRef, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
@@ -48,8 +50,15 @@ fn cell_to_string(cd: &ColumnData) -> Option<String> {
     }
 }
 
+/// Client-side cursor state: the wrapped query + how far we've paged.
+struct CursorState {
+    sql: String,
+    offset: usize,
+}
+
 pub struct SqlServerDriver {
     client: Mutex<Conn>,
+    cursors: StdMutex<HashMap<String, CursorState>>,
 }
 
 impl SqlServerDriver {
@@ -59,7 +68,7 @@ impl SqlServerDriver {
         let tcp = TcpStream::connect(config.get_addr()).await.map_err(db)?;
         tcp.set_nodelay(true).ok();
         let client = Client::connect(config, tcp.compat_write()).await.map_err(db)?;
-        Ok(Self { client: Mutex::new(client) })
+        Ok(Self { client: Mutex::new(client), cursors: StdMutex::new(HashMap::new()) })
     }
 
     /// Run `sql` and return (column names, column-major stringified data).
@@ -81,8 +90,12 @@ impl SqlServerDriver {
     }
 }
 
-/// Build an all-Utf8 batch from column-major string data.
+/// Build an all-Utf8 batch from column-major string data. An empty result (e.g. end-of-cursor)
+/// has no column metadata, so return a 0-row / 0-column batch rather than erroring.
 fn to_batch(columns: &[std::string::String], data: &[Vec<Option<std::string::String>>]) -> DResult<RecordBatch> {
+    if columns.is_empty() {
+        return Ok(RecordBatch::new_empty(Arc::new(Schema::empty())));
+    }
     let mut fields = Vec::with_capacity(columns.len());
     let mut arrays: Vec<ArrayRef> = Vec::with_capacity(columns.len());
     for (i, c) in columns.iter().enumerate() {
@@ -95,13 +108,43 @@ fn to_batch(columns: &[std::string::String], data: &[Vec<Option<std::string::Str
 
 #[async_trait]
 impl SqlDriver for SqlServerDriver {
-    async fn open_cursor(&self, _sql: &str, _page_size: usize) -> DResult<CursorId> {
-        Err(DriverError::NotImplemented)
+    async fn open_cursor(&self, sql: &str, _page_size: usize) -> DResult<CursorId> {
+        let id = format!(
+            "mssql-cur-{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        self.cursors
+            .lock()
+            .unwrap()
+            .insert(id.clone(), CursorState { sql: sql.to_string(), offset: 0 });
+        Ok(CursorId(id))
     }
-    async fn fetch_next(&self, _c: &CursorId, _n: usize) -> DResult<RecordBatch> {
-        Err(DriverError::NotImplemented)
+
+    async fn fetch_next(&self, cursor: &CursorId, n: usize) -> DResult<RecordBatch> {
+        let (sql, offset) = {
+            let map = self.cursors.lock().unwrap();
+            let s = map.get(&cursor.0).ok_or_else(|| DriverError::Db("unknown cursor".into()))?;
+            (s.sql.clone(), s.offset)
+        };
+        // Stable paging over an arbitrary query via OFFSET/FETCH (requires an ORDER BY).
+        let q = format!(
+            "SELECT * FROM ({sql}) AS _q ORDER BY (SELECT NULL) OFFSET {offset} ROWS FETCH NEXT {n} ROWS ONLY"
+        );
+        let (cols, d) = self.query_text(&q).await?;
+        let got = d.first().map(|c| c.len()).unwrap_or(0);
+        if got > 0 {
+            if let Some(s) = self.cursors.lock().unwrap().get_mut(&cursor.0) {
+                s.offset += got;
+            }
+        }
+        to_batch(&cols, &d)
     }
-    async fn close_cursor(&self, _c: &CursorId) -> DResult<()> {
+
+    async fn close_cursor(&self, cursor: &CursorId) -> DResult<()> {
+        self.cursors.lock().unwrap().remove(&cursor.0);
         Ok(())
     }
 
