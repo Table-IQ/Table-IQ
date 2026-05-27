@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { Wordmark } from "./Brand";
 import { ThemeToggle } from "./ThemeToggle";
 import { Onboarding } from "./Onboarding";
-import { ColorDot } from "./ui/Chip";
 import { IconExport, IconImport, IconPlus } from "./ui/Icon";
 import {
   connect,
@@ -70,6 +69,9 @@ export function ConnectionManager() {
     kind: "idle",
     msg: "",
   });
+  // List-first design: the form is hidden until the user picks Edit/New.
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [search, setSearch] = useState("");
 
   const ssh: SshConfig = form.ssh ?? defaultSshConfig();
   const setSsh = (next: Partial<SshConfig>) =>
@@ -131,34 +133,58 @@ export function ConnectionManager() {
   const field =
     "w-full rounded-md border border-border bg-bg px-2.5 py-1.5 text-sm text-text placeholder:text-muted focus:border-primary focus:outline-none";
 
+  const filteredSaved = saved.filter((c) => {
+    if (!search.trim()) return true;
+    const q = search.toLowerCase();
+    return (
+      c.name.toLowerCase().includes(q) ||
+      c.engine.toLowerCase().includes(q) ||
+      c.host.toLowerCase().includes(q) ||
+      c.database.toLowerCase().includes(q)
+    );
+  });
+
+  const openSheet = (c: ConnConfig) => {
+    loadInto(c);
+    setSheetOpen(true);
+  };
+
   return (
     <div className="flex h-full flex-col">
+      {/* Minimal native-style titlebar — reserves traffic-light space and hosts the
+          theme toggle. The hero lives in the main body, not here. */}
       <header
-        className="tiq-titlebar-drag flex shrink-0 items-center gap-3 border-b border-border bg-surface pl-[88px] pr-3"
+        className="tiq-titlebar-drag flex shrink-0 items-center gap-3 border-b border-border bg-surface pl-[78px] pr-3"
         style={{ height: "var(--header-h)" }}
       >
-        <Wordmark className="text-sm" />
-        <span className="text-xs text-muted">Connections</span>
+        <Wordmark className="text-[12px]" />
+        <span className="text-[11px] text-muted">Connections</span>
         <div className="ml-auto flex items-center gap-1">
           <ThemeToggle />
         </div>
       </header>
 
-      <div className="mx-auto flex w-full max-w-5xl flex-1 gap-6 overflow-auto p-8">
-        {/* saved list — TablePlus-style color-edge cards */}
-        <div className="w-72 shrink-0">
-          <div className="mb-2 flex items-center justify-between">
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted">
-              Connections · {saved.length}
-            </span>
+      {/* List-first welcome. Hero (logo + actions) on the left, generous list on the right. */}
+      <div className="mx-auto grid w-full max-w-[1100px] flex-1 grid-cols-[280px_1fr] gap-10 overflow-auto px-10 pt-12 pb-10">
+        {/* Hero column */}
+        <div className="flex flex-col gap-5">
+          <Wordmark className="text-[28px]" />
+          <p className="text-[12px] leading-relaxed text-muted">
+            A fast, local-first SQL desktop client.<br />
+            Browse, query, edit, and visualize across<br />
+            Postgres, MySQL, SQL Server, SQLite, Redis,<br />
+            and MongoDB — all in one app.
+          </p>
+          <div className="mt-2 flex flex-col gap-1.5">
             <button
-              onClick={() => loadInto(blankConfig())}
-              className="inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-[11px] font-medium text-white hover:bg-primary-hover"
+              onClick={() => {
+                loadInto(blankConfig());
+                setSheetOpen(true);
+              }}
+              className="inline-flex h-8 items-center justify-center gap-2 rounded-[var(--radius)] bg-primary px-3 text-[12px] font-medium text-white shadow-[var(--shadow-soft)] hover:bg-primary-hover"
             >
-              <IconPlus size={11} /> New
+              <IconPlus size={12} /> Create Connection
             </button>
-          </div>
-          <div className="mb-2 flex items-center gap-2 text-[11px]">
             <button
               onClick={async () =>
                 downloadText(
@@ -167,16 +193,16 @@ export function ConnectionManager() {
                   "application/json",
                 )
               }
-              className="inline-flex items-center gap-1 text-muted hover:text-text"
+              className="inline-flex h-8 items-center justify-center gap-2 rounded-[var(--radius)] border border-border bg-bg px-3 text-[12px] text-text hover:bg-surface-2"
               title="Export saved connections (no passwords) to share"
             >
-              <IconExport size={11} /> Export
+              <IconExport size={12} /> Export
             </button>
             <label
-              className="inline-flex cursor-pointer items-center gap-1 text-muted hover:text-text"
+              className="inline-flex h-8 cursor-pointer items-center justify-center gap-2 rounded-[var(--radius)] border border-border bg-bg px-3 text-[12px] text-text hover:bg-surface-2"
               title="Import a connection bundle"
             >
-              <IconImport size={11} /> Import
+              <IconImport size={12} /> Import
               <input
                 type="file"
                 accept="application/json"
@@ -190,65 +216,87 @@ export function ConnectionManager() {
               />
             </label>
           </div>
-          <div className="space-y-1.5">
-            {saved.length === 0 && (
-              <div className="rounded-md border border-dashed border-border p-4 text-center text-xs text-muted">
-                No saved connections yet. Click <span className="text-primary">New</span> to add one.
+        </div>
+
+        {/* List column */}
+        <div className="flex min-w-0 flex-col gap-3">
+          <label className="flex h-9 items-center gap-2 rounded-[var(--radius)] border border-border bg-bg px-3 focus-within:border-primary">
+            <span className="text-muted">⌕</span>
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search for connection..."
+              className="h-full flex-1 bg-transparent text-[12.5px] text-text placeholder:text-muted focus:outline-none"
+            />
+            {search && (
+              <button
+                onClick={() => setSearch("")}
+                className="text-[11px] text-muted hover:text-text"
+              >
+                ×
+              </button>
+            )}
+          </label>
+
+          <div className="flex flex-col gap-px">
+            {filteredSaved.length === 0 && (
+              <div className="rounded-md border border-dashed border-border p-8 text-center text-[11px] text-muted">
+                {saved.length === 0 ? (
+                  <>
+                    No saved connections yet.<br />
+                    Click <span className="font-medium text-primary">Create Connection</span> to add one.
+                  </>
+                ) : (
+                  <>No connections match "{search}".</>
+                )}
               </div>
             )}
-            {saved.map((c) => {
-              const isSelected = c.id === form.id;
-              const accent = c.color ?? ENGINE_COLORS[c.engine] ?? "#4f46e5";
+            {filteredSaved.map((c) => {
+              const accent = ENGINE_COLORS[c.engine] ?? "#a1a1aa";
               return (
                 <div
                   key={c.id}
-                  className={`group relative flex overflow-hidden rounded-md border bg-bg transition-shadow ${
-                    isSelected
-                      ? "border-primary shadow-[var(--shadow-soft)]"
-                      : "border-border hover:border-border-strong"
-                  }`}
+                  className="group flex items-center gap-3 rounded-[var(--radius)] px-3 py-2 transition-colors hover:bg-surface"
                 >
                   <span
-                    aria-hidden
-                    className="w-1 shrink-0"
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold uppercase text-white"
                     style={{ background: accent }}
-                  />
-                  <button
-                    onClick={() => loadInto(c)}
-                    className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-2 text-left"
+                    title={ENGINE_LABELS[c.engine] ?? c.engine}
                   >
-                    <ColorDot color={ENGINE_COLORS[c.engine] ?? "#999"} size={8} />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[13px] font-medium text-text">
-                        {c.name || "(unnamed)"}
+                    {engineBadge(c.engine)}
+                  </span>
+                  <button
+                    onClick={() => void doConnect(c)}
+                    className="flex min-w-0 flex-1 flex-col items-start text-left"
+                  >
+                    <span className="flex items-center gap-1.5 text-[13px] text-text">
+                      <span className="truncate font-medium">{c.name || "(unnamed)"}</span>
+                      <span className="text-[10px] font-medium uppercase tracking-wide text-ok">
+                        (local)
                       </span>
-                      <span className="block truncate text-[11px] text-muted">
-                        {ENGINE_LABELS[c.engine] ?? c.engine} ·{" "}
-                        {c.engine === "sqlite"
-                          ? c.database || "(file)"
-                          : `${c.host}:${c.port}/${c.database}`}
-                      </span>
+                    </span>
+                    <span className="block truncate text-[11px] text-muted">
+                      {c.engine === "sqlite"
+                        ? c.database || "(file)"
+                        : `${c.host}:${c.port}/${c.database}`}
                     </span>
                   </button>
                   <button
-                    onClick={() => {
-                      void doConnect(c);
-                    }}
-                    title="Connect"
-                    className="hidden h-full items-center px-2 text-[11px] font-medium text-primary hover:bg-primary/10 group-hover:flex"
+                    onClick={() => openSheet(c)}
+                    title="Edit"
+                    className="hidden h-7 items-center px-2 text-[11px] text-muted hover:bg-surface-2 hover:text-text group-hover:inline-flex rounded-[var(--radius)]"
                   >
-                    Connect
+                    Edit
                   </button>
                   <button
                     onClick={async () => {
                       if (!confirm(`Delete connection "${c.name}"?`)) return;
                       await deleteConnection(c.id);
                       await refresh();
-                      if (c.id === form.id) loadInto(blankConfig());
                     }}
                     title="Delete"
                     aria-label={`Delete ${c.name}`}
-                    className="hidden items-center px-2 text-muted hover:bg-surface-2 hover:text-danger group-hover:flex"
+                    className="hidden h-7 w-7 items-center justify-center text-muted hover:bg-surface-2 hover:text-danger group-hover:inline-flex rounded-[var(--radius)]"
                   >
                     ×
                   </button>
@@ -257,9 +305,32 @@ export function ConnectionManager() {
             })}
           </div>
         </div>
+      </div>
 
-        {/* form */}
-        <div className="min-w-0 flex-1 rounded-lg border border-border bg-bg p-5">
+      {/* Form side-sheet — opens from the right when editing / creating. Modal overlay
+          dims the welcome behind it. */}
+      {sheetOpen && (
+        <div
+          className="fixed inset-0 z-40 flex items-stretch justify-end bg-black/30 backdrop-blur-[2px]"
+          onClick={() => setSheetOpen(false)}
+        >
+        <div
+          onClick={(e) => e.stopPropagation()}
+          className="flex h-full w-[460px] flex-col overflow-hidden border-l border-border bg-bg shadow-[var(--shadow-pop)]"
+        >
+          <div className="flex shrink-0 items-center border-b border-border px-4" style={{ height: "var(--header-h)" }}>
+            <span className="text-[13px] font-semibold text-text">
+              {form.name || "New Connection"}
+            </span>
+            <button
+              onClick={() => setSheetOpen(false)}
+              className="ml-auto inline-flex h-6 w-6 items-center justify-center rounded text-muted hover:bg-surface-2 hover:text-text"
+              aria-label="Close"
+            >
+              ×
+            </button>
+          </div>
+          <div className="min-w-0 flex-1 overflow-auto p-5">
           <div className="mb-3 flex items-center gap-3">
             <span className="text-sm font-semibold">Connection</span>
             <select
@@ -502,9 +573,34 @@ export function ConnectionManager() {
               />
             </label>
           </div>
+          </div>
         </div>
-      </div>
+        </div>
+      )}
       <Onboarding />
     </div>
   );
+}
+
+/**
+ * Two-letter engine badge used in the connection list (TablePlus draws engine
+ * logos; we use initials with the engine-specific color until we ship logos).
+ */
+function engineBadge(engine: string): string {
+  switch (engine) {
+    case "postgres":
+      return "Pg";
+    case "mysql":
+      return "My";
+    case "sqlite":
+      return "Sq";
+    case "sqlserver":
+      return "Ms";
+    case "redis":
+      return "Re";
+    case "mongodb":
+      return "Mo";
+    default:
+      return engine.slice(0, 2);
+  }
 }

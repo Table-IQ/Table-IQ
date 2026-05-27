@@ -1,61 +1,65 @@
 @import "tailwindcss";
 
-/* ── TableIQ design tokens ───────────────────────────────────────────────
-   Refined-minimal aesthetic, modeled on TablePlus density + clarity,
-   carrying TableIQ branding (indigo primary, ◇/◳ glyphs, Brand wordmark).
-   Light is the default (:root); dark overrides via [data-theme="dark"].
-   The @theme inline block exposes them as Tailwind utilities. */
+/* ── TableIQ design tokens (2026-05-27 — TablePlus parity overhaul) ────────
+   Source of truth: DESIGN.md. Light is default (:root); dark overrides via
+   [data-theme="dark"]. The @theme inline block exposes them as Tailwind
+   utilities so `bg-surface`, `text-muted`, `border-border` "just work" in
+   both themes. */
 
 :root {
-  /* Surfaces */
+  /* Surfaces — neutral. Chrome reads as "quiet"; primary is reserved for state. */
   --bg: #ffffff;
-  --surface: #f3f4f6;       /* sidebar / status bar / toolbar — half-shade darker than bg so panels read */
-  --surface-2: #e9ecef;     /* hover / pressed */
-  --border: #d1d5db;        /* visible 1-px dividers (was #e5e7eb — too low contrast) */
-  --border-strong: #9ca3af;
-  --text: #111827;          /* slightly softer than near-black, ~16:1 on bg */
-  --muted: #4b5563;         /* ~7:1 on bg, AA Pass for small caption text (was #6b7280 — borderline) */
-  --primary: #4f46e5;       /* TableIQ indigo — branding */
+  --surface: #f7f7f8;
+  --surface-2: #eeeef0;
+  --border: #e4e4e7;
+  --border-strong: #a1a1aa;
+  --text: #18181b;
+  --muted: #52525b;
+  --muted-2: #71717a;
+  --primary: #4f46e5;
   --primary-hover: #4338ca;
+  --primary-soft: #eef2ff;
   --accent: #7c3aed;
-  --selection: #2563eb;     /* TablePlus-style row selection blue */
+  --selection: #2563eb;
   --selection-bg: #dbeafe;
   --danger: #dc2626;
   --warn: #d97706;
   --ok: #059669;
 
-  /* Fonts — system stack first so the app feels native, fall through to Inter */
-  --font-sans: system-ui, -apple-system, "SF Pro Text", "Segoe UI Variable",
-    "Segoe UI", "Inter", sans-serif;
+  /* Typography. System stack first so the app feels native on every OS. */
+  --font-sans: -apple-system, "SF Pro Text", "SF Pro", system-ui,
+    "Segoe UI Variable", "Segoe UI", "Inter", sans-serif;
   --font-mono: "SF Mono", "JetBrains Mono", ui-monospace, SFMono-Regular,
     Menlo, monospace;
 
-  /* Density — every panel uses these for a consistent vertical rhythm */
-  --row-h: 26px;
-  --toolbar-h: 36px;
-  --tabbar-h: 30px;
-  --statusbar-h: 24px;
-  --header-h: 38px;
-  --rail-w: 56px;
-  --sidebar-w: 232px;
-  --inspector-w: 260px;
-  --gap-tight: 6px;
-  --radius: 6px;
-  --radius-sm: 4px;
+  /* Density — tighter than v1, matches TablePlus eye-feel. */
+  --row-h: 22px;
+  --toolbar-h: 28px;
+  --tabbar-h: 26px;
+  --statusbar-h: 22px;
+  --header-h: 32px;
+  --sidebar-w: 220px;
+  --inspector-w: 240px;
+  --gap-tight: 4px;
+  --gap: 8px;
+  --radius: 5px;
+  --radius-sm: 3px;
   --shadow-soft: 0 1px 2px rgb(0 0 0 / 0.04), 0 1px 1px rgb(0 0 0 / 0.03);
   --shadow-pop: 0 8px 24px rgb(0 0 0 / 0.12), 0 2px 6px rgb(0 0 0 / 0.06);
 }
 
 [data-theme="dark"] {
-  --bg: #0b0f17;
-  --surface: #111726;
-  --surface-2: #18203a;
-  --border: #1f2937;
-  --border-strong: #374151;
-  --text: #e5e7eb;
+  --bg: #0f1115;
+  --surface: #15171c;
+  --surface-2: #1c1f26;
+  --border: #26282f;
+  --border-strong: #3a3d46;
+  --text: #e6e7eb;
   --muted: #9ca3af;
+  --muted-2: #71757e;
   --primary: #6366f1;
   --primary-hover: #818cf8;
+  --primary-soft: #1e1b4b;
   --accent: #8b5cf6;
   --selection: #3b82f6;
   --selection-bg: #1e3a8a;
@@ -74,8 +78,10 @@
   --color-border-strong: var(--border-strong);
   --color-text: var(--text);
   --color-muted: var(--muted);
+  --color-muted-2: var(--muted-2);
   --color-primary: var(--primary);
   --color-primary-hover: var(--primary-hover);
+  --color-primary-soft: var(--primary-soft);
   --color-accent: var(--accent);
   --color-selection: var(--selection);
   --color-selection-bg: var(--selection-bg);
@@ -97,48 +103,68 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-sans);
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.4;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
 
-/* Native-feeling scrollbars (subtle, narrow). */
+/* Auto-hide native-feel scrollbars (TablePlus-style — narrow + subtle). */
 *::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
 }
 *::-webkit-scrollbar-thumb {
-  background: var(--border-strong);
-  border-radius: 6px;
-  border: 2px solid var(--bg);
+  background: transparent;
+  border-radius: 4px;
+  transition: background 120ms ease-out;
 }
+*:hover::-webkit-scrollbar-thumb,
 *::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+}
+*::-webkit-scrollbar-thumb:active {
   background: var(--muted);
 }
 *::-webkit-scrollbar-track {
   background: transparent;
 }
 
-/* macOS traffic-light overlay region — header reserves space for them */
+/* macOS native vibrancy on the sidebar + inspector. The Tauri window decorates
+   ship a translucent backdrop already; these classes layer a frosted blur on
+   top so the panels feel like a real Mac app. Linux/Windows fall back to a
+   solid surface (no-op selector if backdrop-filter is unsupported). */
+.tiq-vibrancy {
+  background: color-mix(in srgb, var(--surface) 86%, transparent);
+}
+@supports (backdrop-filter: blur(20px)) {
+  .tiq-vibrancy {
+    background: color-mix(in srgb, var(--surface) 70%, transparent);
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+  }
+}
+
+/* macOS traffic-light overlay region — header reserves space + drags the window. */
 .tiq-titlebar-drag {
   -webkit-app-region: drag;
   app-region: drag;
 }
 .tiq-titlebar-drag button,
 .tiq-titlebar-drag input,
-.tiq-titlebar-drag a {
+.tiq-titlebar-drag a,
+.tiq-titlebar-drag select {
   -webkit-app-region: no-drag;
   app-region: no-drag;
 }
 
-/* Subtle keyboard-shortcut hint pills used in toolbars / palette */
+/* Subtle keyboard-shortcut hint pills used in toolbars / palette / status bar. */
 .tiq-kbd {
   display: inline-flex;
   align-items: center;
   padding: 0 4px;
-  height: 16px;
-  min-width: 16px;
+  height: 15px;
+  min-width: 15px;
   justify-content: center;
   border-radius: 3px;
   border: 1px solid var(--border);
@@ -149,7 +175,7 @@ body {
   line-height: 1;
 }
 
-/* Used by Onboarding to dim the page behind the welcome card */
+/* Dim the page behind the welcome card. */
 .tiq-overlay {
   position: fixed;
   inset: 0;

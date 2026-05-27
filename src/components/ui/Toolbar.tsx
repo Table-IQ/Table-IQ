@@ -44,7 +44,7 @@ export function ToolbarButton({
       onClick={onClick}
       disabled={disabled}
       title={title}
-      className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+      className={`inline-flex h-6 items-center gap-1 rounded-[var(--radius)] px-1.5 text-[11px] transition-colors duration-100 disabled:cursor-not-allowed disabled:opacity-50 ${
         active ? "bg-surface-2 text-text" : "text-muted hover:bg-surface-2 hover:text-text"
       }`}
     >

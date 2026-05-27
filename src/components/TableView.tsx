@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { DataGrid, type GridSource } from "./DataGrid";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { DataGrid, type DataGridHandle, type GridSource } from "./DataGrid";
 import {
   applyEdit,
   downloadText,
@@ -22,21 +22,21 @@ import { useConnections } from "../state/connectionStore";
 import { ColumnProfilePanel } from "./ColumnProfilePanel";
 import { AlterTablePanel } from "./AlterTablePanel";
 import type { Engine } from "../lib/commands";
-import { Toolbar, ToolbarButton, ToolbarDivider, ToolbarSpacer } from "./ui/Toolbar";
-import { StatusBar, StatusDot } from "./ui/StatusBar";
+import { Toolbar, ToolbarButton, ToolbarSpacer } from "./ui/Toolbar";
+import { SegmentedToggle, StatusBar, StatusBarButton, StatusDot } from "./ui/StatusBar";
 import { Chip } from "./ui/Chip";
 import { ContextMenu, type ContextMenuItem } from "./ui/ContextMenu";
 import { buildRowAs } from "../lib/rowFormat";
 import { buildInsertValues, isDraftDirty } from "../lib/insertRow";
 import { chipLabel, removeFilter, upsertFilter, FILTER_OP_LABEL, isNullOp } from "../lib/filterBuilder";
 import {
+  IconChevronLeft,
+  IconChevronRight,
   IconClose,
   IconExport,
   IconFilter,
   IconLink,
   IconRefresh,
-  IconRow,
-  IconStructure,
 } from "./ui/Icon";
 
 interface Props {
@@ -66,6 +66,8 @@ export function TableView({ connId, schema, object }: Props) {
     row: number;
     value: string | null;
   } | null>(null);
+  const [gridWindowStart, setGridWindowStart] = useState(0);
+  const gridRef = useRef<DataGridHandle>(null);
   const openTab = useTabs((s) => s.openTable);
   const engine = useConnections((s) => s.active?.engine ?? "postgres") as Engine;
 
@@ -168,47 +170,16 @@ export function TableView({ connId, schema, object }: Props) {
 
   return (
     <div className="flex h-full flex-col">
-      {/* Action toolbar */}
+      {/* Compact action toolbar — Filter/Insert/Structure now live in the status bar
+          (TablePlus parity). This row keeps the secondary actions: Refresh, Profile,
+          Alter, and export. */}
       <Toolbar>
-        <ToolbarButton
-          icon={<IconFilter size={12} />}
-          label="Filter"
-          active={filterDraft !== null || filters.length > 0}
-          onClick={() =>
-            setFilterDraft(
-              filterDraft
-                ? null
-                : {
-                    column: object.columns[0]?.name ?? "",
-                    op: "Eq",
-                    value: "",
-                  },
-            )
-          }
-        />
-        <ToolbarButton
-          icon={<IconRow size={12} />}
-          label="Insert row"
-          active={draft !== null}
-          disabled={!editable}
-          onClick={() => setDraft(draft ? null : {})}
-        />
         <ToolbarButton
           icon={<IconRefresh size={12} />}
           label="Refresh"
           onClick={() => setRefreshKey((k) => k + 1)}
         />
-        <ToolbarDivider />
-        <ToolbarButton
-          icon={<IconStructure size={12} />}
-          label="Structure"
-          active={view === "structure"}
-          onClick={() => setView((v) => (v === "structure" ? "data" : "structure"))}
-        />
-        <ToolbarButton
-          label="Profile"
-          onClick={() => setShowProfile(true)}
-        />
+        <ToolbarButton label="Profile" onClick={() => setShowProfile(true)} />
         {object.kind === "Table" && (
           <ToolbarButton label="Alter" onClick={() => setShowAlter(true)} />
         )}
@@ -371,20 +342,23 @@ export function TableView({ connId, schema, object }: Props) {
         </div>
       )}
 
-      {/* FK chip rail — only when this table has outgoing FKs (TablePlus-style indicator) */}
+      {/* FK indicator — subtler than the prior chip rail. Only renders when this
+          table has outgoing FKs; cells with an FK column now render a chevron in the
+          grid (DataGrid handles that), so the rail just lists targets at a glance. */}
       {fks.length > 0 && (
-        <div className="flex items-center gap-1.5 border-b border-border bg-bg px-3 py-1.5">
-          <IconLink size={11} className="text-primary" />
-          <span className="text-[10px] uppercase tracking-wider text-muted">references</span>
-          {fks.map((fk) => (
-            <Chip
+        <div className="flex items-center gap-1.5 border-b border-border bg-bg px-3 py-1 text-[10.5px] text-muted">
+          <IconLink size={10} className="text-muted-2" />
+          <span>references</span>
+          {fks.map((fk, i) => (
+            <button
               key={`${fk.from_column}->${fk.to_table}`}
-              tone="primary"
               onClick={() => openTab(schema, fk.to_table)}
               title={`${fk.from_column} → ${fk.to_table}.${fk.to_column}`}
+              className="text-text/80 transition-colors hover:text-primary"
             >
-              → {fk.to_table}
-            </Chip>
+              {fk.to_table}
+              {i < fks.length - 1 ? <span className="ml-1 text-muted-2">·</span> : null}
+            </button>
           ))}
         </div>
       )}
@@ -393,57 +367,111 @@ export function TableView({ connId, schema, object }: Props) {
       <div className="min-h-0 flex-1">
         {view === "data" ? (
           <DataGrid
+            ref={gridRef}
             source={source}
             onEdit={editable ? onEdit : undefined}
             fkByColumn={fkByColumn}
             onFkClick={(toTable) => openTab(schema, toTable)}
             onCellContext={(c) => setCellMenu(c)}
+            onVisibleRangeChange={(start) => setGridWindowStart(start)}
           />
         ) : (
           <StructureView object={object} fks={fks} />
         )}
       </div>
 
-      {/* Status bar (TablePlus parity: row count, dirty, commit/discard) */}
+      {/* TablePlus-style status bar — content-rich.
+          Left  : object info
+          Center: row-window pager (rows N-M of K, ‹ ›)
+          Right : Data/Structure toggle · + Row · Filters · Columns · editable chip */}
       <StatusBar
         left={
           <>
             <span className="font-mono text-text">
-              {schema}.<span className="font-semibold">{object.name}</span>
+              <span className="text-muted">{schema}.</span>
+              <span className="font-medium">{object.name}</span>
             </span>
-            <span className="text-muted">·</span>
+            <span className="text-muted-2">·</span>
             <span>{object.kind}</span>
-            <span>· {object.columns.length} cols</span>
-            <span>· ~{source.totalRows.toLocaleString()} rows</span>
+            <span className="text-muted-2">·</span>
+            <span>{object.columns.length} cols</span>
+            <span className="text-muted-2">·</span>
+            <span>~{source.totalRows.toLocaleString()} rows</span>
             {filters.length > 0 && (
-              <span className="text-primary">· {filters.length} filter{filters.length === 1 ? "" : "s"}</span>
+              <>
+                <span className="text-muted-2">·</span>
+                <span className="text-primary">
+                  {filters.length} filter{filters.length === 1 ? "" : "s"}
+                </span>
+              </>
+            )}
+            {notice && <span className="ml-1 truncate text-warn">{notice}</span>}
+            {dirty > 0 && (
+              <span className="ml-1 text-warn">
+                {dirty} pending edit{dirty === 1 ? "" : "s"}
+              </span>
             )}
           </>
         }
         center={
-          notice ? (
-            <span className="text-warn">{notice}</span>
-          ) : dirty > 0 ? (
-            <span className="text-warn">{dirty} pending edit{dirty === 1 ? "" : "s"}</span>
-          ) : null
+          <RowPager
+            total={source.totalRows}
+            onPrev={() => gridRef.current?.scrollToRow(Math.max(0, gridWindowStart - 300))}
+            onNext={() =>
+              gridRef.current?.scrollToRow(Math.min(source.totalRows - 1, gridWindowStart + 300))
+            }
+            start={gridWindowStart}
+          />
         }
         right={
           <>
-            {editable ? (
-              <Chip tone="ok"><StatusDot tone="ok" /> editable</Chip>
-            ) : (
-              <Chip tone="muted">read-only{pk && pk.length === 0 ? " · no PK" : ""}</Chip>
-            )}
-            <button
-              onClick={() => {
-                /* per-cell edits commit on input (Slice 2 behavior); discard means refresh. */
-                setRefreshKey((k) => k + 1);
-              }}
-              className="text-muted hover:text-text"
-              title="Refresh to discard any visual edits"
+            <SegmentedToggle
+              options={[
+                { value: "data", label: "Data" },
+                { value: "structure", label: "Structure" },
+              ]}
+              value={view}
+              onChange={(v) => setView(v)}
+            />
+            <StatusBarButton
+              onClick={() => setDraft(draft ? null : {})}
+              disabled={!editable}
+              active={draft !== null}
+              title="Insert a new row"
             >
-              ⌘Z Discard
-            </button>
+              + Row
+            </StatusBarButton>
+            <StatusBarButton
+              onClick={() =>
+                setFilterDraft(
+                  filterDraft
+                    ? null
+                    : {
+                        column: object.columns[0]?.name ?? "",
+                        op: "Eq",
+                        value: "",
+                      },
+                )
+              }
+              active={filterDraft !== null || filters.length > 0}
+              title="Filter rows"
+            >
+              Filters{filters.length > 0 ? ` · ${filters.length}` : ""}
+            </StatusBarButton>
+            <StatusBarButton title="Choose columns to display (coming soon)" disabled>
+              Columns
+            </StatusBarButton>
+            {editable ? (
+              <span className="inline-flex items-center gap-1 text-ok">
+                <StatusDot tone="ok" />
+                <span>editable</span>
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 text-muted">
+                <StatusDot tone="muted" />
+                <span>read-only{pk && pk.length === 0 ? " · no PK" : ""}</span>
+              </span>
+            )}
           </>
         }
       />
@@ -567,5 +595,39 @@ function StructureView({ object, fks }: { object: ObjectInfo; fks: ForeignKey[] 
         </table>
       </div>
     </div>
+  );
+}
+
+/** TablePlus-style row pager — "1-300 of 721 rows" with chevron buttons. */
+function RowPager({
+  total,
+  start,
+  onPrev,
+  onNext,
+}: {
+  total: number;
+  start: number;
+  onPrev: () => void;
+  onNext: () => void;
+}) {
+  if (total === 0) return null;
+  const PAGE = 300;
+  const from = start + 1;
+  const to = Math.min(total, start + PAGE);
+  return (
+    <span className="inline-flex items-center gap-1 text-[11px] text-muted">
+      <StatusBarButton onClick={onPrev} disabled={start <= 0} title="Previous page">
+        <IconChevronLeft size={10} />
+      </StatusBarButton>
+      <span className="tabular-nums">
+        <span className="text-text">
+          {from.toLocaleString()}-{to.toLocaleString()}
+        </span>{" "}
+        of {total.toLocaleString()} rows
+      </span>
+      <StatusBarButton onClick={onNext} disabled={to >= total} title="Next page">
+        <IconChevronRight size={10} />
+      </StatusBarButton>
+    </span>
   );
 }
