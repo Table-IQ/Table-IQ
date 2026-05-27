@@ -38,6 +38,7 @@ import { useConnections } from "../state/connectionStore";
 import { useTabs } from "../state/tabsStore";
 import type { Tab } from "../state/tabsStore";
 import { connect, disconnect, listObjects, type ConnConfig, type Engine, type ObjectInfo } from "../lib/commands";
+import { markConnected } from "../lib/lastConnected";
 
 function findObject(
   schema: ReturnType<typeof useConnections.getState>["schema"],
@@ -180,6 +181,7 @@ export function MainShell() {
       await disconnect(active.id);
       const info = await connect(c.id);
       const schemaModel = await listObjects(c.id);
+      markConnected(c.id);
       reset();
       setActive(info);
       setSchema(schemaModel);

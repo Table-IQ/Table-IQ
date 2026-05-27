@@ -183,12 +183,69 @@ Two tiers only:
 - Tab switch: instant — feels snappier
 - Filter / Insert row appearance: 180ms slide-down
 
-## Surfaces redesigned this slice
+## Connection manager (welcome) — TablePlus parity
+
+The welcome screen is a **brand sidebar (left) + connection list (right)**, copied
+beat-for-beat from TablePlus. Single-purpose: pick a connection, connect, leave.
+No marketing copy, no centred max-width card, no detail panel — the previous
+list-first welcome (with its 1100px max-width and stacked hero) was the "college
+project" we replaced in Slice 23.
+
+### Brand sidebar (280px)
+- `tiq-vibrancy` background (frosted on macOS, solid elsewhere)
+- Top region (~56px) is `tiq-titlebar-drag` so the user can grab anywhere in
+  the strip to move the window; traffic-light reserve is implicit
+- Stack: `<BrandMark size={120}>` → `TableIQ` wordmark (36px semibold) → version
+  line (12px muted) → tagline (11px muted-2, "Local-first · zero telemetry / Open source · MIT")
+- Bottom stack (three buttons, identical width, 32px tall): Export Bundle,
+  Import Bundle, **Create Connection** (primary)
+- Tiny footer row under buttons: `⌘N new · ⌘F filter` + ThemeToggle (icon-only)
+- TablePlus's "Backup Database / Restore Database / Create Connection" maps 1:1
+  onto our "Export / Import / Create"; "free trial / purchase" line is replaced
+  by the open-source tagline
+
+### Connection list pane (1fr)
+- Top: round `+` icon button + full-pill search input ("Search for connection…").
+  Pill is `rounded-full` with `border-border bg-surface/60 backdrop-blur-sm`,
+  9px tall, 13px font — feels iOS-like, premium
+- Drag region: 36px transparent strip at the top so window dragging works on
+  the right pane too
+- Row: `<EngineIcon size="lg">` (32px circle, engine colour, 2-letter monogram)
+  + name 13.5px medium + env tag in colour-coded parens + colour-tag dot, then
+  on the second line: `host:port/db` in 11.5px mono muted. No engine label
+  suffix on the row — the coloured circle does that job
+- Hover reveals Edit + × delete buttons on the right; right-click opens the
+  context menu (Connect / Edit / Duplicate / Delete)
+- Single-click connects (via the inner button); double-click on the `<li>`
+  wrapper also connects (for users who instinctively double-click)
+- No status bar — TablePlus doesn't have one on this screen and neither do we
+
+### Engine identifier (`EngineIcon`)
+Lives in [src/components/ui/EngineIcon.tsx](src/components/ui/EngineIcon.tsx).
+TablePlus-style 2-letter monogram circle (not square tile, not avatar): flat
+engine colour fill + an inset 1px white-on-top / black-on-bottom highlight that
+reads as glass depth. Used everywhere a connection is identified (welcome list,
+⌘O picker). Sizes: sm 16 / md 22 / lg 32 / xl 44. Monograms: Pg, My, Sq, Re, Mo, Ms.
+
+### Env tag derivation
+Without a dedicated `environment` field on `ConnConfig`, we derive the row's
+parenthetical tag from existing data: `(local)` for loopback host, `(ssh)` for
+SSH-tunneled, `(remote)` otherwise, `(file)` for SQLite. Coloured by tone:
+green / amber / muted / muted. The user's `color` hex still renders as a small
+dot next to the tag for custom environments.
+
+### Last-connected tracking
+`src/lib/lastConnected.ts` writes the connect timestamp to localStorage on every
+successful connect (from welcome and from `⌘O` swap in MainShell). `sortByRecency`
+floats recently-used connections to the top of the list without any UI grouping
+— we deliberately don't show a "Recent" header because TablePlus doesn't.
+
+## Surfaces redesigned in earlier slices
 
 | Surface | Change |
 |---|---|
 | Welcome / first-launch | Hero treatment, larger wordmark, glass action chips |
-| Connection manager | List-first; form slides out as side sheet on edit/new |
+| Connection manager (Slice 22) | List-first; form slides out as side sheet on edit/new |
 | Workspace titlebar | Tighter (32px), 1.5-stroke icons, breadcrumb redesign |
 | Connection rail (left edge) | **Removed**. Replaced by `⌘O` Open Connection palette |
 | Tab strip | Subtler active state, smaller |

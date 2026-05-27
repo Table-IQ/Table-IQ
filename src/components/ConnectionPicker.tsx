@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ConnConfig } from "../lib/commands";
 import { fuzzyFilter } from "../lib/fuzzy";
-import { ColorDot } from "./ui/Chip";
+import { EngineIcon, engineLabel } from "./ui/EngineIcon";
 import { IconSearch } from "./ui/Icon";
 
 /**
@@ -101,10 +101,18 @@ export function ConnectionPicker({
                     i === sel ? "bg-selection-bg" : "hover:bg-surface-2"
                   }`}
                 >
-                  <ColorDot color={c.color ?? "#a1a1aa"} size={10} />
+                  <EngineIcon engine={c.engine} size="md" />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5 text-[12px] text-text">
                       <span className="truncate font-medium">{c.name}</span>
+                      {c.color && c.color !== "#4f46e5" && (
+                        <span
+                          aria-hidden
+                          title="Environment tag"
+                          className="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
+                          style={{ background: c.color }}
+                        />
+                      )}
                       {isActive && (
                         <span className="rounded-[3px] bg-primary/10 px-1 text-[9px] font-medium uppercase tracking-wider text-primary">
                           active
@@ -112,7 +120,7 @@ export function ConnectionPicker({
                       )}
                     </div>
                     <div className="truncate text-[10.5px] text-muted">
-                      {labelForEngine(c.engine)} · {c.host}:{c.port}/{c.database}
+                      {engineLabel(c.engine)} · {c.host}:{c.port}/{c.database}
                     </div>
                   </div>
                 </button>
@@ -145,21 +153,3 @@ export function ConnectionPicker({
   );
 }
 
-function labelForEngine(engine: string): string {
-  switch (engine) {
-    case "postgres":
-      return "PostgreSQL";
-    case "mysql":
-      return "MySQL";
-    case "sqlite":
-      return "SQLite";
-    case "sqlserver":
-      return "SQL Server";
-    case "redis":
-      return "Redis";
-    case "mongodb":
-      return "MongoDB";
-    default:
-      return engine;
-  }
-}
