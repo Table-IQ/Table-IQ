@@ -1,6 +1,6 @@
 # TableIQ — Pending Work & Prerequisites
 
-**Date:** 2026-05-25 · **Branch baseline:** `main` (slices 5–**19** merged) · **Status:** Phase 1–3 substantially shipped. **This round (slices 15–19): MSSQL inline-edit + cursor, WASM plugins (Extism), result-diff + ALTER UIs, AI explain/optimize/fix.** Remaining is mostly prerequisite-blocked (certs, AI key, model weights).
+**Date:** 2026-05-27 · **Branch baseline:** `main` (slices 5–**19** + UI Slice 20 merged) · **Status:** Phase 1–3 substantially shipped. **Slice 20 (this round): TablePlus-faithful shell across every surface (shared UI primitives, native title-bar overlay, color-edge connection cards, sectioned ObjectTree, primary action toolbar, StatusBar, ConnectionRail mini-rail, Items/Queries/History sidebar tabs, right Inspector with FK relationships, light-theme contrast pass, system-font stack, cell-level FK arrow in data grid, ERD pan/zoom/search/column-anchored connectors, first-launch Onboarding + CoachMarks, FK introspection parity for MySQL/SQLite/MSSQL).** Remaining is mostly prerequisite-blocked (certs, AI key, model weights).
 
 This is the single source of truth for what's left. Two parts: **(1) Prerequisites** — things only you (or the environment) can supply, which block certain items; **(2) Pending items** — all remaining work, grouped, with current state and where it lives in the code.
 
@@ -38,6 +38,23 @@ Connect / introspect / primary-key / query / window / DDL / row-estimate work **
 ### B. UI gaps (tested backend, missing UI) — ✅ DONE (Slice 17)
 - ✅ **Result-set diff picker UI** — `resultsStore` tracks recent results; `DiffResultsView` picks two → `diff_results`. "Diff results" button in QueryView.
 - ✅ **ALTER-table UI** — `AlterTablePanel` (drop/add columns → `generate_ddl` preview → apply) via a "Structure" button in TableView. **Still open:** rename/type-change need extra backend (`RenameColumn`/`AlterColumnType`); route those through the SQL editor for now.
+
+### B'. TablePlus-faithful UI overhaul — ✅ DONE (Slice 20, 2026-05-27)
+- ✅ **Shared UI primitives** in `src/components/ui/` — `Panel`, `Toolbar`, `StatusBar`, `Section`, `Chip`, `IconButton`, `CoachMark`, hand-rolled `Icon` set. Every surface now consumes them so spacing, type, and chrome are uniform.
+- ✅ **Shell** — `MainShell` adopts native title-bar overlay (macOS traffic lights via `titleBarStyle: "Overlay"`), `ConnectionRail` mini-rail on the far left, breadcrumb chip in the header, Items/Queries/History sidebar tabs, primary action toolbar above the tab strip, workspace `StatusBar`, right `Inspector` panel (Details/Assistant) with columns + FK relationships.
+- ✅ **ObjectTree** — sectioned (Pinned / Tables / Views / Functions), in-tree search, pin toggle, type icons.
+- ✅ **ConnectionManager** — TablePlus-style color-edge cards in saved list, env color picker, hosts Onboarding overlay.
+- ✅ **TableView + DataGrid** — action toolbar (Filter / Insert / Refresh / Structure / Profile / Alter / Export), FK chip rail, cell-level FK arrow in the grid (clicking jumps to referenced table), Data/Structure toggle, dirty-row count in StatusBar.
+- ✅ **QueryView + SqlEditor** — collapsed AI drawer, primary Run/Cancel/Explain/Library toolbar, drawer-routed Library/Chart/Plugins/DiffResults/AiSettings, result-set status footer.
+- ✅ **ErdView** — mouse-drag pan + ⌘+wheel zoom (0.4–2.0), column-anchored orthogonal connectors (edges emerge from FK column rows), search-as-you-type fades non-matches, dotted grid backdrop.
+- ✅ **All schema-tool modals** (`StructureEditor`, `AlterTablePanel`, `DiffView`, `DiffResultsView`, `ImportDialog` with 3-step progress) migrated to the `Panel` primitive.
+- ✅ **Non-SQL shells** (`KvShell`, `DocShell`) inherit the same titlebar/sidebar/status treatment.
+- ✅ **First-launch onboarding** — `Onboarding.tsx` + `CoachMark.tsx`. 3-step welcome card on first launch (detected via Tauri `onboarded.json` in app-config dir) + 4 coach marks pointing at sidebar/tabs/inspector after connect. Help menu re-runs the tour.
+- ✅ **Light-theme contrast pass** — `--muted` #6b7280 → #4b5563, `--text` → #111827, `--border` → #d1d5db, `--surface` → #f3f4f6 (all AA Pass for caption-sized text). Density variables added (`--row-h`, `--toolbar-h`, etc.). System-ui / SF Pro font stack first.
+- ✅ **FK detection parity** — `foreign_keys()` implemented for MySQL (`information_schema.kcu ⋈ rc`), SQLite (`PRAGMA foreign_key_list` iter over `sqlite_master`), SQL Server (`sys.foreign_keys ⋈ sys.foreign_key_columns`). +3 tests; live SQLite round-trip test against temp file (always-on). ERD edges + cell-level FK arrow now light up on every engine.
+- ✅ **Tauri commands** — `read_onboarding_state` / `write_onboarding_state` persist the first-launch marker under the platform app-config dir.
+
+**Verification:** 57 frontend Vitest + 69 Rust unit tests green. Live design review confirmed TablePlus parity across light/dark in shell, sidebar, data grid, query workspace, ERD, inspector, and onboarding.
 
 ### C. AI features
 - ✅ **NL→SQL** — built; deterministic parts unit-tested (`ai/mod.rs`, `ipc/connect.rs:825`). Egress "what gets sent" preview ✅, schema-only privacy ✅, generate-not-execute read-only guard ✅, BYOK (Anthropic/OpenAI/Gemini) + Ollama HTTP ✅.
