@@ -226,9 +226,9 @@ export function ConnectionManager() {
             user can grab anywhere in this strip to move the window. */}
         <div className="tiq-titlebar-drag absolute inset-x-0 top-0 h-14" aria-hidden />
 
-        <div className="flex flex-col items-start gap-3 px-7 pt-14 pb-6">
-          <BrandMark size={120} className="text-primary" />
-          <h1 className="mt-1 text-[36px] font-semibold leading-none tracking-tight text-text">
+        <div className="flex flex-col items-start gap-3 px-7 pt-12 pb-6">
+          <BrandMark size={168} className="-ml-1 text-primary" />
+          <h1 className="mt-2 text-[36px] font-semibold leading-none tracking-tight text-text">
             Table<span className="text-primary">IQ</span>
           </h1>
           <div className="text-[12px] text-muted">Version 0.1.0</div>
