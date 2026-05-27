@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Wordmark } from "./Brand";
 import { ThemeToggle } from "./ThemeToggle";
 import { Onboarding } from "./Onboarding";
-import { IconExport, IconImport, IconPlus } from "./ui/Icon";
+import { IconExport, IconImport, IconPlus, IconSearch } from "./ui/Icon";
 import {
   connect,
   deleteConnection,
@@ -72,6 +72,15 @@ export function ConnectionManager() {
   // List-first design: the form is hidden until the user picks Edit/New.
   const [sheetOpen, setSheetOpen] = useState(false);
   const [search, setSearch] = useState("");
+  // Inline 2-click delete confirmation. Tauri v2's webview disables window.confirm
+  // (returns undefined), so we cannot rely on the native dialog. Arming holds the
+  // pending-delete connection id; clicking again within ~3s commits the delete.
+  const [armedDelete, setArmedDelete] = useState<string | null>(null);
+  useEffect(() => {
+    if (!armedDelete) return;
+    const t = setTimeout(() => setArmedDelete(null), 3000);
+    return () => clearTimeout(t);
+  }, [armedDelete]);
 
   const ssh: SshConfig = form.ssh ?? defaultSshConfig();
   const setSsh = (next: Partial<SshConfig>) =>
@@ -158,32 +167,30 @@ export function ConnectionManager() {
         style={{ height: "var(--header-h)" }}
       >
         <Wordmark className="text-[12px]" />
-        <span className="text-[11px] text-muted">Connections</span>
         <div className="ml-auto flex items-center gap-1">
           <ThemeToggle />
         </div>
       </header>
 
       {/* List-first welcome. Hero (logo + actions) on the left, generous list on the right. */}
-      <div className="mx-auto grid w-full max-w-[1100px] flex-1 grid-cols-[280px_1fr] gap-10 overflow-auto px-10 pt-12 pb-10">
+      <div className="mx-auto grid w-full max-w-[1100px] flex-1 grid-cols-[300px_1fr] gap-12 overflow-auto px-12 pt-16 pb-10">
         {/* Hero column */}
-        <div className="flex flex-col gap-5">
-          <Wordmark className="text-[28px]" />
+        <div className="flex flex-col gap-6">
+          <Wordmark className="text-[36px]" />
           <p className="text-[12px] leading-relaxed text-muted">
             A fast, local-first SQL desktop client.<br />
-            Browse, query, edit, and visualize across<br />
-            Postgres, MySQL, SQL Server, SQLite, Redis,<br />
-            and MongoDB — all in one app.
+            Postgres, MySQL, SQL Server, SQLite,<br />
+            Redis, and MongoDB &mdash; in one app.
           </p>
-          <div className="mt-2 flex flex-col gap-1.5">
+          <div className="flex flex-col gap-1.5">
             <button
               onClick={() => {
                 loadInto(blankConfig());
                 setSheetOpen(true);
               }}
-              className="inline-flex h-8 items-center justify-center gap-2 rounded-[var(--radius)] bg-primary px-3 text-[12px] font-medium text-white shadow-[var(--shadow-soft)] hover:bg-primary-hover"
+              className="inline-flex h-9 items-center justify-center gap-2 rounded-[var(--radius)] bg-primary px-3.5 text-[12.5px] font-medium text-white shadow-[var(--shadow-soft)] transition-colors hover:bg-primary-hover"
             >
-              <IconPlus size={12} /> Create Connection
+              <IconPlus size={13} /> Create Connection
             </button>
             <button
               onClick={async () =>
@@ -193,13 +200,13 @@ export function ConnectionManager() {
                   "application/json",
                 )
               }
-              className="inline-flex h-8 items-center justify-center gap-2 rounded-[var(--radius)] border border-border bg-bg px-3 text-[12px] text-text hover:bg-surface-2"
+              className="inline-flex h-9 items-center justify-center gap-2 rounded-[var(--radius)] border border-border bg-bg px-3 text-[12px] text-text transition-colors hover:bg-surface-2"
               title="Export saved connections (no passwords) to share"
             >
               <IconExport size={12} /> Export
             </button>
             <label
-              className="inline-flex h-8 cursor-pointer items-center justify-center gap-2 rounded-[var(--radius)] border border-border bg-bg px-3 text-[12px] text-text hover:bg-surface-2"
+              className="inline-flex h-9 cursor-pointer items-center justify-center gap-2 rounded-[var(--radius)] border border-border bg-bg px-3 text-[12px] text-text transition-colors hover:bg-surface-2"
               title="Import a connection bundle"
             >
               <IconImport size={12} /> Import
@@ -216,22 +223,30 @@ export function ConnectionManager() {
               />
             </label>
           </div>
+          <div className="mt-2 text-[10.5px] leading-relaxed text-muted-2">
+            <span className="tiq-kbd">⌘O</span> opens connections
+            <br />
+            <span className="tiq-kbd">⌘K</span> opens the command palette
+            <br />
+            Local-first &middot; zero telemetry
+          </div>
         </div>
 
         {/* List column */}
         <div className="flex min-w-0 flex-col gap-3">
-          <label className="flex h-9 items-center gap-2 rounded-[var(--radius)] border border-border bg-bg px-3 focus-within:border-primary">
-            <span className="text-muted">⌕</span>
+          <label className="flex h-9 items-center gap-2 rounded-[var(--radius)] border border-border bg-bg px-3 transition-colors focus-within:border-primary">
+            <IconSearch size={13} className="text-muted-2" />
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search for connection..."
-              className="h-full flex-1 bg-transparent text-[12.5px] text-text placeholder:text-muted focus:outline-none"
+              placeholder="Search connections..."
+              className="h-full flex-1 bg-transparent text-[12.5px] text-text placeholder:text-muted-2 focus:outline-none"
             />
             {search && (
               <button
                 onClick={() => setSearch("")}
-                className="text-[11px] text-muted hover:text-text"
+                className="text-[11px] text-muted-2 hover:text-text"
+                aria-label="Clear search"
               >
                 ×
               </button>
@@ -288,18 +303,29 @@ export function ConnectionManager() {
                   >
                     Edit
                   </button>
-                  <button
-                    onClick={async () => {
-                      if (!confirm(`Delete connection "${c.name}"?`)) return;
-                      await deleteConnection(c.id);
-                      await refresh();
-                    }}
-                    title="Delete"
-                    aria-label={`Delete ${c.name}`}
-                    className="hidden h-7 w-7 items-center justify-center text-muted hover:bg-surface-2 hover:text-danger group-hover:inline-flex rounded-[var(--radius)]"
-                  >
-                    ×
-                  </button>
+                  {armedDelete === c.id ? (
+                    <button
+                      onClick={async () => {
+                        await deleteConnection(c.id);
+                        setArmedDelete(null);
+                        await refresh();
+                      }}
+                      title="Click to confirm"
+                      aria-label={`Confirm delete ${c.name}`}
+                      className="inline-flex h-7 items-center gap-1 rounded-[var(--radius)] bg-danger/10 px-2 text-[11px] font-medium text-danger hover:bg-danger/20"
+                    >
+                      Confirm delete?
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => setArmedDelete(c.id)}
+                      title="Delete"
+                      aria-label={`Delete ${c.name}`}
+                      className="hidden h-7 w-7 items-center justify-center text-muted hover:bg-surface-2 hover:text-danger group-hover:inline-flex rounded-[var(--radius)]"
+                    >
+                      ×
+                    </button>
+                  )}
                 </div>
               );
             })}
@@ -307,16 +333,22 @@ export function ConnectionManager() {
         </div>
       </div>
 
-      {/* Form side-sheet — opens from the right when editing / creating. Modal overlay
-          dims the welcome behind it. */}
-      {sheetOpen && (
-        <div
-          className="fixed inset-0 z-40 flex items-stretch justify-end bg-black/30 backdrop-blur-[2px]"
-          onClick={() => setSheetOpen(false)}
-        >
+      {/* Form side-sheet — opens from the right when editing / creating.
+          Always mounted (no mount-time hit) and slid off-screen when closed.
+          Solid scrim dim (no backdrop-filter blur — was the lag culprit on every
+          keystroke since the whole viewport repainted under the blur). */}
+      <div
+        className={`fixed inset-0 z-40 flex items-stretch justify-end transition-opacity duration-150 ${
+          sheetOpen ? "pointer-events-auto bg-black/30 opacity-100" : "pointer-events-none opacity-0"
+        }`}
+        onClick={() => setSheetOpen(false)}
+        aria-hidden={!sheetOpen}
+      >
         <div
           onClick={(e) => e.stopPropagation()}
-          className="flex h-full w-[460px] flex-col overflow-hidden border-l border-border bg-bg shadow-[var(--shadow-pop)]"
+          className={`tiq-sheet flex h-full w-[460px] flex-col overflow-hidden border-l border-border bg-bg shadow-[var(--shadow-pop)] transition-transform duration-200 ease-out ${
+            sheetOpen ? "translate-x-0" : "translate-x-full"
+          }`}
         >
           <div className="flex shrink-0 items-center border-b border-border px-4" style={{ height: "var(--header-h)" }}>
             <span className="text-[13px] font-semibold text-text">
@@ -575,8 +607,7 @@ export function ConnectionManager() {
           </div>
           </div>
         </div>
-        </div>
-      )}
+      </div>
       <Onboarding />
     </div>
   );
