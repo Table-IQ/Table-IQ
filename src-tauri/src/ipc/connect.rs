@@ -13,8 +13,8 @@ use arrow::record_batch::RecordBatch;
 use crate::connections::{self, ConnConfig, ConnStore};
 use crate::drivers::{
     doc_mongo::MongoDriver, kv_redis::RedisDriver, mysql::MySqlDriver, postgres::PgDriver,
-    sqlite::SqliteDriver, sqlserver::SqlServerDriver, CancelToken, DocumentDriver, DriverError,
-    EditSpec, KeyInfo, KvDriver, KvValue, SchemaModel, SqlDriver,
+    sqlite::SqliteDriver, sqlserver::SqlServerDriver, CancelToken, ColumnFilter, DocumentDriver,
+    DriverError, EditSpec, KeyInfo, KvDriver, KvValue, SchemaModel, SqlDriver,
 };
 use crate::ssh::tunnel::{RemoteTarget, Tunnel};
 use crate::ssh::SshAuth;
@@ -317,9 +317,14 @@ pub async fn open_table(
     id: String,
     schema: String,
     table: String,
+    filters: Option<Vec<ColumnFilter>>,
 ) -> Result<OpenTableInfo, String> {
     let drv = state.session(&id)?;
-    let row_estimate = drv.row_estimate(&schema, &table).await.map_err(|e| e.to_string())?;
+    let f = filters.unwrap_or_default();
+    let row_estimate = drv
+        .row_estimate_filtered(&schema, &table, &f)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(OpenTableInfo { row_estimate })
 }
 
@@ -331,14 +336,32 @@ pub async fn get_table_window(
     table: String,
     offset: usize,
     len: usize,
+    filters: Option<Vec<ColumnFilter>>,
 ) -> Result<Response, String> {
     let drv = state.session(&id)?;
+    let f = filters.unwrap_or_default();
     let batch = drv
-        .open_window(&schema, &table, offset, len)
+        .open_window_filtered(&schema, &table, offset, len, &f)
         .await
         .map_err(|e| e.to_string())?;
     let bytes = crate::query::window::encode_ipc(&batch).map_err(|e| e.to_string())?;
     Ok(Response::new(bytes))
+}
+
+/// Insert a single row built from `(column, text_value)` pairs (Slice 21 #2).
+/// Returns rows affected (1 on success).
+#[tauri::command]
+pub async fn insert_row(
+    state: State<'_, ConnState>,
+    id: String,
+    schema: String,
+    table: String,
+    values: Vec<(String, Option<String>)>,
+) -> Result<u64, String> {
+    let drv = state.session(&id)?;
+    drv.insert_row(&schema, &table, &values)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[derive(Serialize)]
@@ -482,11 +505,13 @@ pub async fn export_table(
     schema: String,
     table: String,
     format: String,
+    filters: Option<Vec<ColumnFilter>>,
 ) -> Result<String, String> {
     let drv = state.session(&id)?;
+    let f = filters.unwrap_or_default();
     // Export up to the same cap as queries (bounded).
     let batch = drv
-        .open_window(&schema, &table, 0, QUERY_CAP)
+        .open_window_filtered(&schema, &table, 0, QUERY_CAP, &f)
         .await
         .map_err(|e| e.to_string())?;
     Ok(encode_export(&batch, &format))
@@ -751,6 +776,165 @@ pub async fn import_rows(
         return Ok(ImportResult { inserted: 0 });
     }
     let inserted = drv.run_script(&sql).await.map_err(|e| e.to_string())?;
+    Ok(ImportResult { inserted })
+}
+
+// ── Parquet import (Slice 21 #7) ────────────────────────────────────────────
+/// 500 MB byte cap on uploads — files larger than this are rejected with a clear
+/// message suggesting a split. Aligns with the spec's safety section.
+const PARQUET_MAX_BYTES: usize = 500 * 1024 * 1024;
+
+/// Reject identifiers (schema / table / target columns) that contain control
+/// characters or are empty. The engine-specific `quote_ident` would still escape
+/// embedded quotes, but failing fast keeps the error close to the user input.
+fn validate_target_idents(
+    schema: Option<&str>,
+    table: &str,
+    column_mapping: &[(usize, String, String)],
+) -> Result<(), String> {
+    fn check(ident: &str, kind: &str) -> Result<(), String> {
+        if ident.is_empty() {
+            return Err(format!("{kind} must not be empty"));
+        }
+        if ident.chars().any(|c| c.is_control()) {
+            return Err(format!("{kind} contains control characters: {ident:?}"));
+        }
+        Ok(())
+    }
+    if let Some(s) = schema {
+        check(s, "schema")?;
+    }
+    check(table, "table")?;
+    for (_, name, _) in column_mapping {
+        check(name, "column")?;
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+pub struct ParquetPreview {
+    pub columns: Vec<String>,
+    /// Engine-mapped SQL types (e.g. "bigint", "text"), aligned to `columns`.
+    pub sql_types: Vec<String>,
+    /// Arrow logical types as strings (e.g. "Int64"), aligned to `columns`.
+    pub arrow_types: Vec<String>,
+    pub rows: Vec<Vec<Option<String>>>,
+    pub total_rows: i64,
+    pub file_size: u64,
+}
+
+/// Parse a parquet byte stream into a preview (first 100 rows + per-engine SQL types).
+#[tauri::command]
+pub async fn parse_parquet_preview(
+    engine: String,
+    bytes: Vec<u8>,
+) -> Result<ParquetPreview, String> {
+    if bytes.len() > PARQUET_MAX_BYTES {
+        return Err(format!(
+            "parquet file is {} MB — over the 500 MB cap. Split the file or use chunked upload.",
+            bytes.len() / (1024 * 1024)
+        ));
+    }
+    let dialect = crate::query::ddl::Dialect::from_engine(&engine);
+    let meta = crate::query::parquet::parquet_metadata(&bytes).map_err(|e| e.to_string())?;
+    let parsed = crate::query::parquet::parse_parquet_preview(&bytes).map_err(|e| e.to_string())?;
+    // Rebuild Arrow types from the metadata so we can map per engine.
+    let b = bytes::Bytes::copy_from_slice(&bytes);
+    let builder = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(b)
+        .map_err(|e| e.to_string())?;
+    let schema = builder.schema();
+    let sql_types: Vec<String> = schema
+        .fields()
+        .iter()
+        .map(|f| crate::query::parquet::arrow_type_to_sql(dialect, f.data_type()))
+        .collect();
+    let arrow_types: Vec<String> = schema.fields().iter().map(|f| format!("{:?}", f.data_type())).collect();
+    Ok(ParquetPreview {
+        columns: parsed.columns,
+        sql_types,
+        arrow_types,
+        rows: parsed.rows,
+        total_rows: meta.row_count,
+        file_size: meta.file_size,
+    })
+}
+
+/// Apply a parquet import: optionally CREATE TABLE, then batched INSERT via the existing
+/// `import_rows` codepath. `column_mapping[i] = (file_col_index, target_name)`; columns
+/// not in the mapping are skipped. Returns rows inserted.
+#[tauri::command]
+pub async fn apply_parquet_import(
+    state: State<'_, ConnState>,
+    id: String,
+    engine: String,
+    schema: Option<String>,
+    table: String,
+    column_mapping: Vec<(usize, String, String)>, // (file_col_idx, target_name, sql_type)
+    create_table: bool,
+    bytes: Vec<u8>,
+) -> Result<ImportResult, String> {
+    if bytes.len() > PARQUET_MAX_BYTES {
+        return Err(format!(
+            "parquet file is {} MB — over the 500 MB cap.",
+            bytes.len() / (1024 * 1024)
+        ));
+    }
+    // Validate identifiers up front whether or not we're creating the table,
+    // so a bad table/column name never reaches the engine via quoted-but-trusted
+    // interpolation. (Quoting catches it, but explicit is better than implicit.)
+    if let Err(e) = validate_target_idents(schema.as_deref(), &table, &column_mapping) {
+        return Err(e);
+    }
+    let drv = state.session(&id)?;
+    let dialect = crate::query::ddl::Dialect::from_engine(&engine);
+
+    // 1) Parse all rows server-side.
+    let parsed = crate::query::parquet::parse_parquet_all(&bytes).map_err(|e| e.to_string())?;
+
+    // 2) Optionally create the destination table.
+    if create_table {
+        let cols: Vec<(String, String)> = column_mapping
+            .iter()
+            .map(|(_, name, ty)| (name.clone(), ty.clone()))
+            .collect();
+        let ddl = crate::query::parquet::build_create_table_sql(
+            dialect,
+            schema.as_deref(),
+            &table,
+            &cols,
+        )
+        .map_err(|e| e)?;
+        drv.run_script(&ddl).await.map_err(|e| e.to_string())?;
+    }
+
+    // 3) Project rows down to the mapped columns + INSERT in streamed chunks
+    //    so we don't build one giant SQL string for a multi-million-row file.
+    let target_cols: Vec<String> =
+        column_mapping.iter().map(|(_, n, _)| n.clone()).collect();
+    const INSERT_CHUNK_ROWS: usize = 5_000;
+    let mut inserted: u64 = 0;
+    for chunk in parsed.rows.chunks(INSERT_CHUNK_ROWS) {
+        let projected: Vec<Vec<Option<String>>> = chunk
+            .iter()
+            .map(|r| {
+                column_mapping
+                    .iter()
+                    .map(|(idx, _, _)| r.get(*idx).cloned().flatten())
+                    .collect()
+            })
+            .collect();
+        let sql = crate::query::import::build_insert_sql(
+            schema.as_deref(),
+            &table,
+            &target_cols,
+            &projected,
+            dialect,
+        );
+        if sql.is_empty() {
+            continue;
+        }
+        inserted += drv.run_script(&sql).await.map_err(|e| e.to_string())?;
+    }
     Ok(ImportResult { inserted })
 }
 

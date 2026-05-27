@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DataGrid, type GridSource } from "./DataGrid";
 import { SqlEditor, type SqlEditorHandle } from "./SqlEditor";
 import { AiSettings } from "./AiSettings";
@@ -8,7 +8,9 @@ import { ChartView } from "./ChartView";
 import { PluginsPanel } from "./PluginsPanel";
 import { DiffResultsView } from "./DiffResultsView";
 import { useResults } from "../state/resultsStore";
+import { useConnections } from "../state/connectionStore";
 import { oneLine } from "../lib/history";
+import { schemaModelToCompletionMap } from "../lib/schemaCompletion";
 import {
   aiEgressPreview,
   aiExplainSql,
@@ -53,6 +55,24 @@ export function QueryView({ connId }: { connId: string }) {
   );
   const recordResult = useResults((s) => s.record);
   const recentCount = useResults((s) => s.recents.length);
+  const schemaModel = useConnections((s) => s.schema);
+  const completionSchema = useMemo(
+    () => schemaModelToCompletionMap(schemaModel),
+    [schemaModel],
+  );
+
+  // One-shot starter SQL (used by the ObjectTree "New Query Selecting…" context item).
+  // Fires at most once per QueryView mount.
+  useEffect(() => {
+    const onStarter = (e: Event) => {
+      const sql = (e as CustomEvent<string>).detail;
+      if (!sql) return;
+      sqlRef.current = sql;
+      editorRef.current?.setText(sql);
+    };
+    window.addEventListener("tiq:starter-sql", onStarter);
+    return () => window.removeEventListener("tiq:starter-sql", onStarter);
+  }, []);
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
   const [egress, setEgress] = useState<string | null>(null);
@@ -104,29 +124,35 @@ export function QueryView({ connId }: { connId: string }) {
     [connId, error],
   );
 
-  const run = useCallback(async () => {
-    setRunning(true);
-    setError(null);
-    setTxStatus(null);
-    setPlan(null);
-    const queryId = crypto.randomUUID();
-    runningQueryId.current = queryId;
-    try {
-      const m = await runQuery(connId, sqlRef.current, queryId);
-      setMeta(m);
-      recordResult({
-        resultId: m.resultId,
-        label: oneLine(sqlRef.current, 50),
-        ts: Date.now() / 1000,
-      });
-    } catch (e) {
-      setError(String(e));
-      setMeta(null);
-    } finally {
-      setRunning(false);
-      runningQueryId.current = null;
-    }
-  }, [connId, recordResult]);
+  const runSql = useCallback(
+    async (sqlText: string) => {
+      setRunning(true);
+      setError(null);
+      setTxStatus(null);
+      setPlan(null);
+      const queryId = crypto.randomUUID();
+      runningQueryId.current = queryId;
+      try {
+        const m = await runQuery(connId, sqlText, queryId);
+        setMeta(m);
+        recordResult({
+          resultId: m.resultId,
+          label: oneLine(sqlText, 50),
+          ts: Date.now() / 1000,
+        });
+      } catch (e) {
+        setError(String(e));
+        setMeta(null);
+      } finally {
+        setRunning(false);
+        runningQueryId.current = null;
+      }
+    },
+    [connId, recordResult],
+  );
+
+  const run = useCallback(() => runSql(sqlRef.current), [runSql]);
+  const runSelection = useCallback((sqlText: string) => runSql(sqlText), [runSql]);
 
   const cancel = useCallback(async () => {
     const queryId = runningQueryId.current;
@@ -199,6 +225,17 @@ export function QueryView({ connId }: { connId: string }) {
             onClick={cancel}
           />
         )}
+        <ToolbarButton
+          label="Run selection"
+          shortcut="⇧⌘↵"
+          onClick={() => {
+            // Fall back to running everything when no selection helper is available
+            // (button mirrors the keyboard shortcut for discoverability).
+            const doc = sqlRef.current;
+            runSelection(doc);
+          }}
+          disabled={running}
+        />
         <ToolbarButton label="Run in tx" onClick={runInTx} disabled={running} />
         <ToolbarButton label="Explain" onClick={explain} disabled={running} />
         <ToolbarDivider />
@@ -325,6 +362,8 @@ export function QueryView({ connId }: { connId: string }) {
           initial={sqlRef.current}
           onChange={(v) => (sqlRef.current = v)}
           onRun={run}
+          onRunSelection={runSelection}
+          schema={completionSchema}
         />
       </div>
 

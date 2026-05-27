@@ -24,7 +24,16 @@ interface Edge {
  *   • Search-as-you-type fades non-matches.
  *   • Click a card to open the table in a tab.
  */
-export function ErdView({ connId, schema }: { connId: string; schema: SchemaModel }) {
+export function ErdView({
+  connId,
+  schema,
+  focusTable,
+}: {
+  connId: string;
+  schema: SchemaModel;
+  /** Center + highlight one card on mount (Slice 21 #5 → "Show in Diagram"). */
+  focusTable?: string;
+}) {
   const [fks, setFks] = useState<ForeignKey[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [query, setQuery] = useState("");
@@ -40,6 +49,25 @@ export function ErdView({ connId, schema }: { connId: string; schema: SchemaMode
   useEffect(() => {
     refresh();
   }, [connId]);
+
+  // Center the requested card after the layout settles (one tick post-mount).
+  useEffect(() => {
+    if (!focusTable) return;
+    const id = requestAnimationFrame(() => {
+      const card = cardRefs.current.get(focusTable);
+      const cont = containerRef.current;
+      if (!card || !cont) return;
+      const cardR = card.getBoundingClientRect();
+      const contR = cont.getBoundingClientRect();
+      // Translate so the card's center lines up with the container's center.
+      setPan({
+        x: contR.width / 2 - (cardR.left - contR.left) - cardR.width / 2,
+        y: contR.height / 2 - (cardR.top - contR.top) - cardR.height / 2,
+      });
+      setQuery(focusTable);
+    });
+    return () => cancelAnimationFrame(id);
+  }, [focusTable, schema]);
 
   // Recompute edge endpoints whenever layout / fks change. Endpoints are anchored at
   // the FK column's row center (column-anchored connector style), not card centers.

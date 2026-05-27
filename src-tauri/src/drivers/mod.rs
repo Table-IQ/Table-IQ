@@ -148,6 +148,82 @@ pub struct EditSpec {
     pub orig_value: Option<String>,
 }
 
+/// Per-column filter operator. NULL ops emit no bind; the rest emit one bind each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FilterOp {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Like,
+    ILike,
+    IsNull,
+    IsNotNull,
+}
+
+/// One AND-clause in a per-column filter set (Slice 21 #1).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ColumnFilter {
+    pub column: String,
+    pub op: FilterOp,
+    pub value: Option<String>,
+}
+
+/// Build a parameterized WHERE fragment from a filter set. Returns `(sql, binds)` where
+/// `sql` is "" for an empty filter set, otherwise a "<col> <op> <ph> AND …" string with
+/// no leading "WHERE" (callers wrap as needed). `quote_ident` and `placeholder` are
+/// engine-specific helpers; `start_idx` is the first placeholder index to allocate
+/// (1 for PG `$1`, 1 for MSSQL `@P1`, 1 for SQLite `?1`, ignored for MySQL `?`).
+///
+/// `ILike` translates to a cross-engine `LOWER(col) LIKE LOWER(val)` form so a non-PG
+/// engine never sees an unsupported keyword. PG keeps that translation too (correct +
+/// portable), trading a tiny perf hit for one less SQL dialect quirk.
+pub fn build_where_clause(
+    filters: &[ColumnFilter],
+    quote_ident: &dyn Fn(&str) -> String,
+    placeholder: &dyn Fn(usize) -> String,
+    start_idx: usize,
+) -> (String, Vec<Option<String>>) {
+    if filters.is_empty() {
+        return (String::new(), Vec::new());
+    }
+    let mut parts: Vec<String> = Vec::new();
+    let mut binds: Vec<Option<String>> = Vec::new();
+    let mut idx = start_idx;
+    for f in filters {
+        let col = quote_ident(&f.column);
+        match f.op {
+            FilterOp::IsNull => parts.push(format!("{col} IS NULL")),
+            FilterOp::IsNotNull => parts.push(format!("{col} IS NOT NULL")),
+            FilterOp::ILike => {
+                let ph = placeholder(idx);
+                parts.push(format!("LOWER({col}) LIKE LOWER({ph})"));
+                binds.push(f.value.clone());
+                idx += 1;
+            }
+            op => {
+                let sym = match op {
+                    FilterOp::Eq => "=",
+                    FilterOp::Ne => "<>",
+                    FilterOp::Lt => "<",
+                    FilterOp::Le => "<=",
+                    FilterOp::Gt => ">",
+                    FilterOp::Ge => ">=",
+                    FilterOp::Like => "LIKE",
+                    _ => unreachable!("null/ILike handled above"),
+                };
+                let ph = placeholder(idx);
+                parts.push(format!("{col} {sym} {ph}"));
+                binds.push(f.value.clone());
+                idx += 1;
+            }
+        }
+    }
+    (parts.join(" AND "), binds)
+}
+
 /// SQL engines (PG/MySQL/MariaDB/SQLite/SQL Server). Results stream as Arrow.
 #[async_trait]
 pub trait SqlDriver: Send + Sync {
@@ -164,8 +240,19 @@ pub trait SqlDriver: Send + Sync {
 
     /// Browse the connection's schemas → tables/views → columns.
     async fn introspect(&self) -> DResult<SchemaModel>;
-    /// Fast (approximate) row count for a table.
+    /// Fast (approximate) row count for a table. With filters, falls back to an
+    /// exact `COUNT(*)` (engine stats catalogs are unfiltered).
     async fn row_estimate(&self, schema: &str, table: &str) -> DResult<i64>;
+    /// Filtered row count. Default: ignore filters and delegate to `row_estimate`
+    /// (preserves prior behaviour for engines that haven't been updated yet).
+    async fn row_estimate_filtered(
+        &self,
+        schema: &str,
+        table: &str,
+        _filters: &[ColumnFilter],
+    ) -> DResult<i64> {
+        self.row_estimate(schema, table).await
+    }
     /// Read a window of rows from a table as Arrow (read-only browse).
     async fn open_window(
         &self,
@@ -174,6 +261,28 @@ pub trait SqlDriver: Send + Sync {
         offset: usize,
         len: usize,
     ) -> DResult<arrow::record_batch::RecordBatch>;
+    /// Filtered window read. Default: ignore filters and delegate to `open_window`
+    /// (preserves prior behaviour for engines that haven't been updated yet).
+    async fn open_window_filtered(
+        &self,
+        schema: &str,
+        table: &str,
+        offset: usize,
+        len: usize,
+        _filters: &[ColumnFilter],
+    ) -> DResult<arrow::record_batch::RecordBatch> {
+        self.open_window(schema, table, offset, len).await
+    }
+    /// Insert a single row built from `(column, text_value)` pairs.
+    /// Default: unsupported (KV/Document drivers don't reach here).
+    async fn insert_row(
+        &self,
+        _schema: &str,
+        _table: &str,
+        _values: &[(String, Option<String>)],
+    ) -> DResult<u64> {
+        Err(DriverError::NotImplemented)
+    }
 
     /// Run a one-shot query (single statement), capped, as an Arrow result.
     async fn run_query(&self, sql: &str, cap: usize) -> DResult<QueryResult>;
@@ -245,9 +354,168 @@ pub trait KvDriver: Send + Sync {
     async fn get(&self, key: &str) -> DResult<KvValue>;
 }
 
+/// Pure builder for a parameterized INSERT used by the per-engine `insert_row` impls
+/// (Slice 21 #2). `quote_ident` and `placeholder` mirror `build_where_clause`. Returns
+/// `(sql, binds)` where `binds.len() == values.len()`.
+pub fn build_insert_sql(
+    schema: &str,
+    table: &str,
+    values: &[(String, Option<String>)],
+    quote_ident: &dyn Fn(&str) -> String,
+    placeholder: &dyn Fn(usize) -> String,
+    qualify_schema: bool,
+) -> (String, Vec<Option<String>>) {
+    let cols: Vec<String> = values.iter().map(|(c, _)| quote_ident(c)).collect();
+    let phs: Vec<String> = (1..=values.len()).map(placeholder).collect();
+    let binds: Vec<Option<String>> = values.iter().map(|(_, v)| v.clone()).collect();
+    let qualified = if qualify_schema {
+        format!("{}.{}", quote_ident(schema), quote_ident(table))
+    } else {
+        quote_ident(table)
+    };
+    let sql = format!(
+        "INSERT INTO {} ({}) VALUES ({})",
+        qualified,
+        cols.join(", "),
+        phs.join(", "),
+    );
+    (sql, binds)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pg_ident(n: &str) -> String {
+        format!("\"{}\"", n.replace('"', "\"\""))
+    }
+    fn pg_ph(i: usize) -> String {
+        format!("${i}")
+    }
+    fn mysql_ident(n: &str) -> String {
+        format!("`{}`", n.replace('`', "``"))
+    }
+    fn mysql_ph(_i: usize) -> String {
+        "?".to_string()
+    }
+    fn sqlite_ph(i: usize) -> String {
+        format!("?{i}")
+    }
+    fn mssql_ident(n: &str) -> String {
+        format!("[{}]", n.replace(']', "]]"))
+    }
+    fn mssql_ph(i: usize) -> String {
+        format!("@P{i}")
+    }
+
+    #[test]
+    fn where_clause_empty_filters() {
+        let (sql, binds) = build_where_clause(&[], &pg_ident, &pg_ph, 1);
+        assert_eq!(sql, "");
+        assert!(binds.is_empty());
+    }
+
+    #[test]
+    fn where_clause_postgres() {
+        let f = vec![
+            ColumnFilter { column: "name".into(), op: FilterOp::Eq, value: Some("a".into()) },
+            ColumnFilter { column: "age".into(), op: FilterOp::Ge, value: Some("18".into()) },
+            ColumnFilter { column: "email".into(), op: FilterOp::IsNotNull, value: None },
+        ];
+        let (sql, binds) = build_where_clause(&f, &pg_ident, &pg_ph, 1);
+        assert_eq!(
+            sql,
+            "\"name\" = $1 AND \"age\" >= $2 AND \"email\" IS NOT NULL"
+        );
+        assert_eq!(binds, vec![Some("a".into()), Some("18".into())]);
+    }
+
+    #[test]
+    fn where_clause_mysql_uses_question_mark() {
+        let f = vec![
+            ColumnFilter { column: "x".into(), op: FilterOp::Lt, value: Some("5".into()) },
+            ColumnFilter { column: "y".into(), op: FilterOp::Like, value: Some("%foo%".into()) },
+        ];
+        let (sql, binds) = build_where_clause(&f, &mysql_ident, &mysql_ph, 1);
+        assert_eq!(sql, "`x` < ? AND `y` LIKE ?");
+        assert_eq!(binds, vec![Some("5".into()), Some("%foo%".into())]);
+    }
+
+    #[test]
+    fn where_clause_sqlite_numeric_placeholders() {
+        let f = vec![
+            ColumnFilter { column: "a".into(), op: FilterOp::Ne, value: Some("1".into()) },
+            ColumnFilter { column: "b".into(), op: FilterOp::IsNull, value: None },
+        ];
+        let (sql, binds) = build_where_clause(&f, &pg_ident, &sqlite_ph, 3);
+        assert_eq!(sql, "\"a\" <> ?3 AND \"b\" IS NULL");
+        assert_eq!(binds, vec![Some("1".into())]);
+    }
+
+    #[test]
+    fn where_clause_mssql_bracket_quoted() {
+        let f = vec![ColumnFilter {
+            column: "col]name".into(),
+            op: FilterOp::Eq,
+            value: Some("v".into()),
+        }];
+        let (sql, _binds) = build_where_clause(&f, &mssql_ident, &mssql_ph, 1);
+        assert_eq!(sql, "[col]]name] = @P1");
+    }
+
+    #[test]
+    fn where_clause_ilike_translates_to_lower() {
+        let f = vec![ColumnFilter {
+            column: "name".into(),
+            op: FilterOp::ILike,
+            value: Some("%Bob%".into()),
+        }];
+        let (sql, binds) = build_where_clause(&f, &pg_ident, &pg_ph, 1);
+        assert_eq!(sql, "LOWER(\"name\") LIKE LOWER($1)");
+        assert_eq!(binds, vec![Some("%Bob%".into())]);
+    }
+
+    #[test]
+    fn insert_sql_postgres() {
+        let vals = vec![
+            ("id".to_string(), Some("1".into())),
+            ("name".to_string(), Some("a".into())),
+        ];
+        let (sql, binds) = build_insert_sql("public", "users", &vals, &pg_ident, &pg_ph, true);
+        assert_eq!(
+            sql,
+            "INSERT INTO \"public\".\"users\" (\"id\", \"name\") VALUES ($1, $2)"
+        );
+        assert_eq!(binds.len(), 2);
+        assert_eq!(binds[0], Some("1".into()));
+    }
+
+    #[test]
+    fn insert_sql_mysql() {
+        let vals = vec![("col".to_string(), Some("v".into()))];
+        let (sql, _b) = build_insert_sql("db", "t", &vals, &mysql_ident, &mysql_ph, true);
+        assert_eq!(sql, "INSERT INTO `db`.`t` (`col`) VALUES (?)");
+    }
+
+    #[test]
+    fn insert_sql_sqlite_unqualified() {
+        // SQLite has one logical schema; we never prepend it.
+        let vals = vec![("name".to_string(), Some("v".into()))];
+        let (sql, _b) = build_insert_sql("main", "users", &vals, &pg_ident, &sqlite_ph, false);
+        assert_eq!(sql, "INSERT INTO \"users\" (\"name\") VALUES (?1)");
+    }
+
+    #[test]
+    fn insert_sql_mssql() {
+        let vals = vec![
+            ("a".to_string(), Some("1".into())),
+            ("b".to_string(), None),
+        ];
+        let (sql, binds) =
+            build_insert_sql("dbo", "tbl", &vals, &mssql_ident, &mssql_ph, true);
+        assert_eq!(sql, "INSERT INTO [dbo].[tbl] ([a], [b]) VALUES (@P1, @P2)");
+        assert_eq!(binds, vec![Some("1".into()), None]);
+    }
 
     #[test]
     fn fetch_window_variants_construct() {
