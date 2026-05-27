@@ -10,8 +10,8 @@ use sqlx::sqlite::{SqlitePoolOptions, SqliteRow};
 use sqlx::{Column, Executor, Row, Sqlite, Pool};
 
 use super::{
-    ColumnInfo, CursorId, DResult, DriverError, EditSpec, ObjectInfo, ObjectKind, QueryResult,
-    SchemaInfo, SchemaModel, SqlDriver,
+    ColumnInfo, CursorId, DResult, DriverError, EditSpec, ForeignKey, ObjectInfo, ObjectKind,
+    QueryResult, SchemaInfo, SchemaModel, SqlDriver,
 };
 
 fn db(e: sqlx::Error) -> DriverError {
@@ -210,5 +210,58 @@ impl SqlDriver for SqliteDriver {
 
     async fn run_script(&self, sql: &str) -> DResult<u64> {
         Ok(sqlx::raw_sql(sql).execute(&self.pool).await.map_err(db)?.rows_affected())
+    }
+
+    /// FK edges via `PRAGMA foreign_key_list(<table>)` for each user table.
+    /// SQLite has no central FK catalog, so we iterate sqlite_master and union.
+    async fn foreign_keys(&self) -> DResult<Vec<ForeignKey>> {
+        let tables: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        let mut out: Vec<ForeignKey> = Vec::new();
+        for t in tables {
+            let rows = sqlx::query(&format!("PRAGMA foreign_key_list({})", quote_ident(&t)))
+                .fetch_all(&self.pool)
+                .await
+                .map_err(db)?;
+            for r in rows {
+                out.push(ForeignKey {
+                    from_table: t.clone(),
+                    from_column: r.get("from"),
+                    to_table: r.get("table"),
+                    to_column: r.get("to"),
+                });
+            }
+        }
+        Ok(out)
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Live FK introspection against a temp-file SQLite — no external infra needed,
+    /// so this is *not* gated on TIQ_* env vars (it always runs).
+    #[tokio::test]
+    async fn foreign_keys_via_pragma() {
+        let tmp = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        let drv = SqliteDriver::connect(&path).await.expect("connect");
+        sqlx::query("PRAGMA foreign_keys = ON;").execute(&drv.pool).await.unwrap();
+        sqlx::query("CREATE TABLE parent (id INTEGER PRIMARY KEY, name TEXT)")
+            .execute(&drv.pool).await.unwrap();
+        sqlx::query("CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parent(id))")
+            .execute(&drv.pool).await.unwrap();
+        let fks = drv.foreign_keys().await.expect("foreign_keys");
+        assert_eq!(fks.len(), 1, "expected 1 FK edge, got {:?}", fks);
+        assert_eq!(fks[0].from_table, "child");
+        assert_eq!(fks[0].from_column, "parent_id");
+        assert_eq!(fks[0].to_table, "parent");
+        assert_eq!(fks[0].to_column, "id");
     }
 }

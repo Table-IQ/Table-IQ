@@ -924,3 +924,36 @@ pub async fn ai_fix_sql(
     let (system, user) = ai::build_fix_prompt(&card, &sql, &error);
     Ok(ai::extract_sql(&provider.complete(&system, &user).await?))
 }
+
+// ── First-launch onboarding marker ─────────────────────────────────────────
+// Stored as a tiny JSON file in the platform app-config dir so it survives
+// upgrades but is reset when the user wipes their config (e.g. `--reset`).
+#[derive(serde::Deserialize, serde::Serialize, Default)]
+pub struct OnboardingState {
+    pub onboarded: bool,
+}
+
+fn onboarding_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    use tauri::Manager;
+    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("onboarded.json"))
+}
+
+#[tauri::command]
+pub fn read_onboarding_state(app: tauri::AppHandle) -> Result<OnboardingState, String> {
+    let path = onboarding_path(&app)?;
+    if !path.exists() {
+        return Ok(OnboardingState::default());
+    }
+    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    serde_json::from_str(&text).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn write_onboarding_state(app: tauri::AppHandle, state: OnboardingState) -> Result<(), String> {
+    let path = onboarding_path(&app)?;
+    let text = serde_json::to_string_pretty(&state).map_err(|e| e.to_string())?;
+    std::fs::write(&path, text).map_err(|e| e.to_string())
+}
+

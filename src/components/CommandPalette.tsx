@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { fuzzyFilter } from "../lib/fuzzy";
+import { IconSearch } from "./ui/Icon";
 
 export interface Command {
   id: string;
@@ -10,9 +11,15 @@ export interface Command {
 
 /**
  * Cmd-K command palette: fuzzy-search tables and actions, arrow keys to move, Enter to run.
- * `commands` is supplied by the shell (tables/views + actions).
+ * Centered card with TablePlus-style search affordance + result list.
  */
-export function CommandPalette({ commands, onClose }: { commands: Command[]; onClose: () => void }) {
+export function CommandPalette({
+  commands,
+  onClose,
+}: {
+  commands: Command[];
+  onClose: () => void;
+}) {
   const [query, setQuery] = useState("");
   const [sel, setSel] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -21,16 +28,18 @@ export function CommandPalette({ commands, onClose }: { commands: Command[]; onC
     inputRef.current?.focus();
   }, []);
 
-  const filtered = useMemo(() => fuzzyFilter(commands, query, (c) => c.label), [commands, query]);
-  // Keep the selection within bounds as the list shrinks.
+  const filtered = useMemo(
+    () => fuzzyFilter(commands, query, (c) => c.label),
+    [commands, query],
+  );
+
   useEffect(() => {
     setSel((s) => Math.min(s, Math.max(0, filtered.length - 1)));
   }, [filtered.length]);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Escape") {
-      onClose();
-    } else if (e.key === "ArrowDown") {
+    if (e.key === "Escape") onClose();
+    else if (e.key === "ArrowDown") {
       e.preventDefault();
       setSel((s) => Math.min(s + 1, filtered.length - 1));
     } else if (e.key === "ArrowUp") {
@@ -47,22 +56,29 @@ export function CommandPalette({ commands, onClose }: { commands: Command[]; onC
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 p-6 pt-[12vh]" onClick={onClose}>
+    <div
+      className="tiq-overlay flex items-start justify-center p-6 pt-[14vh]"
+      onClick={onClose}
+    >
       <div
-        className="flex max-h-[60vh] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-border bg-bg shadow-xl"
+        className="flex max-h-[60vh] w-full max-w-xl flex-col overflow-hidden rounded-xl border border-border bg-bg shadow-[var(--shadow-pop)]"
         onClick={(e) => e.stopPropagation()}
       >
-        <input
-          ref={inputRef}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={onKeyDown}
-          placeholder="Jump to a table or run a command…"
-          className="border-b border-border bg-bg px-4 py-3 text-sm text-text placeholder:text-muted focus:outline-none"
-        />
+        <label className="flex items-center gap-2 border-b border-border bg-surface px-4 py-3">
+          <IconSearch size={14} className="text-muted" />
+          <input
+            ref={inputRef}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder="Jump to a table or run a command…"
+            className="flex-1 bg-transparent text-sm text-text placeholder:text-muted focus:outline-none"
+          />
+          <span className="tiq-kbd">ESC</span>
+        </label>
         <div className="min-h-0 flex-1 overflow-auto py-1">
           {filtered.length === 0 ? (
-            <div className="px-4 py-3 text-xs text-muted">No matches.</div>
+            <div className="px-4 py-6 text-center text-xs text-muted">No matches.</div>
           ) : (
             filtered.map((c, i) => (
               <button
@@ -72,16 +88,27 @@ export function CommandPalette({ commands, onClose }: { commands: Command[]; onC
                   c.run();
                   onClose();
                 }}
-                className={`flex w-full items-center justify-between px-4 py-1.5 text-left text-sm ${
-                  i === sel ? "bg-primary/10 text-text" : "text-muted hover:bg-surface"
+                className={`flex w-full items-center justify-between gap-3 px-4 py-2 text-left text-sm transition-colors ${
+                  i === sel ? "bg-selection-bg text-text" : "text-text hover:bg-surface-2"
                 }`}
               >
                 <span className="truncate font-mono">{c.label}</span>
-                {c.hint && <span className="ml-3 shrink-0 text-[10px] uppercase tracking-widest text-muted">{c.hint}</span>}
+                {c.hint && (
+                  <span className="ml-3 shrink-0 text-[10px] uppercase tracking-wider text-muted">
+                    {c.hint}
+                  </span>
+                )}
               </button>
             ))
           )}
         </div>
+        <footer className="flex items-center justify-between border-t border-border bg-surface px-4 py-1.5 text-[10px] text-muted">
+          <span>
+            <span className="tiq-kbd">↑</span> <span className="tiq-kbd">↓</span> navigate ·{" "}
+            <span className="tiq-kbd">↵</span> open
+          </span>
+          <span>{filtered.length} result{filtered.length === 1 ? "" : "s"}</span>
+        </footer>
       </div>
     </div>
   );

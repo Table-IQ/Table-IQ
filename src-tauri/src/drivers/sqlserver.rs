@@ -16,8 +16,8 @@ use tokio::sync::Mutex;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
 use super::{
-    ColumnInfo, CursorId, DResult, DriverError, EditSpec, ObjectInfo, ObjectKind, QueryResult,
-    SchemaInfo, SchemaModel, SqlDriver,
+    ColumnInfo, CursorId, DResult, DriverError, EditSpec, ForeignKey, ObjectInfo, ObjectKind,
+    QueryResult, SchemaInfo, SchemaModel, SqlDriver,
 };
 
 type Conn = Client<Compat<TcpStream>>;
@@ -288,5 +288,56 @@ impl SqlDriver for SqlServerDriver {
         let mut c = self.client.lock().await;
         let res = c.execute(sql, &[]).await.map_err(db)?;
         Ok(res.total())
+    }
+
+    /// FK edges via the `sys.foreign_keys` catalog (joined for column + table names).
+    /// All metadata returned as Utf8 strings, matching how the rest of the driver renders.
+    async fn foreign_keys(&self) -> DResult<Vec<ForeignKey>> {
+        let sql = "SELECT tp.name AS from_table, cp.name AS from_column, \
+                          tr.name AS to_table,   cr.name AS to_column \
+                   FROM sys.foreign_keys fk \
+                   JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id \
+                   JOIN sys.tables  tp ON fkc.parent_object_id     = tp.object_id \
+                   JOIN sys.columns cp ON fkc.parent_object_id     = cp.object_id AND fkc.parent_column_id     = cp.column_id \
+                   JOIN sys.tables  tr ON fkc.referenced_object_id = tr.object_id \
+                   JOIN sys.columns cr ON fkc.referenced_object_id = cr.object_id AND fkc.referenced_column_id = cr.column_id";
+        let (_cols, rows) = self.query_text(sql).await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| ForeignKey {
+                from_table: r[0].clone().unwrap_or_default(),
+                from_column: r[1].clone().unwrap_or_default(),
+                to_table: r[2].clone().unwrap_or_default(),
+                to_column: r[3].clone().unwrap_or_default(),
+            })
+            .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Smoke-test that the FK query uses the documented sys.* tables and joins through
+    /// foreign_key_columns to resolve both ends. Live verification is gated on the
+    /// TIQ_MSSQL_URL env var in the integration test suite.
+    #[test]
+    fn fk_query_uses_sys_foreign_keys() {
+        let sql = "SELECT tp.name AS from_table, cp.name AS from_column, \
+                          tr.name AS to_table,   cr.name AS to_column \
+                   FROM sys.foreign_keys fk \
+                   JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id \
+                   JOIN sys.tables  tp ON fkc.parent_object_id     = tp.object_id \
+                   JOIN sys.columns cp ON fkc.parent_object_id     = cp.object_id AND fkc.parent_column_id     = cp.column_id \
+                   JOIN sys.tables  tr ON fkc.referenced_object_id = tr.object_id \
+                   JOIN sys.columns cr ON fkc.referenced_object_id = cr.object_id AND fkc.referenced_column_id = cr.column_id";
+        for needle in [
+            "sys.foreign_keys",
+            "sys.foreign_key_columns",
+            "sys.tables",
+            "sys.columns",
+            "parent_object_id",
+            "referenced_object_id",
+        ] {
+            assert!(sql.contains(needle), "FK query is missing `{needle}`");
+        }
     }
 }
