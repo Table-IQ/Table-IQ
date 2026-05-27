@@ -12,6 +12,8 @@ import { CommandPalette, type Command } from "./CommandPalette";
 import { Onboarding } from "./Onboarding";
 import { ConnectionRail } from "./ConnectionRail";
 import { Inspector } from "./Inspector";
+import { ContextMenu, type ContextMenuItem } from "./ui/ContextMenu";
+import { hydrateForConnection, persistForConnection } from "../lib/tabsPersist";
 import { ToolbarButton, Toolbar, ToolbarDivider, ToolbarSpacer } from "./ui/Toolbar";
 import { StatusBar, StatusDot } from "./ui/StatusBar";
 import { ColorDot } from "./ui/Chip";
@@ -34,6 +36,7 @@ import {
 } from "./ui/Icon";
 import { useConnections } from "../state/connectionStore";
 import { useTabs } from "../state/tabsStore";
+import type { Tab } from "../state/tabsStore";
 import { disconnect, type Engine, type ObjectInfo } from "../lib/commands";
 
 function findObject(
@@ -49,8 +52,9 @@ export function MainShell() {
   const { active, schema, saved, setActive, setSchema } = useConnections();
   // Header color chip resolves from the saved ConnConfig (ConnectedInfo doesn't carry color).
   const activeColor = active ? saved.find((c) => c.id === active.id)?.color ?? null : null;
+  const tabsState = useTabs();
   const { tabs, activeKey, openTable, openQuery, openErd, close, setActive: setActiveTab, reset } =
-    useTabs();
+    tabsState;
   const [showStructure, setShowStructure] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showDiff, setShowDiff] = useState(false);
@@ -60,6 +64,47 @@ export function MainShell() {
   const [showRail, setShowRail] = useState(true);
   const [showHelp, setShowHelp] = useState(false);
   const [pinned, setPinned] = useState<string[]>([]);
+  const [erdFocus, setErdFocus] = useState<string | undefined>(undefined);
+  const [objMenu, setObjMenu] = useState<{
+    x: number;
+    y: number;
+    schema: string;
+    obj: ObjectInfo;
+  } | null>(null);
+  const [tabMenu, setTabMenu] = useState<{ x: number; y: number; tab: Tab } | null>(null);
+  const [hydrated, setHydrated] = useState<string | null>(null);
+
+  // Hydrate persisted tabs whenever we switch connections. Persist on every tab change
+  // afterward.
+  useEffect(() => {
+    if (!active) return;
+    if (hydrated === active.id) return;
+    const slice = hydrateForConnection(active.id, null, schema);
+    // We use Zustand's store directly to seed without firing the inner setters.
+    if (slice) {
+      useTabs.setState({
+        tabs: slice.tabs,
+        activeKey: slice.activeKey,
+        queryCount: slice.queryCount,
+      });
+    } else {
+      useTabs.setState({ tabs: [], activeKey: null, queryCount: 0 });
+    }
+    setHydrated(active.id);
+  }, [active, schema, hydrated]);
+
+  useEffect(() => {
+    if (!active) return;
+    // Skip writes until hydrate has run for this connection — otherwise the initial
+    // mount-time render captures an empty (pre-hydrate) slice and would clobber the
+    // saved slice on disk.
+    if (hydrated !== active.id) return;
+    persistForConnection(
+      active.id,
+      { tabs, activeKey, queryCount: tabsState.queryCount },
+      null,
+    );
+  }, [active, tabs, activeKey, tabsState.queryCount, hydrated]);
 
   // Cmd-K / Ctrl-K toggles the command palette.
   useEffect(() => {
@@ -144,7 +189,7 @@ export function MainShell() {
       );
     }
     if (activeTab.kind === "query") return <QueryView connId={active.id} />;
-    if (activeTab.kind === "erd") return <ErdView connId={active.id} schema={schema} />;
+    if (activeTab.kind === "erd") return <ErdView connId={active.id} schema={schema} focusTable={erdFocus} />;
     return activeObj ? (
       <TableView connId={active.id} schema={activeTab.schema!} object={activeObj} />
     ) : (
@@ -274,6 +319,10 @@ export function MainShell() {
                 activeKey={activeKey}
                 pinned={pinned}
                 onOpen={(schemaName, obj) => openTable(schemaName, obj.name)}
+                onContext={(e, schemaName, obj) => {
+                  e.preventDefault();
+                  setObjMenu({ x: e.clientX, y: e.clientY, schema: schemaName, obj });
+                }}
                 onPinToggle={togglePin}
               />
             </div>
@@ -351,6 +400,10 @@ export function MainShell() {
               return (
                 <div
                   key={t.key}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setTabMenu({ x: e.clientX, y: e.clientY, tab: t });
+                  }}
                   className={`group relative flex items-center gap-1.5 border-r border-border px-3 text-xs transition-colors ${
                     isActive
                       ? "bg-bg text-text"
@@ -438,6 +491,108 @@ export function MainShell() {
         <DiffView connId={active.id} connName={active.name} onClose={() => setShowDiff(false)} />
       )}
       {showPalette && <CommandPalette commands={commands} onClose={() => setShowPalette(false)} />}
+
+      {objMenu &&
+        (() => {
+          const key = `${objMenu.schema}.${objMenu.obj.name}`;
+          const isPinned = pinned.includes(key);
+          const items: (ContextMenuItem | "separator")[] = [
+            { id: "open", label: "Open", onSelect: () => openTable(objMenu.schema, objMenu.obj.name) },
+            {
+              id: "new-query",
+              label: `New Query Selecting from ${objMenu.obj.name}`,
+              onSelect: () => {
+                openQuery();
+                // The new tab is now active; we stash a one-shot starter SQL in window for the
+                // QueryView to optionally hydrate (light-touch approach without store changes).
+                window.dispatchEvent(
+                  new CustomEvent("tiq:starter-sql", {
+                    detail: `SELECT * FROM ${objMenu.schema}.${objMenu.obj.name} LIMIT 100;`,
+                  }),
+                );
+              },
+            },
+            {
+              id: "show-in-diagram",
+              label: "Show in Diagram",
+              onSelect: () => {
+                setErdFocus(objMenu.obj.name);
+                openErd();
+              },
+            },
+            "separator",
+            {
+              id: "pin",
+              label: isPinned ? "Unpin" : "Pin",
+              onSelect: () => togglePin(objMenu.schema, objMenu.obj.name),
+            },
+            "separator",
+            {
+              id: "copy-name",
+              label: "Copy name",
+              onSelect: () => navigator.clipboard?.writeText(objMenu.obj.name),
+            },
+            {
+              id: "copy-qualified",
+              label: `Copy as ${objMenu.schema}.${objMenu.obj.name}`,
+              onSelect: () =>
+                navigator.clipboard?.writeText(`${objMenu.schema}.${objMenu.obj.name}`),
+            },
+          ];
+          return (
+            <ContextMenu
+              x={objMenu.x}
+              y={objMenu.y}
+              items={items}
+              onClose={() => setObjMenu(null)}
+            />
+          );
+        })()}
+
+      {tabMenu &&
+        (() => {
+          const items: (ContextMenuItem | "separator")[] = [
+            { id: "close", label: "Close", onSelect: () => close(tabMenu.tab.key) },
+            {
+              id: "close-others",
+              label: "Close others",
+              disabled: tabs.length <= 1,
+              onSelect: () => {
+                for (const t of tabs) if (t.key !== tabMenu.tab.key) close(t.key);
+              },
+            },
+            {
+              id: "close-all",
+              label: "Close all",
+              tone: "danger",
+              onSelect: () => {
+                for (const t of tabs) close(t.key);
+              },
+            },
+            "separator",
+            {
+              id: "duplicate",
+              label: "Duplicate",
+              onSelect: () => {
+                if (tabMenu.tab.kind === "table" && tabMenu.tab.schema && tabMenu.tab.table) {
+                  openTable(tabMenu.tab.schema, tabMenu.tab.table);
+                } else if (tabMenu.tab.kind === "query") {
+                  openQuery();
+                } else if (tabMenu.tab.kind === "erd") {
+                  openErd();
+                }
+              },
+            },
+          ];
+          return (
+            <ContextMenu
+              x={tabMenu.x}
+              y={tabMenu.y}
+              items={items}
+              onClose={() => setTabMenu(null)}
+            />
+          );
+        })()}
       {showHelp && <HelpMenu onTour={() => { setShowHelp(false); /* tour re-trigger handled by Onboarding */ window.dispatchEvent(new CustomEvent("tiq:show-tour")); }} onClose={() => setShowHelp(false)} />}
       <Onboarding />
     </div>

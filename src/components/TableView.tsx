@@ -6,9 +6,12 @@ import {
   exportTable,
   fetchTableWindow,
   foreignKeys,
+  insertRow,
   openTable,
   primaryKey,
+  type ColumnFilter,
   type ExportFormat,
+  type FilterOp,
   type ForeignKey,
   type ObjectInfo,
 } from "../lib/commands";
@@ -22,7 +25,12 @@ import type { Engine } from "../lib/commands";
 import { Toolbar, ToolbarButton, ToolbarDivider, ToolbarSpacer } from "./ui/Toolbar";
 import { StatusBar, StatusDot } from "./ui/StatusBar";
 import { Chip } from "./ui/Chip";
+import { ContextMenu, type ContextMenuItem } from "./ui/ContextMenu";
+import { buildRowAs } from "../lib/rowFormat";
+import { buildInsertValues, isDraftDirty } from "../lib/insertRow";
+import { chipLabel, removeFilter, upsertFilter, FILTER_OP_LABEL, isNullOp } from "../lib/filterBuilder";
 import {
+  IconClose,
   IconExport,
   IconFilter,
   IconLink,
@@ -48,6 +56,16 @@ export function TableView({ connId, schema, object }: Props) {
   const [view, setView] = useState<"data" | "structure">("data");
   const [dirty, setDirty] = useState(0);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [filters, setFilters] = useState<ColumnFilter[]>([]);
+  const [filterDraft, setFilterDraft] = useState<{ column: string; op: FilterOp; value: string } | null>(null);
+  const [draft, setDraft] = useState<Record<string, string | null | undefined> | null>(null);
+  const [cellMenu, setCellMenu] = useState<{
+    x: number;
+    y: number;
+    col: string;
+    row: number;
+    value: string | null;
+  } | null>(null);
   const openTab = useTabs((s) => s.openTable);
   const engine = useConnections((s) => s.active?.engine ?? "postgres") as Engine;
 
@@ -58,7 +76,7 @@ export function TableView({ connId, schema, object }: Props) {
     setError(null);
     setNotice(null);
     setDirty(0);
-    openTable(connId, schema, object.name)
+    openTable(connId, schema, object.name, filters)
       .then((info) => !cancelled && setRowEstimate(info.rowEstimate))
       .catch((e) => !cancelled && setError(String(e)));
     primaryKey(connId, schema, object.name)
@@ -70,7 +88,7 @@ export function TableView({ connId, schema, object }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [connId, schema, object.name, refreshKey]);
+  }, [connId, schema, object.name, refreshKey, filters]);
 
   const editable = object.kind === "Table" && !!pk && pk.length > 0;
 
@@ -112,13 +130,37 @@ export function TableView({ connId, schema, object }: Props) {
 
   const source = useMemo<GridSource | null>(() => {
     if (rowEstimate === null) return null;
+    // filters are part of the cache key so any change reloads the window.
+    const filterKey = filters.map((f) => `${f.column}${f.op}${f.value ?? ""}`).join("|");
     return {
-      key: `${connId}.${schema}.${object.name}.${refreshKey}`,
+      key: `${connId}.${schema}.${object.name}.${refreshKey}.${filterKey}`,
       totalRows: rowEstimate,
       columns: object.columns.map((c) => c.name),
-      fetch: (offset, len) => fetchTableWindow(connId, schema, object.name, offset, len),
+      fetch: (offset, len) =>
+        fetchTableWindow(connId, schema, object.name, offset, len, filters),
     };
-  }, [connId, schema, object, rowEstimate, refreshKey]);
+  }, [connId, schema, object, rowEstimate, refreshKey, filters]);
+
+  const commitDraft = useCallback(async () => {
+    if (!draft) return;
+    setNotice(null);
+    const values = buildInsertValues(
+      object.columns.map((c) => c.name),
+      draft,
+    );
+    try {
+      await insertRow(connId, schema, object.name, values);
+      setDraft(null);
+      setRefreshKey((k) => k + 1);
+    } catch (e) {
+      setNotice(`Insert failed: ${e}`);
+    }
+  }, [connId, schema, object, draft]);
+
+  const cancelDraft = useCallback(() => {
+    setDraft(null);
+    setNotice(null);
+  }, []);
 
   if (error)
     return <div className="p-6 text-sm text-danger">Failed to open table: {error}</div>;
@@ -131,12 +173,25 @@ export function TableView({ connId, schema, object }: Props) {
         <ToolbarButton
           icon={<IconFilter size={12} />}
           label="Filter"
-          onClick={() => alert("Per-column filters land in the next slice — for now use the SQL tab.")}
+          active={filterDraft !== null || filters.length > 0}
+          onClick={() =>
+            setFilterDraft(
+              filterDraft
+                ? null
+                : {
+                    column: object.columns[0]?.name ?? "",
+                    op: "Eq",
+                    value: "",
+                  },
+            )
+          }
         />
         <ToolbarButton
           icon={<IconRow size={12} />}
           label="Insert row"
-          onClick={() => alert("Insert-row inline editor lands in the next slice.")}
+          active={draft !== null}
+          disabled={!editable}
+          onClick={() => setDraft(draft ? null : {})}
         />
         <ToolbarButton
           icon={<IconRefresh size={12} />}
@@ -175,6 +230,147 @@ export function TableView({ connId, schema, object }: Props) {
         ))}
       </Toolbar>
 
+      {/* Filter builder + chip rail (Slice 21 #1). Stacked above the FK rail. */}
+      {(filterDraft || filters.length > 0) && (
+        <div className="flex flex-wrap items-center gap-1.5 border-b border-border bg-bg px-3 py-1.5">
+          <IconFilter size={11} className="text-primary" />
+          <span className="text-[10px] uppercase tracking-wider text-muted">filters</span>
+          {filters.map((f) => (
+            <Chip
+              key={`${f.column}-${f.op}`}
+              tone="primary"
+              onClick={() => setFilters(removeFilter(filters, f.column, f.op))}
+              title="Click to remove"
+            >
+              {chipLabel(f)} ×
+            </Chip>
+          ))}
+          {filterDraft && (
+            <div className="flex items-center gap-1">
+              <select
+                value={filterDraft.column}
+                onChange={(e) => setFilterDraft({ ...filterDraft, column: e.target.value })}
+                className="rounded-md border border-border bg-surface px-1.5 py-0.5 text-[11px] text-text"
+              >
+                {object.columns.map((c) => (
+                  <option key={c.name} value={c.name}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={filterDraft.op}
+                onChange={(e) =>
+                  setFilterDraft({ ...filterDraft, op: e.target.value as FilterOp })
+                }
+                className="rounded-md border border-border bg-surface px-1.5 py-0.5 text-[11px] text-text"
+              >
+                {(Object.keys(FILTER_OP_LABEL) as FilterOp[]).map((op) => (
+                  <option key={op} value={op}>
+                    {FILTER_OP_LABEL[op]}
+                  </option>
+                ))}
+              </select>
+              {!isNullOp(filterDraft.op) && (
+                <input
+                  autoFocus
+                  value={filterDraft.value}
+                  onChange={(e) => setFilterDraft({ ...filterDraft, value: e.target.value })}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      setFilters(
+                        upsertFilter(filters, {
+                          column: filterDraft.column,
+                          op: filterDraft.op,
+                          value: filterDraft.value === "" ? null : filterDraft.value,
+                        }),
+                      );
+                      setFilterDraft(null);
+                    } else if (e.key === "Escape") {
+                      setFilterDraft(null);
+                    }
+                  }}
+                  placeholder="value…"
+                  className="w-32 rounded-md border border-border bg-surface px-1.5 py-0.5 text-[11px] text-text placeholder:text-muted"
+                />
+              )}
+              <button
+                onClick={() => {
+                  setFilters(
+                    upsertFilter(filters, {
+                      column: filterDraft.column,
+                      op: filterDraft.op,
+                      value: isNullOp(filterDraft.op)
+                        ? null
+                        : filterDraft.value === ""
+                          ? null
+                          : filterDraft.value,
+                    }),
+                  );
+                  setFilterDraft(null);
+                }}
+                className="rounded-md bg-primary px-2 py-0.5 text-[11px] font-medium text-white hover:opacity-90"
+              >
+                Add
+              </button>
+              <button
+                onClick={() => setFilterDraft(null)}
+                className="rounded-md border border-border px-1.5 py-0.5 text-[11px] text-muted hover:text-text"
+              >
+                <IconClose size={9} />
+              </button>
+            </div>
+          )}
+          {filters.length > 0 && (
+            <button
+              onClick={() => setFilters([])}
+              className="ml-auto text-[10px] text-muted hover:text-text"
+              title="Clear all filters"
+            >
+              clear all
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Draft-row rail (Slice 21 #2). Editable inputs for each column; Enter commits. */}
+      {draft !== null && editable && (
+        <div className="flex items-center gap-2 border-b border-border bg-bg px-3 py-1.5">
+          <span className="text-[10px] uppercase tracking-wider text-primary">new row</span>
+          <div className="flex flex-wrap gap-1.5">
+            {object.columns.map((c) => (
+              <input
+                key={c.name}
+                value={draft[c.name] ?? ""}
+                onChange={(e) =>
+                  setDraft({ ...draft, [c.name]: e.target.value === "" ? "" : e.target.value })
+                }
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void commitDraft();
+                  if (e.key === "Escape") cancelDraft();
+                }}
+                placeholder={c.name}
+                title={`${c.name} · ${c.data_type}${c.nullable ? " · null ok" : ""}`}
+                className="w-32 rounded-md border-l-2 border-l-primary border-y border-r border-border bg-surface px-2 py-0.5 text-[11px] text-text placeholder:text-muted"
+              />
+            ))}
+          </div>
+          <button
+            disabled={!isDraftDirty(draft)}
+            onClick={() => void commitDraft()}
+            className="rounded-md bg-primary px-2.5 py-0.5 text-[11px] font-medium text-white hover:opacity-90 disabled:opacity-40"
+          >
+            Commit ↵
+          </button>
+          <button
+            onClick={cancelDraft}
+            className="rounded-md border border-border px-2 py-0.5 text-[11px] text-muted hover:text-text"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+
       {/* FK chip rail — only when this table has outgoing FKs (TablePlus-style indicator) */}
       {fks.length > 0 && (
         <div className="flex items-center gap-1.5 border-b border-border bg-bg px-3 py-1.5">
@@ -196,7 +392,13 @@ export function TableView({ connId, schema, object }: Props) {
       {/* Body */}
       <div className="min-h-0 flex-1">
         {view === "data" ? (
-          <DataGrid source={source} onEdit={editable ? onEdit : undefined} fkByColumn={fkByColumn} onFkClick={(toTable) => openTab(schema, toTable)} />
+          <DataGrid
+            source={source}
+            onEdit={editable ? onEdit : undefined}
+            fkByColumn={fkByColumn}
+            onFkClick={(toTable) => openTab(schema, toTable)}
+            onCellContext={(c) => setCellMenu(c)}
+          />
         ) : (
           <StructureView object={object} fks={fks} />
         )}
@@ -213,6 +415,9 @@ export function TableView({ connId, schema, object }: Props) {
             <span>{object.kind}</span>
             <span>· {object.columns.length} cols</span>
             <span>· ~{source.totalRows.toLocaleString()} rows</span>
+            {filters.length > 0 && (
+              <span className="text-primary">· {filters.length} filter{filters.length === 1 ? "" : "s"}</span>
+            )}
           </>
         }
         center={
@@ -266,6 +471,64 @@ export function TableView({ connId, schema, object }: Props) {
           }}
         />
       )}
+
+      {/* Right-click cell menu (Slice 21 #5). Built lazily so it doesn't allocate when idle. */}
+      {cellMenu &&
+        (() => {
+          const colNames = object.columns.map((c) => c.name);
+          const cache = source ? `${cellMenu.row}` : "";
+          // Build the visible row from the cell text we have + nulls (best-effort —
+          // the grid is the source of truth, but we have the clicked cell value).
+          const rowValues: (string | null)[] = colNames.map((c) =>
+            c === cellMenu.col ? cellMenu.value : null,
+          );
+          void cache;
+          const items: (ContextMenuItem | "separator")[] = [
+            {
+              id: "copy-value",
+              label: "Copy value",
+              onSelect: () => navigator.clipboard?.writeText(cellMenu.value ?? ""),
+            },
+            {
+              id: "copy-row-json",
+              label: "Copy row as JSON",
+              onSelect: () =>
+                navigator.clipboard?.writeText(buildRowAs("json", rowValues, colNames)),
+            },
+            {
+              id: "copy-row-csv",
+              label: "Copy row as CSV",
+              onSelect: () =>
+                navigator.clipboard?.writeText(buildRowAs("csv", rowValues, colNames)),
+            },
+            {
+              id: "copy-row-md",
+              label: "Copy row as Markdown",
+              onSelect: () =>
+                navigator.clipboard?.writeText(buildRowAs("md", rowValues, colNames)),
+            },
+            {
+              id: "set-filter",
+              label: `Set "${cellMenu.col}" = "${cellMenu.value ?? ""}" as filter`,
+              onSelect: () =>
+                setFilters(
+                  upsertFilter(filters, {
+                    column: cellMenu.col,
+                    op: "Eq",
+                    value: cellMenu.value,
+                  }),
+                ),
+            },
+          ];
+          return (
+            <ContextMenu
+              x={cellMenu.x}
+              y={cellMenu.y}
+              items={items}
+              onClose={() => setCellMenu(null)}
+            />
+          );
+        })()}
     </div>
   );
 }

@@ -51,6 +51,14 @@ interface Props {
   fkByColumn?: Map<string, ForeignKey>;
   /** Fires when the user clicks a FK chevron / cell. */
   onFkClick?: (toTable: string, toColumn: string, fromValue: string | null) => void;
+  /** Right-click on a cell (Slice 21 #5). `value` is the visible cell text (or null). */
+  onCellContext?: (args: {
+    col: string;
+    row: number;
+    value: string | null;
+    x: number;
+    y: number;
+  }) => void;
 }
 
 /**
@@ -59,7 +67,7 @@ interface Props {
  * ever resident, so memory does not grow with total row count.
  */
 export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
-  { source, onWindowFetched, onEdit, fkByColumn, onFkClick },
+  { source, onWindowFetched, onEdit, fkByColumn, onFkClick, onCellContext },
   ref,
 ) {
   const { resolved } = useTheme();
@@ -196,6 +204,26 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
       getCellContent={getCellContent}
       onCellEdited={editable ? onCellEdited : undefined}
       onCellClicked={onFkClick ? onCellClicked : undefined}
+      onCellContextMenu={
+        onCellContext
+          ? ([col, row], event) => {
+              event.preventDefault();
+              const name = colNames.current[col];
+              if (!name) return;
+              const value =
+                overlay.current.get(`${row}:${name}`) ??
+                cacheRef.current.getCell(row, name) ??
+                null;
+              onCellContext({
+                col: name,
+                row,
+                value,
+                x: event.bounds.x + event.localEventX,
+                y: event.bounds.y + event.localEventY,
+              });
+            }
+          : undefined
+      }
       rowMarkers="number"
       smoothScrollX
       smoothScrollY

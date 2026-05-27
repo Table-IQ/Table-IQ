@@ -10,8 +10,8 @@ use sqlx::sqlite::{SqlitePoolOptions, SqliteRow};
 use sqlx::{Column, Executor, Row, Sqlite, Pool};
 
 use super::{
-    ColumnInfo, CursorId, DResult, DriverError, EditSpec, ForeignKey, ObjectInfo, ObjectKind,
-    QueryResult, SchemaInfo, SchemaModel, SqlDriver,
+    build_insert_sql, build_where_clause, ColumnFilter, ColumnInfo, CursorId, DResult, DriverError,
+    EditSpec, ForeignKey, ObjectInfo, ObjectKind, QueryResult, SchemaInfo, SchemaModel, SqlDriver,
 };
 
 fn db(e: sqlx::Error) -> DriverError {
@@ -210,6 +210,94 @@ impl SqlDriver for SqliteDriver {
 
     async fn run_script(&self, sql: &str) -> DResult<u64> {
         Ok(sqlx::raw_sql(sql).execute(&self.pool).await.map_err(db)?.rows_affected())
+    }
+
+    async fn open_window_filtered(
+        &self,
+        _schema: &str,
+        table: &str,
+        offset: usize,
+        len: usize,
+        filters: &[ColumnFilter],
+    ) -> DResult<RecordBatch> {
+        if filters.is_empty() {
+            return self.open_window(_schema, table, offset, len).await;
+        }
+        let cols: Vec<String> =
+            self.columns_of(table).await?.into_iter().map(|c| c.name).collect();
+        if cols.is_empty() {
+            return Err(DriverError::Db(format!("no such table {table}")));
+        }
+        let select_list = cols
+            .iter()
+            .map(|c| format!("CAST({0} AS TEXT) AS {0}", quote_ident(c)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let (where_sql, binds) =
+            build_where_clause(filters, &quote_ident, &|i| format!("?{i}"), 1);
+        let off_ph = format!("?{}", binds.len() + 1);
+        let lim_ph = format!("?{}", binds.len() + 2);
+        let q = format!(
+            "SELECT {select_list} FROM (SELECT * FROM {} WHERE {} ORDER BY 1 LIMIT {} OFFSET {}) AS _w",
+            quote_ident(table),
+            where_sql,
+            lim_ph,
+            off_ph
+        );
+        let mut qy = sqlx::query(&q);
+        for b in &binds {
+            qy = qy.bind(b.clone());
+        }
+        qy = qy.bind(offset as i64).bind(len as i64);
+        let rows = qy.fetch_all(&self.pool).await.map_err(db)?;
+        text_rows_to_batch(&cols, &rows)
+    }
+
+    async fn row_estimate_filtered(
+        &self,
+        _schema: &str,
+        table: &str,
+        filters: &[ColumnFilter],
+    ) -> DResult<i64> {
+        if filters.is_empty() {
+            return self.row_estimate(_schema, table).await;
+        }
+        let (where_sql, binds) =
+            build_where_clause(filters, &quote_ident, &|i| format!("?{i}"), 1);
+        let q = format!(
+            "SELECT COUNT(*) FROM {} WHERE {}",
+            quote_ident(table),
+            where_sql
+        );
+        let mut qy = sqlx::query_scalar::<_, i64>(&q);
+        for b in &binds {
+            qy = qy.bind(b.clone());
+        }
+        Ok(qy.fetch_one(&self.pool).await.map_err(db)?.max(0))
+    }
+
+    async fn insert_row(
+        &self,
+        _schema: &str,
+        table: &str,
+        values: &[(String, Option<String>)],
+    ) -> DResult<u64> {
+        if values.is_empty() {
+            return Err(DriverError::Db("no columns to insert".into()));
+        }
+        let (sql, binds) = build_insert_sql(
+            _schema,
+            table,
+            values,
+            &quote_ident,
+            &|i| format!("?{i}"),
+            false,
+        );
+        let mut q = sqlx::query(&sql);
+        for b in &binds {
+            q = q.bind(b.clone());
+        }
+        Ok(q.execute(&self.pool).await.map_err(db)?.rows_affected())
     }
 
     /// FK edges via `PRAGMA foreign_key_list(<table>)` for each user table.

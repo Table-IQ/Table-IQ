@@ -241,13 +241,38 @@ export async function listObjects(id: string): Promise<SchemaModel> {
   return invoke<SchemaModel>("list_objects", { id });
 }
 
+/** Per-column filter for table windowing (Slice 21 #1). Op names match the Rust serde shape. */
+export type FilterOp =
+  | "Eq"
+  | "Ne"
+  | "Lt"
+  | "Le"
+  | "Gt"
+  | "Ge"
+  | "Like"
+  | "ILike"
+  | "IsNull"
+  | "IsNotNull";
+
+export interface ColumnFilter {
+  column: string;
+  op: FilterOp;
+  value: string | null;
+}
+
 export async function openTable(
   id: string,
   schema: string,
   table: string,
+  filters?: ColumnFilter[],
 ): Promise<{ rowEstimate: number }> {
   if (!inTauri()) return { rowEstimate: MOCK_TOTAL_ROWS };
-  const info = await invoke<{ row_estimate: number }>("open_table", { id, schema, table });
+  const info = await invoke<{ row_estimate: number }>("open_table", {
+    id,
+    schema,
+    table,
+    filters: filters && filters.length ? filters : null,
+  });
   return { rowEstimate: info.row_estimate };
 }
 
@@ -257,13 +282,33 @@ export async function fetchTableWindow(
   table: string,
   offset: number,
   len: number,
+  filters?: ColumnFilter[],
 ): Promise<{ bytes: Uint8Array; ms: number }> {
   const t0 = performance.now();
   if (!inTauri()) {
     return { bytes: synthWindowIpc(offset, len), ms: performance.now() - t0 };
   }
-  const ab = await invoke<ArrayBuffer>("get_table_window", { id, schema, table, offset, len });
+  const ab = await invoke<ArrayBuffer>("get_table_window", {
+    id,
+    schema,
+    table,
+    offset,
+    len,
+    filters: filters && filters.length ? filters : null,
+  });
   return { bytes: new Uint8Array(ab), ms: performance.now() - t0 };
+}
+
+/** Insert one row built from `(column, text_value)` pairs (Slice 21 #2). */
+export async function insertRow(
+  id: string,
+  schema: string,
+  table: string,
+  values: [string, string | null][],
+): Promise<{ rowsAffected: number }> {
+  if (!inTauri()) return { rowsAffected: 1 };
+  const n = await invoke<number>("insert_row", { id, schema, table, values });
+  return { rowsAffected: n };
 }
 
 // ── query & edit ─────────────────────────────────────────────────────────
@@ -361,9 +406,16 @@ export async function exportTable(
   schema: string,
   table: string,
   format: ExportFormat,
+  filters?: ColumnFilter[],
 ): Promise<string> {
   if (!inTauri()) return format === "json" ? '[{"id":"1"}]' : "id\n1\n";
-  return invoke<string>("export_table", { id, schema, table, format });
+  return invoke<string>("export_table", {
+    id,
+    schema,
+    table,
+    format,
+    filters: filters && filters.length ? filters : null,
+  });
 }
 
 export async function runScript(id: string, sql: string): Promise<{ rowsAffected: number }> {
@@ -506,6 +558,85 @@ export async function importRows(
 ): Promise<{ inserted: number }> {
   if (!inTauri()) return { inserted: rows.length };
   return invoke<{ inserted: number }>("import_rows", { id, engine, schema, table, columns, rows });
+}
+
+// ── Parquet import (Slice 21 #7) ─────────────────────────────────────────────
+export interface ParquetPreview {
+  columns: string[];
+  sqlTypes: string[];
+  arrowTypes: string[];
+  rows: (string | null)[][];
+  totalRows: number;
+  fileSize: number;
+}
+
+/** Server-side parquet parse → preview (first 100 rows + per-engine SQL types). */
+export async function parseParquetPreview(
+  engine: Engine,
+  bytes: Uint8Array,
+): Promise<ParquetPreview> {
+  if (!inTauri()) {
+    return {
+      columns: ["order_id", "amount", "created_at"],
+      sqlTypes:
+        engine === "sqlite"
+          ? ["INTEGER", "REAL", "TEXT"]
+          : engine === "mysql"
+            ? ["bigint", "double", "datetime(6)"]
+            : ["bigint", "double precision", "timestamptz"],
+      arrowTypes: ["Int64", "Float64", "Timestamp(Microsecond, Some(\"UTC\"))"],
+      rows: [
+        ["1", "12.50", "2026-05-20T10:00:00Z"],
+        ["2", "8.00", "2026-05-21T11:30:00Z"],
+        ["3", null, "2026-05-22T09:15:00Z"],
+      ],
+      totalRows: 3,
+      fileSize: bytes.byteLength || 1024,
+    };
+  }
+  const p = await invoke<{
+    columns: string[];
+    sql_types: string[];
+    arrow_types: string[];
+    rows: (string | null)[][];
+    total_rows: number;
+    file_size: number;
+  }>("parse_parquet_preview", { engine, bytes: Array.from(bytes) });
+  return {
+    columns: p.columns,
+    sqlTypes: p.sql_types,
+    arrowTypes: p.arrow_types,
+    rows: p.rows,
+    totalRows: p.total_rows,
+    fileSize: p.file_size,
+  };
+}
+
+/**
+ * Apply a parquet import. `columnMapping[i] = [fileColIndex, targetName, sqlType]`;
+ * columns omitted from the mapping are skipped. When `createTable` is true the server
+ * runs CREATE TABLE first (using the mapping's `sqlType`s); otherwise it appends to an
+ * existing table whose schema must cover the mapped columns.
+ */
+export async function applyParquetImport(
+  id: string,
+  engine: Engine,
+  schema: string | null,
+  table: string,
+  columnMapping: [number, string, string][],
+  createTable: boolean,
+  bytes: Uint8Array,
+): Promise<{ inserted: number }> {
+  if (!inTauri()) return { inserted: 100 };
+  return invoke<{ inserted: number }>("apply_parquet_import", {
+    id,
+    engine,
+    schema,
+    table,
+    columnMapping,
+    createTable,
+    bytes: Array.from(bytes),
+  });
 }
 
 // ── Saved queries + history ────────────────────────────────────────────────

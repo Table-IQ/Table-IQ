@@ -1,0 +1,102 @@
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+
+export interface ContextMenuItem {
+  /** Stable id for keying; also used as the test selector. */
+  id: string;
+  label: string;
+  /** Optional accent / muted styling. */
+  tone?: "default" | "danger" | "muted";
+  /** Right-aligned secondary text (e.g. a shortcut). */
+  shortcut?: string;
+  disabled?: boolean;
+  onSelect: () => void;
+}
+
+export interface ContextMenuProps {
+  x: number;
+  y: number;
+  items: (ContextMenuItem | "separator")[];
+  onClose: () => void;
+}
+
+/**
+ * Headless context menu — positions at (x, y), auto-flips when near a viewport edge,
+ * closes on outside click / Escape / item activation.
+ */
+export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState({ x, y });
+
+  // Outside click + Escape close.
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("mousedown", onDown, true);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown, true);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+
+  // Auto-flip near right/bottom viewport edges.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    let nx = x;
+    let ny = y;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    if (x + r.width > vw - 4) nx = Math.max(4, vw - r.width - 4);
+    if (y + r.height > vh - 4) ny = Math.max(4, vh - r.height - 4);
+    if (nx !== pos.x || ny !== pos.y) setPos({ x: nx, y: ny });
+    // intentionally only depend on x/y — content height is stable post-mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [x, y]);
+
+  return (
+    <div
+      ref={ref}
+      role="menu"
+      data-testid="context-menu"
+      className="fixed z-50 min-w-[180px] rounded-md border border-border bg-surface py-1 text-xs shadow-xl"
+      style={{ left: pos.x, top: pos.y }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {items.map((item, i) =>
+        item === "separator" ? (
+          <div key={`sep-${i}`} className="my-1 h-px bg-border" />
+        ) : (
+          <button
+            key={item.id}
+            disabled={item.disabled}
+            data-menu-id={item.id}
+            onClick={() => {
+              if (item.disabled) return;
+              item.onSelect();
+              onClose();
+            }}
+            className={`flex w-full items-center justify-between gap-4 px-3 py-1.5 text-left transition-colors hover:bg-bg disabled:cursor-not-allowed disabled:opacity-40 ${
+              item.tone === "danger"
+                ? "text-danger"
+                : item.tone === "muted"
+                  ? "text-muted"
+                  : "text-text"
+            }`}
+            role="menuitem"
+          >
+            <span className="truncate">{item.label}</span>
+            {item.shortcut && (
+              <span className="ml-auto text-[10px] text-muted">{item.shortcut}</span>
+            )}
+          </button>
+        ),
+      )}
+    </div>
+  );
+}

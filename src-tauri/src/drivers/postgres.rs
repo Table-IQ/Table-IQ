@@ -15,8 +15,8 @@ use sqlx::postgres::{PgPoolOptions, PgRow};
 use sqlx::{Column, Executor, Pool, Postgres, Row};
 
 use super::{
-    CancelToken, ColumnInfo, CursorId, DResult, DriverError, EditSpec, ObjectInfo, ObjectKind,
-    QueryResult, SchemaInfo, SchemaModel, SqlDriver,
+    build_insert_sql, build_where_clause, CancelToken, ColumnFilter, ColumnInfo, CursorId, DResult,
+    DriverError, EditSpec, ObjectInfo, ObjectKind, QueryResult, SchemaInfo, SchemaModel, SqlDriver,
 };
 
 /// Map a query error, recognising Postgres' "canceling statement due to user request"
@@ -435,6 +435,99 @@ impl SqlDriver for PgDriver {
 
     async fn run_script(&self, sql: &str) -> DResult<u64> {
         Ok(sqlx::raw_sql(sql).execute(&self.pool).await.map_err(db)?.rows_affected())
+    }
+
+    async fn open_window_filtered(
+        &self,
+        schema: &str,
+        table: &str,
+        offset: usize,
+        len: usize,
+        filters: &[ColumnFilter],
+    ) -> DResult<RecordBatch> {
+        if filters.is_empty() {
+            return self.open_window(schema, table, offset, len).await;
+        }
+        let cols: Vec<String> = sqlx::query_scalar(
+            "SELECT column_name FROM information_schema.columns \
+             WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        if cols.is_empty() {
+            return Err(DriverError::Db(format!("no such table {schema}.{table}")));
+        }
+
+        let select_list = cols
+            .iter()
+            .map(|c| format!("{0}::text AS {0}", quote_ident(c)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        // Build the WHERE in PG style; binds start at $1 (filters), then offset/len go last.
+        let (where_sql, binds) = build_where_clause(filters, &quote_ident, &|i| format!("${i}"), 1);
+        let off_ph = format!("${}", binds.len() + 1);
+        let lim_ph = format!("${}", binds.len() + 2);
+        let q = format!(
+            "SELECT {select_list} FROM \
+             (SELECT * FROM {}.{} WHERE {} ORDER BY 1 OFFSET {} LIMIT {}) AS _w",
+            quote_ident(schema),
+            quote_ident(table),
+            where_sql,
+            off_ph,
+            lim_ph
+        );
+        let mut q = sqlx::query(&q);
+        for b in &binds {
+            q = q.bind(b.clone());
+        }
+        q = q.bind(offset as i64).bind(len as i64);
+        let rows = q.fetch_all(&self.pool).await.map_err(db)?;
+        text_rows_to_batch(&cols, &rows)
+    }
+
+    async fn row_estimate_filtered(
+        &self,
+        schema: &str,
+        table: &str,
+        filters: &[ColumnFilter],
+    ) -> DResult<i64> {
+        if filters.is_empty() {
+            return self.row_estimate(schema, table).await;
+        }
+        let (where_sql, binds) = build_where_clause(filters, &quote_ident, &|i| format!("${i}"), 1);
+        let q = format!(
+            "SELECT COUNT(*)::bigint FROM {}.{} WHERE {}",
+            quote_ident(schema),
+            quote_ident(table),
+            where_sql
+        );
+        let mut q = sqlx::query_scalar::<_, i64>(&q);
+        for b in &binds {
+            q = q.bind(b.clone());
+        }
+        Ok(q.fetch_one(&self.pool).await.map_err(db)?.max(0))
+    }
+
+    async fn insert_row(
+        &self,
+        schema: &str,
+        table: &str,
+        values: &[(String, Option<String>)],
+    ) -> DResult<u64> {
+        if values.is_empty() {
+            return Err(DriverError::Db("no columns to insert".into()));
+        }
+        let (sql, binds) =
+            build_insert_sql(schema, table, values, &quote_ident, &|i| format!("${i}"), true);
+        let mut q = sqlx::query(&sql);
+        for b in &binds {
+            q = q.bind(b.clone());
+        }
+        let res = q.execute(&self.pool).await.map_err(db)?;
+        Ok(res.rows_affected())
     }
 
     async fn foreign_keys(&self) -> DResult<Vec<super::ForeignKey>> {

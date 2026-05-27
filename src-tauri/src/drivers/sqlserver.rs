@@ -16,8 +16,8 @@ use tokio::sync::Mutex;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
 use super::{
-    ColumnInfo, CursorId, DResult, DriverError, EditSpec, ForeignKey, ObjectInfo, ObjectKind,
-    QueryResult, SchemaInfo, SchemaModel, SqlDriver,
+    build_insert_sql, build_where_clause, ColumnFilter, ColumnInfo, CursorId, DResult, DriverError,
+    EditSpec, ForeignKey, ObjectInfo, ObjectKind, QueryResult, SchemaInfo, SchemaModel, SqlDriver,
 };
 
 type Conn = Client<Compat<TcpStream>>;
@@ -287,6 +287,115 @@ impl SqlDriver for SqlServerDriver {
     async fn run_script(&self, sql: &str) -> DResult<u64> {
         let mut c = self.client.lock().await;
         let res = c.execute(sql, &[]).await.map_err(db)?;
+        Ok(res.total())
+    }
+
+    async fn open_window_filtered(
+        &self,
+        schema: &str,
+        table: &str,
+        offset: usize,
+        len: usize,
+        filters: &[ColumnFilter],
+    ) -> DResult<RecordBatch> {
+        if filters.is_empty() {
+            return self.open_window(schema, table, offset, len).await;
+        }
+        // Tiberius uses @P1, @P2, … in declared order; we bind text values.
+        let (where_sql, binds) =
+            build_where_clause(filters, &quote_ident, &|i| format!("@P{i}"), 1);
+        let q = format!(
+            "SELECT * FROM {}.{} WHERE {} ORDER BY (SELECT NULL) OFFSET {} ROWS FETCH NEXT {} ROWS ONLY",
+            quote_ident(schema),
+            quote_ident(table),
+            where_sql,
+            offset,
+            len
+        );
+        let owned: Vec<Option<std::string::String>> = binds.iter().cloned().collect();
+        let params: Vec<&dyn tiberius::ToSql> =
+            owned.iter().map(|o| o as &dyn tiberius::ToSql).collect();
+        let mut c = self.client.lock().await;
+        let rows = c
+            .query(q, &params)
+            .await
+            .map_err(db)?
+            .into_first_result()
+            .await
+            .map_err(db)?;
+        // Build column-major text data the same way query_text does, but inline so we
+        // hold the client lock once.
+        let mut columns: Vec<std::string::String> = Vec::new();
+        let mut data: Vec<Vec<Option<std::string::String>>> = Vec::new();
+        for (ri, row) in rows.iter().enumerate() {
+            if ri == 0 {
+                columns = row.columns().iter().map(|col| col.name().to_string()).collect();
+                data = vec![Vec::new(); columns.len()];
+            }
+            for (ci, (_c, cd)) in row.cells().enumerate() {
+                data[ci].push(cell_to_string(cd));
+            }
+        }
+        to_batch(&columns, &data)
+    }
+
+    async fn row_estimate_filtered(
+        &self,
+        schema: &str,
+        table: &str,
+        filters: &[ColumnFilter],
+    ) -> DResult<i64> {
+        if filters.is_empty() {
+            return self.row_estimate(schema, table).await;
+        }
+        let (where_sql, binds) =
+            build_where_clause(filters, &quote_ident, &|i| format!("@P{i}"), 1);
+        let q = format!(
+            "SELECT COUNT_BIG(*) AS n FROM {}.{} WHERE {}",
+            quote_ident(schema),
+            quote_ident(table),
+            where_sql
+        );
+        let owned: Vec<Option<std::string::String>> = binds.iter().cloned().collect();
+        let params: Vec<&dyn tiberius::ToSql> =
+            owned.iter().map(|o| o as &dyn tiberius::ToSql).collect();
+        let mut c = self.client.lock().await;
+        let rows = c
+            .query(q, &params)
+            .await
+            .map_err(db)?
+            .into_first_result()
+            .await
+            .map_err(db)?;
+        let n = rows
+            .first()
+            .and_then(|r| r.get::<i64, _>(0))
+            .unwrap_or(0);
+        Ok(n.max(0))
+    }
+
+    async fn insert_row(
+        &self,
+        schema: &str,
+        table: &str,
+        values: &[(String, Option<String>)],
+    ) -> DResult<u64> {
+        if values.is_empty() {
+            return Err(DriverError::Db("no columns to insert".into()));
+        }
+        let (sql, binds) = build_insert_sql(
+            schema,
+            table,
+            values,
+            &quote_ident,
+            &|i| format!("@P{i}"),
+            true,
+        );
+        let owned: Vec<Option<std::string::String>> = binds.iter().cloned().collect();
+        let params: Vec<&dyn tiberius::ToSql> =
+            owned.iter().map(|o| o as &dyn tiberius::ToSql).collect();
+        let mut c = self.client.lock().await;
+        let res = c.execute(sql, &params).await.map_err(db)?;
         Ok(res.total())
     }
 

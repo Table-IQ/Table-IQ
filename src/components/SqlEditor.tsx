@@ -2,6 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { EditorView, basicSetup } from "codemirror";
 import { sql, PostgreSQL } from "@codemirror/lang-sql";
 import { keymap } from "@codemirror/view";
+import { extractRunTarget } from "../lib/sqlSelection";
 
 export interface SqlEditorHandle {
   setText: (v: string) => void;
@@ -11,19 +12,29 @@ interface Props {
   initial: string;
   onChange: (v: string) => void;
   onRun: () => void;
+  /** ⇧⌘↵ — runs the active selection or the statement under the cursor. */
+  onRunSelection?: (sql: string) => void;
+  /**
+   * Schema for autocomplete. Maps `tableName` (and `schema.tableName`) to its
+   * columns, the shape `@codemirror/lang-sql` expects. Re-mount the editor when
+   * this object identity changes (rare — on connect / introspect).
+   */
+  schema?: Record<string, string[]>;
 }
 
 /** CodeMirror 6 SQL editor. Theme uses CSS vars so it adapts to light/dark. */
 export const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(
-  { initial, onChange, onRun },
+  { initial, onChange, onRun, onRunSelection, schema },
   ref,
 ) {
   const host = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const onRunRef = useRef(onRun);
   const onChangeRef = useRef(onChange);
+  const onRunSelectionRef = useRef(onRunSelection);
   onRunRef.current = onRun;
   onChangeRef.current = onChange;
+  onRunSelectionRef.current = onRunSelection;
 
   useImperativeHandle(ref, () => ({
     setText: (v: string) => {
@@ -34,6 +45,11 @@ export const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(
     },
   }));
 
+  // Schema identity in the dep array (referential): when the host passes a new
+  // object, we destroy + recreate the editor with refreshed completions.
+  const schemaRef = useRef(schema);
+  schemaRef.current = schema;
+
   useEffect(() => {
     if (!host.current) return;
     const view = new EditorView({
@@ -41,12 +57,23 @@ export const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(
       parent: host.current,
       extensions: [
         basicSetup,
-        sql({ dialect: PostgreSQL }),
+        sql({ dialect: PostgreSQL, schema: schemaRef.current }),
         keymap.of([
           {
             key: "Mod-Enter",
             run: () => {
               onRunRef.current();
+              return true;
+            },
+          },
+          {
+            key: "Mod-Shift-Enter",
+            run: (v) => {
+              if (!onRunSelectionRef.current) return false;
+              const sel = v.state.selection.main;
+              const target = extractRunTarget(v.state.doc.toString(), sel.from, sel.to);
+              if (target.sql.trim().length === 0) return false;
+              onRunSelectionRef.current(target.sql);
               return true;
             },
           },
@@ -70,9 +97,8 @@ export const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(
       view.destroy();
       viewRef.current = null;
     };
-    // create once; editor is uncontrolled after mount
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    // Recreate when schema identity changes so completions stay current.
+  }, [schema]);
 
   return <div ref={host} className="h-full overflow-auto" />;
 });
