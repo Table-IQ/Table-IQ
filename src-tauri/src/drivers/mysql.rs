@@ -10,8 +10,8 @@ use sqlx::mysql::{MySqlPoolOptions, MySqlRow};
 use sqlx::{Column, Executor, MySql, Pool, Row};
 
 use super::{
-    CancelToken, ColumnInfo, CursorId, DResult, DriverError, EditSpec, ObjectInfo, ObjectKind,
-    QueryResult, SchemaInfo, SchemaModel, SqlDriver,
+    CancelToken, ColumnInfo, CursorId, DResult, DriverError, EditSpec, ForeignKey, ObjectInfo,
+    ObjectKind, QueryResult, SchemaInfo, SchemaModel, SqlDriver,
 };
 
 fn db(e: sqlx::Error) -> DriverError {
@@ -289,6 +289,33 @@ impl SqlDriver for MySqlDriver {
     async fn run_script(&self, sql: &str) -> DResult<u64> {
         Ok(sqlx::raw_sql(sql).execute(&self.pool).await.map_err(db)?.rows_affected())
     }
+
+    /// FK edges for ERD + cell-level "go to referenced row." Filtered to the active
+    /// database; non-FK constraints are excluded via the join to referential_constraints.
+    async fn foreign_keys(&self) -> DResult<Vec<ForeignKey>> {
+        let rows = sqlx::query(
+            "SELECT kcu.table_name AS from_table, kcu.column_name AS from_column, \
+                    kcu.referenced_table_name AS to_table, kcu.referenced_column_name AS to_column \
+             FROM information_schema.key_column_usage kcu \
+             JOIN information_schema.referential_constraints rc \
+               ON rc.constraint_name = kcu.constraint_name \
+              AND rc.constraint_schema = kcu.table_schema \
+             WHERE kcu.table_schema = DATABASE() \
+               AND kcu.referenced_table_name IS NOT NULL",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(rows
+            .iter()
+            .map(|r| ForeignKey {
+                from_table: r.get("from_table"),
+                from_column: r.get("from_column"),
+                to_table: r.get("to_table"),
+                to_column: r.get("to_column"),
+            })
+            .collect())
+    }
 }
 
 #[cfg(test)]
@@ -298,5 +325,21 @@ mod tests {
     #[test]
     fn kill_query_sql_targets_connection_id() {
         assert_eq!(kill_query_sql(4242), "KILL QUERY 4242");
+    }
+
+    /// Smoke-test the FK query shape — the query must scope to DATABASE() so a
+    /// shared MySQL server doesn't leak edges from other schemas.
+    #[test]
+    fn fk_query_scopes_to_current_database() {
+        let q = "SELECT kcu.table_name AS from_table, kcu.column_name AS from_column, \
+                    kcu.referenced_table_name AS to_table, kcu.referenced_column_name AS to_column \
+             FROM information_schema.key_column_usage kcu \
+             JOIN information_schema.referential_constraints rc \
+               ON rc.constraint_name = kcu.constraint_name \
+              AND rc.constraint_schema = kcu.table_schema \
+             WHERE kcu.table_schema = DATABASE() \
+               AND kcu.referenced_table_name IS NOT NULL";
+        assert!(q.contains("DATABASE()"));
+        assert!(q.contains("referenced_table_name IS NOT NULL"));
     }
 }

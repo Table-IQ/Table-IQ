@@ -674,6 +674,34 @@ export async function aiFixSql(id: string, sql: string, error: string): Promise<
   return invoke<string>("ai_fix_sql", { id, sql, error });
 }
 
+/** Cheap row-estimate for the inspector / status bar (engine native). */
+export async function rowEstimate(id: string, schema: string, table: string): Promise<number> {
+  if (!inTauri()) return MOCK_TOTAL_ROWS;
+  const info = await invoke<{ row_estimate: number }>("open_table", { id, schema, table });
+  return info.row_estimate;
+}
+
+// ── Onboarding state (first-launch marker) ─────────────────────────────────
+export interface OnboardingState {
+  onboarded: boolean;
+}
+
+export async function readOnboardingState(): Promise<OnboardingState> {
+  if (!inTauri()) {
+    const raw = window.localStorage.getItem("tiq:onboarded");
+    return { onboarded: raw === "1" };
+  }
+  return invoke<OnboardingState>("read_onboarding_state");
+}
+
+export async function writeOnboardingState(state: OnboardingState): Promise<void> {
+  if (!inTauri()) {
+    window.localStorage.setItem("tiq:onboarded", state.onboarded ? "1" : "0");
+    return;
+  }
+  await invoke("write_onboarding_state", { state });
+}
+
 /** Save text to a file (Blob download — works in the WebView and the browser). */
 export function downloadText(filename: string, text: string, mime = "text/plain") {
   const blob = new Blob([text], { type: mime });

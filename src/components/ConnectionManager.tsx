@@ -1,8 +1,12 @@
 import { useEffect, useState } from "react";
 import { Wordmark } from "./Brand";
 import { ThemeToggle } from "./ThemeToggle";
+import { Onboarding } from "./Onboarding";
+import { ColorDot } from "./ui/Chip";
+import { IconExport, IconImport, IconPlus } from "./ui/Icon";
 import {
   connect,
+  deleteConnection,
   downloadText,
   exportConnections,
   importConnections,
@@ -15,6 +19,23 @@ import {
 } from "../lib/commands";
 import { defaultSshConfig, type SshAuthMode, type SshConfig } from "../lib/ssh";
 import { useConnections } from "../state/connectionStore";
+
+const ENGINE_COLORS: Record<string, string> = {
+  postgres: "#336791",
+  mysql: "#4479a1",
+  sqlite: "#003b57",
+  redis: "#dc382d",
+  mongodb: "#13aa52",
+  sqlserver: "#cc2927",
+};
+const ENGINE_LABELS: Record<string, string> = {
+  postgres: "PostgreSQL",
+  mysql: "MySQL / MariaDB",
+  sqlite: "SQLite",
+  redis: "Redis",
+  mongodb: "MongoDB",
+  sqlserver: "SQL Server",
+};
 
 const DEFAULT_PORT: Record<string, number> = {
   postgres: 5432,
@@ -112,33 +133,50 @@ export function ConnectionManager() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex items-center gap-3 border-b border-border px-4 py-2">
+      <header
+        className="tiq-titlebar-drag flex shrink-0 items-center gap-3 border-b border-border bg-surface pl-[88px] pr-3"
+        style={{ height: "var(--header-h)" }}
+      >
         <Wordmark className="text-sm" />
         <span className="text-xs text-muted">Connections</span>
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-1">
           <ThemeToggle />
         </div>
       </header>
 
-      <div className="mx-auto flex w-full max-w-3xl flex-1 gap-6 overflow-auto p-8">
-        {/* saved list */}
-        <div className="w-56 shrink-0">
+      <div className="mx-auto flex w-full max-w-5xl flex-1 gap-6 overflow-auto p-8">
+        {/* saved list — TablePlus-style color-edge cards */}
+        <div className="w-72 shrink-0">
           <div className="mb-2 flex items-center justify-between">
-            <span className="text-[10px] uppercase tracking-widest text-muted">Saved</span>
-            <button onClick={() => loadInto(blankConfig())} className="text-xs text-primary hover:underline">
-              + New
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted">
+              Connections · {saved.length}
+            </span>
+            <button
+              onClick={() => loadInto(blankConfig())}
+              className="inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-[11px] font-medium text-white hover:bg-primary-hover"
+            >
+              <IconPlus size={11} /> New
             </button>
           </div>
           <div className="mb-2 flex items-center gap-2 text-[11px]">
             <button
-              onClick={async () => downloadText("tableiq-connections.json", await exportConnections(), "application/json")}
-              className="text-muted hover:text-text"
+              onClick={async () =>
+                downloadText(
+                  "tableiq-connections.json",
+                  await exportConnections(),
+                  "application/json",
+                )
+              }
+              className="inline-flex items-center gap-1 text-muted hover:text-text"
               title="Export saved connections (no passwords) to share"
             >
-              ⤓ Export
+              <IconExport size={11} /> Export
             </button>
-            <label className="cursor-pointer text-muted hover:text-text" title="Import a connection bundle">
-              ⤒ Import
+            <label
+              className="inline-flex cursor-pointer items-center gap-1 text-muted hover:text-text"
+              title="Import a connection bundle"
+            >
+              <IconImport size={11} /> Import
               <input
                 type="file"
                 accept="application/json"
@@ -152,31 +190,76 @@ export function ConnectionManager() {
               />
             </label>
           </div>
-          <div className="space-y-1">
-            {saved.length === 0 && <div className="text-xs text-muted">No saved connections.</div>}
-            {saved.map((c) => (
-              <button
-                key={c.id}
-                onClick={() => loadInto(c)}
-                className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-surface ${
-                  c.id === form.id ? "bg-surface" : ""
-                }`}
-              >
-                <span className="h-2 w-2 rounded-full" style={{ background: c.color ?? "#4f46e5" }} />
-                <span className="min-w-0 flex-1 truncate">
-                  <span className="text-text">{c.name || "(unnamed)"}</span>
-                  <span className="block truncate text-xs text-muted">
-                    {c.engine} ·{" "}
-                    {c.engine === "sqlite" ? c.database || "(file)" : `${c.host}:${c.port}/${c.database}`}
-                  </span>
-                </span>
-              </button>
-            ))}
+          <div className="space-y-1.5">
+            {saved.length === 0 && (
+              <div className="rounded-md border border-dashed border-border p-4 text-center text-xs text-muted">
+                No saved connections yet. Click <span className="text-primary">New</span> to add one.
+              </div>
+            )}
+            {saved.map((c) => {
+              const isSelected = c.id === form.id;
+              const accent = c.color ?? ENGINE_COLORS[c.engine] ?? "#4f46e5";
+              return (
+                <div
+                  key={c.id}
+                  className={`group relative flex overflow-hidden rounded-md border bg-bg transition-shadow ${
+                    isSelected
+                      ? "border-primary shadow-[var(--shadow-soft)]"
+                      : "border-border hover:border-border-strong"
+                  }`}
+                >
+                  <span
+                    aria-hidden
+                    className="w-1 shrink-0"
+                    style={{ background: accent }}
+                  />
+                  <button
+                    onClick={() => loadInto(c)}
+                    className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-2 text-left"
+                  >
+                    <ColorDot color={ENGINE_COLORS[c.engine] ?? "#999"} size={8} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[13px] font-medium text-text">
+                        {c.name || "(unnamed)"}
+                      </span>
+                      <span className="block truncate text-[11px] text-muted">
+                        {ENGINE_LABELS[c.engine] ?? c.engine} ·{" "}
+                        {c.engine === "sqlite"
+                          ? c.database || "(file)"
+                          : `${c.host}:${c.port}/${c.database}`}
+                      </span>
+                    </span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      void doConnect(c);
+                    }}
+                    title="Connect"
+                    className="hidden h-full items-center px-2 text-[11px] font-medium text-primary hover:bg-primary/10 group-hover:flex"
+                  >
+                    Connect
+                  </button>
+                  <button
+                    onClick={async () => {
+                      if (!confirm(`Delete connection "${c.name}"?`)) return;
+                      await deleteConnection(c.id);
+                      await refresh();
+                      if (c.id === form.id) loadInto(blankConfig());
+                    }}
+                    title="Delete"
+                    aria-label={`Delete ${c.name}`}
+                    className="hidden items-center px-2 text-muted hover:bg-surface-2 hover:text-danger group-hover:flex"
+                  >
+                    ×
+                  </button>
+                </div>
+              );
+            })}
           </div>
         </div>
 
         {/* form */}
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 rounded-lg border border-border bg-bg p-5">
           <div className="mb-3 flex items-center gap-3">
             <span className="text-sm font-semibold">Connection</span>
             <select
@@ -376,28 +459,52 @@ export function ConnectionManager() {
             </details>
           )}
 
-          <div className="mt-4 flex items-center gap-2">
-            <button onClick={() => doConnect(form, password)} className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white hover:bg-primary-hover">
+          <div className="mt-5 flex items-center gap-2 border-t border-border pt-4">
+            <button
+              onClick={() => doConnect(form, password)}
+              className="rounded-md bg-primary px-3.5 py-1.5 text-sm font-medium text-white shadow-[var(--shadow-soft)] hover:bg-primary-hover"
+            >
               Connect
             </button>
-            <button onClick={doSave} className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-surface">
+            <button
+              onClick={doSave}
+              className="rounded-md border border-border px-3 py-1.5 text-sm text-text hover:bg-surface-2"
+            >
               Save
             </button>
-            <button onClick={doTest} className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-surface">
+            <button
+              onClick={doTest}
+              className="rounded-md border border-border px-3 py-1.5 text-sm text-text hover:bg-surface-2"
+            >
               Test
             </button>
             {status.kind !== "idle" && (
               <span
                 className={`text-xs ${
-                  status.kind === "ok" ? "text-emerald-500" : status.kind === "err" ? "text-red-400" : "text-muted"
+                  status.kind === "ok"
+                    ? "text-ok"
+                    : status.kind === "err"
+                    ? "text-danger"
+                    : "text-muted"
                 }`}
               >
                 {status.msg}
               </span>
             )}
+            <label className="ml-auto inline-flex items-center gap-1.5 text-[11px] text-muted">
+              <span>Color tag</span>
+              <input
+                type="color"
+                value={form.color ?? "#4f46e5"}
+                onChange={(e) => set("color", e.target.value)}
+                className="h-5 w-7 cursor-pointer rounded border border-border bg-transparent"
+                title="Pick a color for this connection (env tag)"
+              />
+            </label>
           </div>
         </div>
       </div>
+      <Onboarding />
     </div>
   );
 }

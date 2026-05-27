@@ -1,45 +1,87 @@
 @import "tailwindcss";
 
 /* ── TableIQ design tokens ───────────────────────────────────────────────
+   Refined-minimal aesthetic, modeled on TablePlus density + clarity,
+   carrying TableIQ branding (indigo primary, ◇/◳ glyphs, Brand wordmark).
    Light is the default (:root); dark overrides via [data-theme="dark"].
-   The @theme inline block exposes them as Tailwind utilities (bg-bg,
-   text-text, text-muted, bg-primary, border-border, …) that switch with
-   the active theme. See DESIGN.md for the source of truth. */
+   The @theme inline block exposes them as Tailwind utilities. */
 
 :root {
+  /* Surfaces */
   --bg: #ffffff;
-  --surface: #f7f8fa;
-  --border: #e5e7eb;
-  --text: #0b0f17;
-  --muted: #6b7280;
-  --primary: #4f46e5;
+  --surface: #f3f4f6;       /* sidebar / status bar / toolbar — half-shade darker than bg so panels read */
+  --surface-2: #e9ecef;     /* hover / pressed */
+  --border: #d1d5db;        /* visible 1-px dividers (was #e5e7eb — too low contrast) */
+  --border-strong: #9ca3af;
+  --text: #111827;          /* slightly softer than near-black, ~16:1 on bg */
+  --muted: #4b5563;         /* ~7:1 on bg, AA Pass for small caption text (was #6b7280 — borderline) */
+  --primary: #4f46e5;       /* TableIQ indigo — branding */
   --primary-hover: #4338ca;
   --accent: #7c3aed;
+  --selection: #2563eb;     /* TablePlus-style row selection blue */
+  --selection-bg: #dbeafe;
+  --danger: #dc2626;
+  --warn: #d97706;
+  --ok: #059669;
 
-  --font-sans: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* Fonts — system stack first so the app feels native, fall through to Inter */
+  --font-sans: system-ui, -apple-system, "SF Pro Text", "Segoe UI Variable",
+    "Segoe UI", "Inter", sans-serif;
+  --font-mono: "SF Mono", "JetBrains Mono", ui-monospace, SFMono-Regular,
+    Menlo, monospace;
+
+  /* Density — every panel uses these for a consistent vertical rhythm */
+  --row-h: 26px;
+  --toolbar-h: 36px;
+  --tabbar-h: 30px;
+  --statusbar-h: 24px;
+  --header-h: 38px;
+  --rail-w: 56px;
+  --sidebar-w: 232px;
+  --inspector-w: 260px;
+  --gap-tight: 6px;
+  --radius: 6px;
+  --radius-sm: 4px;
+  --shadow-soft: 0 1px 2px rgb(0 0 0 / 0.04), 0 1px 1px rgb(0 0 0 / 0.03);
+  --shadow-pop: 0 8px 24px rgb(0 0 0 / 0.12), 0 2px 6px rgb(0 0 0 / 0.06);
 }
 
 [data-theme="dark"] {
   --bg: #0b0f17;
   --surface: #111726;
+  --surface-2: #18203a;
   --border: #1f2937;
+  --border-strong: #374151;
   --text: #e5e7eb;
   --muted: #9ca3af;
   --primary: #6366f1;
   --primary-hover: #818cf8;
   --accent: #8b5cf6;
+  --selection: #3b82f6;
+  --selection-bg: #1e3a8a;
+  --danger: #f87171;
+  --warn: #fbbf24;
+  --ok: #34d399;
+  --shadow-soft: 0 1px 2px rgb(0 0 0 / 0.45), 0 1px 1px rgb(0 0 0 / 0.3);
+  --shadow-pop: 0 8px 24px rgb(0 0 0 / 0.55), 0 2px 6px rgb(0 0 0 / 0.3);
 }
 
 @theme inline {
   --color-bg: var(--bg);
   --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
   --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
   --color-text: var(--text);
   --color-muted: var(--muted);
   --color-primary: var(--primary);
   --color-primary-hover: var(--primary-hover);
   --color-accent: var(--accent);
+  --color-selection: var(--selection);
+  --color-selection-bg: var(--selection-bg);
+  --color-danger: var(--danger);
+  --color-warn: var(--warn);
+  --color-ok: var(--ok);
   --font-sans: var(--font-sans);
   --font-mono: var(--font-mono);
 }
@@ -55,4 +97,63 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Native-feeling scrollbars (subtle, narrow). */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 6px;
+  border: 2px solid var(--bg);
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* macOS traffic-light overlay region — header reserves space for them */
+.tiq-titlebar-drag {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+.tiq-titlebar-drag button,
+.tiq-titlebar-drag input,
+.tiq-titlebar-drag a {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* Subtle keyboard-shortcut hint pills used in toolbars / palette */
+.tiq-kbd {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 4px;
+  height: 16px;
+  min-width: 16px;
+  justify-content: center;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1;
+}
+
+/* Used by Onboarding to dim the page behind the welcome card */
+.tiq-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgb(0 0 0 / 0.35);
+  backdrop-filter: blur(4px);
+  z-index: 60;
 }

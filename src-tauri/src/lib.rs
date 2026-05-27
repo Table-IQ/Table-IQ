@@ -17,8 +17,9 @@ use ipc::connect::{
     doc_collections, doc_find, explain_query, export_connections, foreign_keys, import_connections,
     import_rows, install_sample_plugin, kv_get, kv_scan, list_connections, list_objects,
     list_plugins, list_saved_queries, local_llm_available, open_table, parse_import, primary_key,
-    profile_column, query_history, run_plugin_on_result, run_query, run_script, save_ai_config,
-    save_connection, save_query, delete_saved_query, test_connection, ConnState,
+    profile_column, query_history, read_onboarding_state, run_plugin_on_result, run_query,
+    run_script, save_ai_config, save_connection, save_query, delete_saved_query, test_connection,
+    write_onboarding_state, ConnState,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -73,6 +74,8 @@ pub fn run() {
             doc_find,
             export_connections,
             import_connections,
+            read_onboarding_state,
+            write_onboarding_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

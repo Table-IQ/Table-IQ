@@ -1,31 +1,13 @@
 import { useTheme } from "../theme/ThemeProvider";
+import { IconAuto, IconMoon, IconSun } from "./ui/Icon";
+import { IconButton } from "./ui/IconButton";
 import type { ThemeChoice } from "../lib/theme";
 
-const OPTIONS: { value: ThemeChoice; label: string }[] = [
-  { value: "light", label: "Light" },
-  { value: "auto", label: "Auto" },
-  { value: "dark", label: "Dark" },
-];
-
-/** Segmented light / auto / dark control. */
+/** Compact tri-state theme button — light / auto / dark, cycles on click. */
 export function ThemeToggle() {
   const { choice, setChoice } = useTheme();
-  return (
-    <div className="flex items-center rounded-md border border-border bg-surface p-0.5 text-xs">
-      {OPTIONS.map((o) => (
-        <button
-          key={o.value}
-          onClick={() => setChoice(o.value)}
-          className={`rounded px-2 py-1 transition-colors duration-200 ${
-            choice === o.value
-              ? "bg-primary text-white"
-              : "text-muted hover:text-text"
-          }`}
-          aria-pressed={choice === o.value}
-        >
-          {o.label}
-        </button>
-      ))}
-    </div>
-  );
+  const next: Record<ThemeChoice, ThemeChoice> = { light: "auto", auto: "dark", dark: "light" };
+  const icon = choice === "light" ? <IconSun /> : choice === "dark" ? <IconMoon /> : <IconAuto />;
+  const label = `Theme: ${choice} (click for ${next[choice]})`;
+  return <IconButton icon={icon} label={label} onClick={() => setChoice(next[choice])} />;
 }

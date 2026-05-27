@@ -19,6 +19,7 @@ import {
 import { decodeWindow, WindowCache } from "../lib/arrowWindow";
 import { gridTheme } from "../lib/theme";
 import { useTheme } from "../theme/ThemeProvider";
+import type { ForeignKey } from "../lib/commands";
 
 const PAGE = 200; // rows per fetched window
 const MAX_PAGES = 12; // LRU bound → JS heap stays bounded regardless of total rows
@@ -46,6 +47,10 @@ interface Props {
     newValue: string,
     getOriginal: (c: string) => string | null,
   ) => Promise<boolean>;
+  /** Map of column-name → foreign-key edge; cells whose column is a FK show a chevron affordance. */
+  fkByColumn?: Map<string, ForeignKey>;
+  /** Fires when the user clicks a FK chevron / cell. */
+  onFkClick?: (toTable: string, toColumn: string, fromValue: string | null) => void;
 }
 
 /**
@@ -54,7 +59,7 @@ interface Props {
  * ever resident, so memory does not grow with total row count.
  */
 export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
-  { source, onWindowFetched, onEdit },
+  { source, onWindowFetched, onEdit, fkByColumn, onFkClick },
   ref,
 ) {
   const { resolved } = useTheme();
@@ -124,15 +129,36 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
         ensurePage(page + 1);
         return { kind: GridCellKind.Loading, allowOverlay: false };
       }
+      const fk = name ? fkByColumn?.get(name) : undefined;
+      const display = fk && value !== null && value !== "" ? `→ ${value}` : value;
       return {
         kind: GridCellKind.Text,
         data: value,
-        displayData: value,
+        displayData: display,
         allowOverlay: editable,
         readonly: !editable,
+        themeOverride: fk
+          ? {
+              textDark: "var(--primary)",
+              textLight: "var(--primary)",
+            }
+          : undefined,
       };
     },
-    [ensurePage, editable],
+    [ensurePage, editable, fkByColumn],
+  );
+
+  // Cell click: if it's a FK cell, fire the navigation callback.
+  const onCellClicked = useCallback(
+    ([col, row]: Item) => {
+      if (!onFkClick) return;
+      const name = colNames.current[col];
+      const fk = name ? fkByColumn?.get(name) : undefined;
+      if (!fk) return;
+      const value = name ? (overlay.current.get(`${row}:${name}`) ?? cacheRef.current.getCell(row, name)) : null;
+      onFkClick(fk.to_table, fk.to_column, value ?? null);
+    },
+    [fkByColumn, onFkClick],
   );
 
   const onCellEdited = useCallback(
@@ -169,6 +195,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
       rows={source.totalRows}
       getCellContent={getCellContent}
       onCellEdited={editable ? onCellEdited : undefined}
+      onCellClicked={onFkClick ? onCellClicked : undefined}
       rowMarkers="number"
       smoothScrollX
       smoothScrollY
