@@ -41,7 +41,10 @@ export function Inspector({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex h-9 shrink-0 items-center border-b border-border pl-2 pr-1">
+      <div
+        className="flex shrink-0 items-center border-b border-border pl-2 pr-1"
+        style={{ height: "var(--toolbar-h)" }}
+      >
         <Tabs
           tabs={[
             { key: "details", label: "Details" },
@@ -54,12 +57,12 @@ export function Inspector({
         <button
           onClick={onClose}
           aria-label="Close inspector"
-          className="inline-flex h-6 w-6 items-center justify-center rounded text-muted hover:bg-surface-2 hover:text-text"
+          className="inline-flex h-5 w-5 items-center justify-center rounded text-muted hover:bg-surface-2 hover:text-text"
         >
           <IconClose />
         </button>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto p-3 text-xs">
+      <div className="min-h-0 flex-1 overflow-auto p-3 text-[11px]">
         {tab === "details" ? (
           object ? (
             <div className="flex flex-col gap-4">
@@ -129,7 +132,15 @@ export function Inspector({
               )}
             </div>
           ) : (
-            <div className="text-muted">Select a table to inspect.</div>
+            <div className="flex flex-col gap-2 text-muted">
+              <div className="text-[10px] font-semibold uppercase tracking-widest">Inspector</div>
+              <p className="text-[11px] leading-snug">
+                Open a table tab to see its columns, row estimate, and relationships here.
+              </p>
+              <p className="text-[10.5px] leading-snug text-muted-2">
+                Tip: <span className="tiq-kbd">⌘]</span> toggles this panel.
+              </p>
+            </div>
           )
         ) : (
           <div className="text-muted">

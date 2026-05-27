@@ -9,8 +9,8 @@ import { StructureEditor } from "./StructureEditor";
 import { ImportDialog } from "./ImportDialog";
 import { DiffView } from "./DiffView";
 import { CommandPalette, type Command } from "./CommandPalette";
+import { ConnectionPicker } from "./ConnectionPicker";
 import { Onboarding } from "./Onboarding";
-import { ConnectionRail } from "./ConnectionRail";
 import { Inspector } from "./Inspector";
 import { ContextMenu, type ContextMenuItem } from "./ui/ContextMenu";
 import { hydrateForConnection, persistForConnection } from "../lib/tabsPersist";
@@ -37,7 +37,7 @@ import {
 import { useConnections } from "../state/connectionStore";
 import { useTabs } from "../state/tabsStore";
 import type { Tab } from "../state/tabsStore";
-import { disconnect, type Engine, type ObjectInfo } from "../lib/commands";
+import { connect, disconnect, listObjects, type ConnConfig, type Engine, type ObjectInfo } from "../lib/commands";
 
 function findObject(
   schema: ReturnType<typeof useConnections.getState>["schema"],
@@ -59,9 +59,10 @@ export function MainShell() {
   const [showImport, setShowImport] = useState(false);
   const [showDiff, setShowDiff] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
+  // ⌘O Open Connection palette (TablePlus-style switcher; replaces the left-edge rail).
+  const [showConnPicker, setShowConnPicker] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
-  const [showInspector, setShowInspector] = useState(false);
-  const [showRail, setShowRail] = useState(true);
+  const [showInspector, setShowInspector] = useState(true);
   const [showHelp, setShowHelp] = useState(false);
   const [pinned, setPinned] = useState<string[]>([]);
   const [erdFocus, setErdFocus] = useState<string | undefined>(undefined);
@@ -106,13 +107,16 @@ export function MainShell() {
     );
   }, [active, tabs, activeKey, tabsState.queryCount, hydrated]);
 
-  // Cmd-K / Ctrl-K toggles the command palette.
+  // Keyboard shortcuts. ⌘O is new — Open Connection picker (TablePlus parity).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const meta = e.metaKey || e.ctrlKey;
       if (meta && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setShowPalette((v) => !v);
+      } else if (meta && e.key.toLowerCase() === "o") {
+        e.preventDefault();
+        setShowConnPicker((v) => !v);
       } else if (meta && e.key.toLowerCase() === "t") {
         e.preventDefault();
         openQuery();
@@ -168,6 +172,25 @@ export function MainShell() {
     setActive(null);
   };
 
+  /** Swap to a different saved connection without leaving the workspace. */
+  const onSwapConnection = async (c: ConnConfig) => {
+    if (c.id === active.id) return;
+    try {
+      // Disconnect the current session first so we don't pile up backend sessions.
+      await disconnect(active.id);
+      const info = await connect(c.id);
+      const schemaModel = await listObjects(c.id);
+      reset();
+      setActive(info);
+      setSchema(schemaModel);
+    } catch (e) {
+      // If the new connection fails, fall back to no-active so the user can recover via the picker.
+      console.error("connection swap failed", e);
+      setActive(null);
+      setSchema(null);
+    }
+  };
+
   const togglePin = (s: string, name: string) => {
     const key = `${s}.${name}`;
     setPinned((p) => (p.includes(key) ? p.filter((x) => x !== key) : [...p, key]));
@@ -197,18 +220,20 @@ export function MainShell() {
     );
   };
 
+  // Breadcrumb: TablePlus-style monospace strip — no border / bg, just dim · separators
+  // and a brighter active-table segment. Compact (h-5) so it fits the 32px titlebar.
   const breadcrumb = (
-    <div className="flex h-7 items-center gap-1.5 rounded-md border border-border bg-surface px-2.5 font-mono text-[11px] text-muted">
-      <span className="font-semibold text-text">{active.name}</span>
-      <span>·</span>
-      <span>{active.engine}</span>
-      <span>·</span>
+    <div className="flex h-5 items-center gap-1 font-mono text-[11px] text-muted">
+      <span className="font-medium text-text">{active.name}</span>
+      <span className="text-muted-2">·</span>
+      <span className="uppercase tracking-wide">{active.engine}</span>
+      <span className="text-muted-2">·</span>
       <span>{active.database}</span>
       {activeTab?.kind === "table" && activeTab.schema && activeTab.table && (
         <>
-          <span>·</span>
+          <span className="text-muted-2">·</span>
           <span className="text-text">
-            {activeTab.schema}.<span className="font-semibold">{activeTab.table}</span>
+            {activeTab.schema}.<span className="font-medium">{activeTab.table}</span>
           </span>
         </>
       )}
@@ -219,7 +244,7 @@ export function MainShell() {
     <div className="flex h-full flex-col">
       {/* ── TITLE BAR ─────────────────────────────────────────────────────── */}
       <header
-        className="tiq-titlebar-drag flex shrink-0 items-center gap-2 border-b border-border bg-surface pl-[88px] pr-2"
+        className="tiq-titlebar-drag flex shrink-0 items-center gap-2 border-b border-border bg-surface pl-[78px] pr-2"
         style={{ height: "var(--header-h)" }}
       >
         {/* Left icon strip */}
@@ -233,11 +258,16 @@ export function MainShell() {
           />
         </div>
 
-        <Wordmark className="ml-1 text-[13px]" />
-        <span className="flex items-center gap-1.5 rounded-md bg-bg/60 px-1.5 py-0.5">
-          {activeColor && <ColorDot color={activeColor} />}
-          <span className="text-[11px] font-medium text-text">{active.name}</span>
-        </span>
+        <Wordmark className="ml-0.5 text-[12px]" />
+        {/* Active-connection chip — colored engine dot + name. Click to swap (⌘O). */}
+        <button
+          onClick={() => setShowConnPicker(true)}
+          title="Open Connection · ⌘O"
+          className="inline-flex h-5 items-center gap-1.5 rounded-[var(--radius-sm)] px-1.5 text-[11px] text-text transition-colors hover:bg-surface-2"
+        >
+          {activeColor && <ColorDot color={activeColor} size={8} />}
+          <span className="font-medium">{active.name}</span>
+        </button>
 
         <div className="mx-2 flex-1">{breadcrumb}</div>
 
@@ -247,8 +277,6 @@ export function MainShell() {
             icon={<IconRefresh />}
             label="Refresh schema"
             onClick={() => {
-              // schema refresh is lightweight — re-trigger by clearing & re-listing on next focus.
-              // wired by the ConnectionManager.connect flow; here we just blink the icon visually
               setSchema(schema);
             }}
           />
@@ -283,33 +311,24 @@ export function MainShell() {
 
       {/* ── BODY ─────────────────────────────────────────────────────────── */}
       <div className="flex min-h-0 flex-1">
-        {showRail && (
-          <ConnectionRail
-            onAdd={onDisconnect}
-            onCollapse={() => setShowRail(false)}
-          />
-        )}
-
         {showSidebar && (
           <aside
-            className="flex shrink-0 flex-col border-r border-border bg-surface"
+            className="tiq-vibrancy flex shrink-0 flex-col border-r border-border"
             style={{ width: "var(--sidebar-w)" }}
             data-onboard="sidebar"
           >
-            {/* Items / Queries / History — TablePlus parity for sidebar sub-tabs */}
-            <div className="flex h-7 shrink-0 items-center border-b border-border">
+            {/* Items / Queries / History — subtler than the prior version; active uses
+                a soft background instead of the bottom-edge primary line. */}
+            <div className="flex h-[26px] shrink-0 items-center gap-px border-b border-border px-1">
               {(["Items", "Queries", "History"] as const).map((t, i) => (
                 <button
                   key={t}
-                  className={`relative h-7 flex-1 text-[11px] ${
-                    i === 0 ? "text-text" : "text-muted hover:text-text"
+                  className={`flex-1 rounded-[var(--radius-sm)] py-[3px] text-[11px] transition-colors ${
+                    i === 0 ? "bg-surface-2 text-text" : "text-muted hover:text-text"
                   }`}
                   title={t}
                 >
                   {t}
-                  {i === 0 && (
-                    <span className="absolute inset-x-3 -bottom-px h-0.5 rounded-full bg-primary" />
-                  )}
                 </button>
               ))}
             </div>
@@ -326,8 +345,11 @@ export function MainShell() {
                 onPinToggle={togglePin}
               />
             </div>
-            <div className="flex h-7 shrink-0 items-center justify-between gap-1 border-t border-border px-2 text-[11px] text-muted">
-              <span className="font-mono">public</span>
+            <div
+              className="flex shrink-0 items-center justify-between gap-1 border-t border-border px-2 text-[10px] text-muted"
+              style={{ height: "var(--statusbar-h)" }}
+            >
+              <span className="font-mono">{schema.schemas[0]?.name ?? "public"}</span>
               <span>{schema.schemas.reduce((n, s) => n + s.objects.length, 0)} objects</span>
             </div>
           </aside>
@@ -456,7 +478,7 @@ export function MainShell() {
 
         {showInspector && (
           <aside
-            className="flex shrink-0 flex-col border-l border-border bg-surface"
+            className="tiq-vibrancy flex shrink-0 flex-col border-l border-border"
             style={{ width: "var(--inspector-w)" }}
             data-onboard="inspector"
           >
@@ -491,6 +513,15 @@ export function MainShell() {
         <DiffView connId={active.id} connName={active.name} onClose={() => setShowDiff(false)} />
       )}
       {showPalette && <CommandPalette commands={commands} onClose={() => setShowPalette(false)} />}
+
+      {showConnPicker && (
+        <ConnectionPicker
+          connections={saved}
+          activeId={active.id}
+          onPick={(c) => void onSwapConnection(c)}
+          onClose={() => setShowConnPicker(false)}
+        />
+      )}
 
       {objMenu &&
         (() => {

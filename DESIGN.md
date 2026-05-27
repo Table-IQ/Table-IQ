@@ -1,58 +1,208 @@
-# TableIQ — Design System
+# TableIQ Design System
 
-The source of truth for TableIQ's brand and UI. Tokens live in [src/index.css](src/index.css);
-brand assets in [src/assets/brand/](src/assets/brand/).
+Source of truth for the visual system. Tokens defined here are mirrored 1:1 in
+[src/index.css](src/index.css) as CSS custom properties. Any component that
+needs a value reaches for the variable, not a literal. Brand assets in
+[src/assets/brand/](src/assets/brand/).
+
+## Design DNA
+
+> Mature desktop SQL client — TablePlus, Postico 2, Tower. Dense, monochrome,
+> instantly familiar to macOS power users. Data front and centre; chrome quiet.
+
+Three principles, in order:
+
+1. **Data first.** Every pixel of chrome above the grid steals a row. Default to
+   tight rows, small fonts, single-strip toolbars. Generous space only for
+   onboarding / connection picker / modals.
+2. **Monochrome, with restraint on color.** Primary indigo is for *state*
+   (focus ring, active tab dot, AI badge). Chips and FK indicators default to
+   neutral; they never compete with the data.
+3. **Native-feeling.** SF system fonts, system-style scrollbars, macOS
+   translucency where the platform supports it, system keyboard idioms (⌘O,
+   ⌘N, ⌘W, ⌘1–9 tab switching).
 
 ## Brand
 
 - **Name:** TableIQ (one word, capital T and IQ). Never "Table-IQ" or "Tableiq".
-- **Tagline (working):** *The database client with a brain.*
-- **Wordmark:** `Table` in `--text`, `IQ` in `--primary`. Inter SemiBold, `tracking-tight`. Component: [`<Wordmark>`](src/components/Brand.tsx).
-- **Mark:** "cells-T + spark" monogram — a T whose crossbar is three table cells, with a violet spark = the IQ/intelligence.
-  - **App icon:** indigo→violet gradient rounded tile ([icon-tile.svg](src/assets/brand/icon-tile.svg)); the OS icon set is generated from it via `pnpm tauri icon src/assets/brand/icon-1024.png` (regenerate the PNG with `node scripts/render-brand-icon.mjs`).
-  - **Inline glyph:** tile-less, uses `currentColor` so it adapts to theme ([`<BrandMark>`](src/components/Brand.tsx) / [glyph.svg](src/assets/brand/glyph.svg)).
+- **Wordmark:** `Table` in `--text`, `IQ` in `--primary`. Component: [`<Wordmark>`](src/components/Brand.tsx).
+- **Inline glyph:** tile-less, uses `currentColor` ([`<BrandMark>`](src/components/Brand.tsx)).
+- Reserve the **violet `--accent`** and the primary→accent gradient for AI
+  features (NL→SQL, chat, explain). Never for ordinary chrome.
+
+## Type scale
+
+Base sized down from 13 → 12px so we read like TablePlus. Grid cells render at
+11.5px via the glide-data-grid theme so they feel tighter than the surrounding
+chrome.
+
+| Token | Size / line | Usage |
+|---|---|---|
+| `--text-xs` | 10 / 14 | Section labels (uppercase, tracking-widest), kbd hints |
+| `--text-sm` | 11 / 16 | Sidebar rows, toolbar labels, status bar, captions |
+| `--text-base` | 12 / 17 | Body, form inputs, breadcrumb |
+| `--text-md` | 13 / 18 | Panel titles, modal headings |
+| `--text-lg` | 16 / 22 | Welcome / hero (connection manager) |
+| `--text-mono-cell` | 11.5 / 15 | Grid cells |
+
+Weights: 400 default, 500 on labels + emphasis, 600 on hero + panel titles only.
+**Never 700 in chrome.**
+
+Fonts:
+- **UI:** SF Pro → system stack → Inter fallback (`--font-sans`).
+- **Mono:** SF Mono → JetBrains Mono → ui-monospace (`--font-mono`).
+
+## Density tokens
+
+| Token | Old | New |
+|---|---|---|
+| `--row-h` | 26 | 22 |
+| `--toolbar-h` | 36 | 28 |
+| `--tabbar-h` | 30 | 26 |
+| `--statusbar-h` | 24 | 22 |
+| `--header-h` | 38 | 32 |
+| `--sidebar-w` | 232 | 220 |
+| `--inspector-w` | 260 | 240 |
+| `--gap-tight` | 6 | 4 |
+| `--gap` | — | 8 |
+| `--radius` | 6 | 5 |
+| `--radius-sm` | 4 | 3 |
+
+`--rail-w` removed — the left-edge connection rail is gone; switching happens
+through the `⌘O` Open Connection palette and the breadcrumb.
 
 ## Color tokens
 
-Light is the default; dark overrides under `[data-theme="dark"]`. Exposed as Tailwind utilities
-(`bg-bg`, `bg-surface`, `text-text`, `text-muted`, `bg-primary`, `text-primary`, `border-border`,
-`text-accent`) that switch with the active theme.
+Chrome reads as **neutral**. Primary indigo is reserved for state. Chips default
+to a transparent neutral background; primary is opt-in (AI badge, focused
+field ring, active-tab dot, draft-row left accent).
 
-| Token | Light | Dark | Use |
-|---|---|---|---|
-| `--bg` | `#ffffff` | `#0b0f17` | app background |
-| `--surface` | `#f7f8fa` | `#111726` | panels, inputs, hover |
-| `--border` | `#e5e7eb` | `#1f2937` | dividers, outlines |
-| `--text` | `#0b0f17` | `#e5e7eb` | primary text |
-| `--muted` | `#6b7280` | `#9ca3af` | secondary text, captions |
-| `--primary` | `#4f46e5` | `#6366f1` | brand actions, accents |
-| `--primary-hover` | `#4338ca` | `#818cf8` | hovered primary |
-| `--accent` | `#7c3aed` | `#8b5cf6` | **AI moments only** (gradient `--primary → --accent`) |
+### Light
 
-Rule: the violet `--accent` and the primary→accent gradient are reserved for AI features
-(NL→SQL, chat, explain). Don't use them for ordinary chrome.
+| Token | Value | Use |
+|---|---|---|
+| `--bg` | `#ffffff` | Workspace background, grid background |
+| `--surface` | `#f7f7f8` | Sidebar, toolbar, status bar |
+| `--surface-2` | `#eeeef0` | Hover, pressed |
+| `--border` | `#e4e4e7` | 1px dividers |
+| `--border-strong` | `#a1a1aa` | Inline kbd borders |
+| `--text` | `#18181b` | Body text |
+| `--muted` | `#52525b` | Captions, section labels, dim icons |
+| `--muted-2` | `#71717a` | Placeholder text |
+| `--primary` | `#4f46e5` | State only — focus ring, active tab dot |
+| `--primary-soft` | `#eef2ff` | Subtle focus / selection backgrounds |
+| `--accent` | `#7c3aed` | AI surfaces only |
+| `--selection` | `#2563eb` | Cell selection in grid |
+| `--selection-bg` | `#dbeafe` | Row hover / soft selection |
+| `--danger` | `#dc2626` | Destructive |
+| `--warn` | `#d97706` | Warning |
+| `--ok` | `#059669` | OK / editable indicator |
 
-## Theme
+### Dark
 
-Light / dark / **auto** (auto follows `prefers-color-scheme`). Managed by
-[`ThemeProvider`](src/theme/ThemeProvider.tsx) (sets `data-theme` on `<html>`, persists to
-`localStorage`), switched via [`<ThemeToggle>`](src/components/ThemeToggle.tsx). The data grid gets
-matching light/dark themes from `gridTheme()` in [src/lib/theme.ts](src/lib/theme.ts).
+Engineered for macOS dark mode — warm-leaning blue-black backgrounds, less
+saturated than our previous indigo-tinted dark.
 
-## Typography
+| Token | Value |
+|---|---|
+| `--bg` | `#0f1115` |
+| `--surface` | `#15171c` |
+| `--surface-2` | `#1c1f26` |
+| `--border` | `#26282f` |
+| `--border-strong` | `#3a3d46` |
+| `--text` | `#e6e7eb` |
+| `--muted` | `#9ca3af` |
+| `--muted-2` | `#71757e` |
+| `--primary` | `#6366f1` |
+| `--primary-soft` | `#1e1b4b` |
+| `--accent` | `#8b5cf6` |
+| `--selection` | `#3b82f6` |
+| `--selection-bg` | `#1e3a8a` |
 
-- **UI / headings:** Inter → `system-ui` fallback. Headings `font-semibold tracking-tight`.
-- **Data / SQL / IDs:** JetBrains Mono → `ui-monospace` fallback (`--font-mono`).
-- Scale: page title `text-xl`, section `text-sm font-semibold`, body `text-sm`, captions `text-xs text-muted`, labels `text-[10px] uppercase tracking-widest text-muted`.
-- *Follow-up:* bundle Inter + JetBrains Mono woff2 for offline/local-first (currently relies on system install + fallbacks).
+## Iconography
 
-## Motion & spacing
+- All lucide-react icons in chrome render at `strokeWidth={1.5}` and `size={12}`
+  (toolbar) or `size={11}` (status bar).
+- Inline data UI icons (FK chevrons, sort markers) render at `strokeWidth={2}`
+  and `size={10}`.
 
-- Transitions only on interactive elements: `transition-colors duration-200`. No ambient animation.
-- Generous spacing: page padding `px-6`/`p-8`, avoid cramped containers.
+## Layout building blocks
+
+### Window chrome (32px)
+- macOS traffic-lights reserve (left ~80px)
+- `<Wordmark>` + active-connection dot + name (left)
+- Breadcrumb: `connection · database · schema · table` (center, font-mono)
+- Right icon strip: refresh, theme, command palette, help, inspector toggle, disconnect
+
+### Tab strip (26px)
+- `<` `>` history navigation
+- Tab list — kind glyph (◇ query / ◫ ERD / ▦ table) + title
+- Active tab: subtler highlight (no top-border accent)
+- Right-edge `+` for new query
+
+### Action toolbar (28px, contextual to active tab kind)
+- Tables: Filter · Insert row · Refresh · Structure · Profile · Alter | Export
+- Queries: Run · Run selection · Run in tx · Explain | Library · Chart · Plugins · Diff · AI
+
+### Sidebar (220px)
+- Items / Queries / History segmented tabs at top
+- Search input (24px tall)
+- Tree: `PUBLIC > Tables > [list]`, `Views`, `Functions`
+- Bottom strip: schema name + total objects
+
+### Inspector (240px)
+- Details / Assistant segmented tabs
+- Details for active table: columns + size + indexes + comment **by default**
+- Falls back to "select a table" only when no table tab is active
+
+### Status bar (22px) — content-rich
+- **Left:** `public.wide · Table · 5 cols · ~1,000,000 rows`
+- **Center:** `‹ ‹ 1-300 of 721 rows › ›`
+- **Right:** `Data | Structure` segmented · `+ Row` · `Filters` · `Columns` · editable/RO chip
+
+## Surface treatments
+
+### Translucency (macOS)
+On `navigator.platform.includes('Mac')`:
+- Sidebar + Inspector get `backdrop-filter: blur(20px) saturate(180%)` over a translucent surface
+- The body uses an off-white tinted surface so blur has something to attenuate
+
+### Scrollbars
+Auto-hide native-feel: 8px wide, 4px radius, transparent track, thumb fades in
+on scroll/hover.
+
+### Shadows
+Two tiers only:
+- `--shadow-soft` — cards, sidebar elevation
+- `--shadow-pop` — modal / popover / context menu
+
+## Motion
+
+- Hover transitions: 120ms ease-out
+- Modal open/close: 160ms cubic-bezier(0.2, 0.8, 0.2, 1)
+- Tab switch: instant — feels snappier
+- Filter / Insert row appearance: 180ms slide-down
+
+## Surfaces redesigned this slice
+
+| Surface | Change |
+|---|---|
+| Welcome / first-launch | Hero treatment, larger wordmark, glass action chips |
+| Connection manager | List-first; form slides out as side sheet on edit/new |
+| Workspace titlebar | Tighter (32px), 1.5-stroke icons, breadcrumb redesign |
+| Connection rail (left edge) | **Removed**. Replaced by `⌘O` Open Connection palette |
+| Tab strip | Subtler active state, smaller |
+| Status bar | New layout: object info L · row-window nav C · Data/Structure + Row + Filters/Columns + editable chip R |
+| Sidebar | Density tightened; section labels in `text-xs uppercase tracking-widest text-muted` |
+| Inspector | Default state shows active table's details |
+| Grid | strokeWidth-2 inline indicators; mono cell 11.5px; row height matches new `--row-h` |
+| Filter chip rail | Kept; tighter, neutral background |
+| FK chip rail (above grid) | Removed in favor of inline chevron in FK cells |
+| `⌘O` Open Connection modal | New — search + list, swap connections without leaving workspace |
 
 ## Do / Don't
 
 - **Do** use tokens (`bg-surface`, `text-muted`) so light/dark both work. **Don't** hardcode `gray-*`/hex in components.
 - **Do** keep TablePlus's familiar layout, enhanced. **Don't** reinvent the flow users already know.
 - **Do** reserve violet/gradient for AI. **Don't** sprinkle it across normal UI.
+- **Do** keep chrome stroke 1.5; data UI stroke 2.

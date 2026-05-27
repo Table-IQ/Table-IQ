@@ -59,6 +59,8 @@ interface Props {
     x: number;
     y: number;
   }) => void;
+  /** Fires when the grid's visible row range changes — used by the status-bar pager. */
+  onVisibleRangeChange?: (firstRow: number, lastRow: number) => void;
 }
 
 /**
@@ -67,7 +69,7 @@ interface Props {
  * ever resident, so memory does not grow with total row count.
  */
 export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
-  { source, onWindowFetched, onEdit, fkByColumn, onFkClick, onCellContext },
+  { source, onWindowFetched, onEdit, fkByColumn, onFkClick, onCellContext, onVisibleRangeChange },
   ref,
 ) {
   const { resolved } = useTheme();
@@ -204,6 +206,11 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
       getCellContent={getCellContent}
       onCellEdited={editable ? onCellEdited : undefined}
       onCellClicked={onFkClick ? onCellClicked : undefined}
+      onVisibleRegionChanged={
+        onVisibleRangeChange
+          ? (r) => onVisibleRangeChange(r.y, r.y + r.height)
+          : undefined
+      }
       onCellContextMenu={
         onCellContext
           ? ([col, row], event) => {

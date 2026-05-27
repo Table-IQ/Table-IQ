@@ -26,7 +26,7 @@ export function Chip({
     <Comp
       onClick={onClick}
       title={title}
-      className={`inline-flex h-5 items-center gap-1 rounded-full border px-2 text-[11px] leading-none transition-colors ${map[tone]} ${onClick ? "hover:bg-surface-2" : ""}`}
+      className={`inline-flex h-[18px] items-center gap-1 rounded-[var(--radius-sm)] border px-1.5 text-[10.5px] leading-none transition-colors duration-100 ${map[tone]} ${onClick ? "hover:bg-surface-2" : ""}`}
     >
       {children}
       {onClose && (

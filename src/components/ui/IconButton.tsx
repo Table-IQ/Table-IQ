@@ -19,7 +19,7 @@ export function IconButton({
   className = "",
   ...rest
 }: Props) {
-  const dim = size === "sm" ? "h-6 w-6" : "h-7 w-7";
+  const dim = size === "sm" ? "h-5 w-5" : "h-6 w-6";
   const tone =
     variant === "solid"
       ? "bg-primary text-white hover:bg-primary-hover"
