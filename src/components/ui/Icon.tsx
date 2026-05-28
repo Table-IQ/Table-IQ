@@ -1,7 +1,9 @@
 /**
- * Minimal hand-rolled icon set, no external dep. 14-px viewBox, currentColor,
- * inherits text size from parent. Stroke 1.5 for crisp 1-px lines at typical
- * 14-16 px render. Keep names stable — consumed across every surface.
+ * Hand-rolled icon set, no external dep. 14-px viewBox, currentColor, inherits
+ * text size from parent. Stroke 1.7 is the readability sweet spot — light
+ * enough to feel like a system icon, heavy enough to be unambiguous at 14-16
+ * px (lucide-react ships at 2; we go a hair under since our chrome is denser).
+ * Keep names stable — consumed across every surface.
  */
 import type { SVGProps } from "react";
 
@@ -12,7 +14,7 @@ const base = ({ size = 14, ...rest }: P) => ({
   viewBox: "0 0 14 14",
   fill: "none",
   stroke: "currentColor",
-  strokeWidth: 1.4,
+  strokeWidth: 1.7,
   strokeLinecap: "round" as const,
   strokeLinejoin: "round" as const,
   ...rest,
@@ -57,9 +59,12 @@ export const IconStop = (p: P) => (
   </svg>
 );
 export const IconRefresh = (p: P) => (
+  // Single 3/4-circle arrow + sharp arrowhead at the top — reads instantly as
+  // "reload" the way TablePlus / VS Code / Finder reload buttons do. The
+  // previous two-arc design was too abstract to register at 12-14 px.
   <svg {...base(p)}>
-    <path d="M12 4V1.5M12 4H9.5M2 10v2.5M2 10h2.5" />
-    <path d="M11.5 5.5a4.5 4.5 0 0 0-8.5 1.5M2.5 8.5A4.5 4.5 0 0 0 11 7" />
+    <path d="M11.5 7a4.5 4.5 0 1 1-1.4-3.25" />
+    <path d="M11.6 1.5v3h-3" />
   </svg>
 );
 export const IconCommit = (p: P) => (
