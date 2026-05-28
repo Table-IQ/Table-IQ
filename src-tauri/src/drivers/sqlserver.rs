@@ -421,6 +421,20 @@ impl SqlDriver for SqlServerDriver {
             })
             .collect())
     }
+
+    async fn list_databases(&self) -> DResult<Vec<String>> {
+        // sys.databases is visible from every connection regardless of which DB
+        // is currently in scope. We skip the system DBs that SSMS hides by
+        // default (master/tempdb/model/msdb stay out unless the user is wired in).
+        let sql = "SELECT name FROM sys.databases \
+                   WHERE database_id > 4 OR name = 'master' \
+                   ORDER BY CASE WHEN name = 'master' THEN 0 ELSE 1 END, name";
+        let (_cols, rows) = self.query_text(sql).await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| r.into_iter().next().flatten())
+            .collect())
+    }
 }
 
 #[cfg(test)]

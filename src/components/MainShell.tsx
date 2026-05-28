@@ -10,6 +10,7 @@ import { ImportDialog } from "./ImportDialog";
 import { DiffView } from "./DiffView";
 import { CommandPalette, type Command } from "./CommandPalette";
 import { ConnectionPicker } from "./ConnectionPicker";
+import { DatabasePicker } from "./DatabasePicker";
 import { Onboarding } from "./Onboarding";
 import { Inspector } from "./Inspector";
 import { ContextMenu, type ContextMenuItem } from "./ui/ContextMenu";
@@ -37,7 +38,16 @@ import {
 import { useConnections } from "../state/connectionStore";
 import { useTabs } from "../state/tabsStore";
 import type { Tab } from "../state/tabsStore";
-import { connect, disconnect, listObjects, type ConnConfig, type Engine, type ObjectInfo } from "../lib/commands";
+import {
+  connect,
+  disconnect,
+  listDatabases,
+  listObjects,
+  switchDatabase,
+  type ConnConfig,
+  type Engine,
+  type ObjectInfo,
+} from "../lib/commands";
 import { markConnected } from "../lib/lastConnected";
 
 function findObject(
@@ -62,6 +72,13 @@ export function MainShell() {
   const [showPalette, setShowPalette] = useState(false);
   // ⌘O Open Connection palette (TablePlus-style switcher; replaces the left-edge rail).
   const [showConnPicker, setShowConnPicker] = useState(false);
+  // ⌘D Switch Database — opens the per-server database picker (TablePlus parity).
+  const [showDbPicker, setShowDbPicker] = useState(false);
+  const [dbList, setDbList] = useState<{
+    loading: boolean;
+    items: string[];
+    error: string | null;
+  }>({ loading: false, items: [], error: null });
   const [showSidebar, setShowSidebar] = useState(true);
   const [showInspector, setShowInspector] = useState(true);
   const [showHelp, setShowHelp] = useState(false);
@@ -108,6 +125,21 @@ export function MainShell() {
     );
   }, [active, tabs, activeKey, tabsState.queryCount, hydrated]);
 
+  // Load the list of databases visible from this connection and open the picker.
+  // Idempotent — repeated triggers reuse the cached items unless the user closes
+  // the picker, which resets state so the next open re-fetches.
+  const openDbPicker = async () => {
+    if (!active) return;
+    setShowDbPicker(true);
+    setDbList((s) => (s.items.length > 0 ? s : { loading: true, items: [], error: null }));
+    try {
+      const items = await listDatabases(active.id);
+      setDbList({ loading: false, items, error: null });
+    } catch (e) {
+      setDbList({ loading: false, items: [], error: String(e) });
+    }
+  };
+
   // Keyboard shortcuts. ⌘O is new — Open Connection picker (TablePlus parity).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -118,6 +150,9 @@ export function MainShell() {
       } else if (meta && e.key.toLowerCase() === "o") {
         e.preventDefault();
         setShowConnPicker((v) => !v);
+      } else if (meta && e.key.toLowerCase() === "d") {
+        e.preventDefault();
+        void openDbPicker();
       } else if (meta && e.key.toLowerCase() === "t") {
         e.preventDefault();
         openQuery();
@@ -134,7 +169,7 @@ export function MainShell() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [openQuery, close, activeKey]);
+  }, [openQuery, close, activeKey, active?.id]);
 
   const commands = useMemo<Command[]>(() => {
     const list: Command[] = [];
@@ -154,8 +189,17 @@ export function MainShell() {
       { id: "act:table", label: "New Table…", hint: "action", run: () => setShowStructure(true) },
       { id: "act:import", label: "Import CSV / JSON…", hint: "action", run: () => setShowImport(true) },
       { id: "act:diff", label: "Diff with another connection…", hint: "action", run: () => setShowDiff(true) },
+      {
+        id: "act:switch-db",
+        label: "Switch Database…",
+        hint: "⌘D",
+        run: () => void openDbPicker(),
+      },
     );
     return list;
+    // openDbPicker is intentionally not a dep — recomputing the command list on
+    // every keystroke (active changes) would churn the palette unnecessarily.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [schema, openTable, openQuery, openErd]);
 
   if (!active || !schema) return null;
@@ -224,13 +268,22 @@ export function MainShell() {
 
   // Breadcrumb: TablePlus-style monospace strip — no border / bg, just dim · separators
   // and a brighter active-table segment. Compact (h-5) so it fits the 32px titlebar.
+  // The database segment is a button that opens the ⌘D picker (TablePlus parity).
   const breadcrumb = (
     <div className="flex h-5 items-center gap-1 font-mono text-[11px] text-muted">
       <span className="font-medium text-text">{active.name}</span>
       <span className="text-muted-2">·</span>
       <span className="uppercase tracking-wide">{active.engine}</span>
       <span className="text-muted-2">·</span>
-      <span>{active.database}</span>
+      <button
+        onClick={() => void openDbPicker()}
+        title="Switch database · ⌘D"
+        className="inline-flex h-5 items-center rounded-[var(--radius-sm)] px-1 text-[11px] text-text transition-colors hover:bg-surface-2"
+        data-testid="breadcrumb-db"
+      >
+        {active.database || "(none)"}
+        <span aria-hidden className="ml-1 text-muted-2">▾</span>
+      </button>
       {activeTab?.kind === "table" && activeTab.schema && activeTab.table && (
         <>
           <span className="text-muted-2">·</span>
@@ -522,6 +575,31 @@ export function MainShell() {
           activeId={active.id}
           onPick={(c) => void onSwapConnection(c)}
           onClose={() => setShowConnPicker(false)}
+        />
+      )}
+
+      {showDbPicker && (
+        <DatabasePicker
+          databases={dbList.items}
+          activeDatabase={active.database}
+          busy={dbList.loading}
+          error={dbList.error}
+          onPick={async (db) => {
+            try {
+              const info = await switchDatabase(active.id, db);
+              const schemaModel = await listObjects(active.id);
+              markConnected(active.id);
+              reset();
+              setActive(info);
+              setSchema(schemaModel);
+              setShowDbPicker(false);
+              // Reset cache so the next open re-fetches against the new active session.
+              setDbList({ loading: false, items: [], error: null });
+            } catch (e) {
+              setDbList({ loading: false, items: dbList.items, error: String(e) });
+            }
+          }}
+          onClose={() => setShowDbPicker(false)}
         />
       )}
 

@@ -96,4 +96,22 @@ impl KvDriver for RedisDriver {
         };
         Ok(KvValue { kind, columns, rows })
     }
+
+    async fn list_databases(&self) -> DResult<Vec<String>> {
+        // Redis exposes a fixed-count databases config (default 16). `CONFIG GET
+        // databases` returns the pair `["databases", "16"]`; we enumerate 0..N-1
+        // and return them as strings so the same picker UI handles every engine.
+        let mut con = self.con.clone();
+        let pair: Vec<String> = redis::cmd("CONFIG")
+            .arg("GET")
+            .arg("databases")
+            .query_async(&mut con)
+            .await
+            .map_err(e)?;
+        let n: usize = pair
+            .get(1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(16);
+        Ok((0..n).map(|i| i.to_string()).collect())
+    }
 }

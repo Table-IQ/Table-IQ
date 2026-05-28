@@ -271,6 +271,104 @@ pub fn disconnect(state: State<ConnState>, id: String) {
     state.tunnels.lock().unwrap().remove(&id);
 }
 
+/// Enumerate the databases reachable from the active session for `id`. Routes
+/// to the appropriate driver trait based on which session map holds the id.
+/// Used by the post-connection database picker (TablePlus ⌘K idiom).
+#[tauri::command]
+pub async fn list_databases(state: State<'_, ConnState>, id: String) -> Result<Vec<String>, String> {
+    // Probe each session map and clone the Arc out *before* the await — holding
+    // a MutexGuard across .await makes the future !Send and Tauri rejects it.
+    let sql = state.sessions.lock().unwrap().get(&id).cloned();
+    if let Some(drv) = sql {
+        return drv.list_databases().await.map_err(|e| e.to_string());
+    }
+    let kv = state.kv_sessions.lock().unwrap().get(&id).cloned();
+    if let Some(drv) = kv {
+        return drv.list_databases().await.map_err(|e| e.to_string());
+    }
+    let doc = state.doc_sessions.lock().unwrap().get(&id).cloned();
+    if let Some(drv) = doc {
+        return drv.list_databases().await.map_err(|e| e.to_string());
+    }
+    Err("not connected".to_string())
+}
+
+/// Switch the active connection to a different database without persisting the
+/// change to the saved `ConnConfig`. Tears down the current session and opens a
+/// fresh one against the same server + credentials but with `database` swapped
+/// in. Reuses the SSH tunnel where applicable (rebuilds when the previous
+/// session had none). Returns the new `ConnectedInfo`.
+#[tauri::command]
+pub async fn switch_database(
+    state: State<'_, ConnState>,
+    id: String,
+    database: String,
+) -> Result<ConnectedInfo, String> {
+    // Look up the saved config; clone with the database swapped — we do not
+    // mutate the persisted store so the user's saved default is preserved.
+    let cfg = {
+        let store = state.store.lock().unwrap();
+        store
+            .connections
+            .iter()
+            .find(|c| c.id == id)
+            .cloned()
+            .ok_or_else(|| "unknown connection".to_string())?
+    };
+    let mut new_cfg = cfg.clone();
+    new_cfg.database = database;
+
+    // Tear down the current session before opening the new one. We keep the SSH
+    // tunnel: it points at the bastion + remote host:port, which is unchanged
+    // by switching database. Reopening on the same tunnel avoids an SSH handshake.
+    state.sessions.lock().unwrap().remove(&id);
+    state.kv_sessions.lock().unwrap().remove(&id);
+    state.doc_sessions.lock().unwrap().remove(&id);
+
+    let password = if new_cfg.engine == "sqlite" {
+        String::new()
+    } else {
+        connections::get_password(&id).unwrap_or_default()
+    };
+
+    // Compute the effective config — if a tunnel is alive, retarget host/port at
+    // its local forward (matching the original `connect` flow). Pull `local_addr`
+    // out under the lock so we don't hold the guard across any awaits below.
+    let tunnel_local = state
+        .tunnels
+        .lock()
+        .unwrap()
+        .get(&id)
+        .map(|t| t.local_addr());
+    let eff = if let Some(local) = tunnel_local {
+        new_cfg.with_host_port(&local.ip().to_string(), local.port())
+    } else {
+        new_cfg.clone()
+    };
+
+    if eff.engine == "redis" {
+        let drv = RedisDriver::connect(&eff.url_with_password(&password))
+            .await
+            .map_err(|e| e.to_string())?;
+        state.kv_sessions.lock().unwrap().insert(id.clone(), Arc::new(drv));
+    } else if eff.engine == "mongodb" {
+        let drv = MongoDriver::connect(&eff.url_with_password(&password), &eff.database)
+            .await
+            .map_err(|e| e.to_string())?;
+        state.doc_sessions.lock().unwrap().insert(id.clone(), Arc::new(drv));
+    } else {
+        let drv = open_driver(&eff, &password).await?;
+        state.sessions.lock().unwrap().insert(id.clone(), drv);
+    }
+
+    Ok(ConnectedInfo {
+        id: id.clone(),
+        name: new_cfg.name,
+        database: new_cfg.database,
+        engine: new_cfg.engine,
+    })
+}
+
 // ── MongoDB document browse ────────────────────────────────────────────────
 #[tauri::command]
 pub async fn doc_collections(state: State<'_, ConnState>, id: String) -> Result<Vec<String>, String> {

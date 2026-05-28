@@ -326,6 +326,17 @@ impl SqlDriver for SqliteDriver {
         }
         Ok(out)
     }
+
+    async fn list_databases(&self) -> DResult<Vec<String>> {
+        // SQLite is a single-file engine — `PRAGMA database_list` returns the
+        // attached databases (always at least `main`). We expose them as labels
+        // so the picker doesn't disappear for SQLite users.
+        let rows = sqlx::query("PRAGMA database_list")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(rows.iter().map(|r| r.get::<String, _>("name")).collect())
+    }
 }
 
 

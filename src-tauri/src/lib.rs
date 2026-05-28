@@ -16,11 +16,11 @@ use ipc::connect::{
     get_ai_config, get_result_window, get_table_window,
     doc_collections, doc_find, explain_query, export_connections, foreign_keys, import_connections,
     apply_parquet_import, import_rows, insert_row, install_sample_plugin, kv_get, kv_scan,
-    list_connections, list_objects, list_plugins, list_saved_queries, local_llm_available,
-    open_table, parse_import, parse_parquet_preview, primary_key,
+    list_connections, list_databases, list_objects, list_plugins, list_saved_queries,
+    local_llm_available, open_table, parse_import, parse_parquet_preview, primary_key,
     profile_column, query_history, read_onboarding_state, run_plugin_on_result, run_query,
-    run_script, save_ai_config, save_connection, save_query, delete_saved_query, test_connection,
-    write_onboarding_state, ConnState,
+    run_script, save_ai_config, save_connection, save_query, delete_saved_query, switch_database,
+    test_connection, write_onboarding_state, ConnState,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -35,6 +35,8 @@ pub fn run() {
             test_connection,
             connect,
             disconnect,
+            list_databases,
+            switch_database,
             list_objects,
             open_table,
             get_table_window,

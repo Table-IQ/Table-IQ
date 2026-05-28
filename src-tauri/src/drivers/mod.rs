@@ -321,6 +321,14 @@ pub trait SqlDriver: Send + Sync {
     async fn foreign_keys(&self) -> DResult<Vec<ForeignKey>> {
         Ok(Vec::new())
     }
+
+    /// Server-side enumeration of databases this connection can reach. Used by
+    /// the post-connection database picker (TablePlus ⌘K idiom). Default: not
+    /// supported (file-based engines like SQLite override to return an empty
+    /// list since the concept doesn't apply).
+    async fn list_databases(&self) -> DResult<Vec<String>> {
+        Err(DriverError::NotImplemented)
+    }
 }
 
 /// Document stores (MongoDB). The third data-model trait (plan spec #1).
@@ -329,6 +337,10 @@ pub trait DocumentDriver: Send + Sync {
     async fn list_collections(&self) -> DResult<Vec<String>>;
     /// Return up to `limit` documents from a collection as pretty JSON strings.
     async fn find(&self, collection: &str, limit: i64) -> DResult<Vec<String>>;
+    /// Server-side enumeration of databases (for the post-connection picker).
+    async fn list_databases(&self) -> DResult<Vec<String>> {
+        Err(DriverError::NotImplemented)
+    }
 }
 
 /// A Redis key with its type + TTL (seconds; -1 = no expiry).
@@ -352,6 +364,11 @@ pub struct KvValue {
 pub trait KvDriver: Send + Sync {
     async fn scan(&self, pattern: &str, limit: usize) -> DResult<Vec<KeyInfo>>;
     async fn get(&self, key: &str) -> DResult<KvValue>;
+    /// Enumerate Redis databases. Redis exposes a fixed-count `databases`
+    /// config (typically 16); we return them as `"0"`..`"N-1"` strings.
+    async fn list_databases(&self) -> DResult<Vec<String>> {
+        Err(DriverError::NotImplemented)
+    }
 }
 
 /// Pure builder for a parameterized INSERT used by the per-engine `insert_row` impls

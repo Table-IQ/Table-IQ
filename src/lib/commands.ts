@@ -236,6 +236,56 @@ export async function disconnect(id: string): Promise<void> {
   await invoke("disconnect", { id });
 }
 
+/**
+ * Enumerate the databases reachable from the active session for `id`. Backed by
+ * the matching driver's catalog query (`pg_database` for Postgres, `SHOW DATABASES`
+ * for MySQL, `sys.databases` for MSSQL, `PRAGMA database_list` for SQLite,
+ * `listDatabaseNames` for Mongo, `CONFIG GET databases` for Redis).
+ */
+export async function listDatabases(id: string): Promise<string[]> {
+  if (!inTauri()) {
+    const c = mockStore.find((x) => x.id === id);
+    if (!c) return [];
+    switch (c.engine) {
+      case "postgres":
+        return ["tableiq", "postgres", "analytics", "ops"];
+      case "mysql":
+        return ["tableiq", "warehouse", "wordpress"];
+      case "sqlserver":
+        return ["master", "tableiq"];
+      case "sqlite":
+        return ["main"];
+      case "redis":
+        return Array.from({ length: 16 }, (_, i) => String(i));
+      case "mongodb":
+        return ["admin", "tableiq", "local"];
+      default:
+        return [];
+    }
+  }
+  return invoke<string[]>("list_databases", { id });
+}
+
+/**
+ * Switch the active session to `database` without persisting the change to the
+ * saved `ConnConfig`. Backend tears down the current driver session and opens a
+ * fresh one against the same server + credentials, reusing the SSH tunnel where
+ * applicable. Returns the new `ConnectedInfo`.
+ */
+export async function switchDatabase(id: string, database: string): Promise<ConnectedInfo> {
+  if (!inTauri()) {
+    const c = mockStore.find((x) => x.id === id);
+    if (c) c.database = database;
+    return {
+      id,
+      name: c?.name ?? id,
+      database,
+      engine: c?.engine ?? "postgres",
+    };
+  }
+  return invoke<ConnectedInfo>("switch_database", { id, database });
+}
+
 export async function listObjects(id: string): Promise<SchemaModel> {
   if (!inTauri()) return mockSchema;
   return invoke<SchemaModel>("list_objects", { id });

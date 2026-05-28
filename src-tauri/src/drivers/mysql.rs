@@ -402,6 +402,21 @@ impl SqlDriver for MySqlDriver {
             })
             .collect())
     }
+
+    async fn list_databases(&self) -> DResult<Vec<String>> {
+        // information_schema.schemata is the portable form of SHOW DATABASES that
+        // also gives stable ordering and excludes the internal `information_schema`
+        // pseudo-schema by user request.
+        let names: Vec<String> = sqlx::query_scalar(
+            "SELECT schema_name FROM information_schema.schemata \
+             WHERE schema_name NOT IN ('information_schema', 'performance_schema', 'mysql', 'sys') \
+             ORDER BY schema_name",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(names)
+    }
 }
 
 #[cfg(test)]

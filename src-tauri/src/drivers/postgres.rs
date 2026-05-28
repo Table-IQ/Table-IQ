@@ -565,6 +565,18 @@ impl SqlDriver for PgDriver {
                 .map_err(db)?;
         Ok(v.to_string())
     }
+
+    async fn list_databases(&self) -> DResult<Vec<String>> {
+        let names: Vec<String> = sqlx::query_scalar(
+            "SELECT datname FROM pg_database \
+             WHERE NOT datistemplate AND datallowconn \
+             ORDER BY datname",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(names)
+    }
 }
 
 #[cfg(test)]

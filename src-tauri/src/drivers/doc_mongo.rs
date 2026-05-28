@@ -11,6 +11,7 @@ fn e<E: std::fmt::Display>(err: E) -> DriverError {
 }
 
 pub struct MongoDriver {
+    client: Client,
     db: Database,
 }
 
@@ -18,9 +19,8 @@ impl MongoDriver {
     pub async fn connect(url: &str, database: &str) -> DResult<Self> {
         let client = Client::with_uri_str(url).await.map_err(e)?;
         let name = if database.is_empty() { "test" } else { database };
-        Ok(Self {
-            db: client.database(name),
-        })
+        let db = client.database(name);
+        Ok(Self { client, db })
     }
 }
 
@@ -40,5 +40,12 @@ impl DocumentDriver for MongoDriver {
             out.push(serde_json::to_string_pretty(&doc).unwrap_or_else(|_| "{}".into()));
         }
         Ok(out)
+    }
+
+    async fn list_databases(&self) -> DResult<Vec<String>> {
+        // listDatabaseNames hits the admin command and returns names visible to
+        // the authenticated user. We keep the client (not just the active db) on
+        // the driver specifically so this call doesn't have to reconnect.
+        self.client.list_database_names().await.map_err(e)
     }
 }
