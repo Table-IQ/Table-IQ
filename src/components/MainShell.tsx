@@ -14,6 +14,7 @@ import { DatabasePicker } from "./DatabasePicker";
 import { Onboarding } from "./Onboarding";
 import { Inspector } from "./Inspector";
 import { ContextMenu, type ContextMenuItem } from "./ui/ContextMenu";
+import { ResizeHandle, clampWidth } from "./ui/ResizeHandle";
 import { hydrateForConnection, persistForConnection } from "../lib/tabsPersist";
 import { ToolbarButton, Toolbar, ToolbarDivider, ToolbarSpacer } from "./ui/Toolbar";
 import { StatusBar, StatusDot } from "./ui/StatusBar";
@@ -24,6 +25,7 @@ import {
   IconChevronRight,
   IconClose,
   IconCommand,
+  IconDatabase,
   IconDiff,
   IconErd,
   IconHelp,
@@ -81,6 +83,35 @@ export function MainShell() {
   }>({ loading: false, items: [], error: null });
   const [showSidebar, setShowSidebar] = useState(true);
   const [showInspector, setShowInspector] = useState(true);
+  // Per-pane widths are persisted in localStorage so the user's drag survives
+  // a relaunch (TablePlus parity). Default to the CSS token values used before
+  // resizing landed; clamps protect against pathological window sizes.
+  const SIDEBAR_MIN = 180;
+  const SIDEBAR_MAX = 480;
+  const INSPECTOR_MIN = 200;
+  const INSPECTOR_MAX = 520;
+  const SIDEBAR_DEFAULT = 220;
+  const INSPECTOR_DEFAULT = 240;
+  const [sidebarW, setSidebarW] = useState<number>(() => {
+    if (typeof window === "undefined") return SIDEBAR_DEFAULT;
+    const raw = window.localStorage.getItem("tiq:layout:sidebarW");
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? clampWidth(n, SIDEBAR_MIN, SIDEBAR_MAX) : SIDEBAR_DEFAULT;
+  });
+  const [inspectorW, setInspectorW] = useState<number>(() => {
+    if (typeof window === "undefined") return INSPECTOR_DEFAULT;
+    const raw = window.localStorage.getItem("tiq:layout:inspectorW");
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0
+      ? clampWidth(n, INSPECTOR_MIN, INSPECTOR_MAX)
+      : INSPECTOR_DEFAULT;
+  });
+  useEffect(() => {
+    window.localStorage.setItem("tiq:layout:sidebarW", String(sidebarW));
+  }, [sidebarW]);
+  useEffect(() => {
+    window.localStorage.setItem("tiq:layout:inspectorW", String(inspectorW));
+  }, [inspectorW]);
   const [showHelp, setShowHelp] = useState(false);
   const [pinned, setPinned] = useState<string[]>([]);
   const [erdFocus, setErdFocus] = useState<string | undefined>(undefined);
@@ -336,6 +367,12 @@ export function MainShell() {
             }}
           />
           <IconButton
+            icon={<IconDatabase />}
+            label="Switch database"
+            shortcut="⌘D"
+            onClick={() => void openDbPicker()}
+          />
+          <IconButton
             icon={<IconCommand />}
             label="Command palette"
             shortcut="⌘K"
@@ -369,7 +406,7 @@ export function MainShell() {
         {showSidebar && (
           <aside
             className="tiq-vibrancy flex shrink-0 flex-col border-r border-border"
-            style={{ width: "var(--sidebar-w)" }}
+            style={{ width: sidebarW }}
             data-onboard="sidebar"
           >
             {/* Items / Queries / History — subtler than the prior version; active uses
@@ -408,6 +445,14 @@ export function MainShell() {
               <span>{schema.schemas.reduce((n, s) => n + s.objects.length, 0)} objects</span>
             </div>
           </aside>
+        )}
+        {showSidebar && (
+          <ResizeHandle
+            onResize={(d) =>
+              setSidebarW((w) => clampWidth(w + d, SIDEBAR_MIN, SIDEBAR_MAX))
+            }
+            side="right"
+          />
         )}
 
         <main className="flex min-w-0 flex-1 flex-col">
@@ -532,9 +577,17 @@ export function MainShell() {
         </main>
 
         {showInspector && (
+          <ResizeHandle
+            onResize={(d) =>
+              setInspectorW((w) => clampWidth(w - d, INSPECTOR_MIN, INSPECTOR_MAX))
+            }
+            side="left"
+          />
+        )}
+        {showInspector && (
           <aside
             className="tiq-vibrancy flex shrink-0 flex-col border-l border-border"
-            style={{ width: "var(--inspector-w)" }}
+            style={{ width: inspectorW }}
             data-onboard="inspector"
           >
             <Inspector

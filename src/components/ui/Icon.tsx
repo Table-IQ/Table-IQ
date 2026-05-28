@@ -153,6 +153,16 @@ export const IconSidebar = (p: P) => (
     <path d="M5.5 2.5v9" />
   </svg>
 );
+export const IconDatabase = (p: P) => (
+  // Storage cylinder — the universal database glyph (TablePlus, DataGrip, every
+  // ER diagram editor). Top ellipse + side walls + a faint middle band so the
+  // "stack of platters" reading lands at 12-14 px.
+  <svg {...base(p)}>
+    <ellipse cx="7" cy="3" rx="4.5" ry="1.6" />
+    <path d="M2.5 3v8c0 .9 2 1.6 4.5 1.6S11.5 11.9 11.5 11V3" />
+    <path d="M2.5 7c0 .9 2 1.6 4.5 1.6S11.5 7.9 11.5 7" />
+  </svg>
+);
 export const IconSidebarRight = (p: P) => (
   <svg {...base(p)}>
     <rect x="1.5" y="2.5" width="11" height="9" rx="1" />
