@@ -23,8 +23,12 @@ export function gridTheme(mode: ResolvedTheme) {
       "-apple-system, 'SF Pro Text', system-ui, 'Segoe UI Variable', sans-serif",
     headerFontStyle: "500 11px",
     baseFontStyle: "11.5px",
-    cellHorizontalPadding: 8,
-    cellVerticalPadding: 4,
+    // 10px horizontal padding gives cell text a 1ch buffer from the column
+    // border so long values don't visually merge into the next column (the
+    // "cells overlap" feedback after Slice 27). Vertical bumped slightly too
+    // so 22 px rows still look balanced with the extra side breathing room.
+    cellHorizontalPadding: 10,
+    cellVerticalPadding: 5,
     headerIconSize: 12,
   };
   if (mode === "dark") {
@@ -38,7 +42,10 @@ export function gridTheme(mode: ResolvedTheme) {
       textMedium: "#9ca3af",
       textLight: "#71757e",
       textHeader: "#9ca3af",
-      borderColor: "#26282f",
+      // Vertical border darkened from #26282f → #3a3d46 (matches --border-strong
+      // in DESIGN.md). Horizontal kept softer so the grid still reads as rows-
+      // first rather than cells-first.
+      borderColor: "#3a3d46",
       horizontalBorderColor: "#1c1f26",
       accentColor: "#6366f1",
       accentLight: "#1e1b4b",
@@ -54,7 +61,9 @@ export function gridTheme(mode: ResolvedTheme) {
     textMedium: "#52525b",
     textLight: "#71717a",
     textHeader: "#52525b",
-    borderColor: "#e4e4e7",
+    // Light-mode vertical border darkened so cell boundaries land clearly at
+    // 11.5px text — was #e4e4e7 (barely visible against #ffffff cells).
+    borderColor: "#d4d4d8",
     horizontalBorderColor: "#eeeef0",
     accentColor: "#4f46e5",
     accentLight: "#eef2ff",

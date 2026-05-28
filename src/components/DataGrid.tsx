@@ -21,9 +21,10 @@ import { gridTheme } from "../lib/theme";
 import { useTheme } from "../theme/ThemeProvider";
 import type { ForeignKey } from "../lib/commands";
 
+import { DEFAULT_COL_WIDTH } from "../lib/colWidths";
+
 const PAGE = 200; // rows per fetched window
 const MAX_PAGES = 12; // LRU bound → JS heap stays bounded regardless of total rows
-const COL_WIDTH = 160;
 
 /** A windowed data source the grid pages over. `key` identity resets the cache. */
 export interface GridSource {
@@ -65,6 +66,12 @@ interface Props {
    *  Inspector's row-detail mode (Slice 27). Receives `null` when the row's
    *  page hasn't loaded yet (the caller should ignore null). */
   onRowSelected?: (row: number, values: Record<string, string> | null) => void;
+  /** Per-column width overrides, keyed by column name. Missing entries fall
+   *  back to {@link DEFAULT_COL_WIDTH}. (Slice 28 — TablePlus parity). */
+  columnWidths?: Record<string, number>;
+  /** Fires when the user finishes dragging a column edge. Parent persists the
+   *  new width and (typically) updates `columnWidths` on the next render. */
+  onColumnResize?: (column: string, newWidth: number) => void;
 }
 
 /**
@@ -82,6 +89,8 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     onCellContext,
     onVisibleRangeChange,
     onRowSelected,
+    columnWidths,
+    onColumnResize,
   },
   ref,
 ) {
@@ -100,6 +109,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     onFetchedRef.current = onWindowFetched;
   }, [onWindowFetched]);
 
+  const widthFor = (name: string) => columnWidths?.[name] ?? DEFAULT_COL_WIDTH;
   // Reset cache + columns whenever the source changes.
   useEffect(() => {
     cacheRef.current = new WindowCache(PAGE, MAX_PAGES);
@@ -107,13 +117,23 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     inflight.current.clear();
     if (source.columns && source.columns.length > 0) {
       colNames.current = source.columns;
-      setColumns(source.columns.map((c) => ({ title: c, width: COL_WIDTH })));
+      setColumns(source.columns.map((c) => ({ title: c, width: widthFor(c) })));
     } else {
       colNames.current = [];
       setColumns([]);
     }
     setVersion((v) => v + 1);
+    // widthFor reads from columnWidths; intentionally not in deps — we re-render
+    // through the separate effect below when columnWidths changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source.key, source.columns]);
+
+  // Apply width updates from the parent (e.g. after persistence rehydrates).
+  useEffect(() => {
+    if (colNames.current.length === 0) return;
+    setColumns(colNames.current.map((c) => ({ title: c, width: widthFor(c) })));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [columnWidths]);
 
   const ensurePage = useCallback(
     (page: number) => {
@@ -126,7 +146,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
           cacheRef.current.put(page, win);
           if (colNames.current.length === 0 && win.columns.length > 0) {
             colNames.current = win.columns;
-            setColumns(win.columns.map((c) => ({ title: c, width: COL_WIDTH })));
+            setColumns(win.columns.map((c) => ({ title: c, width: widthFor(c) })));
           }
           onFetchedRef.current?.(ms);
           setVersion((v) => v + 1);
@@ -225,6 +245,19 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     scrollToRow: (row: number) => gridRef.current?.scrollTo(0, row, "vertical"),
   }));
 
+  // Update only the dragged column's width in local state so the resize feels
+  // instant; the parent's persistence handler picks up the final value via
+  // `onColumnResize`.
+  const onLocalColumnResize = useCallback(
+    (col: GridColumn, newWidth: number) => {
+      setColumns((cs) => cs.map((c) => (c.title === col.title ? { ...c, width: newWidth } : c)));
+      if (onColumnResize && typeof col.title === "string") {
+        onColumnResize(col.title, newWidth);
+      }
+    },
+    [onColumnResize],
+  );
+
   if (columns.length === 0) {
     return <div className="p-6 text-sm text-muted">Loading…</div>;
   }
@@ -262,9 +295,11 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
             }
           : undefined
       }
+      onColumnResize={onLocalColumnResize}
       rowMarkers="number"
       smoothScrollX
       smoothScrollY
+      verticalBorder
       width="100%"
       height="100%"
       theme={gridTheme(resolved)}

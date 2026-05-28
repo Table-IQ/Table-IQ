@@ -20,6 +20,7 @@ import { outgoingForeignKeys } from "../lib/fk";
 import { useTabs } from "../state/tabsStore";
 import { useConnections } from "../state/connectionStore";
 import { useSelectedRow } from "../state/selectedRowStore";
+import * as colWidths from "../lib/colWidths";
 import { ColumnProfilePanel } from "./ColumnProfilePanel";
 import { AlterTablePanel } from "./AlterTablePanel";
 import type { Engine } from "../lib/commands";
@@ -73,6 +74,16 @@ export function TableView({ connId, schema, object }: Props) {
   const engine = useConnections((s) => s.active?.engine ?? "postgres") as Engine;
   const setSelectedRow = useSelectedRow((s) => s.setRow);
   const clearSelectedRowIfFrom = useSelectedRow((s) => s.clearIfFrom);
+  // Per-(conn, schema, table) column widths, hydrated from localStorage so a
+  // user's drag survives relaunches (TablePlus parity).
+  const [columnWidths, setColumnWidths] = useState<Record<string, number>>(() =>
+    colWidths.load(connId, schema, object.name),
+  );
+  // Re-hydrate when the user switches tables; otherwise we'd keep applying the
+  // previous table's widths to the new table's columns.
+  useEffect(() => {
+    setColumnWidths(colWidths.load(connId, schema, object.name));
+  }, [connId, schema, object.name]);
   // Clear any prior selection when the user navigates to a different table — the
   // Inspector should fall back to "table metadata" mode until the user clicks a
   // row in the new table.
@@ -388,6 +399,11 @@ export function TableView({ connId, schema, object }: Props) {
             onRowSelected={(row, values) => {
               if (!values) return; // page not loaded yet — ignore the click
               setSelectedRow({ schema, table: object.name, row, values });
+            }}
+            columnWidths={columnWidths}
+            onColumnResize={(col, w) => {
+              const next = colWidths.update(connId, schema, object.name, col, w);
+              setColumnWidths(next);
             }}
           />
         ) : (
