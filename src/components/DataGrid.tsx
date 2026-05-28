@@ -61,6 +61,10 @@ interface Props {
   }) => void;
   /** Fires when the grid's visible row range changes — used by the status-bar pager. */
   onVisibleRangeChange?: (firstRow: number, lastRow: number) => void;
+  /** Fires on any cell click with the whole row's values map. Used by the
+   *  Inspector's row-detail mode (Slice 27). Receives `null` when the row's
+   *  page hasn't loaded yet (the caller should ignore null). */
+  onRowSelected?: (row: number, values: Record<string, string> | null) => void;
 }
 
 /**
@@ -69,7 +73,16 @@ interface Props {
  * ever resident, so memory does not grow with total row count.
  */
 export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
-  { source, onWindowFetched, onEdit, fkByColumn, onFkClick, onCellContext, onVisibleRangeChange },
+  {
+    source,
+    onWindowFetched,
+    onEdit,
+    fkByColumn,
+    onFkClick,
+    onCellContext,
+    onVisibleRangeChange,
+    onRowSelected,
+  },
   ref,
 ) {
   const { resolved } = useTheme();
@@ -158,9 +171,27 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     [ensurePage, editable, fkByColumn],
   );
 
-  // Cell click: if it's a FK cell, fire the navigation callback.
+  /** Build the full {col → value} map for `row` by walking columns through the
+   *  cache + overlay. Returns null if the row's page hasn't loaded yet. */
+  const readRow = useCallback((row: number): Record<string, string> | null => {
+    const cols = colNames.current;
+    if (cols.length === 0) return null;
+    const out: Record<string, string> = {};
+    for (const name of cols) {
+      const ov = overlay.current.get(`${row}:${name}`);
+      const v = ov ?? cacheRef.current.getCell(row, name);
+      if (v === undefined) return null; // page miss — caller should retry later
+      out[name] = v;
+    }
+    return out;
+  }, []);
+
+  // Cell click: lift the row to the Inspector and (if applicable) fire FK navigation.
   const onCellClicked = useCallback(
     ([col, row]: Item) => {
+      if (onRowSelected) {
+        onRowSelected(row, readRow(row));
+      }
       if (!onFkClick) return;
       const name = colNames.current[col];
       const fk = name ? fkByColumn?.get(name) : undefined;
@@ -168,7 +199,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
       const value = name ? (overlay.current.get(`${row}:${name}`) ?? cacheRef.current.getCell(row, name)) : null;
       onFkClick(fk.to_table, fk.to_column, value ?? null);
     },
-    [fkByColumn, onFkClick],
+    [fkByColumn, onFkClick, onRowSelected, readRow],
   );
 
   const onCellEdited = useCallback(
@@ -205,7 +236,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
       rows={source.totalRows}
       getCellContent={getCellContent}
       onCellEdited={editable ? onCellEdited : undefined}
-      onCellClicked={onFkClick ? onCellClicked : undefined}
+      onCellClicked={onFkClick || onRowSelected ? onCellClicked : undefined}
       onVisibleRegionChanged={
         onVisibleRangeChange
           ? (r) => onVisibleRangeChange(r.y, r.y + r.height)

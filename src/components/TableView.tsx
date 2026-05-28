@@ -19,6 +19,7 @@ import { buildEdit } from "../lib/edit";
 import { outgoingForeignKeys } from "../lib/fk";
 import { useTabs } from "../state/tabsStore";
 import { useConnections } from "../state/connectionStore";
+import { useSelectedRow } from "../state/selectedRowStore";
 import { ColumnProfilePanel } from "./ColumnProfilePanel";
 import { AlterTablePanel } from "./AlterTablePanel";
 import type { Engine } from "../lib/commands";
@@ -70,6 +71,16 @@ export function TableView({ connId, schema, object }: Props) {
   const gridRef = useRef<DataGridHandle>(null);
   const openTab = useTabs((s) => s.openTable);
   const engine = useConnections((s) => s.active?.engine ?? "postgres") as Engine;
+  const setSelectedRow = useSelectedRow((s) => s.setRow);
+  const clearSelectedRowIfFrom = useSelectedRow((s) => s.clearIfFrom);
+  // Clear any prior selection when the user navigates to a different table — the
+  // Inspector should fall back to "table metadata" mode until the user clicks a
+  // row in the new table.
+  useEffect(() => {
+    clearSelectedRowIfFrom(schema, object.name);
+    useSelectedRow.setState({ row: null });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [schema, object.name]);
 
   useEffect(() => {
     let cancelled = false;
@@ -374,6 +385,10 @@ export function TableView({ connId, schema, object }: Props) {
             onFkClick={(toTable) => openTab(schema, toTable)}
             onCellContext={(c) => setCellMenu(c)}
             onVisibleRangeChange={(start) => setGridWindowStart(start)}
+            onRowSelected={(row, values) => {
+              if (!values) return; // page not loaded yet — ignore the click
+              setSelectedRow({ schema, table: object.name, row, values });
+            }}
           />
         ) : (
           <StructureView object={object} fks={fks} />
