@@ -24,10 +24,27 @@ export interface FitOpts {
   max?: number;
 }
 
+// Approx px per character at the grid's 11.5px cell font (see gridTheme's
+// `baseFontStyle` in theme.ts / `--text-mono-cell` in DESIGN.md). If that font
+// size changes, revisit CHAR_PX.
 const CHAR_PX = 7;
 const PADDING = 24;
 const HEADER_EXTRA = 16;
+// Intentionally smaller than colWidths.ts MAX_COL_WIDTH (1200): auto-fit caps a
+// wide value on first load so one blob column can't swallow the viewport; a user
+// can still drag wider, up to that larger manual ceiling.
 export const MAX_AUTO_FIT = 420;
+
+// int / int4 / numeric / float8 / serial / money / double precision … but not
+// text, timestamp, interval, etc. Digit suffixes (int4, float8) are Postgres
+// internal names; `\d*` keeps them matching alongside the full forms.
+const NUMERIC_TYPE =
+  /\b(?:int\d*|integer|bigint|smallint|tinyint|mediumint|numeric|number|decimal|real|double|float\d*|money|smallmoney|serial\d*|bigserial)\b/i;
+
+/** True when a SQL column type is numeric — drives right-alignment in the grid. */
+export function isNumericType(dataType: string): boolean {
+  return NUMERIC_TYPE.test(dataType);
+}
 
 /** Longest visible length among real (non-null, non-empty) sample strings. */
 function longestLen(samples: ReadonlyArray<string | null | undefined>): number {

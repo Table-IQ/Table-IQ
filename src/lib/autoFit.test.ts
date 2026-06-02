@@ -1,5 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { fitColumnWidth, autoFitWidths } from "./autoFit";
+import { fitColumnWidth, autoFitWidths, isNumericType } from "./autoFit";
+
+describe("isNumericType", () => {
+  it("matches full SQL numeric type names", () => {
+    for (const t of ["integer", "bigint", "smallint", "numeric", "decimal", "real", "double precision", "money", "serial"]) {
+      expect(isNumericType(t)).toBe(true);
+    }
+  });
+
+  it("matches Postgres internal short names with digit suffixes", () => {
+    for (const t of ["int2", "int4", "int8", "float4", "float8", "serial4"]) {
+      expect(isNumericType(t)).toBe(true);
+    }
+  });
+
+  it("does not match non-numeric types", () => {
+    for (const t of ["text", "varchar", "timestamptz", "uuid", "boolean", "jsonb", "interval"]) {
+      expect(isNumericType(t)).toBe(false);
+    }
+  });
+});
 
 describe("fitColumnWidth", () => {
   it("sizes to the longest cell value when it exceeds the header", () => {
