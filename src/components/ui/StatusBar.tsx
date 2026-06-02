@@ -81,7 +81,11 @@ export function SegmentedToggle<T extends string>({
           onClick={() => onChange(o.value)}
           className={`px-2 text-[11px] transition-colors ${
             i > 0 ? "border-l border-border" : ""
-          } ${value === o.value ? "bg-surface-2 text-text" : "text-muted hover:text-text"}`}
+          } ${
+            value === o.value
+              ? "bg-primary-soft font-medium text-primary"
+              : "text-muted hover:text-text"
+          }`}
         >
           {o.label}
         </button>

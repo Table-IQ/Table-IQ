@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveTheme, gridTheme } from "./theme";
+import { resolveTheme, gridTheme, gridRowTints } from "./theme";
 
 describe("resolveTheme", () => {
   it("returns the explicit choice for light/dark", () => {
@@ -31,5 +31,19 @@ describe("gridTheme", () => {
     // (TablePlus parity, see DESIGN.md "Type scale").
     expect(gridTheme("light").baseFontStyle).toBe("11.5px");
     expect(gridTheme("dark").baseFontStyle).toBe("11.5px");
+  });
+});
+
+describe("gridRowTints", () => {
+  it("zebra tint sits between bgCell and the chrome surface in each mode", () => {
+    // Subtle alternate-row stripe (TablePlus parity). Light is just off-white;
+    // dark is just above the cell black — never as strong as `--surface`.
+    expect(gridRowTints("light").zebra).toBe("#f6f6f7");
+    expect(gridRowTints("dark").zebra).toBe("#13151a");
+  });
+  it("hover tint is a neutral, distinct from the zebra stripe", () => {
+    expect(gridRowTints("light").hover).toBe("#eef0f3");
+    expect(gridRowTints("dark").hover).toBe("#1a1d24");
+    expect(gridRowTints("light").hover).not.toBe(gridRowTints("light").zebra);
   });
 });

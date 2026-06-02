@@ -300,25 +300,46 @@ export function MainShell() {
   // Breadcrumb: TablePlus-style monospace strip — no border / bg, just dim · separators
   // and a brighter active-table segment. Compact (h-5) so it fits the 32px titlebar.
   // The database segment is a button that opens the ⌘D picker (TablePlus parity).
-  const breadcrumb = (
-    <div className="flex h-5 items-center gap-1 font-mono text-[11px] text-muted">
-      <span className="font-medium text-text">{active.name}</span>
-      <span className="text-muted-2">·</span>
+  // TablePlus's signature centered connection capsule: a single rounded pill that
+  // carries the whole context — `conn | ENGINE : database ▾ : schema.table` — with
+  // `|`/`:` separators. The name opens ⌘O (swap connection); the database segment
+  // opens ⌘D (switch database). Replaces the old left chip + plain breadcrumb.
+  const sep = (s: string) => (
+    <span aria-hidden className="text-border-strong">
+      {s}
+    </span>
+  );
+  const connCapsule = (
+    <div
+      className="flex h-[22px] max-w-[60vw] items-center gap-1.5 overflow-hidden rounded-full border border-border bg-bg/70 px-2.5 font-mono text-[11px] text-muted shadow-[var(--shadow-soft)] backdrop-blur-sm"
+      data-testid="conn-capsule"
+    >
+      <button
+        onClick={() => setShowConnPicker(true)}
+        title="Open Connection · ⌘O"
+        className="inline-flex h-[18px] items-center gap-1.5 rounded-full px-1 text-text transition-colors hover:bg-surface-2"
+      >
+        {activeColor && <ColorDot color={activeColor} size={7} />}
+        <span className="font-medium">{active.name}</span>
+      </button>
+      {sep("|")}
       <span className="uppercase tracking-wide">{active.engine}</span>
-      <span className="text-muted-2">·</span>
+      {sep(":")}
       <button
         onClick={() => void openDbPicker()}
         title="Switch database · ⌘D"
-        className="inline-flex h-5 items-center rounded-[var(--radius-sm)] px-1 text-[11px] text-text transition-colors hover:bg-surface-2"
+        className="inline-flex h-[18px] items-center rounded-full px-1 text-text transition-colors hover:bg-surface-2"
         data-testid="breadcrumb-db"
       >
         {active.database || "(none)"}
-        <span aria-hidden className="ml-1 text-muted-2">▾</span>
+        <span aria-hidden className="ml-1 text-muted-2">
+          ▾
+        </span>
       </button>
       {activeTab?.kind === "table" && activeTab.schema && activeTab.table && (
         <>
-          <span className="text-muted-2">·</span>
-          <span className="text-text">
+          {sep(":")}
+          <span className="truncate text-text">
             {activeTab.schema}.<span className="font-medium">{activeTab.table}</span>
           </span>
         </>
@@ -345,17 +366,9 @@ export function MainShell() {
         </div>
 
         <Wordmark className="ml-0.5 text-[12px]" />
-        {/* Active-connection chip — colored engine dot + name. Click to swap (⌘O). */}
-        <button
-          onClick={() => setShowConnPicker(true)}
-          title="Open Connection · ⌘O"
-          className="inline-flex h-5 items-center gap-1.5 rounded-[var(--radius-sm)] px-1.5 text-[11px] text-text transition-colors hover:bg-surface-2"
-        >
-          {activeColor && <ColorDot color={activeColor} size={8} />}
-          <span className="font-medium">{active.name}</span>
-        </button>
 
-        <div className="mx-2 flex-1">{breadcrumb}</div>
+        {/* Centered TablePlus connection capsule */}
+        <div className="mx-2 flex flex-1 items-center justify-center">{connCapsule}</div>
 
         {/* Right icon strip */}
         <div className="flex items-center gap-0.5">
@@ -557,23 +570,24 @@ export function MainShell() {
 
           <div className="min-h-0 flex-1">{renderActive()}</div>
 
-          {/* Bottom status bar (workspace-level fallback) */}
-          <StatusBar
-            left={
-              <>
-                <StatusDot tone="ok" />
-                <span>Connected · {active.engine}</span>
-              </>
-            }
-            center={tabs.length > 0 ? <span>{tabs.length} tab{tabs.length !== 1 ? "s" : ""}</span> : null}
-            right={
-              <>
-                <span>
-                  ⌘K palette · ⌘T new query · ⌘[ sidebar · ⌘] inspector
-                </span>
-              </>
-            }
-          />
+          {/* Bottom status bar (workspace-level fallback). Table + Query tabs render
+              their own content-rich status bar, so this generic one only shows on
+              the welcome state and the ERD tab — never stacked two-deep (TablePlus
+              has a single bottom bar). */}
+          {(!activeTab || activeTab.kind === "erd") && (
+            <StatusBar
+              left={
+                <>
+                  <StatusDot tone="ok" />
+                  <span>Connected · {active.engine}</span>
+                </>
+              }
+              center={tabs.length > 0 ? <span>{tabs.length} tab{tabs.length !== 1 ? "s" : ""}</span> : null}
+              right={
+                <span>⌘K palette · ⌘T new query · ⌘[ sidebar · ⌘] inspector</span>
+              }
+            />
+          )}
         </main>
 
         {showInspector && (

@@ -21,6 +21,7 @@ import { useTabs } from "../state/tabsStore";
 import { useConnections } from "../state/connectionStore";
 import { useSelectedRow } from "../state/selectedRowStore";
 import * as colWidths from "../lib/colWidths";
+import { isNumericType } from "../lib/autoFit";
 import { ColumnProfilePanel } from "./ColumnProfilePanel";
 import { AlterTablePanel } from "./AlterTablePanel";
 import type { Engine } from "../lib/commands";
@@ -152,6 +153,14 @@ export function TableView({ connId, schema, object }: Props) {
     return m;
   }, [fks]);
 
+  // Numeric columns render right-aligned in the grid (TablePlus parity). Type
+  // classification lives in the tested `isNumericType` helper.
+  const rightAlignColumns = useMemo(() => {
+    const s = new Set<string>();
+    for (const c of object.columns) if (isNumericType(c.data_type)) s.add(c.name);
+    return s;
+  }, [object.columns]);
+
   const source = useMemo<GridSource | null>(() => {
     if (rowEstimate === null) return null;
     // filters are part of the cache key so any change reloads the window.
@@ -186,9 +195,37 @@ export function TableView({ connId, schema, object }: Props) {
     setNotice(null);
   }, []);
 
+  // Loading / error states still render the table chrome's bottom bar so the
+  // window never flashes a bar-less state (MainShell suppresses its fallback bar
+  // for table tabs, trusting this view to always own one — TablePlus parity).
+  const statusObjectInfo = (
+    <span className="font-mono text-text">
+      <span className="text-muted">{schema}.</span>
+      <span className="font-medium">{object.name}</span>
+    </span>
+  );
   if (error)
-    return <div className="p-6 text-sm text-danger">Failed to open table: {error}</div>;
-  if (!source) return <div className="p-6 text-sm text-muted">Opening {object.name}…</div>;
+    return (
+      <div className="flex h-full flex-col">
+        <div className="flex-1 p-6 text-sm text-danger">Failed to open table: {error}</div>
+        <StatusBar
+          left={statusObjectInfo}
+          right={
+            <span className="inline-flex items-center gap-1 text-danger">
+              <StatusDot tone="danger" />
+              <span>error</span>
+            </span>
+          }
+        />
+      </div>
+    );
+  if (!source)
+    return (
+      <div className="flex h-full flex-col">
+        <div className="flex-1 p-6 text-sm text-muted">Opening {object.name}…</div>
+        <StatusBar left={statusObjectInfo} right={<span className="text-muted">opening…</span>} />
+      </div>
+    );
 
   return (
     <div className="flex h-full flex-col">
@@ -405,6 +442,7 @@ export function TableView({ connId, schema, object }: Props) {
               const next = colWidths.update(connId, schema, object.name, col, w);
               setColumnWidths(next);
             }}
+            rightAlignColumns={rightAlignColumns}
           />
         ) : (
           <StructureView object={object} fks={fks} />
