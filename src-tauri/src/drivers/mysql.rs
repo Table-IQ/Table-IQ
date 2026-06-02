@@ -47,7 +47,19 @@ pub struct MySqlDriver {
 
 impl MySqlDriver {
     pub async fn connect(url: &str) -> DResult<Self> {
-        let pool = MySqlPoolOptions::new().max_connections(4).connect(url).await.map_err(db)?;
+        // Probe with a direct connection first so the real error surfaces instead
+        // of the pool's opaque "pool timed out" after a 30s retry (see PgDriver).
+        {
+            use sqlx::Connection;
+            let mut probe = sqlx::mysql::MySqlConnection::connect(url).await.map_err(db)?;
+            let _ = probe.close().await;
+        }
+        let pool = MySqlPoolOptions::new()
+            .max_connections(4)
+            .acquire_timeout(std::time::Duration::from_secs(10))
+            .connect(url)
+            .await
+            .map_err(db)?;
         Ok(Self { pool })
     }
 }
