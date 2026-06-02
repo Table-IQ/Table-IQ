@@ -300,4 +300,61 @@ mod tests {
             .expect("connect through tunnel");
         tunnel.close().await;
     }
+
+    /// Full-path live test: open the tunnel AND connect Postgres through it with the
+    /// app's own `PgDriver`, then run a real query. Success proves key auth +
+    /// bastion + forward + DB auth all work. GATED on env; skipped when unset.
+    ///
+    /// To run (secrets stay in the env, never the repo):
+    ///   TIQ_SSH_TEST_HOST=13.126.235.15 TIQ_SSH_TEST_USER=ubuntu \
+    ///   TIQ_SSH_TEST_KEY=~/Downloads/key.pem \
+    ///   TIQ_DB_HOST=172.17.0.1 TIQ_DB_PORT=5432 TIQ_DB_USER=postgres \
+    ///   TIQ_DB_PASSWORD=… TIQ_DB_NAME=cartiq \
+    ///   cargo test --manifest-path src-tauri/Cargo.toml -- --ignored ssh_pg_live
+    #[tokio::test]
+    #[ignore]
+    async fn ssh_pg_live() {
+        use crate::drivers::postgres::PgDriver;
+        use crate::drivers::SqlDriver;
+
+        let host = match std::env::var("TIQ_SSH_TEST_HOST") {
+            Ok(h) => h,
+            Err(_) => {
+                eprintln!("TIQ_SSH_TEST_HOST unset — skipping live SSH+PG test");
+                return;
+            }
+        };
+        let cfg = SshConfig {
+            enabled: true,
+            host,
+            port: std::env::var("TIQ_SSH_TEST_PORT").ok().and_then(|s| s.parse().ok()).unwrap_or(22),
+            username: std::env::var("TIQ_SSH_TEST_USER").expect("TIQ_SSH_TEST_USER"),
+            auth: SshAuth::KeyFile {
+                path: std::env::var("TIQ_SSH_TEST_KEY").expect("TIQ_SSH_TEST_KEY"),
+                passphrase: None,
+            },
+        };
+        let db_host = std::env::var("TIQ_DB_HOST").unwrap_or_else(|_| "127.0.0.1".into());
+        let db_port: u16 = std::env::var("TIQ_DB_PORT").ok().and_then(|s| s.parse().ok()).unwrap_or(5432);
+        let db_user = std::env::var("TIQ_DB_USER").unwrap_or_else(|_| "postgres".into());
+        let db_pw = std::env::var("TIQ_DB_PASSWORD").unwrap_or_default();
+        let db_name = std::env::var("TIQ_DB_NAME").unwrap_or_default();
+
+        let tunnel = Tunnel::connect(&cfg, "", RemoteTarget { host: db_host, port: db_port })
+            .await
+            .expect("tunnel opens");
+        let local = tunnel.local_addr();
+        let url = format!(
+            "postgres://{}:{}@127.0.0.1:{}/{}?sslmode=prefer",
+            db_user,
+            db_pw,
+            local.port(),
+            db_name
+        );
+        let drv = PgDriver::connect(&url).await.expect("postgres connects through tunnel");
+        let dbs = drv.list_databases().await.expect("a real query runs over the tunnel");
+        eprintln!("CONNECTED · {} databases visible (incl. target {db_name})", dbs.len());
+        assert!(!dbs.is_empty(), "expected at least one database");
+        tunnel.close().await;
+    }
 }
