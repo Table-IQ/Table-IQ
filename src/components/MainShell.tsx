@@ -43,13 +43,17 @@ import type { Tab } from "../state/tabsStore";
 import {
   connect,
   disconnect,
+  downloadText,
+  exportTable,
   listDatabases,
   listObjects,
   switchDatabase,
   type ConnConfig,
   type Engine,
+  type ExportFormat,
   type ObjectInfo,
 } from "../lib/commands";
+import { buildTableScript, quoteIdent, type ScriptColumn } from "../lib/tableScript";
 import { markConnected } from "../lib/lastConnected";
 
 function findObject(
@@ -121,6 +125,8 @@ export function MainShell() {
     schema: string;
     obj: ObjectInfo;
   } | null>(null);
+  // Sidebar-foot "+" → new-object menu (TablePlus parity, Slice 31).
+  const [sidebarMenu, setSidebarMenu] = useState<{ x: number; y: number } | null>(null);
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; tab: Tab } | null>(null);
   const [hydrated, setHydrated] = useState<string | null>(null);
 
@@ -272,6 +278,23 @@ export function MainShell() {
     const key = `${s}.${name}`;
     setPinned((p) => (p.includes(key) ? p.filter((x) => x !== key) : [...p, key]));
   };
+
+  // Open a new query tab pre-filled with `sql` (the QueryView hydrates the
+  // one-shot starter event). Shared by the table menu + the sidebar "+" menu.
+  const newQueryWith = (sql: string) => {
+    openQuery();
+    window.dispatchEvent(new CustomEvent("tiq:starter-sql", { detail: sql }));
+  };
+  /** "New …" items for a schema — used by the sidebar foot "+" and table menu. */
+  const newObjectItems = (s: string): ContextMenuItem[] => [
+    { id: "n-table", label: "New Table…", onSelect: () => setShowStructure(true) },
+    { id: "n-view", label: "New View…", onSelect: () => newQueryWith(`CREATE VIEW ${quoteIdent(s)}."new_view" AS\nSELECT 1;`) },
+    { id: "n-mview", label: "New Materialized View…", onSelect: () => newQueryWith(`CREATE MATERIALIZED VIEW ${quoteIdent(s)}."new_mview" AS\nSELECT 1;`) },
+    { id: "n-fn", label: "New Function…", onSelect: () => newQueryWith(`CREATE FUNCTION ${quoteIdent(s)}."new_fn"()\nRETURNS void AS $$\nBEGIN\n  -- …\nEND;\n$$ LANGUAGE plpgsql;`) },
+    { id: "n-proc", label: "New Procedure…", onSelect: () => newQueryWith(`CREATE PROCEDURE ${quoteIdent(s)}."new_proc"()\nLANGUAGE plpgsql AS $$\nBEGIN\n  -- …\nEND;\n$$;`) },
+    { id: "n-schema", label: "New Schema…", onSelect: () => newQueryWith(`CREATE SCHEMA "new_schema";`) },
+    { id: "n-group", label: "New Group / Role…", onSelect: () => newQueryWith(`CREATE ROLE "new_group";`) },
+  ];
 
   const renderActive = () => {
     if (!activeTab) {
@@ -451,11 +474,24 @@ export function MainShell() {
               />
             </div>
             <div
-              className="flex shrink-0 items-center justify-between gap-1 border-t border-border px-2 text-[10px] text-muted"
+              className="flex shrink-0 items-center gap-1 border-t border-border px-2 text-[10px] text-muted"
               style={{ height: "var(--statusbar-h)" }}
             >
+              <button
+                onClick={(e) => {
+                  const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                  setSidebarMenu({ x: r.left, y: r.top - 4 });
+                }}
+                title="New table, view, function, schema…"
+                aria-label="New object"
+                className="inline-flex h-[18px] w-[18px] items-center justify-center rounded text-muted transition-colors hover:bg-surface-2 hover:text-text"
+              >
+                <IconPlus size={12} />
+              </button>
               <span className="font-mono">{schema.schemas[0]?.name ?? "public"}</span>
-              <span>{schema.schemas.reduce((n, s) => n + s.objects.length, 0)} objects</span>
+              <span className="ml-auto">
+                {schema.schemas.reduce((n, s) => n + s.objects.length, 0)} objects
+              </span>
             </div>
           </aside>
         )}
@@ -672,49 +708,106 @@ export function MainShell() {
 
       {objMenu &&
         (() => {
-          const key = `${objMenu.schema}.${objMenu.obj.name}`;
+          const { schema: s, obj } = objMenu;
+          const key = `${s}.${obj.name}`;
           const isPinned = pinned.includes(key);
+          const qualified = `${quoteIdent(s)}.${quoteIdent(obj.name)}`;
+          const scriptCols: ScriptColumn[] = obj.columns.map((c) => ({
+            name: c.name,
+            data_type: c.data_type,
+            nullable: c.nullable,
+          }));
+          const copy = (str: string) => navigator.clipboard?.writeText(str);
+          const exportAs = async (fmt: ExportFormat) => {
+            const text = await exportTable(active.id, s, obj.name, fmt);
+            downloadText(
+              `${obj.name}.${fmt}`,
+              text,
+              fmt === "json" ? "application/json" : "text/csv",
+            );
+          };
           const items: (ContextMenuItem | "separator")[] = [
-            { id: "open", label: "Open", onSelect: () => openTable(objMenu.schema, objMenu.obj.name) },
+            { id: "open", label: "Open in new tab", onSelect: () => openTable(s, obj.name) },
             {
-              id: "new-query",
-              label: `New Query Selecting from ${objMenu.obj.name}`,
+              id: "open-structure",
+              label: "Open structure",
               onSelect: () => {
-                openQuery();
-                // The new tab is now active; we stash a one-shot starter SQL in window for the
-                // QueryView to optionally hydrate (light-touch approach without store changes).
+                openTable(s, obj.name);
                 window.dispatchEvent(
-                  new CustomEvent("tiq:starter-sql", {
-                    detail: `SELECT * FROM ${objMenu.schema}.${objMenu.obj.name} LIMIT 100;`,
-                  }),
+                  new CustomEvent("tiq:view-structure", { detail: `${s}.${obj.name}` }),
                 );
               },
             },
             {
-              id: "show-in-diagram",
-              label: "Show in Diagram",
+              id: "overview",
+              label: "Item overview",
               onSelect: () => {
-                setErdFocus(objMenu.obj.name);
+                openTable(s, obj.name);
+                setShowInspector(true);
+              },
+            },
+            {
+              id: "show-in-diagram",
+              label: "Show in diagram (ERD)",
+              onSelect: () => {
+                setErdFocus(obj.name);
                 openErd();
               },
             },
             "separator",
+            { id: "copy-name", label: "Copy name", onSelect: () => copy(obj.name) },
             {
-              id: "pin",
-              label: isPinned ? "Unpin" : "Pin",
-              onSelect: () => togglePin(objMenu.schema, objMenu.obj.name),
+              id: "copy-qualified",
+              label: `Copy as ${s}.${obj.name}`,
+              onSelect: () => copy(`${s}.${obj.name}`),
+            },
+            { id: "pin", label: isPinned ? "Unpin" : "Pin to top", onSelect: () => togglePin(s, obj.name) },
+            "separator",
+            {
+              id: "copy-script",
+              label: "Copy script as",
+              children: [
+                { id: "cs-create", label: "CREATE", onSelect: () => copy(buildTableScript("create", s, obj.name, scriptCols)) },
+                { id: "cs-select", label: "SELECT", onSelect: () => copy(buildTableScript("select", s, obj.name, scriptCols)) },
+                { id: "cs-drop", label: "DROP", onSelect: () => copy(buildTableScript("drop", s, obj.name, scriptCols)) },
+                { id: "cs-truncate", label: "TRUNCATE", onSelect: () => copy(buildTableScript("truncate", s, obj.name, scriptCols)) },
+              ],
+            },
+            {
+              id: "export",
+              label: "Export",
+              children: [
+                { id: "exp-csv", label: "Export table as CSV", onSelect: () => void exportAs("csv") },
+                { id: "exp-json", label: "Export table as JSON", onSelect: () => void exportAs("json") },
+                { id: "exp-cols", label: "Export with column selection…", disabled: true, onSelect: () => {} },
+                "separator",
+                { id: "imp-csv", label: "Import from CSV…", onSelect: () => setShowImport(true) },
+                { id: "imp-sql", label: "Import from SQL…", disabled: true, onSelect: () => {} },
+              ],
+            },
+            { id: "new", label: "New", children: newObjectItems(s) },
+            {
+              id: "new-query",
+              label: "New query selecting from this",
+              onSelect: () => newQueryWith(`SELECT * FROM ${qualified} LIMIT 100;`),
             },
             "separator",
             {
-              id: "copy-name",
-              label: "Copy name",
-              onSelect: () => navigator.clipboard?.writeText(objMenu.obj.name),
+              id: "clone",
+              label: "Clone (open as query)",
+              onSelect: () => newQueryWith(`CREATE TABLE ${quoteIdent(s)}.${quoteIdent(`${obj.name}_copy`)} (LIKE ${qualified} INCLUDING ALL);`),
             },
             {
-              id: "copy-qualified",
-              label: `Copy as ${objMenu.schema}.${objMenu.obj.name}`,
-              onSelect: () =>
-                navigator.clipboard?.writeText(`${objMenu.schema}.${objMenu.obj.name}`),
+              id: "truncate",
+              label: "Truncate (open as query)",
+              tone: "danger",
+              onSelect: () => newQueryWith(buildTableScript("truncate", s, obj.name, scriptCols)),
+            },
+            {
+              id: "drop",
+              label: "Drop (open as query)",
+              tone: "danger",
+              onSelect: () => newQueryWith(buildTableScript("drop", s, obj.name, scriptCols)),
             },
           ];
           return (
@@ -726,6 +819,15 @@ export function MainShell() {
             />
           );
         })()}
+
+      {sidebarMenu && (
+        <ContextMenu
+          x={sidebarMenu.x}
+          y={sidebarMenu.y}
+          items={newObjectItems(schema.schemas[0]?.name ?? "public")}
+          onClose={() => setSidebarMenu(null)}
+        />
+      )}
 
       {tabMenu &&
         (() => {

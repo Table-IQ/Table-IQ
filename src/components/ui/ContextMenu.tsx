@@ -9,7 +9,10 @@ export interface ContextMenuItem {
   /** Right-aligned secondary text (e.g. a shortcut). */
   shortcut?: string;
   disabled?: boolean;
-  onSelect: () => void;
+  /** Leaf action. Omitted on items that only open a submenu. */
+  onSelect?: () => void;
+  /** Nested submenu — opens as a flyout on hover/click (TablePlus parity). */
+  children?: (ContextMenuItem | "separator")[];
 }
 
 export interface ContextMenuProps {
@@ -19,9 +22,83 @@ export interface ContextMenuProps {
   onClose: () => void;
 }
 
+/** Recursive item list — owns its open-submenu state so nesting composes. */
+function MenuItems({
+  items,
+  onClose,
+  flipLeft,
+}: {
+  items: (ContextMenuItem | "separator")[];
+  onClose: () => void;
+  flipLeft: boolean;
+}) {
+  const [openSub, setOpenSub] = useState<string | null>(null);
+  return (
+    <>
+      {items.map((item, i) =>
+        item === "separator" ? (
+          <div key={`sep-${i}`} className="my-1 h-px bg-border" />
+        ) : (
+          <div
+            key={item.id}
+            className="relative"
+            onMouseEnter={() => setOpenSub(item.children ? item.id : null)}
+          >
+            <button
+              disabled={item.disabled}
+              data-menu-id={item.id}
+              onClick={() => {
+                if (item.disabled) return;
+                if (item.children) {
+                  setOpenSub((s) => (s === item.id ? null : item.id));
+                  return;
+                }
+                item.onSelect?.();
+                onClose();
+              }}
+              className={`flex w-full items-center justify-between gap-4 px-3 py-1.5 text-left transition-colors hover:bg-bg disabled:cursor-not-allowed disabled:opacity-40 ${
+                item.tone === "danger"
+                  ? "text-danger"
+                  : item.tone === "muted"
+                    ? "text-muted"
+                    : "text-text"
+              }`}
+              role="menuitem"
+              aria-haspopup={item.children ? "menu" : undefined}
+              aria-expanded={item.children ? openSub === item.id : undefined}
+            >
+              <span className="truncate">{item.label}</span>
+              {item.children ? (
+                <span aria-hidden className="ml-auto text-muted">
+                  ›
+                </span>
+              ) : (
+                item.shortcut && (
+                  <span className="ml-auto text-[10px] text-muted">{item.shortcut}</span>
+                )
+              )}
+            </button>
+            {item.children && openSub === item.id && (
+              <div
+                role="menu"
+                className={`absolute top-0 z-50 min-w-[190px] rounded-md border border-border bg-surface py-1 text-xs shadow-xl ${
+                  flipLeft ? "right-full -mr-1" : "left-full -ml-1"
+                }`}
+              >
+                <MenuItems items={item.children} onClose={onClose} flipLeft={flipLeft} />
+              </div>
+            )}
+          </div>
+        ),
+      )}
+    </>
+  );
+}
+
 /**
  * Headless context menu — positions at (x, y), auto-flips when near a viewport edge,
- * closes on outside click / Escape / item activation.
+ * closes on outside click / Escape / leaf activation. Items may nest via `children`,
+ * which open as flyout submenus (TablePlus parity).
  */
 export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
   const ref = useRef<HTMLDivElement>(null);
@@ -59,44 +136,19 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [x, y]);
 
+  // Submenus flow left when the menu sits in the right portion of the viewport.
+  const flipLeft = pos.x > (typeof window !== "undefined" ? window.innerWidth : 1440) * 0.55;
+
   return (
     <div
       ref={ref}
       role="menu"
       data-testid="context-menu"
-      className="fixed z-50 min-w-[180px] rounded-md border border-border bg-surface py-1 text-xs shadow-xl"
+      className="fixed z-50 min-w-[190px] rounded-md border border-border bg-surface py-1 text-xs shadow-xl"
       style={{ left: pos.x, top: pos.y }}
       onClick={(e) => e.stopPropagation()}
     >
-      {items.map((item, i) =>
-        item === "separator" ? (
-          <div key={`sep-${i}`} className="my-1 h-px bg-border" />
-        ) : (
-          <button
-            key={item.id}
-            disabled={item.disabled}
-            data-menu-id={item.id}
-            onClick={() => {
-              if (item.disabled) return;
-              item.onSelect();
-              onClose();
-            }}
-            className={`flex w-full items-center justify-between gap-4 px-3 py-1.5 text-left transition-colors hover:bg-bg disabled:cursor-not-allowed disabled:opacity-40 ${
-              item.tone === "danger"
-                ? "text-danger"
-                : item.tone === "muted"
-                  ? "text-muted"
-                  : "text-text"
-            }`}
-            role="menuitem"
-          >
-            <span className="truncate">{item.label}</span>
-            {item.shortcut && (
-              <span className="ml-auto text-[10px] text-muted">{item.shortcut}</span>
-            )}
-          </button>
-        ),
-      )}
+      <MenuItems items={items} onClose={onClose} flipLeft={flipLeft} />
     </div>
   );
 }
