@@ -121,3 +121,30 @@ Internal pages still match (Slice 29) — new logo in the capsule, grid + bottom
 
 Backend + frontend tests green, builds clean, QA clean, internal pages verified
 matching. **Clean → merging to main** (autonomous build mode).
+
+## Addendum — SSH section rebuilt to TablePlus + a real keyfile bug
+
+After review, the SSH section was reworked to match TablePlus exactly (the Auth
+dropdown had buried the PEM picker):
+
+- **Server / Port / User**, an always-visible **Password** (empty → ssh-agent),
+  and a **"Use SSH key (PEM / OpenSSH)"** checkbox that reveals the key-file
+  picker (path + **Browse…** + Clear) and an optional passphrase. No dropdown.
+- Split the SSH secret into password vs key-passphrase state (both shown, like
+  TablePlus); only the active method's secret is sent.
+- Backend: an empty SSH password falls back to the ssh-agent.
+
+**Real bug found + fixed (latent):** `SshAuth` used `rename_all = "snake_case"`,
+so the `KeyFile` wire tag was `"key_file"`, but the TS client sends `"keyfile"`.
+Saving/connecting *any* key-auth SSH connection failed at the IPC boundary with
+`unknown variant 'keyfile'`. Pinned the tag to `"keyfile"` (+ a test that
+deserializes the exact frontend JSON). **This would have blocked the cartiq SSH
+connection entirely.** 89 Rust + 137 frontend tests green.
+
+Created the `cartiq - dev server` connection (Server `13.126.235.15:22`, user
+`ubuntu`, key `~/Downloads/prod-rhobots.pem`, DB `cartiq`) in the app store. The
+actual connect is left to the user: it targets a production bastion and the DB
+password is masked in the reference screenshot.
+
+![ssh-password](assets/slice-30/ssh-tableplus-password.png)
+![ssh-keyfile](assets/slice-30/ssh-tableplus-keyfile.png)
