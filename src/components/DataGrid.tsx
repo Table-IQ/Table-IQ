@@ -56,11 +56,14 @@ interface Props {
   fkByColumn?: Map<string, ForeignKey>;
   /** Fires when the user clicks a FK chevron / cell. */
   onFkClick?: (toTable: string, toColumn: string, fromValue: string | null) => void;
-  /** Right-click on a cell (Slice 21 #5). `value` is the visible cell text (or null). */
+  /** Right-click on a cell (Slice 21 #5). `value` is the visible cell text (or null);
+   *  `values` is the full {col → value} map for the row (null if its page hasn't
+   *  loaded), used by the row context menu's copy/duplicate actions. */
   onCellContext?: (args: {
     col: string;
     row: number;
     value: string | null;
+    values: Record<string, string> | null;
     x: number;
     y: number;
   }) => void;
@@ -374,6 +377,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
                 col: name,
                 row,
                 value,
+                values: readRow(row),
                 x: event.bounds.x + event.localEventX,
                 y: event.bounds.y + event.localEventY,
               });

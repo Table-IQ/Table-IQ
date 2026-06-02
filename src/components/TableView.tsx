@@ -68,6 +68,7 @@ export function TableView({ connId, schema, object }: Props) {
     col: string;
     row: number;
     value: string | null;
+    values: Record<string, string> | null;
   } | null>(null);
   const [gridWindowStart, setGridWindowStart] = useState(0);
   const gridRef = useRef<DataGridHandle>(null);
@@ -114,6 +115,17 @@ export function TableView({ connId, schema, object }: Props) {
       cancelled = true;
     };
   }, [connId, schema, object.name, refreshKey, filters]);
+
+  // "Open structure" from the sidebar context menu switches this view to the
+  // Structure tab when it targets the active table (Slice 31).
+  useEffect(() => {
+    const onStructure = (e: Event) => {
+      const target = (e as CustomEvent<string>).detail;
+      if (target === `${schema}.${object.name}`) setView("structure");
+    };
+    window.addEventListener("tiq:view-structure", onStructure);
+    return () => window.removeEventListener("tiq:view-structure", onStructure);
+  }, [schema, object.name]);
 
   const editable = object.kind === "Table" && !!pk && pk.length > 0;
 
@@ -569,52 +581,111 @@ export function TableView({ connId, schema, object }: Props) {
         />
       )}
 
-      {/* Right-click cell menu (Slice 21 #5). Built lazily so it doesn't allocate when idle. */}
+      {/* Right-click row menu — TablePlus parity (Slice 31). Built lazily. */}
       {cellMenu &&
         (() => {
           const colNames = object.columns.map((c) => c.name);
-          const cache = source ? `${cellMenu.row}` : "";
-          // Build the visible row from the cell text we have + nulls (best-effort —
-          // the grid is the source of truth, but we have the clicked cell value).
+          const vals = cellMenu.values;
+          // Full row in column order; falls back to the single clicked cell when
+          // the row's page hasn't loaded yet.
           const rowValues: (string | null)[] = colNames.map((c) =>
-            c === cellMenu.col ? cellMenu.value : null,
+            vals ? (vals[c] ?? null) : c === cellMenu.col ? cellMenu.value : null,
           );
-          void cache;
+          const qualified = `"${schema}"."${object.name}"`;
+          const copy = (s: string) => navigator.clipboard?.writeText(s);
+          const copyRowAs = (fmt: Parameters<typeof buildRowAs>[0]) =>
+            copy(buildRowAs(fmt, rowValues, colNames, { table: qualified }));
+          const applyCellValue = async (newValue: string | null) => {
+            if (!pk || pk.length === 0 || !vals) return;
+            const edit = buildEdit(pk, (c) => vals[c] ?? null, cellMenu.col, newValue);
+            try {
+              await applyEdit(connId, schema, object.name, edit);
+              setRefreshKey((k) => k + 1);
+            } catch (e) {
+              setNotice(`Update failed: ${e}`);
+            }
+          };
+          const deleteStmt = () => {
+            if (!pk || pk.length === 0 || !vals) return `-- no primary key on ${object.name}`;
+            const where = pk
+              .map((c) => {
+                const v = vals[c];
+                return `"${c}" = ${v == null ? "NULL" : `'${v.replace(/'/g, "''")}'`}`;
+              })
+              .join(" AND ");
+            return `DELETE FROM ${qualified} WHERE ${where};`;
+          };
+
           const items: (ContextMenuItem | "separator")[] = [
+            { id: "refresh", label: "Refresh", onSelect: () => setRefreshKey((k) => k + 1) },
             {
-              id: "copy-value",
-              label: "Copy value",
-              onSelect: () => navigator.clipboard?.writeText(cellMenu.value ?? ""),
+              id: "add-row",
+              label: "Add row",
+              disabled: !editable,
+              onSelect: () => setDraft({}),
             },
             {
-              id: "copy-row-json",
-              label: "Copy row as JSON",
-              onSelect: () =>
-                navigator.clipboard?.writeText(buildRowAs("json", rowValues, colNames)),
+              id: "duplicate",
+              label: "Duplicate row",
+              disabled: !editable || !vals,
+              onSelect: () => {
+                if (!vals) return;
+                const d: Record<string, string> = {};
+                for (const c of object.columns) {
+                  if (!pk?.includes(c.name)) d[c.name] = vals[c.name] ?? "";
+                }
+                setDraft(d);
+              },
+            },
+            "separator",
+            {
+              id: "set-value",
+              label: "Set value",
+              disabled: !editable,
+              children: [
+                { id: "set-empty", label: "Empty ''", onSelect: () => void applyCellValue("") },
+                { id: "set-null", label: "NULL", onSelect: () => void applyCellValue(null) },
+                { id: "set-default", label: "DEFAULT", disabled: true, onSelect: () => {} },
+              ],
+            },
+            "separator",
+            {
+              id: "copy-cell",
+              label: "Copy cell value",
+              onSelect: () => copy(cellMenu.value ?? ""),
             },
             {
-              id: "copy-row-csv",
-              label: "Copy row as CSV",
-              onSelect: () =>
-                navigator.clipboard?.writeText(buildRowAs("csv", rowValues, colNames)),
+              id: "copy-all-cols",
+              label: "Copy all column values",
+              onSelect: () => copy(buildRowAs("plain", rowValues, colNames)),
             },
             {
-              id: "copy-row-md",
-              label: "Copy row as Markdown",
-              onSelect: () =>
-                navigator.clipboard?.writeText(buildRowAs("md", rowValues, colNames)),
+              id: "copy-row-as",
+              label: "Copy row as",
+              children: [
+                { id: "cra-plain", label: "Plain text", onSelect: () => copyRowAs("plain") },
+                { id: "cra-json", label: "JSON", onSelect: () => copyRowAs("json") },
+                { id: "cra-html", label: "HTML", onSelect: () => copyRowAs("html") },
+                { id: "cra-md", label: "Markdown table", onSelect: () => copyRowAs("md") },
+                { id: "cra-csv", label: "CSV", onSelect: () => copyRowAs("csv") },
+                { id: "cra-csvh", label: "CSV with header", onSelect: () => copyRowAs("csv-header") },
+                { id: "cra-insert", label: "INSERT statement", onSelect: () => copyRowAs("insert") },
+              ],
             },
+            "separator",
             {
-              id: "set-filter",
-              label: `Set "${cellMenu.col}" = "${cellMenu.value ?? ""}" as filter`,
+              id: "quick-filter",
+              label: `Filter "${cellMenu.col}" = ${cellMenu.value ?? "NULL"}`,
               onSelect: () =>
                 setFilters(
-                  upsertFilter(filters, {
-                    column: cellMenu.col,
-                    op: "Eq",
-                    value: cellMenu.value,
-                  }),
+                  upsertFilter(filters, { column: cellMenu.col, op: "Eq", value: cellMenu.value }),
                 ),
+            },
+            {
+              id: "copy-delete",
+              label: "Copy DELETE statement",
+              tone: "danger",
+              onSelect: () => copy(deleteStmt()),
             },
           ];
           return (
@@ -631,37 +702,65 @@ export function TableView({ connId, schema, object }: Props) {
 }
 
 function StructureView({ object, fks }: { object: ObjectInfo; fks: ForeignKey[] }) {
+  // Structure sub-tabs (TablePlus parity). Columns is live; Indexes/Triggers need
+  // backend introspection (deferred — shown with a note so the tab is discoverable).
+  const [tab, setTab] = useState<"columns" | "indexes" | "triggers">("columns");
+  const subTabs: { id: typeof tab; label: string }[] = [
+    { id: "columns", label: "Columns" },
+    { id: "indexes", label: "Indexes" },
+    { id: "triggers", label: "Triggers" },
+  ];
   return (
-    <div className="h-full overflow-auto p-4">
-      <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted">
-        Columns
+    <div className="flex h-full flex-col">
+      <div className="flex shrink-0 items-center gap-1 border-b border-border px-3 py-1.5">
+        {subTabs.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className={`rounded-[var(--radius-sm)] px-2.5 py-1 text-[11px] transition-colors ${
+              tab === t.id
+                ? "bg-primary-soft font-medium text-primary"
+                : "text-muted hover:text-text"
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
       </div>
-      <div className="overflow-hidden rounded-md border border-border bg-bg">
-        <table className="w-full text-xs">
-          <thead className="border-b border-border bg-surface text-left text-[11px] text-muted">
-            <tr>
-              <th className="px-3 py-1.5 font-medium">Name</th>
-              <th className="px-3 py-1.5 font-medium">Type</th>
-              <th className="px-3 py-1.5 font-medium">Nullable</th>
-              <th className="px-3 py-1.5 font-medium">References</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border">
-            {object.columns.map((c) => {
-              const fk = fks.find((f) => f.from_column === c.name);
-              return (
-                <tr key={c.name}>
-                  <td className="px-3 py-1.5 font-mono text-text">{c.name}</td>
-                  <td className="px-3 py-1.5 text-muted">{c.data_type}</td>
-                  <td className="px-3 py-1.5 text-muted">{c.nullable ? "yes" : "no"}</td>
-                  <td className="px-3 py-1.5 font-mono text-[11px] text-primary">
-                    {fk ? `${fk.to_table}.${fk.to_column}` : ""}
-                  </td>
+      <div className="min-h-0 flex-1 overflow-auto p-4">
+        {tab === "columns" ? (
+          <div className="overflow-hidden rounded-md border border-border bg-bg">
+            <table className="w-full text-xs">
+              <thead className="border-b border-border bg-surface text-left text-[11px] text-muted">
+                <tr>
+                  <th className="px-3 py-1.5 font-medium">Name</th>
+                  <th className="px-3 py-1.5 font-medium">Type</th>
+                  <th className="px-3 py-1.5 font-medium">Nullable</th>
+                  <th className="px-3 py-1.5 font-medium">References</th>
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {object.columns.map((c) => {
+                  const fk = fks.find((f) => f.from_column === c.name);
+                  return (
+                    <tr key={c.name}>
+                      <td className="px-3 py-1.5 font-mono text-text">{c.name}</td>
+                      <td className="px-3 py-1.5 text-muted">{c.data_type}</td>
+                      <td className="px-3 py-1.5 text-muted">{c.nullable ? "yes" : "no"}</td>
+                      <td className="px-3 py-1.5 font-mono text-[11px] text-primary">
+                        {fk ? `${fk.to_table}.${fk.to_column}` : ""}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="rounded-md border border-dashed border-border p-6 text-center text-[12px] text-muted">
+            {tab === "indexes" ? "Index" : "Trigger"} introspection is coming soon.
+          </div>
+        )}
       </div>
     </div>
   );
