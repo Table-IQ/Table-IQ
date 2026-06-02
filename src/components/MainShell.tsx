@@ -53,7 +53,7 @@ import {
   type ExportFormat,
   type ObjectInfo,
 } from "../lib/commands";
-import { buildTableScript, type ScriptColumn } from "../lib/tableScript";
+import { buildTableScript, quoteIdent, type ScriptColumn } from "../lib/tableScript";
 import { markConnected } from "../lib/lastConnected";
 
 function findObject(
@@ -288,10 +288,10 @@ export function MainShell() {
   /** "New …" items for a schema — used by the sidebar foot "+" and table menu. */
   const newObjectItems = (s: string): ContextMenuItem[] => [
     { id: "n-table", label: "New Table…", onSelect: () => setShowStructure(true) },
-    { id: "n-view", label: "New View…", onSelect: () => newQueryWith(`CREATE VIEW "${s}"."new_view" AS\nSELECT 1;`) },
-    { id: "n-mview", label: "New Materialized View…", onSelect: () => newQueryWith(`CREATE MATERIALIZED VIEW "${s}"."new_mview" AS\nSELECT 1;`) },
-    { id: "n-fn", label: "New Function…", onSelect: () => newQueryWith(`CREATE FUNCTION "${s}"."new_fn"()\nRETURNS void AS $$\nBEGIN\n  -- …\nEND;\n$$ LANGUAGE plpgsql;`) },
-    { id: "n-proc", label: "New Procedure…", onSelect: () => newQueryWith(`CREATE PROCEDURE "${s}"."new_proc"()\nLANGUAGE plpgsql AS $$\nBEGIN\n  -- …\nEND;\n$$;`) },
+    { id: "n-view", label: "New View…", onSelect: () => newQueryWith(`CREATE VIEW ${quoteIdent(s)}."new_view" AS\nSELECT 1;`) },
+    { id: "n-mview", label: "New Materialized View…", onSelect: () => newQueryWith(`CREATE MATERIALIZED VIEW ${quoteIdent(s)}."new_mview" AS\nSELECT 1;`) },
+    { id: "n-fn", label: "New Function…", onSelect: () => newQueryWith(`CREATE FUNCTION ${quoteIdent(s)}."new_fn"()\nRETURNS void AS $$\nBEGIN\n  -- …\nEND;\n$$ LANGUAGE plpgsql;`) },
+    { id: "n-proc", label: "New Procedure…", onSelect: () => newQueryWith(`CREATE PROCEDURE ${quoteIdent(s)}."new_proc"()\nLANGUAGE plpgsql AS $$\nBEGIN\n  -- …\nEND;\n$$;`) },
     { id: "n-schema", label: "New Schema…", onSelect: () => newQueryWith(`CREATE SCHEMA "new_schema";`) },
     { id: "n-group", label: "New Group / Role…", onSelect: () => newQueryWith(`CREATE ROLE "new_group";`) },
   ];
@@ -711,7 +711,7 @@ export function MainShell() {
           const { schema: s, obj } = objMenu;
           const key = `${s}.${obj.name}`;
           const isPinned = pinned.includes(key);
-          const qualified = `"${s}"."${obj.name}"`;
+          const qualified = `${quoteIdent(s)}.${quoteIdent(obj.name)}`;
           const scriptCols: ScriptColumn[] = obj.columns.map((c) => ({
             name: c.name,
             data_type: c.data_type,
@@ -795,7 +795,7 @@ export function MainShell() {
             {
               id: "clone",
               label: "Clone (open as query)",
-              onSelect: () => newQueryWith(`CREATE TABLE "${s}"."${obj.name}_copy" (LIKE ${qualified} INCLUDING ALL);`),
+              onSelect: () => newQueryWith(`CREATE TABLE ${quoteIdent(s)}.${quoteIdent(`${obj.name}_copy`)} (LIKE ${qualified} INCLUDING ALL);`),
             },
             {
               id: "truncate",

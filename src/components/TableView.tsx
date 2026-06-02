@@ -30,6 +30,7 @@ import { SegmentedToggle, StatusBar, StatusBarButton, StatusDot } from "./ui/Sta
 import { Chip } from "./ui/Chip";
 import { ContextMenu, type ContextMenuItem } from "./ui/ContextMenu";
 import { buildRowAs } from "../lib/rowFormat";
+import { quoteIdent } from "../lib/tableScript";
 import { buildInsertValues, isDraftDirty } from "../lib/insertRow";
 import { chipLabel, removeFilter, upsertFilter, FILTER_OP_LABEL, isNullOp } from "../lib/filterBuilder";
 import {
@@ -591,7 +592,7 @@ export function TableView({ connId, schema, object }: Props) {
           const rowValues: (string | null)[] = colNames.map((c) =>
             vals ? (vals[c] ?? null) : c === cellMenu.col ? cellMenu.value : null,
           );
-          const qualified = `"${schema}"."${object.name}"`;
+          const qualified = `${quoteIdent(schema)}.${quoteIdent(object.name)}`;
           const copy = (s: string) => navigator.clipboard?.writeText(s);
           const copyRowAs = (fmt: Parameters<typeof buildRowAs>[0]) =>
             copy(buildRowAs(fmt, rowValues, colNames, { table: qualified }));
@@ -610,7 +611,7 @@ export function TableView({ connId, schema, object }: Props) {
             const where = pk
               .map((c) => {
                 const v = vals[c];
-                return `"${c}" = ${v == null ? "NULL" : `'${v.replace(/'/g, "''")}'`}`;
+                return `${quoteIdent(c)} = ${v == null ? "NULL" : `'${v.replace(/'/g, "''")}'`}`;
               })
               .join(" AND ");
             return `DELETE FROM ${qualified} WHERE ${where};`;
@@ -641,7 +642,7 @@ export function TableView({ connId, schema, object }: Props) {
             {
               id: "set-value",
               label: "Set value",
-              disabled: !editable,
+              disabled: !editable || !vals,
               children: [
                 { id: "set-empty", label: "Empty ''", onSelect: () => void applyCellValue("") },
                 { id: "set-null", label: "NULL", onSelect: () => void applyCellValue(null) },
@@ -685,6 +686,7 @@ export function TableView({ connId, schema, object }: Props) {
               id: "copy-delete",
               label: "Copy DELETE statement",
               tone: "danger",
+              disabled: !pk || pk.length === 0 || !vals,
               onSelect: () => copy(deleteStmt()),
             },
           ];
