@@ -85,8 +85,21 @@ struct CursorState {
 
 impl PgDriver {
     pub async fn connect(url: &str) -> DResult<Self> {
+        // Validate with a single direct connection FIRST so the real Postgres
+        // error (connection refused / auth failed / database does not exist)
+        // surfaces immediately. `PgPoolOptions::connect` would instead retry in
+        // the pool until `acquire_timeout` (default 30s) and return the opaque
+        // "pool timed out while waiting for an open connection", hiding the cause.
+        {
+            use sqlx::Connection;
+            let probe = sqlx::postgres::PgConnection::connect(url)
+                .await
+                .map_err(|e| DriverError::Db(e.to_string()))?;
+            let _ = probe.close().await;
+        }
         let pool = PgPoolOptions::new()
             .max_connections(4)
+            .acquire_timeout(std::time::Duration::from_secs(10))
             .connect(url)
             .await
             .map_err(|e| DriverError::Db(e.to_string()))?;
@@ -612,6 +625,31 @@ mod tests {
         );
         assert!(sql.contains("\"a\" = $2::int4 AND \"b\" = $3::text"));
         assert!(sql.ends_with("\"v\" IS NOT DISTINCT FROM $4::int8"));
+    }
+
+    // Connecting to a closed port must surface the REAL connection error
+    // ("connection refused"), not sqlx's masked "pool timed out while waiting for
+    // an open connection" — and it must fail fast, not after the 30s pool retry
+    // window. Port 1 is reserved + never listening, so this is deterministic and
+    // needs no live server.
+    #[tokio::test]
+    async fn connect_surfaces_real_error_not_pool_timeout() {
+        use super::PgDriver;
+        let url = "postgres://postgres@127.0.0.1:1/postgres?sslmode=disable";
+        let start = std::time::Instant::now();
+        let err = match PgDriver::connect(url).await {
+            Ok(_) => panic!("connecting to a closed port must fail"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            !err.to_lowercase().contains("pool timed out"),
+            "real error was masked by the pool: {err}"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(15),
+            "took {:?} — the pool retry loop is still masking the error",
+            start.elapsed()
+        );
     }
 }
 

@@ -3,7 +3,7 @@ import { BrandMark } from "./Brand";
 import { ThemeToggle } from "./ThemeToggle";
 import { Onboarding } from "./Onboarding";
 import { EngineIcon } from "./ui/EngineIcon";
-import { IconExport, IconImport, IconPlus, IconSearch } from "./ui/Icon";
+import { IconClose, IconExport, IconImport, IconKey, IconPlus, IconSearch } from "./ui/Icon";
 import { ContextMenu } from "./ui/ContextMenu";
 import {
   connect,
@@ -13,6 +13,7 @@ import {
   importConnections,
   listConnections,
   listObjects,
+  pickKeyFile,
   saveConnection,
   testConnection,
   type ConnConfig,
@@ -21,6 +22,10 @@ import {
 import { defaultSshConfig, type SshAuthMode, type SshConfig } from "../lib/ssh";
 import { useConnections } from "../state/connectionStore";
 import { getLastConnected, markConnected } from "../lib/lastConnected";
+
+/** Default connection color (light-mode `--primary`). Connections still on this
+ *  value are treated as "no custom tag" — so the row dot is suppressed. */
+const DEFAULT_CONN_COLOR = "#4f46e5";
 
 const DEFAULT_PORT: Record<string, number> = {
   postgres: 5432,
@@ -35,7 +40,7 @@ function blankConfig(): ConnConfig {
   return {
     id: crypto.randomUUID(),
     name: "",
-    color: "#4f46e5",
+    color: DEFAULT_CONN_COLOR,
     engine: "postgres",
     host: "127.0.0.1",
     port: 5432,
@@ -111,8 +116,10 @@ export function ConnectionManager() {
   }, [armedDelete]);
 
   const ssh: SshConfig = form.ssh ?? defaultSshConfig();
-  const setSsh = (next: Partial<SshConfig>) =>
+  const setSsh = (next: Partial<SshConfig>) => {
     setForm((f) => ({ ...f, ssh: { ...(f.ssh ?? defaultSshConfig()), ...next } }));
+    clearStatus();
+  };
   const setSshAuthMode = (mode: SshAuthMode) =>
     setSsh({ auth: mode === "keyfile" ? { mode, path: "" } : { mode } });
 
@@ -137,8 +144,14 @@ export function ConnectionManager() {
   }, [sheetOpen]);
 
   const refresh = () => listConnections().then(setSaved).catch(() => {});
-  const set = <K extends keyof ConnConfig>(k: K, v: ConnConfig[K]) =>
+  // Clear a green/red test result the moment the user changes anything, so the
+  // feedback never goes stale against edited values.
+  const clearStatus = () =>
+    setStatus((s) => (s.kind === "idle" ? s : { kind: "idle", msg: "" }));
+  const set = <K extends keyof ConnConfig>(k: K, v: ConnConfig[K]) => {
     setForm((f) => ({ ...f, [k]: v }));
+    clearStatus();
+  };
 
   const loadInto = (c: ConnConfig) => {
     setForm(c);
@@ -197,8 +210,22 @@ export function ConnectionManager() {
     }
   };
 
-  const field =
-    "w-full rounded-md border border-border bg-bg px-2.5 py-1.5 text-sm text-text placeholder:text-muted focus:border-primary focus:outline-none";
+  // Whole-form test feedback (TablePlus parity): every field borders green on a
+  // successful Test, red on failure, neutral otherwise. `h-[34px]` is an explicit
+  // px height (root font is 12px, so rem-based `h-*` would shrink) — this is what
+  // makes inputs, selects, and number fields line up to the same height.
+  const tone: "idle" | "ok" | "err" =
+    status.kind === "ok" ? "ok" : status.kind === "err" ? "err" : "idle";
+  const fieldBase =
+    "h-[34px] w-full rounded-md border bg-bg px-2.5 text-[13px] text-text placeholder:text-muted transition-colors focus:outline-none focus:ring-2";
+  const fieldNeutral = `${fieldBase} border-border focus:border-primary focus:ring-primary/25`;
+  const field = `${fieldBase} ${
+    tone === "ok"
+      ? "border-ok/60 focus:border-ok focus:ring-ok/20"
+      : tone === "err"
+        ? "border-danger/60 focus:border-danger focus:ring-danger/20"
+        : "border-border focus:border-primary focus:ring-primary/25"
+  }`;
 
   const filtered = useMemo(() => {
     const sorted = sortByRecency(saved);
@@ -433,21 +460,23 @@ export function ConnectionManager() {
             </span>
             <button
               onClick={() => setSheetOpen(false)}
-              className="ml-auto inline-flex h-6 w-6 items-center justify-center rounded text-muted hover:bg-surface-2 hover:text-text"
+              className="ml-auto inline-flex h-8 w-8 items-center justify-center rounded-md text-muted transition-colors hover:bg-surface-2 hover:text-text"
               aria-label="Close"
+              title="Close (Esc)"
             >
-              ×
+              <IconClose size={16} />
             </button>
           </div>
           <div className="min-w-0 flex-1 overflow-auto p-5">
             <div className="mb-3 flex items-center gap-3">
               <span className="text-sm font-semibold">Connection</span>
               <select
-                className={`${field} w-auto`}
+                className={`${fieldNeutral} w-auto`}
                 value={form.engine}
                 onChange={(e) => {
                   const eng = e.target.value as Engine;
                   setForm((f) => ({ ...f, engine: eng, port: DEFAULT_PORT[eng] ?? f.port }));
+                  clearStatus();
                 }}
               >
                 <option value="postgres">PostgreSQL</option>
@@ -512,7 +541,10 @@ export function ConnectionManager() {
                       className={field}
                       type="password"
                       value={password}
-                      onChange={(e) => setPassword(e.target.value)}
+                      onChange={(e) => {
+                        setPassword(e.target.value);
+                        clearStatus();
+                      }}
                       placeholder="•••• (keychain)"
                     />
                   </label>
@@ -558,7 +590,10 @@ export function ConnectionManager() {
                       className={field}
                       type="password"
                       value={password}
-                      onChange={(e) => setPassword(e.target.value)}
+                      onChange={(e) => {
+                        setPassword(e.target.value);
+                        clearStatus();
+                      }}
                       placeholder="•••••••• (stored in keychain)"
                     />
                   </label>
@@ -571,8 +606,11 @@ export function ConnectionManager() {
                         onChange={(e) => set("sslmode", e.target.value)}
                       >
                         <option value="disable">disable</option>
+                        <option value="allow">allow</option>
                         <option value="prefer">prefer</option>
                         <option value="require">require</option>
+                        <option value="verify-ca">verify-ca</option>
+                        <option value="verify-full">verify-full</option>
                       </select>
                     </label>
                   )}
@@ -647,15 +685,34 @@ export function ConnectionManager() {
                         {ssh.auth.mode === "keyfile" && (
                           <>
                             <label className="col-span-2 text-xs text-muted">
-                              Private key path
-                              <input
-                                className={field}
-                                value={ssh.auth.path}
-                                onChange={(e) =>
-                                  setSsh({ auth: { mode: "keyfile", path: e.target.value } })
-                                }
-                                placeholder="~/.ssh/id_ed25519"
-                              />
+                              Private key (PEM / OpenSSH)
+                              <div className="flex gap-2">
+                                <input
+                                  className={field}
+                                  value={ssh.auth.path}
+                                  onChange={(e) =>
+                                    setSsh({ auth: { mode: "keyfile", path: e.target.value } })
+                                  }
+                                  placeholder="~/.ssh/id_ed25519 or /path/to/key.pem"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    try {
+                                      const picked = await pickKeyFile();
+                                      if (picked)
+                                        setSsh({ auth: { mode: "keyfile", path: picked } });
+                                    } catch (err) {
+                                      setStatus({ kind: "err", msg: `Could not open file picker: ${err}` });
+                                    }
+                                  }}
+                                  title="Choose a .pem / key file"
+                                  className="inline-flex h-[34px] shrink-0 items-center gap-1.5 rounded-md border border-border px-3 text-[12px] text-text transition-colors hover:bg-surface-2"
+                                >
+                                  <IconKey size={12} className="text-muted" />
+                                  Browse…
+                                </button>
+                              </div>
                             </label>
                             <label className="col-span-2 text-xs text-muted">
                               Key passphrase (optional)
@@ -663,7 +720,10 @@ export function ConnectionManager() {
                                 className={field}
                                 type="password"
                                 value={sshSecret}
-                                onChange={(e) => setSshSecret(e.target.value)}
+                                onChange={(e) => {
+                                setSshSecret(e.target.value);
+                                clearStatus();
+                              }}
                                 placeholder="•••• (stored in keychain)"
                               />
                             </label>
@@ -676,7 +736,10 @@ export function ConnectionManager() {
                               className={field}
                               type="password"
                               value={sshSecret}
-                              onChange={(e) => setSshSecret(e.target.value)}
+                              onChange={(e) => {
+                                setSshSecret(e.target.value);
+                                clearStatus();
+                              }}
                               placeholder="•••••••• (stored in keychain)"
                             />
                           </label>
@@ -692,48 +755,62 @@ export function ConnectionManager() {
               </details>
             )}
 
-            <div className="mt-5 flex items-center gap-2 border-t border-border pt-4">
-              <button
-                onClick={() => doConnect(form, password)}
-                className="rounded-md bg-primary px-3.5 py-1.5 text-sm font-medium text-white shadow-[var(--shadow-soft)] hover:bg-primary-hover"
-              >
-                Connect
-              </button>
-              <button
-                onClick={doSave}
-                className="rounded-md border border-border px-3 py-1.5 text-sm text-text hover:bg-surface-2"
-              >
-                Save
-              </button>
-              <button
-                onClick={doTest}
-                className="rounded-md border border-border px-3 py-1.5 text-sm text-text hover:bg-surface-2"
-              >
-                Test
-              </button>
-              {status.kind !== "idle" && (
-                <span
-                  className={`text-xs ${
-                    status.kind === "ok"
-                      ? "text-ok"
-                      : status.kind === "err"
-                      ? "text-danger"
-                      : "text-muted"
-                  }`}
+            <div className="mt-5 border-t border-border pt-4">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => doConnect(form, password)}
+                  className="inline-flex h-[34px] items-center rounded-md bg-primary px-4 text-[13px] font-medium text-white shadow-[var(--shadow-soft)] transition-colors hover:bg-primary-hover"
                 >
-                  {status.msg}
-                </span>
+                  Connect
+                </button>
+                <button
+                  onClick={doSave}
+                  className="inline-flex h-[34px] items-center rounded-md border border-border px-3.5 text-[13px] text-text transition-colors hover:bg-surface-2"
+                >
+                  Save
+                </button>
+                <button
+                  onClick={doTest}
+                  disabled={status.kind === "busy"}
+                  className="inline-flex h-[34px] items-center rounded-md border border-border px-3.5 text-[13px] text-text transition-colors hover:bg-surface-2 disabled:opacity-50"
+                >
+                  Test
+                </button>
+                <label
+                  className="ml-auto inline-flex items-center gap-2 text-[11px] text-muted"
+                  title="Pick a color for this connection (shown as the env tag dot)"
+                >
+                  <span>Color tag</span>
+                  <span className="relative inline-flex h-7 w-9 items-center justify-center overflow-hidden rounded-md border border-border shadow-[var(--shadow-soft)] focus-within:ring-2 focus-within:ring-primary/30">
+                    <input
+                      type="color"
+                      value={form.color ?? DEFAULT_CONN_COLOR}
+                      onChange={(e) => set("color", e.target.value)}
+                      className="absolute inset-0 h-[150%] w-[150%] -translate-x-2 -translate-y-2 cursor-pointer border-0 bg-transparent p-0"
+                    />
+                  </span>
+                </label>
+              </div>
+
+              {/* TablePlus-style result banner: green on success, red + the real
+                  error on failure, muted spinner while testing. */}
+              {status.kind !== "idle" && (
+                <div
+                  className={`mt-3 flex items-start gap-2 rounded-md border px-3 py-2 text-[12px] ${
+                    status.kind === "ok"
+                      ? "border-ok/30 bg-ok/10 text-ok"
+                      : status.kind === "err"
+                        ? "border-danger/30 bg-danger/10 text-danger"
+                        : "border-border bg-surface text-muted"
+                  }`}
+                  role="status"
+                >
+                  <span aria-hidden className="mt-px shrink-0 font-semibold">
+                    {status.kind === "ok" ? "✓" : status.kind === "err" ? "✕" : "⋯"}
+                  </span>
+                  <span className="min-w-0 break-words">{status.msg}</span>
+                </div>
               )}
-              <label className="ml-auto inline-flex items-center gap-1.5 text-[11px] text-muted">
-                <span>Color tag</span>
-                <input
-                  type="color"
-                  value={form.color ?? "#4f46e5"}
-                  onChange={(e) => set("color", e.target.value)}
-                  className="h-5 w-7 cursor-pointer rounded border border-border bg-transparent"
-                  title="Pick a color for this connection (env tag)"
-                />
-              </label>
             </div>
           </div>
         </div>
@@ -783,11 +860,11 @@ function ConnRow({
           <div className="flex items-center gap-1.5 text-[13.5px] font-medium text-text">
             <span className="truncate">{conn.name || "(unnamed)"}</span>
             <span className={`shrink-0 text-[12px] font-normal ${toneClass}`}>{tag.label}</span>
-            {conn.color && conn.color !== "#4f46e5" && (
+            {conn.color && conn.color !== DEFAULT_CONN_COLOR && (
               <span
                 aria-hidden
                 title={`Color tag ${conn.color}`}
-                className="ml-0.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full"
+                className="ml-0.5 inline-block h-2.5 w-2.5 shrink-0 rounded-full ring-1 ring-black/10 dark:ring-white/15"
                 style={{ background: conn.color }}
               />
             )}

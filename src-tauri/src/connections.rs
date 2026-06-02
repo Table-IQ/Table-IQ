@@ -86,15 +86,26 @@ impl ConnConfig {
                 self.port,
                 urlencode(&self.database),
             ),
-            _ => format!(
-                "postgres://{}:{}@{}:{}/{}?sslmode={}",
-                urlencode(&self.username),
-                urlencode(password),
-                self.host,
-                self.port,
-                urlencode(&self.database),
-                self.sslmode
-            ),
+            _ => {
+                // psql / TablePlus behavior: an empty database connects to the
+                // database named after the user. Sending an empty dbname instead
+                // produces an opaque connect failure (later masked as a pool
+                // timeout), so default it here.
+                let dbn = if self.database.is_empty() {
+                    &self.username
+                } else {
+                    &self.database
+                };
+                format!(
+                    "postgres://{}:{}@{}:{}/{}?sslmode={}",
+                    urlencode(&self.username),
+                    urlencode(password),
+                    self.host,
+                    self.port,
+                    urlencode(dbn),
+                    self.sslmode
+                )
+            }
         }
     }
 }
@@ -214,6 +225,27 @@ mod tests {
         let json = serde_json::to_string(&store).unwrap();
         let back: ConnStore = serde_json::from_str(&json).unwrap();
         assert_eq!(back.connections[0], cfg);
+    }
+
+    #[test]
+    fn pg_url_defaults_empty_database_to_username() {
+        // psql / TablePlus behavior: an empty database connects to the database
+        // named after the user. Empty `database` must NOT produce `…/?sslmode=…`
+        // (which masks the real cause behind a connect error).
+        let cfg = ConnConfig {
+            id: "x".into(),
+            name: "x".into(),
+            color: None,
+            engine: "postgres".into(),
+            host: "h".into(),
+            port: 5432,
+            database: "".into(),
+            username: "postgres".into(),
+            sslmode: "prefer".into(),
+            ssh: None,
+        };
+        let url = cfg.url_with_password("pw");
+        assert!(url.contains("@h:5432/postgres?"), "expected db=username, got {url}");
     }
 
     #[test]

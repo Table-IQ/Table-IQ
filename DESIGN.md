@@ -26,9 +26,13 @@ Three principles, in order:
 
 - **Name:** TableIQ (one word, capital T and IQ). Never "Table-IQ" or "Tableiq".
 - **Wordmark:** `Table` in `--text`, `IQ` in `--primary`. Component: [`<Wordmark>`](src/components/Brand.tsx).
-- **Inline glyph:** tile-less, uses `currentColor` ([`<BrandMark>`](src/components/Brand.tsx)).
+- **Inline glyph:** tile-less "T" of three table cells + stem in `currentColor`,
+  topped by a 4-point **AI sparkle** (indigo→violet gradient) at the upper-right
+  ([`<BrandMark>`](src/components/Brand.tsx)). Slice 30 replaced the old flat dot
+  with the sparkle — the spark *is* the "IQ", so it carries the AI gradient.
 - Reserve the **violet `--accent`** and the primary→accent gradient for AI
-  features (NL→SQL, chat, explain). Never for ordinary chrome.
+  features (NL→SQL, chat, explain) — including the brand spark. Never for
+  ordinary chrome.
 
 ## Type scale
 
