@@ -127,6 +127,11 @@ async fn authenticate(
     secret: &str,
 ) -> Result<(), String> {
     let ok = match &cfg.auth {
+        // An empty password falls back to the ssh-agent (TablePlus's "leave empty
+        // to use ~/.ssh/config" behavior) instead of attempting empty-password auth.
+        SshAuth::Password if secret.is_empty() => {
+            authenticate_agent(handle, &cfg.username).await?
+        }
         SshAuth::Password => handle
             .authenticate_password(cfg.username.clone(), secret.to_string())
             .await

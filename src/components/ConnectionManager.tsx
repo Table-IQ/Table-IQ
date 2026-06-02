@@ -19,7 +19,7 @@ import {
   type ConnConfig,
   type Engine,
 } from "../lib/commands";
-import { defaultSshConfig, type SshAuthMode, type SshConfig } from "../lib/ssh";
+import { defaultSshConfig, type SshConfig } from "../lib/ssh";
 import { useConnections } from "../state/connectionStore";
 import { getLastConnected, markConnected } from "../lib/lastConnected";
 
@@ -96,7 +96,11 @@ export function ConnectionManager() {
   const { saved, setSaved, setActive, setSchema } = useConnections();
   const [form, setForm] = useState<ConnConfig>(blankConfig);
   const [password, setPassword] = useState("");
-  const [sshSecret, setSshSecret] = useState("");
+  // SSH secrets are split so the form can show password + key passphrase the way
+  // TablePlus does (both visible). Only the active method's secret is sent — see
+  // `effectiveSshSecret`. Both live in keychain under `ssh:<conn_id>`.
+  const [sshPassword, setSshPassword] = useState("");
+  const [sshKeyPass, setSshKeyPass] = useState("");
   const [status, setStatus] = useState<{ kind: "idle" | "busy" | "ok" | "err"; msg: string }>({
     kind: "idle",
     msg: "",
@@ -120,8 +124,15 @@ export function ConnectionManager() {
     setForm((f) => ({ ...f, ssh: { ...(f.ssh ?? defaultSshConfig()), ...next } }));
     clearStatus();
   };
-  const setSshAuthMode = (mode: SshAuthMode) =>
-    setSsh({ auth: mode === "keyfile" ? { mode, path: "" } : { mode } });
+  // TablePlus-style SSH auth: a "Use SSH key" toggle, not a dropdown. Key on →
+  // KeyFile; key off → Password (and an empty password falls back to the agent on
+  // the backend). The active method's secret is what gets sent.
+  const useKey = ssh.auth.mode === "keyfile";
+  const keyPath = ssh.auth.mode === "keyfile" ? ssh.auth.path : "";
+  const effectiveSshSecret = useKey ? sshKeyPass : sshPassword;
+  const toggleUseKey = (on: boolean) =>
+    setSsh({ auth: on ? { mode: "keyfile", path: keyPath } : { mode: "password" } });
+  const setKeyPath = (path: string) => setSsh({ auth: { mode: "keyfile", path } });
 
   useEffect(() => {
     listConnections().then(setSaved).catch(() => {});
@@ -156,7 +167,8 @@ export function ConnectionManager() {
   const loadInto = (c: ConnConfig) => {
     setForm(c);
     setPassword("");
-    setSshSecret("");
+    setSshPassword("");
+    setSshKeyPass("");
     setStatus({ kind: "idle", msg: "" });
   };
 
@@ -187,7 +199,7 @@ export function ConnectionManager() {
   const doSave = async () => {
     setStatus({ kind: "busy", msg: "Saving…" });
     try {
-      await saveConnection(form, password || undefined, sshSecret || undefined);
+      await saveConnection(form, password || undefined, effectiveSshSecret || undefined);
       await refresh();
       setStatus({ kind: "ok", msg: "Saved" });
     } catch (e) {
@@ -198,7 +210,8 @@ export function ConnectionManager() {
   const doConnect = async (cfg: ConnConfig, pw?: string) => {
     setStatus({ kind: "busy", msg: "Connecting…" });
     try {
-      if (pw !== undefined) await saveConnection(cfg, pw || undefined, sshSecret || undefined);
+      if (pw !== undefined)
+        await saveConnection(cfg, pw || undefined, effectiveSshSecret || undefined);
       const info = await connect(cfg.id);
       if (info.engine !== "redis" && info.engine !== "mongodb") {
         setSchema(await listObjects(cfg.id));
@@ -642,18 +655,21 @@ export function ConnectionManager() {
                   </label>
                   {ssh.enabled && (
                     <>
+                      {/* TablePlus "Over SSH" layout: Server / Port / User, an
+                          always-visible Password, and a "Use SSH key" toggle that
+                          reveals the PEM file picker. No auth dropdown. */}
                       <div className="mt-3 grid grid-cols-2 gap-3">
-                        <label className="text-xs text-muted">
-                          Bastion host
+                        <label className="col-span-2 text-xs text-muted">
+                          Server (bastion host)
                           <input
                             className={field}
                             value={ssh.host}
                             onChange={(e) => setSsh({ host: e.target.value })}
-                            placeholder="bastion.example.com (or ~/.ssh/config alias)"
+                            placeholder="13.126.235.15 (or ~/.ssh/config alias)"
                           />
                         </label>
                         <label className="text-xs text-muted">
-                          Bastion port
+                          Port
                           <input
                             className={field}
                             type="number"
@@ -662,91 +678,99 @@ export function ConnectionManager() {
                           />
                         </label>
                         <label className="text-xs text-muted">
-                          SSH user
+                          User
                           <input
                             className={field}
                             value={ssh.username}
                             onChange={(e) => setSsh({ username: e.target.value })}
-                            placeholder="deploy"
+                            placeholder="ubuntu"
                           />
                         </label>
-                        <label className="text-xs text-muted">
-                          Auth
-                          <select
-                            className={field}
-                            value={ssh.auth.mode}
-                            onChange={(e) => setSshAuthMode(e.target.value as SshAuthMode)}
-                          >
-                            <option value="agent">SSH agent</option>
-                            <option value="keyfile">Private key file</option>
-                            <option value="password">Password</option>
-                          </select>
-                        </label>
-                        {ssh.auth.mode === "keyfile" && (
-                          <>
-                            <label className="col-span-2 text-xs text-muted">
-                              Private key (PEM / OpenSSH)
-                              <div className="flex gap-2">
-                                <input
-                                  className={field}
-                                  value={ssh.auth.path}
-                                  onChange={(e) =>
-                                    setSsh({ auth: { mode: "keyfile", path: e.target.value } })
-                                  }
-                                  placeholder="~/.ssh/id_ed25519 or /path/to/key.pem"
-                                />
-                                <button
-                                  type="button"
-                                  onClick={async () => {
-                                    try {
-                                      const picked = await pickKeyFile();
-                                      if (picked)
-                                        setSsh({ auth: { mode: "keyfile", path: picked } });
-                                    } catch (err) {
-                                      setStatus({ kind: "err", msg: `Could not open file picker: ${err}` });
-                                    }
-                                  }}
-                                  title="Choose a .pem / key file"
-                                  className="inline-flex h-[34px] shrink-0 items-center gap-1.5 rounded-md border border-border px-3 text-[12px] text-text transition-colors hover:bg-surface-2"
-                                >
-                                  <IconKey size={12} className="text-muted" />
-                                  Browse…
-                                </button>
-                              </div>
-                            </label>
-                            <label className="col-span-2 text-xs text-muted">
-                              Key passphrase (optional)
-                              <input
-                                className={field}
-                                type="password"
-                                value={sshSecret}
-                                onChange={(e) => {
-                                setSshSecret(e.target.value);
-                                clearStatus();
-                              }}
-                                placeholder="•••• (stored in keychain)"
-                              />
-                            </label>
-                          </>
-                        )}
-                        {ssh.auth.mode === "password" && (
+                        {!useKey && (
                           <label className="col-span-2 text-xs text-muted">
-                            SSH password
+                            Password
                             <input
                               className={field}
                               type="password"
-                              value={sshSecret}
+                              value={sshPassword}
                               onChange={(e) => {
-                                setSshSecret(e.target.value);
+                                setSshPassword(e.target.value);
+                                if (ssh.auth.mode !== "password") setSsh({ auth: { mode: "password" } });
                                 clearStatus();
                               }}
-                              placeholder="•••••••• (stored in keychain)"
+                              placeholder="•••••••• (stored in keychain · leave empty for agent)"
                             />
                           </label>
                         )}
                       </div>
+
+                      {/* Use SSH key — the PEM picker, always one click away. */}
+                      <label className="mt-3 flex items-center gap-2 text-xs font-medium text-text">
+                        <input
+                          type="checkbox"
+                          checked={useKey}
+                          onChange={(e) => toggleUseKey(e.target.checked)}
+                        />
+                        Use SSH key (PEM / OpenSSH)
+                      </label>
+                      {useKey && (
+                        <div className="mt-2 flex flex-col gap-3">
+                          <label className="text-xs text-muted">
+                            Private key file
+                            <div className="flex gap-2">
+                              <input
+                                className={field}
+                                value={keyPath}
+                                onChange={(e) => setKeyPath(e.target.value)}
+                                placeholder="~/Downloads/prod-rhobots.pem or ~/.ssh/id_ed25519"
+                              />
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  try {
+                                    const picked = await pickKeyFile();
+                                    if (picked) setKeyPath(picked);
+                                  } catch (err) {
+                                    setStatus({ kind: "err", msg: `Could not open file picker: ${err}` });
+                                  }
+                                }}
+                                title="Choose a .pem / key file"
+                                className="inline-flex h-[34px] shrink-0 items-center gap-1.5 rounded-md border border-border px-3 text-[12px] text-text transition-colors hover:bg-surface-2"
+                              >
+                                <IconKey size={12} className="text-muted" />
+                                Browse…
+                              </button>
+                              {keyPath && (
+                                <button
+                                  type="button"
+                                  onClick={() => setKeyPath("")}
+                                  title="Clear key"
+                                  aria-label="Clear key"
+                                  className="inline-flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-md border border-border text-muted transition-colors hover:bg-surface-2 hover:text-text"
+                                >
+                                  <IconClose size={13} />
+                                </button>
+                              )}
+                            </div>
+                          </label>
+                          <label className="text-xs text-muted">
+                            Key passphrase (optional)
+                            <input
+                              className={field}
+                              type="password"
+                              value={sshKeyPass}
+                              onChange={(e) => {
+                                setSshKeyPass(e.target.value);
+                                clearStatus();
+                              }}
+                              placeholder="•••• (stored in keychain)"
+                            />
+                          </label>
+                        </div>
+                      )}
                       <p className="mt-2 text-[10px] leading-snug text-muted">
                         The DB driver connects to a local forward (127.0.0.1) over this tunnel.
+                        Leave the password and key empty to use your ssh-agent / ~/.ssh/config.
                         Host keys are accepted on first use (v1) — the fingerprint is logged.
                       </p>
                     </>
