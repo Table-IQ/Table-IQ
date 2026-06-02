@@ -92,7 +92,7 @@ impl PgDriver {
         // "pool timed out while waiting for an open connection", hiding the cause.
         {
             use sqlx::Connection;
-            let mut probe = sqlx::postgres::PgConnection::connect(url)
+            let probe = sqlx::postgres::PgConnection::connect(url)
                 .await
                 .map_err(|e| DriverError::Db(e.to_string()))?;
             let _ = probe.close().await;

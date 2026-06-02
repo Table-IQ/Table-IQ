@@ -51,7 +51,7 @@ impl MySqlDriver {
         // of the pool's opaque "pool timed out" after a 30s retry (see PgDriver).
         {
             use sqlx::Connection;
-            let mut probe = sqlx::mysql::MySqlConnection::connect(url).await.map_err(db)?;
+            let probe = sqlx::mysql::MySqlConnection::connect(url).await.map_err(db)?;
             let _ = probe.close().await;
         }
         let pool = MySqlPoolOptions::new()

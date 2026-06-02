@@ -13,6 +13,6 @@
   <rect x="598" y="320" width="139" height="116" rx="22" fill="#FFFFFF"/>
   <!-- T stem -->
   <rect x="448" y="436" width="128" height="324" rx="28" fill="#FFFFFF"/>
-  <!-- IQ spark -->
-  <circle cx="760" cy="292" r="60" fill="#C4B5FD"/>
+  <!-- AI sparkle (4-point star) -->
+  <path d="M795 150 L817 226 L893 248 L817 270 L795 346 L773 270 L697 248 L773 226 Z" fill="#FFFFFF"/>
 </svg>

@@ -59,6 +59,24 @@ function inTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
+/**
+ * Open the native file picker for an SSH private key (PEM/key). Returns the
+ * absolute path, or null when cancelled or running in the browser (where the
+ * webview can't expose a real path — the user types it instead). Dynamically
+ * imports the dialog plugin so the browser-mock build never pulls it in.
+ */
+export async function pickKeyFile(): Promise<string | null> {
+  if (!inTauri()) return null;
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const picked = await open({
+    multiple: false,
+    directory: false,
+    title: "Select SSH private key",
+    filters: [{ name: "Key files", extensions: ["pem", "key", "ppk", "rsa", "ed25519", "id_rsa"] }],
+  });
+  return typeof picked === "string" ? picked : null;
+}
+
 // ── browser-mode mock backend (lets /browse exercise the full flow) ──────
 const mockStore: ConnConfig[] = [
   {
