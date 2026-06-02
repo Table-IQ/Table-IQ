@@ -257,6 +257,20 @@ floats recently-used connections to the top of the list without any UI grouping
 | FK chip rail (above grid) | Removed in favor of inline chevron in FK cells |
 | `⌘O` Open Connection modal | New — search + list, swap connections without leaving workspace |
 
+### Slice 29 — TablePlus grid + chrome parity
+
+| Surface | Change |
+|---|---|
+| Grid columns | **Auto-fit to content** on first load (`lib/autoFit.ts`: `fitColumnWidth`/`autoFitWidths`), clamped to `MAX_AUTO_FIT` 420px. Fixes the old fixed-160px clipping. A persisted drag (`lib/colWidths.ts`) always wins over auto-fit. |
+| Grid rows | **Zebra stripe** on odd rows + neutral **hover** highlight (`gridRowTints` in `theme.ts` → glide `getRowThemeOverride`). Row 29px / header 30px (tighter than glide's 34px). |
+| Grid cells | Numeric columns **right-align** (`isNumericType`). FK cells stay left (`→ value`). |
+| Connection capsule | Centered TablePlus pill in the titlebar: `conn \| ENGINE : database ▾ : schema.table`. Name → ⌘O, database → ⌘D. Replaces the plain breadcrumb + left chip. |
+| Bottom bar | Active Data/Structure segment uses the primary accent (TablePlus blue tab). **Single** bottom bar — the workspace fallback is suppressed when a Table/Query tab owns one (was stacked two-deep). |
+
+> Grid colors are hardcoded hex in `theme.ts`/`gridRowTints` on purpose —
+> glide-data-grid's canvas theme needs literal colors, not CSS custom properties.
+> Components still use tokens.
+
 ## Do / Don't
 
 - **Do** use tokens (`bg-surface`, `text-muted`) so light/dark both work. **Don't** hardcode `gray-*`/hex in components.
