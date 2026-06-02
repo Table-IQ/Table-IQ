@@ -21,6 +21,11 @@ pub enum SshAuth {
     Password,
     /// Private-key auth. `path` is the key file on disk; `passphrase` (if any) comes from the
     /// keychain at connect time and is never serialized to disk / the bundle.
+    ///
+    /// Tag is `"keyfile"` (not snake_case `key_file`) to match the TS client
+    /// (`src/lib/ssh.ts`) — otherwise key-auth SSH configs fail to deserialize at
+    /// the IPC boundary.
+    #[serde(rename = "keyfile")]
     KeyFile {
         path: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -100,6 +105,19 @@ mod tests {
         let json = serde_json::to_string(&cfg).unwrap();
         let back: SshConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(back, cfg);
+    }
+
+    #[test]
+    fn deserializes_frontend_keyfile_tag() {
+        // The TS client (src/lib/ssh.ts) sends `mode: "keyfile"`. The Rust enum
+        // must accept that exact tag, or saving a key-auth SSH connection fails to
+        // deserialize at the IPC boundary.
+        let json = r#"{"mode":"keyfile","path":"/Users/me/Downloads/key.pem"}"#;
+        let auth: SshAuth = serde_json::from_str(json).expect("frontend keyfile tag must parse");
+        match auth {
+            SshAuth::KeyFile { path, .. } => assert_eq!(path, "/Users/me/Downloads/key.pem"),
+            other => panic!("expected KeyFile, got {other:?}"),
+        }
     }
 
     #[test]
