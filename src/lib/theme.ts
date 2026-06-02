@@ -70,6 +70,18 @@ export function gridTheme(mode: ResolvedTheme) {
   };
 }
 
+/**
+ * Row-level tints the grid layers over `bgCell` (TablePlus parity, Slice 29):
+ * a faint zebra stripe on odd rows and a neutral hover highlight. Kept subtle —
+ * the stripe never reads as strong as `--surface`, so the grid stays data-first.
+ */
+export function gridRowTints(mode: ResolvedTheme): { zebra: string; hover: string } {
+  if (mode === "dark") {
+    return { zebra: "#13151a", hover: "#1a1d24" };
+  }
+  return { zebra: "#f6f6f7", hover: "#eef0f3" };
+}
+
 export function systemPrefersDark(): boolean {
   return typeof window !== "undefined" && !!window.matchMedia?.("(prefers-color-scheme: dark)").matches;
 }

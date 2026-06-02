@@ -152,6 +152,15 @@ export function TableView({ connId, schema, object }: Props) {
     return m;
   }, [fks]);
 
+  // Numeric columns render right-aligned in the grid (TablePlus parity). Derived
+  // from the column's SQL data type — int / numeric / decimal / float / money / serial.
+  const rightAlignColumns = useMemo(() => {
+    const NUMERIC = /\b(int|integer|bigint|smallint|tinyint|numeric|decimal|real|double|float|money|serial|number)\b/i;
+    const s = new Set<string>();
+    for (const c of object.columns) if (NUMERIC.test(c.data_type)) s.add(c.name);
+    return s;
+  }, [object.columns]);
+
   const source = useMemo<GridSource | null>(() => {
     if (rowEstimate === null) return null;
     // filters are part of the cache key so any change reloads the window.
@@ -405,6 +414,7 @@ export function TableView({ connId, schema, object }: Props) {
               const next = colWidths.update(connId, schema, object.name, col, w);
               setColumnWidths(next);
             }}
+            rightAlignColumns={rightAlignColumns}
           />
         ) : (
           <StructureView object={object} fks={fks} />

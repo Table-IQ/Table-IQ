@@ -17,14 +17,18 @@ import {
   useState,
 } from "react";
 import { decodeWindow, WindowCache } from "../lib/arrowWindow";
-import { gridTheme } from "../lib/theme";
+import { gridTheme, gridRowTints } from "../lib/theme";
 import { useTheme } from "../theme/ThemeProvider";
 import type { ForeignKey } from "../lib/commands";
 
 import { DEFAULT_COL_WIDTH } from "../lib/colWidths";
+import { autoFitWidths } from "../lib/autoFit";
 
 const PAGE = 200; // rows per fetched window
 const MAX_PAGES = 12; // LRU bound → JS heap stays bounded regardless of total rows
+const AUTO_FIT_SAMPLE = 60; // rows sampled from the first page to size columns to content
+const ROW_HEIGHT = 29; // tighter than glide's 34px default — TablePlus eye-feel (Slice 29)
+const HEADER_HEIGHT = 30;
 
 /** A windowed data source the grid pages over. `key` identity resets the cache. */
 export interface GridSource {
@@ -72,6 +76,9 @@ interface Props {
   /** Fires when the user finishes dragging a column edge. Parent persists the
    *  new width and (typically) updates `columnWidths` on the next render. */
   onColumnResize?: (column: string, newWidth: number) => void;
+  /** Columns whose values are numeric — rendered right-aligned (TablePlus
+   *  parity, Slice 29). */
+  rightAlignColumns?: ReadonlySet<string>;
 }
 
 /**
@@ -91,6 +98,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     onRowSelected,
     columnWidths,
     onColumnResize,
+    rightAlignColumns,
   },
   ref,
 ) {
@@ -103,18 +111,70 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   const [columns, setColumns] = useState<GridColumn[]>([]);
   const colNames = useRef<string[]>([]);
   const [, setVersion] = useState(0);
+  // Content-fitted widths computed once from the first loaded page (TablePlus
+  // parity). Persisted user drags always win over these (see `widthFor`).
+  const autoFitRef = useRef<Record<string, number>>({});
+  const autoFitDoneRef = useRef(false);
+  // Hovered row index drives a faint row highlight (see `getRowThemeOverride`).
+  const [hoverRow, setHoverRow] = useState<number | undefined>(undefined);
 
   const onFetchedRef = useRef(onWindowFetched);
   useEffect(() => {
     onFetchedRef.current = onWindowFetched;
   }, [onWindowFetched]);
 
-  const widthFor = (name: string) => columnWidths?.[name] ?? DEFAULT_COL_WIDTH;
+  // Mirror columnWidths into a ref so the stable `maybeAutoFit` callback can read
+  // the latest persisted widths without re-creating (and churning `ensurePage`).
+  const columnWidthsRef = useRef(columnWidths);
+  useEffect(() => {
+    columnWidthsRef.current = columnWidths;
+  }, [columnWidths]);
+
+  // A user's persisted drag wins; otherwise use the content-fitted width; only
+  // then fall back to the legacy fixed default.
+  const widthFor = (name: string) =>
+    columnWidths?.[name] ?? autoFitRef.current[name] ?? DEFAULT_COL_WIDTH;
+
+  // Size each not-yet-resized column to its content using a sample of the first
+  // loaded page. Runs once per source (guarded by `autoFitDoneRef`); retries on
+  // the next fetch if the page hasn't decoded yet. Persisted widths are skipped.
+  const maybeAutoFit = useCallback(() => {
+    if (autoFitDoneRef.current) return;
+    const cols = colNames.current;
+    if (cols.length === 0) return;
+    const persisted = columnWidthsRef.current ?? {};
+    const rows: Record<string, string>[] = [];
+    for (let r = 0; r < AUTO_FIT_SAMPLE; r++) {
+      const row: Record<string, string> = {};
+      let complete = true;
+      for (const c of cols) {
+        const v = cacheRef.current.getCell(r, c);
+        if (v === undefined) {
+          complete = false;
+          break;
+        }
+        row[c] = v;
+      }
+      if (!complete) break;
+      rows.push(row);
+    }
+    if (rows.length === 0) return; // first page not decoded yet — retry next fetch
+    autoFitRef.current = autoFitWidths(cols, rows, persisted);
+    autoFitDoneRef.current = true;
+    setColumns(
+      cols.map((c) => ({
+        title: c,
+        width: persisted[c] ?? autoFitRef.current[c] ?? DEFAULT_COL_WIDTH,
+      })),
+    );
+  }, []);
   // Reset cache + columns whenever the source changes.
   useEffect(() => {
     cacheRef.current = new WindowCache(PAGE, MAX_PAGES);
     overlay.current.clear();
     inflight.current.clear();
+    autoFitRef.current = {};
+    autoFitDoneRef.current = false;
     if (source.columns && source.columns.length > 0) {
       colNames.current = source.columns;
       setColumns(source.columns.map((c) => ({ title: c, width: widthFor(c) })));
@@ -148,13 +208,14 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
             colNames.current = win.columns;
             setColumns(win.columns.map((c) => ({ title: c, width: widthFor(c) })));
           }
+          maybeAutoFit();
           onFetchedRef.current?.(ms);
           setVersion((v) => v + 1);
         })
         .catch(() => {})
         .finally(() => inflight.current.delete(page));
     },
-    [source],
+    [source, maybeAutoFit],
   );
 
   useEffect(() => {
@@ -174,12 +235,16 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
       }
       const fk = name ? fkByColumn?.get(name) : undefined;
       const display = fk && value !== null && value !== "" ? `→ ${value}` : value;
+      // Numeric columns right-align (TablePlus parity) — but never an FK cell,
+      // whose `→ value` affordance reads left-to-right.
+      const numeric = !fk && name ? rightAlignColumns?.has(name) : false;
       return {
         kind: GridCellKind.Text,
         data: value,
         displayData: display,
         allowOverlay: editable,
         readonly: !editable,
+        contentAlign: numeric ? "right" : undefined,
         themeOverride: fk
           ? {
               textDark: "var(--primary)",
@@ -188,7 +253,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
           : undefined,
       };
     },
-    [ensurePage, editable, fkByColumn],
+    [ensurePage, editable, fkByColumn, rightAlignColumns],
   );
 
   /** Build the full {col → value} map for `row` by walking columns through the
@@ -258,6 +323,19 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     [onColumnResize],
   );
 
+  // Zebra stripe on odd rows + a neutral highlight on the hovered row (TablePlus
+  // parity). Both layer over `bgCell` via glide's per-row theme override. Defined
+  // before the early return below so hook order stays stable across renders.
+  const getRowThemeOverride = useCallback(
+    (row: number) => {
+      const t = gridRowTints(resolved);
+      if (row === hoverRow) return { bgCell: t.hover };
+      if (row % 2 === 1) return { bgCell: t.zebra };
+      return undefined;
+    },
+    [resolved, hoverRow],
+  );
+
   if (columns.length === 0) {
     return <div className="p-6 text-sm text-muted">Loading…</div>;
   }
@@ -267,6 +345,13 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
       ref={gridRef}
       columns={columns}
       rows={source.totalRows}
+      rowHeight={ROW_HEIGHT}
+      headerHeight={HEADER_HEIGHT}
+      getRowThemeOverride={getRowThemeOverride}
+      onItemHovered={(args) => {
+        const r = args.kind === "cell" ? args.location[1] : undefined;
+        setHoverRow((prev) => (prev === r ? prev : r));
+      }}
       getCellContent={getCellContent}
       onCellEdited={editable ? onCellEdited : undefined}
       onCellClicked={onFkClick || onRowSelected ? onCellClicked : undefined}
