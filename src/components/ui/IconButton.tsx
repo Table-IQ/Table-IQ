@@ -1,5 +1,16 @@
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 
+/** A rounded container that groups related toolbar icons into one "card" —
+ *  TablePlus's top-bar idiom (Slice 33). Buttons sit flush inside with a faint
+ *  surface + border so the group reads as a single unit. */
+export function IconGroup({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex items-center gap-0.5 rounded-lg border border-border bg-bg/50 p-0.5">
+      {children}
+    </div>
+  );
+}
+
 interface Props extends ButtonHTMLAttributes<HTMLButtonElement> {
   icon: ReactNode;
   label: string;

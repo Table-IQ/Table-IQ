@@ -38,7 +38,6 @@ fn build_update_sql(
     set_col: &str,
     set_udt: &str,
     pk: &[(String, String)], // (name, udt)
-    match_udt: &str,
 ) -> String {
     let mut p = 1;
     let set = format!("{} = ${}::{}", quote_ident(set_col), p, set_udt);
@@ -48,12 +47,15 @@ fn build_update_sql(
         wheres.push(format!("{} = ${}::{}", quote_ident(name), p, udt));
         p += 1;
     }
-    // NULL-safe optimistic match on the original cell value.
+    // NULL-safe optimistic match on the ORIGINAL cell value, compared on the
+    // column's TEXT rendering. `orig_value` was produced by the display query's
+    // `col::text` cast, so `col::text` round-trips it exactly — and this avoids
+    // casting back to the column's own type, which breaks for types with no
+    // equality operator (notably `json`: "operator does not exist: json = json").
     wheres.push(format!(
-        "{} IS NOT DISTINCT FROM ${}::{}",
+        "{}::text IS NOT DISTINCT FROM ${}::text",
         quote_ident(set_col),
         p,
-        match_udt
     ));
     format!(
         "UPDATE {}.{} SET {} WHERE {}",
@@ -97,9 +99,27 @@ impl PgDriver {
                 .map_err(|e| DriverError::Db(e.to_string()))?;
             let _ = probe.close().await;
         }
+        // Pin the session GUCs that affect `col::text` rendering on EVERY pooled
+        // connection. The display query and the optimistic-concurrency edit
+        // (`col::text IS NOT DISTINCT FROM $n::text`) must agree byte-for-byte, but
+        // they may run on different connections in the pool. Without this, a role-
+        // or pooler-set TimeZone / DateStyle / extra_float_digits could make a
+        // timestamptz/float render differently between the two queries, so a
+        // correct edit would silently match 0 rows. UTC + ISO + max float digits
+        // make the text form deterministic and stable across the pool.
         let pool = PgPoolOptions::new()
             .max_connections(4)
             .acquire_timeout(std::time::Duration::from_secs(10))
+            .after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    conn.execute(
+                        "SET TimeZone = 'UTC'; SET DateStyle = 'ISO, MDY'; \
+                         SET extra_float_digits = 3;",
+                    )
+                    .await
+                    .map(|_| ())
+                })
+            })
             .connect(url)
             .await
             .map_err(|e| DriverError::Db(e.to_string()))?;
@@ -435,7 +455,7 @@ impl SqlDriver for PgDriver {
         let pk_with_udt: Vec<(String, String)> =
             edit.pk.iter().map(|(n, _)| (n.clone(), udt(n))).collect();
 
-        let sql = build_update_sql(schema, table, &edit.column, &set_udt, &pk_with_udt, &set_udt);
+        let sql = build_update_sql(schema, table, &edit.column, &set_udt, &pk_with_udt);
 
         let mut q = sqlx::query(&sql).bind(edit.new_value.clone());
         for (_, v) in &edit.pk {
@@ -604,12 +624,11 @@ mod tests {
             "name",
             "text",
             &[("id".into(), "int4".into())],
-            "text",
         );
         assert_eq!(
             sql,
             "UPDATE \"public\".\"edit_demo\" SET \"name\" = $1::text \
-             WHERE \"id\" = $2::int4 AND \"name\" IS NOT DISTINCT FROM $3::text"
+             WHERE \"id\" = $2::int4 AND \"name\"::text IS NOT DISTINCT FROM $3::text"
         );
     }
 
@@ -621,10 +640,67 @@ mod tests {
             "v",
             "int8",
             &[("a".into(), "int4".into()), ("b".into(), "text".into())],
-            "int8",
         );
         assert!(sql.contains("\"a\" = $2::int4 AND \"b\" = $3::text"));
-        assert!(sql.ends_with("\"v\" IS NOT DISTINCT FROM $4::int8"));
+        assert!(sql.ends_with("\"v\"::text IS NOT DISTINCT FROM $4::text"));
+    }
+
+    // Full driver round-trip against a live Postgres (env-gated; run against a
+    // throwaway docker instance, never prod). Reproduces the Slice 33 edit bug:
+    // editing a `json` column used to throw "operator does not exist: json = json".
+    // Set TIQ_PG_TEST_URL to enable, e.g.:
+    //   TIQ_PG_TEST_URL=postgres://postgres:pw@127.0.0.1:55432/cartiq?sslmode=disable \
+    //     cargo test -p tableiq apply_edit_types_live -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore = "needs a live throwaway Postgres via TIQ_PG_TEST_URL"]
+    async fn apply_edit_types_live() {
+        use super::PgDriver;
+        use crate::drivers::{EditSpec, SqlDriver};
+        let url = std::env::var("TIQ_PG_TEST_URL").expect("set TIQ_PG_TEST_URL");
+        let drv = PgDriver::connect(&url).await.expect("connect");
+        // Fresh fixture.
+        drv.run_script("DROP TABLE IF EXISTS tiq_edit_live").await.ok();
+        drv.run_script(
+            "CREATE TABLE tiq_edit_live (id int4 PRIMARY KEY, name text, meta json)",
+        )
+        .await
+        .expect("create");
+        drv.run_script("INSERT INTO tiq_edit_live VALUES (1, 'KVETOO', '{\"a\":1}')")
+            .await
+            .expect("insert");
+
+        // 1) text column edit.
+        let e1 = EditSpec {
+            pk: vec![("id".into(), Some("1".into()))],
+            column: "name".into(),
+            new_value: Some("KVETOO2".into()),
+            orig_value: Some("KVETOO".into()),
+        };
+        let n1 = drv.apply_edit("public", "tiq_edit_live", &e1).await.expect("text edit");
+        assert_eq!(n1, 1, "text-column edit must affect exactly 1 row");
+
+        // 2) json column edit — orig_value is the `col::text` rendering, matching
+        //    what the display query returns.
+        let e2 = EditSpec {
+            pk: vec![("id".into(), Some("1".into()))],
+            column: "meta".into(),
+            new_value: Some("{\"a\":2}".into()),
+            orig_value: Some("{\"a\":1}".into()),
+        };
+        let n2 = drv.apply_edit("public", "tiq_edit_live", &e2).await.expect("json edit");
+        assert_eq!(n2, 1, "json-column edit must affect exactly 1 row (was 0 before fix)");
+
+        // 3) stale orig → optimistic-concurrency miss (0 rows), no error.
+        let e3 = EditSpec {
+            pk: vec![("id".into(), Some("1".into()))],
+            column: "name".into(),
+            new_value: Some("X".into()),
+            orig_value: Some("STALE".into()),
+        };
+        let n3 = drv.apply_edit("public", "tiq_edit_live", &e3).await.expect("stale edit runs");
+        assert_eq!(n3, 0, "stale orig_value must match 0 rows");
+
+        drv.run_script("DROP TABLE tiq_edit_live").await.ok();
     }
 
     // Connecting to a closed port must surface the REAL connection error

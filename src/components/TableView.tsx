@@ -128,6 +128,17 @@ export function TableView({ connId, schema, object }: Props) {
     return () => window.removeEventListener("tiq:view-structure", onStructure);
   }, [schema, object.name]);
 
+  // Re-sync the grid when a cell is edited from the Inspector panel (Slice 33),
+  // so the data grid reflects the committed value.
+  useEffect(() => {
+    const onEdited = (e: Event) => {
+      const target = (e as CustomEvent<string>).detail;
+      if (target === `${schema}.${object.name}`) setRefreshKey((k) => k + 1);
+    };
+    window.addEventListener("tiq:row-edited", onEdited);
+    return () => window.removeEventListener("tiq:row-edited", onEdited);
+  }, [schema, object.name]);
+
   const editable = object.kind === "Table" && !!pk && pk.length > 0;
 
   const onEdit = useCallback(
@@ -463,50 +474,14 @@ export function TableView({ connId, schema, object }: Props) {
         )}
       </div>
 
-      {/* TablePlus-style status bar — content-rich.
-          Left  : object info
-          Center: row-window pager (rows N-M of K, ‹ ›)
-          Right : Data/Structure toggle · + Row · Filters · Columns · editable chip */}
+      {/* TablePlus-style status bar — decluttered (Slice 33). The object identity
+          (schema.table · engine · db) already lives in the top connection capsule,
+          so the bottom bar carries ONLY controls:
+          Left  : Data/Structure toggle · + Row  (primary actions, grouped)
+          Center: row-window pager + any transient edit notice
+          Right : Filters · Columns · editable dot */}
       <StatusBar
         left={
-          <>
-            <span className="font-mono text-text">
-              <span className="text-muted">{schema}.</span>
-              <span className="font-medium">{object.name}</span>
-            </span>
-            <span className="text-muted-2">·</span>
-            <span>{object.kind}</span>
-            <span className="text-muted-2">·</span>
-            <span>{object.columns.length} cols</span>
-            <span className="text-muted-2">·</span>
-            <span>~{source.totalRows.toLocaleString()} rows</span>
-            {filters.length > 0 && (
-              <>
-                <span className="text-muted-2">·</span>
-                <span className="text-primary">
-                  {filters.length} filter{filters.length === 1 ? "" : "s"}
-                </span>
-              </>
-            )}
-            {notice && <span className="ml-1 truncate text-warn">{notice}</span>}
-            {dirty > 0 && (
-              <span className="ml-1 text-warn">
-                {dirty} pending edit{dirty === 1 ? "" : "s"}
-              </span>
-            )}
-          </>
-        }
-        center={
-          <RowPager
-            total={source.totalRows}
-            onPrev={() => gridRef.current?.scrollToRow(Math.max(0, gridWindowStart - 300))}
-            onNext={() =>
-              gridRef.current?.scrollToRow(Math.min(source.totalRows - 1, gridWindowStart + 300))
-            }
-            start={gridWindowStart}
-          />
-        }
-        right={
           <>
             <SegmentedToggle
               options={[
@@ -524,6 +499,29 @@ export function TableView({ connId, schema, object }: Props) {
             >
               + Row
             </StatusBarButton>
+          </>
+        }
+        center={
+          notice ? (
+            <span className="truncate text-warn">{notice}</span>
+          ) : (
+            <RowPager
+              total={source.totalRows}
+              onPrev={() => gridRef.current?.scrollToRow(Math.max(0, gridWindowStart - 300))}
+              onNext={() =>
+                gridRef.current?.scrollToRow(Math.min(source.totalRows - 1, gridWindowStart + 300))
+              }
+              start={gridWindowStart}
+            />
+          )
+        }
+        right={
+          <>
+            {dirty > 0 && (
+              <span className="text-warn">
+                {dirty} saving…
+              </span>
+            )}
             <StatusBarButton
               onClick={() =>
                 setFilterDraft(
@@ -545,12 +543,12 @@ export function TableView({ connId, schema, object }: Props) {
               Columns
             </StatusBarButton>
             {editable ? (
-              <span className="inline-flex items-center gap-1 text-ok">
+              <span className="inline-flex items-center gap-1 text-ok" title="This table has a primary key — cells are editable">
                 <StatusDot tone="ok" />
                 <span>editable</span>
               </span>
             ) : (
-              <span className="inline-flex items-center gap-1 text-muted">
+              <span className="inline-flex items-center gap-1 text-muted" title={pk && pk.length === 0 ? "No primary key — editing disabled" : "Read-only"}>
                 <StatusDot tone="muted" />
                 <span>read-only{pk && pk.length === 0 ? " · no PK" : ""}</span>
               </span>
