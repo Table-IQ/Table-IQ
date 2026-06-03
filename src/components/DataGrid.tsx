@@ -118,6 +118,12 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   const editState = useRef(new Map<string, "saving" | "saved" | "error">());
   // Undo stack of applied edits ({row,col,prev}) for ⌘Z.
   const undoStack = useRef<Array<{ row: number; col: string; prev: string | null }>>([]);
+  // Pending save-state clear timers, keyed by cell — so we can cancel them on
+  // unmount / source switch (else setVersion fires on an unmounted grid).
+  const editTimers = useRef(new Map<string, number>());
+  // Monotonic per-cell edit token — a resolving write that's been superseded by
+  // a newer edit on the same cell bails instead of clobbering it.
+  const editSeq = useRef(new Map<string, number>());
   const inflight = useRef(new Set<number>());
   const [columns, setColumns] = useState<GridColumn[]>([]);
   const colNames = useRef<string[]>([]);
@@ -184,6 +190,14 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     cacheRef.current = new WindowCache(PAGE, MAX_PAGES);
     overlay.current.clear();
     inflight.current.clear();
+    // Bare `row:col` edit keys carry no source identity, so they MUST be wiped
+    // on every source switch — otherwise a stale tint repaints an unrelated cell
+    // and a leftover undo entry would write into a freshly-refetched row.
+    editState.current.clear();
+    undoStack.current = [];
+    editSeq.current.clear();
+    editTimers.current.forEach((id) => window.clearTimeout(id));
+    editTimers.current.clear();
     autoFitRef.current = {};
     autoFitDoneRef.current = false;
     if (source.columns && source.columns.length > 0) {
@@ -321,18 +335,33 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
         c === name
           ? before
           : (overlay.current.get(`${row}:${c}`) ?? cacheRef.current.getCell(row, c) ?? null);
+      // Token this write; a later edit on the same cell bumps the token, so this
+      // resolver knows it's been superseded and must not touch overlay/state.
+      const seq = (editSeq.current.get(key) ?? 0) + 1;
+      editSeq.current.set(key, seq);
       overlay.current.set(key, newValue);
       editState.current.set(key, "saving");
       if (pushUndo) undoStack.current.push({ row, col: name, prev: before });
       setVersion((v) => v + 1);
+      // Schedule a save-state clear, tracking the timer so a source switch /
+      // unmount can cancel it.
+      const clearLater = (delay: number) => {
+        const prev = editTimers.current.get(key);
+        if (prev !== undefined) window.clearTimeout(prev);
+        const id = window.setTimeout(() => {
+          editTimers.current.delete(key);
+          if (editSeq.current.get(key) !== seq) return; // a newer edit owns this cell
+          editState.current.delete(key);
+          setVersion((v) => v + 1);
+        }, delay);
+        editTimers.current.set(key, id);
+      };
       void onEdit(row, name, newValue, getOriginal).then((keep) => {
+        if (editSeq.current.get(key) !== seq) return; // superseded by a newer edit
         if (keep) {
           editState.current.set(key, "saved");
           setVersion((v) => v + 1);
-          window.setTimeout(() => {
-            editState.current.delete(key);
-            setVersion((v) => v + 1);
-          }, 1100);
+          clearLater(1100);
         } else {
           // Conflict / error → restore the pre-edit value and flash red.
           if (priorOverlay !== undefined) overlay.current.set(key, priorOverlay);
@@ -340,10 +369,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
           if (pushUndo) undoStack.current.pop();
           editState.current.set(key, "error");
           setVersion((v) => v + 1);
-          window.setTimeout(() => {
-            editState.current.delete(key);
-            setVersion((v) => v + 1);
-          }, 2000);
+          clearLater(2000);
         }
       });
     },
@@ -372,6 +398,14 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     if (!editable) return;
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return;
+      // Don't hijack ⌘Z/⌘S while the user is typing in the cell overlay editor or
+      // any other input — let native text undo / form handling win there.
+      const t = e.target as HTMLElement | null;
+      if (
+        t &&
+        (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)
+      )
+        return;
       const k = e.key.toLowerCase();
       if (k === "z") {
         e.preventDefault();
@@ -384,6 +418,12 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [editable, undoLastEdit, onSave]);
+
+  // Cancel any pending save-state timers when the grid unmounts.
+  useEffect(() => {
+    const timers = editTimers.current;
+    return () => timers.forEach((id) => window.clearTimeout(id));
+  }, []);
 
   useImperativeHandle(ref, () => ({
     scrollToRow: (row: number) => gridRef.current?.scrollTo(0, row, "vertical"),
