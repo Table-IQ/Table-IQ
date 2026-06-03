@@ -19,15 +19,17 @@ export function IconButton({
   className = "",
   ...rest
 }: Props) {
-  const dim = size === "sm" ? "h-5 w-5" : "h-6 w-6";
+  // Larger hit targets + a hover overlay that's clearly visible in BOTH themes
+  // (`bg-text/N` = a tint of the foreground, so it reads on light and dark).
+  const dim = size === "sm" ? "h-6 w-6" : "h-7 w-7";
   const tone =
     variant === "solid"
       ? "bg-primary text-white hover:bg-primary-hover"
       : variant === "danger"
-      ? "text-danger hover:bg-surface-2"
-      : active
-      ? "bg-surface-2 text-text"
-      : "text-muted hover:bg-surface-2 hover:text-text";
+        ? "text-danger hover:bg-danger/10"
+        : active
+          ? "bg-text/12 text-text"
+          : "text-muted hover:bg-text/10 hover:text-text";
   const title = shortcut ? `${label} (${shortcut})` : label;
   return (
     <button

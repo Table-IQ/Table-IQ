@@ -205,25 +205,30 @@ function RowDetailView({
  *  distinguishable from an empty string. */
 function FieldCard({ name, type, value }: { name: string; type: string; value: string | undefined }) {
   const isNull = value === undefined || value === "";
+  const copy = () => {
+    if (!isNull && value !== undefined) navigator.clipboard?.writeText(value);
+  };
   return (
-    <li
-      data-testid="inspector-field"
-      data-field={name}
-      className="flex flex-col gap-1 border-b border-border pb-2 last:border-b-0 last:pb-0"
-    >
-      <div className="flex items-baseline gap-2">
+    <li data-testid="inspector-field" data-field={name} className="flex flex-col gap-1">
+      <div className="flex items-baseline gap-2 px-0.5">
         <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-text">{name}</span>
-        <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted-2">{type}</span>
-      </div>
-      {isNull ? (
-        <span className="inline-block w-fit rounded-[var(--radius-sm)] border border-border bg-surface px-1.5 py-px text-[10px] uppercase tracking-wider text-muted-2">
-          NULL
+        <span className="shrink-0 font-mono text-[9.5px] uppercase tracking-wide text-muted-2">
+          {type}
         </span>
-      ) : (
-        <pre className="whitespace-pre-wrap break-words font-mono text-[11.5px] leading-relaxed text-text">
-          {value}
-        </pre>
-      )}
+      </div>
+      <button
+        onClick={copy}
+        title={isNull ? undefined : "Click to copy"}
+        className="w-full cursor-copy rounded-[var(--radius-sm)] border border-border bg-surface px-2 py-1.5 text-left transition-colors hover:border-border-strong"
+      >
+        {isNull ? (
+          <span className="font-mono text-[11px] italic text-muted-2">NULL</span>
+        ) : (
+          <span className="block max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[11.5px] leading-relaxed text-text">
+            {value}
+          </span>
+        )}
+      </button>
     </li>
   );
 }

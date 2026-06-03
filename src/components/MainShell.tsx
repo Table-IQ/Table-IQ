@@ -380,7 +380,7 @@ export function MainShell() {
         {/* Left icon strip */}
         <div className="flex items-center gap-0.5">
           <IconButton
-            icon={<IconSidebar />}
+            icon={<IconSidebar size={16} />}
             label="Toggle sidebar"
             shortcut="⌘["
             active={showSidebar}
@@ -396,32 +396,32 @@ export function MainShell() {
         {/* Right icon strip */}
         <div className="flex items-center gap-0.5">
           <IconButton
-            icon={<IconRefresh />}
+            icon={<IconRefresh size={16} />}
             label="Refresh schema"
             onClick={() => {
               setSchema(schema);
             }}
           />
           <IconButton
-            icon={<IconDatabase />}
+            icon={<IconDatabase size={16} />}
             label="Switch database"
             shortcut="⌘D"
             onClick={() => void openDbPicker()}
           />
           <IconButton
-            icon={<IconCommand />}
+            icon={<IconCommand size={16} />}
             label="Command palette"
             shortcut="⌘K"
             onClick={() => setShowPalette(true)}
           />
           <ThemeToggle />
           <IconButton
-            icon={<IconHelp />}
+            icon={<IconHelp size={16} />}
             label="Help / Show tour"
             onClick={() => setShowHelp((v) => !v)}
           />
           <IconButton
-            icon={<IconSidebarRight />}
+            icon={<IconSidebarRight size={16} />}
             label="Toggle inspector"
             shortcut="⌘]"
             active={showInspector}

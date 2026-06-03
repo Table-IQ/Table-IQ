@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveTheme, gridTheme, gridRowTints } from "./theme";
+import { resolveTheme, gridTheme, gridRowTints, editTints } from "./theme";
 
 describe("resolveTheme", () => {
   it("returns the explicit choice for light/dark", () => {
@@ -45,5 +45,15 @@ describe("gridRowTints", () => {
     expect(gridRowTints("light").hover).toBe("#eef0f3");
     expect(gridRowTints("dark").hover).toBe("#1a1d24");
     expect(gridRowTints("light").hover).not.toBe(gridRowTints("light").zebra);
+  });
+});
+
+describe("editTints", () => {
+  it("distinct saving/saved/error tints per theme", () => {
+    const l = editTints("light");
+    expect(new Set([l.saving, l.saved, l.error]).size).toBe(3);
+    const d = editTints("dark");
+    expect(new Set([d.saving, d.saved, d.error]).size).toBe(3);
+    expect(l.saved).not.toBe(d.saved);
   });
 });
