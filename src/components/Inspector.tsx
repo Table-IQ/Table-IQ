@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   applyEdit,
   foreignKeys,
@@ -282,6 +282,8 @@ function FieldCard({
   const [draft, setDraft] = useState(original);
   const [editing, setEditing] = useState(false);
   const [flash, setFlash] = useState<"ok" | "err" | null>(null);
+  const mounted = useRef(true);
+  const flashTimer = useRef<number | undefined>(undefined);
 
   // Keep the local draft in sync when the row/value changes underneath us.
   useEffect(() => {
@@ -289,13 +291,27 @@ function FieldCard({
     setEditing(false);
   }, [original, name]);
 
+  // Cancel any pending flash timer on unmount (selection change, filter typing,
+  // tab switch) so we never setState on an unmounted FieldCard.
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (flashTimer.current !== undefined) window.clearTimeout(flashTimer.current);
+    };
+  }, []);
+
   const commit = async () => {
     setEditing(false);
     if (draft === original) return;
     const ok = await onCommit(draft);
+    if (!mounted.current) return;
     setFlash(ok ? "ok" : "err");
     if (!ok) setDraft(original);
-    window.setTimeout(() => setFlash(null), ok ? 900 : 1600);
+    if (flashTimer.current !== undefined) window.clearTimeout(flashTimer.current);
+    flashTimer.current = window.setTimeout(() => {
+      if (mounted.current) setFlash(null);
+    }, ok ? 900 : 1600);
   };
 
   const border =

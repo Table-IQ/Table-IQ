@@ -99,9 +99,27 @@ impl PgDriver {
                 .map_err(|e| DriverError::Db(e.to_string()))?;
             let _ = probe.close().await;
         }
+        // Pin the session GUCs that affect `col::text` rendering on EVERY pooled
+        // connection. The display query and the optimistic-concurrency edit
+        // (`col::text IS NOT DISTINCT FROM $n::text`) must agree byte-for-byte, but
+        // they may run on different connections in the pool. Without this, a role-
+        // or pooler-set TimeZone / DateStyle / extra_float_digits could make a
+        // timestamptz/float render differently between the two queries, so a
+        // correct edit would silently match 0 rows. UTC + ISO + max float digits
+        // make the text form deterministic and stable across the pool.
         let pool = PgPoolOptions::new()
             .max_connections(4)
             .acquire_timeout(std::time::Duration::from_secs(10))
+            .after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    conn.execute(
+                        "SET TimeZone = 'UTC'; SET DateStyle = 'ISO, MDY'; \
+                         SET extra_float_digits = 3;",
+                    )
+                    .await
+                    .map(|_| ())
+                })
+            })
             .connect(url)
             .await
             .map_err(|e| DriverError::Db(e.to_string()))?;
