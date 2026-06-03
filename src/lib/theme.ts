@@ -82,6 +82,18 @@ export function gridRowTints(mode: ResolvedTheme): { zebra: string; hover: strin
   return { zebra: "#f6f6f7", hover: "#eef0f3" };
 }
 
+/**
+ * Per-cell save-state background tints for inline editing (Slice 32). Amber while
+ * the UPDATE is in flight, green on success, red on conflict/error — TablePlus's
+ * edit feedback, adapted to each theme (kept soft so text stays readable).
+ */
+export function editTints(mode: ResolvedTheme): { saving: string; saved: string; error: string } {
+  if (mode === "dark") {
+    return { saving: "#3a2f12", saved: "#13311f", error: "#3a1518" };
+  }
+  return { saving: "#fef3c7", saved: "#dcfce7", error: "#fee2e2" };
+}
+
 export function systemPrefersDark(): boolean {
   return typeof window !== "undefined" && !!window.matchMedia?.("(prefers-color-scheme: dark)").matches;
 }

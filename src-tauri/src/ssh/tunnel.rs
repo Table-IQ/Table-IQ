@@ -357,4 +357,81 @@ mod tests {
         assert!(!dbs.is_empty(), "expected at least one database");
         tunnel.close().await;
     }
+
+    /// Reproduce the inline-edit path end-to-end against a live table: detect the
+    /// PK, read one row, then apply an edit setting a column to ITS CURRENT VALUE
+    /// (a no-op write — zero data change) and assert rows_affected == 1. This is
+    /// exactly what the grid does on a cell edit, so a failure here is the bug.
+    /// GATED on env; reads TIQ_EDIT_TABLE / TIQ_EDIT_PK / TIQ_EDIT_COL.
+    #[tokio::test]
+    #[ignore]
+    async fn ssh_apply_edit_live() {
+        use crate::drivers::postgres::PgDriver;
+        use crate::drivers::{EditSpec, SqlDriver};
+        use sqlx::{Connection, Row};
+
+        let host = match std::env::var("TIQ_SSH_TEST_HOST") {
+            Ok(h) => h,
+            Err(_) => {
+                eprintln!("TIQ_SSH_TEST_HOST unset — skipping live apply_edit test");
+                return;
+            }
+        };
+        let cfg = SshConfig {
+            enabled: true,
+            host,
+            port: std::env::var("TIQ_SSH_TEST_PORT").ok().and_then(|s| s.parse().ok()).unwrap_or(22),
+            username: std::env::var("TIQ_SSH_TEST_USER").expect("TIQ_SSH_TEST_USER"),
+            auth: SshAuth::KeyFile {
+                path: std::env::var("TIQ_SSH_TEST_KEY").expect("TIQ_SSH_TEST_KEY"),
+                passphrase: None,
+            },
+        };
+        let db_host = std::env::var("TIQ_DB_HOST").unwrap_or_else(|_| "127.0.0.1".into());
+        let db_port: u16 = std::env::var("TIQ_DB_PORT").ok().and_then(|s| s.parse().ok()).unwrap_or(5432);
+        let db_user = std::env::var("TIQ_DB_USER").unwrap_or_else(|_| "postgres".into());
+        let db_pw = std::env::var("TIQ_DB_PASSWORD").unwrap_or_default();
+        let db_name = std::env::var("TIQ_DB_NAME").unwrap_or_default();
+        let schema = std::env::var("TIQ_EDIT_SCHEMA").unwrap_or_else(|_| "public".into());
+        let table = std::env::var("TIQ_EDIT_TABLE").unwrap_or_else(|_| "accounts_user".into());
+        let pk_col = std::env::var("TIQ_EDIT_PK").unwrap_or_else(|_| "id".into());
+        let col = std::env::var("TIQ_EDIT_COL").unwrap_or_else(|_| "is_superuser".into());
+
+        let tunnel = Tunnel::connect(&cfg, "", RemoteTarget { host: db_host, port: db_port })
+            .await
+            .expect("tunnel opens");
+        let url = format!(
+            "postgres://{}:{}@127.0.0.1:{}/{}?sslmode=prefer",
+            db_user, db_pw, tunnel.local_addr().port(), db_name
+        );
+
+        // 1) PK detection (drives `editable` in the UI).
+        let drv = PgDriver::connect(&url).await.expect("connect");
+        let pk = drv.primary_key(&schema, &table).await.expect("primary_key query");
+        eprintln!("PK({table}) = {pk:?}");
+        assert!(!pk.is_empty(), "no PK detected → grid would be read-only");
+
+        // 2) Read one row's pk + target column as text (how the grid sees them).
+        let mut conn = sqlx::postgres::PgConnection::connect(&url).await.unwrap();
+        let q = format!(
+            "SELECT \"{pk_col}\"::text AS pk, \"{col}\"::text AS val FROM \"{schema}\".\"{table}\" LIMIT 1"
+        );
+        let row = sqlx::query(&q).fetch_one(&mut conn).await.expect("read a row");
+        let pkv: Option<String> = row.get("pk");
+        let cur: Option<String> = row.get("val");
+        let _ = conn.close().await;
+        eprintln!("row {pk_col}={pkv:?} {col}={cur:?}");
+
+        // 3) Apply a no-op edit (col := its current value) — the exact grid path.
+        let edit = EditSpec {
+            pk: vec![(pk_col.clone(), pkv)],
+            column: col.clone(),
+            new_value: cur.clone(),
+            orig_value: cur.clone(),
+        };
+        let affected = drv.apply_edit(&schema, &table, &edit).await.expect("apply_edit runs");
+        eprintln!("apply_edit rows_affected = {affected}");
+        assert_eq!(affected, 1, "edit did not affect exactly one row");
+        tunnel.close().await;
+    }
 }

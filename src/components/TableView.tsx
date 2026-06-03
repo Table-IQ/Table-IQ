@@ -456,6 +456,7 @@ export function TableView({ connId, schema, object }: Props) {
               setColumnWidths(next);
             }}
             rightAlignColumns={rightAlignColumns}
+            onSave={() => setRefreshKey((k) => k + 1)}
           />
         ) : (
           <StructureView object={object} fks={fks} />

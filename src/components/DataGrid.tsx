@@ -17,7 +17,7 @@ import {
   useState,
 } from "react";
 import { decodeWindow, WindowCache } from "../lib/arrowWindow";
-import { gridTheme, gridRowTints } from "../lib/theme";
+import { gridTheme, gridRowTints, editTints } from "../lib/theme";
 import { useTheme } from "../theme/ThemeProvider";
 import type { ForeignKey } from "../lib/commands";
 
@@ -27,8 +27,8 @@ import { autoFitWidths } from "../lib/autoFit";
 const PAGE = 200; // rows per fetched window
 const MAX_PAGES = 12; // LRU bound → JS heap stays bounded regardless of total rows
 const AUTO_FIT_SAMPLE = 60; // rows sampled from the first page to size columns to content
-const ROW_HEIGHT = 29; // tighter than glide's 34px default — TablePlus eye-feel (Slice 29)
-const HEADER_HEIGHT = 30;
+const ROW_HEIGHT = 32; // comfortable TablePlus-like rows (Slice 32 raised from 29)
+const HEADER_HEIGHT = 38; // taller column header — TablePlus's header is notably taller
 
 /** A windowed data source the grid pages over. `key` identity resets the cache. */
 export interface GridSource {
@@ -82,6 +82,8 @@ interface Props {
   /** Columns whose values are numeric — rendered right-aligned (TablePlus
    *  parity, Slice 29). */
   rightAlignColumns?: ReadonlySet<string>;
+  /** ⌘S in the grid — re-sync the visible page from the DB (Slice 32). */
+  onSave?: () => void;
 }
 
 /**
@@ -102,6 +104,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     columnWidths,
     onColumnResize,
     rightAlignColumns,
+    onSave,
   },
   ref,
 ) {
@@ -110,6 +113,17 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   const gridRef = useRef<DataEditorRef>(null);
   const cacheRef = useRef(new WindowCache(PAGE, MAX_PAGES));
   const overlay = useRef(new Map<string, string>()); // optimistic edits: `${row}:${col}` → value
+  // Per-cell save state for the edit feedback tint: amber while saving, green on
+  // success (auto-clears), red on conflict/error (TablePlus parity, Slice 32).
+  const editState = useRef(new Map<string, "saving" | "saved" | "error">());
+  // Undo stack of applied edits ({row,col,prev}) for ⌘Z.
+  const undoStack = useRef<Array<{ row: number; col: string; prev: string | null }>>([]);
+  // Pending save-state clear timers, keyed by cell — so we can cancel them on
+  // unmount / source switch (else setVersion fires on an unmounted grid).
+  const editTimers = useRef(new Map<string, number>());
+  // Monotonic per-cell edit token — a resolving write that's been superseded by
+  // a newer edit on the same cell bails instead of clobbering it.
+  const editSeq = useRef(new Map<string, number>());
   const inflight = useRef(new Set<number>());
   const [columns, setColumns] = useState<GridColumn[]>([]);
   const colNames = useRef<string[]>([]);
@@ -176,6 +190,14 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     cacheRef.current = new WindowCache(PAGE, MAX_PAGES);
     overlay.current.clear();
     inflight.current.clear();
+    // Bare `row:col` edit keys carry no source identity, so they MUST be wiped
+    // on every source switch — otherwise a stale tint repaints an unrelated cell
+    // and a leftover undo entry would write into a freshly-refetched row.
+    editState.current.clear();
+    undoStack.current = [];
+    editSeq.current.clear();
+    editTimers.current.forEach((id) => window.clearTimeout(id));
+    editTimers.current.clear();
     autoFitRef.current = {};
     autoFitDoneRef.current = false;
     if (source.columns && source.columns.length > 0) {
@@ -241,6 +263,15 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
       // Numeric columns right-align (TablePlus parity) — but never an FK cell,
       // whose `→ value` affordance reads left-to-right.
       const numeric = !fk && name ? rightAlignColumns?.has(name) : false;
+      // Save-state tint: amber while writing, green on save, red on error.
+      const save = name ? editState.current.get(`${row}:${name}`) : undefined;
+      const saveBg = save ? editTints(resolved)[save] : undefined;
+      const themeOverride =
+        saveBg !== undefined
+          ? { bgCell: saveBg }
+          : fk
+            ? { textDark: "var(--primary)", textLight: "var(--primary)" }
+            : undefined;
       return {
         kind: GridCellKind.Text,
         data: value,
@@ -248,15 +279,10 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
         allowOverlay: editable,
         readonly: !editable,
         contentAlign: numeric ? "right" : undefined,
-        themeOverride: fk
-          ? {
-              textDark: "var(--primary)",
-              textLight: "var(--primary)",
-            }
-          : undefined,
+        themeOverride,
       };
     },
-    [ensurePage, editable, fkByColumn, rightAlignColumns],
+    [ensurePage, editable, fkByColumn, rightAlignColumns, resolved],
   );
 
   /** Build the full {col → value} map for `row` by walking columns through the
@@ -290,24 +316,114 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     [fkByColumn, onFkClick, onRowSelected, readRow],
   );
 
-  const onCellEdited = useCallback(
-    ([col, row]: Item, newCell: EditableGridCell) => {
-      if (!onEdit || newCell.kind !== GridCellKind.Text) return;
-      const name = colNames.current[col];
-      if (!name) return;
-      const newValue = String(newCell.data);
-      const getOriginal = (c: string) => cacheRef.current.getCell(row, c) ?? null;
-      overlay.current.set(`${row}:${name}`, newValue);
+  /** Apply one cell edit through `onEdit`, with overlay-aware originals so a
+   *  repeated edit (or an edit on a row with other pending overlays) sends the
+   *  CURRENT value as `orig_value` — otherwise the optimistic concurrency check
+   *  matched nothing and silently reverted (the Slice 32 edit bug). Drives the
+   *  save-state tint and the undo stack. */
+  const applyCellEdit = useCallback(
+    (row: number, name: string, newValue: string, pushUndo: boolean) => {
+      if (!onEdit) return;
+      const key = `${row}:${name}`;
+      const priorOverlay = overlay.current.get(key);
+      // The value of this cell *before* this edit (last saved value).
+      const before = priorOverlay ?? cacheRef.current.getCell(row, name) ?? null;
+      if (before === newValue) return; // no-op
+      // Edited column → its pre-edit value; other (PK) columns → their latest
+      // value (overlay wins over the now-stale cache).
+      const getOriginal = (c: string) =>
+        c === name
+          ? before
+          : (overlay.current.get(`${row}:${c}`) ?? cacheRef.current.getCell(row, c) ?? null);
+      // Token this write; a later edit on the same cell bumps the token, so this
+      // resolver knows it's been superseded and must not touch overlay/state.
+      const seq = (editSeq.current.get(key) ?? 0) + 1;
+      editSeq.current.set(key, seq);
+      overlay.current.set(key, newValue);
+      editState.current.set(key, "saving");
+      if (pushUndo) undoStack.current.push({ row, col: name, prev: before });
       setVersion((v) => v + 1);
-      void onEdit(row, name, newValue, getOriginal).then((keep) => {
-        if (!keep) {
-          overlay.current.delete(`${row}:${name}`);
+      // Schedule a save-state clear, tracking the timer so a source switch /
+      // unmount can cancel it.
+      const clearLater = (delay: number) => {
+        const prev = editTimers.current.get(key);
+        if (prev !== undefined) window.clearTimeout(prev);
+        const id = window.setTimeout(() => {
+          editTimers.current.delete(key);
+          if (editSeq.current.get(key) !== seq) return; // a newer edit owns this cell
+          editState.current.delete(key);
           setVersion((v) => v + 1);
+        }, delay);
+        editTimers.current.set(key, id);
+      };
+      void onEdit(row, name, newValue, getOriginal).then((keep) => {
+        if (editSeq.current.get(key) !== seq) return; // superseded by a newer edit
+        if (keep) {
+          editState.current.set(key, "saved");
+          setVersion((v) => v + 1);
+          clearLater(1100);
+        } else {
+          // Conflict / error → restore the pre-edit value and flash red.
+          if (priorOverlay !== undefined) overlay.current.set(key, priorOverlay);
+          else overlay.current.delete(key);
+          if (pushUndo) undoStack.current.pop();
+          editState.current.set(key, "error");
+          setVersion((v) => v + 1);
+          clearLater(2000);
         }
       });
     },
     [onEdit],
   );
+
+  const onCellEdited = useCallback(
+    ([col, row]: Item, newCell: EditableGridCell) => {
+      if (!onEdit || newCell.kind !== GridCellKind.Text) return;
+      const name = colNames.current[col];
+      if (!name) return;
+      applyCellEdit(row, name, String(newCell.data), true);
+    },
+    [onEdit, applyCellEdit],
+  );
+
+  /** ⌘Z — revert the most recent edit by re-applying its previous value. */
+  const undoLastEdit = useCallback(() => {
+    const last = undoStack.current.pop();
+    if (!last || last.prev === null) return; // null restore can't go through the string edit path
+    applyCellEdit(last.row, last.col, last.prev, false);
+  }, [applyCellEdit]);
+
+  // ⌘Z undo last edit · ⌘S re-sync the page from the DB (TablePlus idioms).
+  useEffect(() => {
+    if (!editable) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      // Don't hijack ⌘Z/⌘S while the user is typing in the cell overlay editor or
+      // any other input — let native text undo / form handling win there.
+      const t = e.target as HTMLElement | null;
+      if (
+        t &&
+        (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)
+      )
+        return;
+      const k = e.key.toLowerCase();
+      if (k === "z") {
+        e.preventDefault();
+        undoLastEdit();
+      } else if (k === "s") {
+        e.preventDefault();
+        onSave?.();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [editable, undoLastEdit, onSave]);
+
+  // Cancel any pending save-state timers when the grid unmounts.
+  useEffect(() => {
+    const timers = editTimers.current;
+    return () => timers.forEach((id) => window.clearTimeout(id));
+  }, []);
 
   useImperativeHandle(ref, () => ({
     scrollToRow: (row: number) => gridRef.current?.scrollTo(0, row, "vertical"),
