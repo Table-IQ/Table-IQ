@@ -19,7 +19,7 @@ import { hydrateForConnection, persistForConnection } from "../lib/tabsPersist";
 import { ToolbarButton, Toolbar, ToolbarDivider, ToolbarSpacer } from "./ui/Toolbar";
 import { StatusBar, StatusDot } from "./ui/StatusBar";
 import { ColorDot } from "./ui/Chip";
-import { IconButton } from "./ui/IconButton";
+import { IconButton, IconGroup } from "./ui/IconButton";
 import {
   IconChevronLeft,
   IconChevronRight,
@@ -377,8 +377,9 @@ export function MainShell() {
         className="tiq-titlebar-drag flex shrink-0 items-center gap-2 border-b border-border bg-surface pl-[78px] pr-2"
         style={{ height: "var(--header-h)" }}
       >
-        {/* Left icon strip */}
-        <div className="flex items-center gap-0.5">
+        {/* Left icon group — TablePlus groups toolbar icons into a rounded
+            container/card rather than free-floating icons (Slice 33). */}
+        <IconGroup>
           <IconButton
             icon={<IconSidebar size={16} />}
             label="Toggle sidebar"
@@ -386,15 +387,15 @@ export function MainShell() {
             active={showSidebar}
             onClick={() => setShowSidebar((v) => !v)}
           />
-        </div>
+        </IconGroup>
 
-        <Wordmark className="ml-0.5 text-[12px]" />
+        <Wordmark className="ml-1 text-[13px]" />
 
         {/* Centered TablePlus connection capsule */}
         <div className="mx-2 flex flex-1 items-center justify-center">{connCapsule}</div>
 
-        {/* Right icon strip */}
-        <div className="flex items-center gap-0.5">
+        {/* Right icon groups — actions in one card, the inspector toggle in its own. */}
+        <IconGroup>
           <IconButton
             icon={<IconRefresh size={16} />}
             label="Refresh schema"
@@ -420,6 +421,8 @@ export function MainShell() {
             label="Help / Show tour"
             onClick={() => setShowHelp((v) => !v)}
           />
+        </IconGroup>
+        <IconGroup>
           <IconButton
             icon={<IconSidebarRight size={16} />}
             label="Toggle inspector"
@@ -427,14 +430,14 @@ export function MainShell() {
             active={showInspector}
             onClick={() => setShowInspector((v) => !v)}
           />
-          <button
-            onClick={onDisconnect}
-            title="Disconnect"
-            className="ml-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-text"
-          >
-            Disconnect
-          </button>
-        </div>
+        </IconGroup>
+        <button
+          onClick={onDisconnect}
+          title="Disconnect"
+          className="ml-1 h-[28px] rounded-lg border border-border px-2.5 text-[11px] text-muted transition-colors hover:border-border-strong hover:text-text"
+        >
+          Disconnect
+        </button>
       </header>
 
       {/* ── BODY ─────────────────────────────────────────────────────────── */}

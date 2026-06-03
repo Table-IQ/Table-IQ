@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { foreignKeys, rowEstimate, type ForeignKey, type ObjectInfo } from "../lib/commands";
+import {
+  applyEdit,
+  foreignKeys,
+  primaryKey,
+  rowEstimate,
+  type ForeignKey,
+  type ObjectInfo,
+} from "../lib/commands";
+import { buildEdit } from "../lib/edit";
 import { Tabs } from "./ui/Panel";
 import { Chip } from "./ui/Chip";
 import { IconClose, IconKey, IconLink, IconSearch } from "./ui/Icon";
@@ -34,7 +42,9 @@ export function Inspector({
   const [fks, setFks] = useState<ForeignKey[]>([]);
   const [rows, setRows] = useState<number | null>(null);
   const [fieldFilter, setFieldFilter] = useState("");
+  const [pk, setPk] = useState<string[]>([]);
   const selectedRow = useSelectedRow((s) => s.row);
+  const setSelectedRow = useSelectedRow((s) => s.setRow);
   // Only show the row-detail mode when the selection matches the active object —
   // otherwise the Inspector would render a stale row from a different table.
   const rowDetail =
@@ -46,13 +56,42 @@ export function Inspector({
     let cancelled = false;
     setFks([]);
     setRows(null);
+    setPk([]);
     if (!object || !schema) return;
     foreignKeys(connId).then((all) => !cancelled && setFks(all)).catch(() => {});
     rowEstimate(connId, schema, object.name).then((n) => !cancelled && setRows(n)).catch(() => {});
+    if (object.kind === "Table") {
+      primaryKey(connId, schema, object.name)
+        .then((cols) => !cancelled && setPk(cols))
+        .catch(() => !cancelled && setPk([]));
+    }
     return () => {
       cancelled = true;
     };
   }, [connId, schema, object?.name]);
+
+  // Commit a single inspector-field edit to the DB (TablePlus parity, Slice 33).
+  // Editable only when the object is a Table with a primary key. On success we
+  // update the selected-row store (so the panel shows the new value) and ask the
+  // matching TableView to re-sync its grid.
+  const editable = object?.kind === "Table" && pk.length > 0;
+  const commitField = async (col: string, newValue: string): Promise<boolean> => {
+    if (!rowDetail || !object || !schema || pk.length === 0) return false;
+    const orig = rowDetail.values[col] ?? "";
+    if (orig === newValue) return true;
+    const edit = buildEdit(pk, (c) => rowDetail.values[c] ?? null, col, newValue);
+    try {
+      const { rowsAffected } = await applyEdit(connId, schema, object.name, edit);
+      if (rowsAffected !== 1) return false;
+      setSelectedRow({ ...rowDetail, values: { ...rowDetail.values, [col]: newValue } });
+      window.dispatchEvent(
+        new CustomEvent("tiq:row-edited", { detail: `${schema}.${object.name}` }),
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  };
 
   const outgoing = object ? fks.filter((f) => f.from_table === object.name) : [];
   const incoming = object ? fks.filter((f) => f.to_table === object.name) : [];
@@ -102,6 +141,9 @@ export function Inspector({
             totalCols={object.columns.length}
             filter={fieldFilter}
             onFilter={setFieldFilter}
+            editable={editable}
+            pkCols={pk}
+            onCommit={commitField}
           />
         ) : (
           <div className="min-h-0 flex-1 overflow-auto p-3 text-[11px]">
@@ -137,23 +179,33 @@ export function Inspector({
   );
 }
 
-/** Row-selected mode — TablePlus parity. Search input at top, then one card per column. */
+/** Row-selected mode — TablePlus's "Details" panel. A neutral grey panel with
+ *  each field rendered as a label + type over an editable value box that sits
+ *  "over" the grey (Slice 33 redesign). Fields are editable when the table has a
+ *  primary key; committing writes straight to the DB. */
 function RowDetailView({
   row,
   columns,
   totalCols,
   filter,
   onFilter,
+  editable,
+  pkCols,
+  onCommit,
 }: {
   row: { schema: string; table: string; row: number; values: Record<string, string> };
   columns: { name: string; data_type: string; nullable: boolean }[];
   totalCols: number;
   filter: string;
   onFilter: (s: string) => void;
+  editable: boolean;
+  pkCols: string[];
+  onCommit: (col: string, newValue: string) => Promise<boolean>;
 }) {
+  const pkSet = useMemo(() => new Set(pkCols), [pkCols]);
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <label className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2">
+    <div className="flex min-h-0 flex-1 flex-col bg-surface-2">
+      <label className="flex shrink-0 items-center gap-2 border-b border-border bg-surface px-3 py-2">
         <IconSearch size={11} className="text-muted-2" />
         <input
           value={filter}
@@ -172,21 +224,30 @@ function RowDetailView({
           </button>
         )}
       </label>
-      <div className="min-h-0 flex-1 overflow-auto px-3 py-2">
+      <div className="min-h-0 flex-1 overflow-auto px-3 py-3">
         {columns.length === 0 ? (
           <div className="px-1 py-3 text-[11px] text-muted">
             No fields match “{filter}”.
           </div>
         ) : (
-          <ul className="flex flex-col gap-2.5">
+          <ul className="flex flex-col gap-3">
             {columns.map((c) => (
-              <FieldCard key={c.name} name={c.name} type={c.data_type} value={row.values[c.name]} />
+              <FieldCard
+                key={c.name}
+                name={c.name}
+                type={c.data_type}
+                value={row.values[c.name]}
+                // PK columns identify the row — editing them would break the
+                // optimistic-concurrency WHERE, so they stay read-only.
+                editable={editable && !pkSet.has(c.name)}
+                onCommit={(v) => onCommit(c.name, v)}
+              />
             ))}
           </ul>
         )}
       </div>
       <div
-        className="flex shrink-0 items-center justify-between border-t border-border px-3 text-[10px] text-muted-2"
+        className="flex shrink-0 items-center justify-between border-t border-border bg-surface px-3 text-[10px] text-muted-2"
         style={{ height: "var(--statusbar-h)" }}
       >
         <span>
@@ -200,35 +261,97 @@ function RowDetailView({
   );
 }
 
-/** A single field card — label, type pill on the right, value below.
- *  Value text wraps; null / empty renders as a muted `NULL` chip so it's
- *  distinguishable from an empty string. */
-function FieldCard({ name, type, value }: { name: string; type: string; value: string | undefined }) {
+/** A single field — label + type over a value box that sits over the grey panel.
+ *  When editable, the box is a focusable input: ⏎ / blur commits, Esc reverts.
+ *  A green/red border flash confirms the save outcome (TablePlus parity). */
+function FieldCard({
+  name,
+  type,
+  value,
+  editable,
+  onCommit,
+}: {
+  name: string;
+  type: string;
+  value: string | undefined;
+  editable: boolean;
+  onCommit: (newValue: string) => Promise<boolean>;
+}) {
+  const original = value ?? "";
   const isNull = value === undefined || value === "";
-  const copy = () => {
-    if (!isNull && value !== undefined) navigator.clipboard?.writeText(value);
+  const [draft, setDraft] = useState(original);
+  const [editing, setEditing] = useState(false);
+  const [flash, setFlash] = useState<"ok" | "err" | null>(null);
+
+  // Keep the local draft in sync when the row/value changes underneath us.
+  useEffect(() => {
+    setDraft(original);
+    setEditing(false);
+  }, [original, name]);
+
+  const commit = async () => {
+    setEditing(false);
+    if (draft === original) return;
+    const ok = await onCommit(draft);
+    setFlash(ok ? "ok" : "err");
+    if (!ok) setDraft(original);
+    window.setTimeout(() => setFlash(null), ok ? 900 : 1600);
   };
+
+  const border =
+    flash === "ok"
+      ? "border-ok"
+      : flash === "err"
+        ? "border-danger"
+        : editing
+          ? "border-primary"
+          : "border-border hover:border-border-strong";
+
   return (
     <li data-testid="inspector-field" data-field={name} className="flex flex-col gap-1">
       <div className="flex items-baseline gap-2 px-0.5">
-        <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-text">{name}</span>
+        <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-muted">{name}</span>
         <span className="shrink-0 font-mono text-[9.5px] uppercase tracking-wide text-muted-2">
           {type}
         </span>
       </div>
-      <button
-        onClick={copy}
-        title={isNull ? undefined : "Click to copy"}
-        className="w-full cursor-copy rounded-[var(--radius-sm)] border border-border bg-surface px-2 py-1.5 text-left transition-colors hover:border-border-strong"
-      >
-        {isNull ? (
-          <span className="font-mono text-[11px] italic text-muted-2">NULL</span>
-        ) : (
-          <span className="block max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[11.5px] leading-relaxed text-text">
-            {value}
-          </span>
-        )}
-      </button>
+      {editable ? (
+        <textarea
+          rows={1}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onFocus={() => setEditing(true)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              (e.target as HTMLTextAreaElement).blur();
+            } else if (e.key === "Escape") {
+              setDraft(original);
+              setEditing(false);
+              (e.target as HTMLTextAreaElement).blur();
+            }
+          }}
+          spellCheck={false}
+          className={`max-h-40 w-full resize-y rounded-[var(--radius-sm)] border bg-bg px-2 py-1.5 font-mono text-[11.5px] leading-relaxed text-text transition-colors focus:outline-none ${border}`}
+        />
+      ) : (
+        <button
+          onClick={() => {
+            if (!isNull) navigator.clipboard?.writeText(original);
+          }}
+          title={isNull ? undefined : "Click to copy"}
+          className="w-full cursor-copy rounded-[var(--radius-sm)] border border-border bg-bg px-2 py-1.5 text-left transition-colors hover:border-border-strong"
+        >
+          {isNull ? (
+            <span className="font-mono text-[11px] italic text-muted-2">NULL</span>
+          ) : (
+            <span className="block max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[11.5px] leading-relaxed text-text">
+              {original}
+            </span>
+          )}
+        </button>
+      )}
     </li>
   );
 }
