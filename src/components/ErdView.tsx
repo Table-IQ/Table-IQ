@@ -1,5 +1,6 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { foreignKeys, type ForeignKey, type SchemaModel } from "../lib/commands";
+import { computeErdLayout, CARD_W, type NodeBox } from "../lib/erdLayout";
 import { useTabs } from "../state/tabsStore";
 import { Toolbar, ToolbarButton, ToolbarSpacer } from "./ui/Toolbar";
 import { IconRefresh, IconSearch } from "./ui/Icon";
@@ -39,11 +40,27 @@ export function ErdView({
   const [query, setQuery] = useState("");
   const [scale, setScale] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
+  // Per-card top-left positions (seeded from auto-layout, then user-draggable).
+  const [positions, setPositions] = useState<Map<string, NodeBox>>(new Map());
   const containerRef = useRef<HTMLDivElement>(null);
   const cardRefs = useRef(new Map<string, HTMLDivElement>());
   const colRefs = useRef(new Map<string, HTMLDivElement>()); // `${table}.${col}` → row el
   const openTab = useTabs((s) => s.openTable);
   const dragRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
+  // Active card drag (header grab). `moved` suppresses the click-to-open that
+  // would otherwise fire when a drag ends on the card.
+  const cardDragRef = useRef<{
+    name: string;
+    startX: number;
+    startY: number;
+    origX: number;
+    origY: number;
+    moved: boolean;
+  } | null>(null);
+  // Once the user drags a card we stop re-seeding from auto-layout, so a Refresh
+  // / FK-refetch (which produces a fresh `layout` object) can't clobber their
+  // arrangement or snap the viewport back to fit.
+  const userArrangedRef = useRef(false);
 
   const refresh = () => foreignKeys(connId).then(setFks).catch(() => setFks([]));
   useEffect(() => {
@@ -108,7 +125,7 @@ export function ErdView({
     compute();
     window.addEventListener("resize", compute);
     return () => window.removeEventListener("resize", compute);
-  }, [fks, schema, pan, scale]);
+  }, [fks, schema, pan, scale, positions]);
 
   // Allow wheel to zoom (cmd/ctrl held) — bare wheel scrolls.
   const onWheel = (e: React.WheelEvent) => {
@@ -123,6 +140,23 @@ export function ErdView({
     dragRef.current = { x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y };
   };
   const onMouseMove = (e: React.MouseEvent) => {
+    const cd = cardDragRef.current;
+    if (cd) {
+      if (Math.abs(e.clientX - cd.startX) + Math.abs(e.clientY - cd.startY) > 3) {
+        cd.moved = true;
+        userArrangedRef.current = true; // freeze auto-layout — respect manual placement
+      }
+      const dx = (e.clientX - cd.startX) / scale;
+      const dy = (e.clientY - cd.startY) / scale;
+      setPositions((prev) => {
+        const box = prev.get(cd.name);
+        if (!box) return prev;
+        const next = new Map(prev);
+        next.set(cd.name, { ...box, x: cd.origX + dx, y: cd.origY + dy });
+        return next;
+      });
+      return;
+    }
     if (!dragRef.current) return;
     setPan({
       x: dragRef.current.panX + (e.clientX - dragRef.current.x),
@@ -131,12 +165,62 @@ export function ErdView({
   };
   const stopDrag = () => {
     dragRef.current = null;
+    if (cardDragRef.current) {
+      suppressClick.current = cardDragRef.current.moved;
+      cardDragRef.current = null;
+    }
   };
 
   const tables = useMemo(
     () => schema.schemas.flatMap((s) => s.objects.map((o) => ({ schema: s.name, obj: o }))),
     [schema],
   );
+
+  // Auto-layout: tables + FK edges → non-overlapping card positions (dagre).
+  const layout = useMemo(
+    () =>
+      computeErdLayout(
+        tables.map(({ obj }) => ({ name: obj.name, columns: obj.columns.length })),
+        fks.map((f) => ({ from: f.from_table, to: f.to_table })),
+      ),
+    [tables, fks],
+  );
+
+  // Frame the whole graph in the viewport (TablePlus "fit" idiom).
+  const fit = useCallback(() => {
+    const cont = containerRef.current;
+    if (!cont || layout.width === 0) return;
+    const r = cont.getBoundingClientRect();
+    const s = Math.max(0.4, Math.min(1, Math.min(r.width / layout.width, r.height / layout.height)));
+    setScale(s);
+    setPan({ x: (r.width - layout.width * s) / 2, y: (r.height - layout.height * s) / 2 });
+  }, [layout]);
+
+  // Seed card positions from the auto-layout while the diagram is still
+  // machine-arranged. FKs load async after mount, so this re-runs to apply the
+  // proper layered layout once edges arrive — but bails the moment the user has
+  // hand-arranged anything. Fit to view unless we're centering a specific table.
+  useEffect(() => {
+    if (userArrangedRef.current) return;
+    setPositions(new Map(layout.nodes));
+    if (!focusTable) requestAnimationFrame(fit);
+  }, [layout, focusTable, fit]);
+
+  const startCardDrag = (e: React.MouseEvent, name: string) => {
+    if (e.button !== 0) return;
+    e.stopPropagation(); // don't also pan the canvas
+    const box = positions.get(name);
+    if (!box) return;
+    cardDragRef.current = {
+      name,
+      startX: e.clientX,
+      startY: e.clientY,
+      origX: box.x,
+      origY: box.y,
+      moved: false,
+    };
+  };
+  const suppressClick = useRef(false);
 
   const visible = (name: string) => {
     if (!query.trim()) return true;
@@ -161,13 +245,7 @@ export function ErdView({
             className="h-6 w-40 bg-transparent text-xs text-text placeholder:text-muted focus:outline-none"
           />
         </label>
-        <ToolbarButton
-          label={`Zoom ${Math.round(scale * 100)}%`}
-          onClick={() => {
-            setScale(1);
-            setPan({ x: 0, y: 0 });
-          }}
-        />
+        <ToolbarButton label={`Fit · ${Math.round(scale * 100)}%`} onClick={fit} />
         <ToolbarButton icon={<IconRefresh size={12} />} label="Refresh" onClick={refresh} />
       </Toolbar>
 
@@ -191,19 +269,36 @@ export function ErdView({
           }}
         />
         <div
-          className="relative h-full w-full"
+          className="relative"
           style={{
+            width: layout.width,
+            height: layout.height,
             transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})`,
             transformOrigin: "0 0",
-            transition: dragRef.current ? "none" : "transform 80ms ease-out",
+            transition: dragRef.current || cardDragRef.current ? "none" : "transform 80ms ease-out",
           }}
         >
-          <svg className="pointer-events-none absolute inset-0 h-[2000px] w-[2400px]" style={{ overflow: "visible" }}>
+          <svg
+            className="pointer-events-none absolute inset-0"
+            width={layout.width}
+            height={layout.height}
+            style={{ overflow: "visible" }}
+          >
+            <defs>
+              <marker
+                id="erd-arrow"
+                viewBox="0 0 10 10"
+                refX="9"
+                refY="5"
+                markerWidth="7"
+                markerHeight="7"
+                orient="auto-start-reverse"
+              >
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--primary)" />
+              </marker>
+            </defs>
             {edges.map((e, i) => {
-              const dim =
-                !visible(e.from) || !visible(e.to)
-                  ? 0.15
-                  : 0.7;
+              const dim = !visible(e.from) || !visible(e.to) ? 0.15 : 0.7;
               const midX = (e.a.x + e.b.x) / 2;
               const d = `M ${e.a.x} ${e.a.y} C ${midX} ${e.a.y} ${midX} ${e.b.y} ${e.b.x} ${e.b.y}`;
               return (
@@ -212,17 +307,18 @@ export function ErdView({
                     d={d}
                     fill="none"
                     stroke="var(--primary)"
-                    strokeWidth={1.2}
+                    strokeWidth={1.4}
+                    markerEnd="url(#erd-arrow)"
                   />
                   <circle cx={e.a.x} cy={e.a.y} r={3} fill="var(--primary)" />
-                  <circle cx={e.b.x} cy={e.b.y} r={3} fill="var(--accent)" />
                 </g>
               );
             })}
           </svg>
-          <div className="relative flex flex-wrap gap-6 p-6">
+          <div className="absolute inset-0">
             {tables.map(({ schema: sName, obj }) => {
               const dim = !visible(obj.name);
+              const box = positions.get(obj.name);
               return (
                 <div
                   key={`${sName}.${obj.name}`}
@@ -230,11 +326,26 @@ export function ErdView({
                   ref={(el) => {
                     if (el) cardRefs.current.set(obj.name, el);
                   }}
-                  onClick={() => openTab(sName, obj.name)}
-                  style={{ opacity: dim ? 0.25 : 1 }}
-                  className="w-60 cursor-pointer self-start overflow-hidden rounded-lg border border-border bg-bg shadow-[var(--shadow-soft)] transition-shadow hover:border-primary hover:shadow-[var(--shadow-pop)]"
+                  onClick={() => {
+                    if (suppressClick.current) {
+                      suppressClick.current = false;
+                      return;
+                    }
+                    openTab(sName, obj.name);
+                  }}
+                  style={{
+                    opacity: dim ? 0.25 : 1,
+                    position: "absolute",
+                    left: box?.x ?? 0,
+                    top: box?.y ?? 0,
+                    width: CARD_W,
+                  }}
+                  className="cursor-pointer overflow-hidden rounded-lg border border-border bg-bg shadow-[var(--shadow-soft)] transition-shadow hover:border-primary hover:shadow-[var(--shadow-pop)]"
                 >
-                  <div className="flex items-center justify-between border-b border-border bg-surface px-3 py-1.5 text-[11px]">
+                  <div
+                    onMouseDown={(e) => startCardDrag(e, obj.name)}
+                    className="flex cursor-move items-center justify-between border-b border-border bg-surface px-3 py-1.5 text-[11px]"
+                  >
                     <span className="font-mono font-semibold text-text">
                       {obj.kind === "View" ? "◳ " : ""}
                       {obj.name}
@@ -261,7 +372,7 @@ export function ErdView({
           </div>
         </div>
         <div className="pointer-events-none absolute bottom-3 right-3 rounded-md border border-border bg-surface px-2 py-1 text-[10px] text-muted">
-          Drag to pan · <span className="tiq-kbd">⌘ + wheel</span> to zoom
+          Drag a table to move · drag canvas to pan · <span className="tiq-kbd">⌘ + wheel</span> to zoom
         </div>
       </div>
     </div>
