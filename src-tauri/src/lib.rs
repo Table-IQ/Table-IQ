@@ -11,7 +11,7 @@ pub mod ssh;
 
 use ipc::connect::{
     ai_egress_preview, ai_explain_sql, ai_fix_sql, ai_generate_sql, ai_optimize_sql, apply_edit,
-    cancel_query, connect, delete_connection,
+    cancel_query, connect, delete_connection, delete_row,
     disconnect, diff_results, diff_schemas, export_result, export_table, generate_ddl,
     get_ai_config, get_result_window, get_table_window,
     doc_collections, doc_find, explain_query, export_connections, foreign_keys, import_connections,
@@ -46,6 +46,7 @@ pub fn run() {
             get_result_window,
             primary_key,
             apply_edit,
+            delete_row,
             export_result,
             export_table,
             run_script,

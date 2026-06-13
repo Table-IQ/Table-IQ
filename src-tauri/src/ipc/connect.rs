@@ -462,6 +462,22 @@ pub async fn insert_row(
         .map_err(|e| e.to_string())
 }
 
+/// Delete a single row matched by its primary-key `(column, text_value)` pairs.
+/// Returns rows affected (1 on success, 0 if the row was already gone).
+#[tauri::command]
+pub async fn delete_row(
+    state: State<'_, ConnState>,
+    id: String,
+    schema: String,
+    table: String,
+    pk: Vec<(String, Option<String>)>,
+) -> Result<u64, String> {
+    let drv = state.session(&id)?;
+    drv.delete_row(&schema, &table, &pk)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[derive(Serialize)]
 pub struct QueryResultMeta {
     pub result_id: String,

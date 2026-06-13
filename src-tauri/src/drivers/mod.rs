@@ -309,6 +309,17 @@ pub trait SqlDriver: Send + Sync {
     /// Apply a single-cell edit; returns rows affected (0 ⇒ optimistic-concurrency conflict).
     async fn apply_edit(&self, schema: &str, table: &str, edit: &EditSpec) -> DResult<u64>;
 
+    /// Delete a row matched by its primary-key `(name, text_value)` pairs; returns rows
+    /// affected (0 ⇒ no matching row). Default: unsupported (KV/Document drivers).
+    async fn delete_row(
+        &self,
+        _schema: &str,
+        _table: &str,
+        _pk: &[(String, Option<String>)],
+    ) -> DResult<u64> {
+        Err(DriverError::NotImplemented)
+    }
+
     /// Execute a raw (possibly multi-statement) script — used for `BEGIN; …; COMMIT/ROLLBACK`.
     async fn run_script(&self, sql: &str) -> DResult<u64>;
 

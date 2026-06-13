@@ -66,6 +66,30 @@ fn build_update_sql(
     )
 }
 
+/// Build a parameterized, identifier-safe DELETE matching a row by its primary key.
+/// PK columns are matched on their TEXT rendering (`col::text IS NOT DISTINCT FROM $n::text`)
+/// — NULL-safe and type-agnostic. This deliberately differs from `build_update_sql`'s
+/// PK clause (`col = $n::udt`): the pk values handed in are the display query's
+/// `col::text` renderings, so matching back on `::text` round-trips them exactly and
+/// avoids per-type cast lookups. Params: $1.. = pk values in `pk_cols` order.
+fn build_delete_sql(schema: &str, table: &str, pk_cols: &[String]) -> String {
+    let mut p = 1;
+    let wheres: Vec<String> = pk_cols
+        .iter()
+        .map(|c| {
+            let w = format!("{}::text IS NOT DISTINCT FROM ${}::text", quote_ident(c), p);
+            p += 1;
+            w
+        })
+        .collect();
+    format!(
+        "DELETE FROM {}.{} WHERE {}",
+        quote_ident(schema),
+        quote_ident(table),
+        wheres.join(" AND ")
+    )
+}
+
 fn db(e: sqlx::Error) -> DriverError {
     DriverError::Db(e.to_string())
 }
@@ -466,6 +490,24 @@ impl SqlDriver for PgDriver {
         Ok(res.rows_affected())
     }
 
+    async fn delete_row(
+        &self,
+        schema: &str,
+        table: &str,
+        pk: &[(String, Option<String>)],
+    ) -> DResult<u64> {
+        if pk.is_empty() {
+            return Err(DriverError::Db("cannot delete without a primary key".into()));
+        }
+        let pk_cols: Vec<String> = pk.iter().map(|(n, _)| n.clone()).collect();
+        let sql = build_delete_sql(schema, table, &pk_cols);
+        let mut q = sqlx::query(&sql);
+        for (_, v) in pk {
+            q = q.bind(v.clone());
+        }
+        Ok(q.execute(&self.pool).await.map_err(db)?.rows_affected())
+    }
+
     async fn run_script(&self, sql: &str) -> DResult<u64> {
         Ok(sqlx::raw_sql(sql).execute(&self.pool).await.map_err(db)?.rows_affected())
     }
@@ -614,7 +656,28 @@ impl SqlDriver for PgDriver {
 
 #[cfg(test)]
 mod tests {
-    use super::build_update_sql;
+    use super::{build_delete_sql, build_update_sql};
+
+    #[test]
+    fn delete_sql_is_parameterized_and_quoted() {
+        let sql = build_delete_sql("public", "edit_demo", &["id".into()]);
+        assert_eq!(
+            sql,
+            "DELETE FROM \"public\".\"edit_demo\" \
+             WHERE \"id\"::text IS NOT DISTINCT FROM $1::text"
+        );
+    }
+
+    #[test]
+    fn delete_sql_handles_composite_pk() {
+        let sql = build_delete_sql("s", "t", &["a".into(), "b".into()]);
+        assert_eq!(
+            sql,
+            "DELETE FROM \"s\".\"t\" \
+             WHERE \"a\"::text IS NOT DISTINCT FROM $1::text \
+             AND \"b\"::text IS NOT DISTINCT FROM $2::text"
+        );
+    }
 
     #[test]
     fn update_sql_is_parameterized_and_quoted() {
