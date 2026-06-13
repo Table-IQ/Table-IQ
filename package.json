@@ -21,8 +21,11 @@
     "@tauri-apps/plugin-opener": "^2",
     "apache-arrow": "^21.1.0",
     "codemirror": "^6.0.2",
+    "lodash": "^4.18.1",
+    "marked": "^18.0.5",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
+    "react-responsive-carousel": "^3.2.23",
     "zustand": "^5.0.13"
   },
   "devDependencies": {

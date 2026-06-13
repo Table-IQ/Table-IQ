@@ -483,6 +483,20 @@ export function TableView({ connId, schema, object }: Props) {
         </div>
       )}
 
+      {/* Read-only hint — explains WHY cells can't be edited, at the point of
+          interaction (the bottom-bar dot alone left "editing does nothing"
+          feeling like a bug). Only in data view, once the PK has loaded. */}
+      {view === "data" && !editable && pk !== null && (
+        <div className="flex items-center gap-1.5 border-b border-border bg-bg px-3 py-1 text-[10.5px] text-muted">
+          <StatusDot tone="muted" />
+          {object.kind !== "Table" ? (
+            <span>Read-only — a {object.kind.toLowerCase()} can't be edited.</span>
+          ) : (
+            <span>Read-only — this table has no primary key, so cells can't be edited.</span>
+          )}
+        </div>
+      )}
+
       {/* Body */}
       <div className="min-h-0 flex-1">
         {view === "data" ? (
