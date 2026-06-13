@@ -379,6 +379,18 @@ export async function insertRow(
   return { rowsAffected: n };
 }
 
+/** Delete one row matched by its primary-key `(column, text_value)` pairs. */
+export async function deleteRow(
+  id: string,
+  schema: string,
+  table: string,
+  pk: [string, string | null][],
+): Promise<{ rowsAffected: number }> {
+  if (!inTauri()) return { rowsAffected: 1 };
+  const n = await invoke<number>("delete_row", { id, schema, table, pk });
+  return { rowsAffected: n };
+}
+
 // ── query & edit ─────────────────────────────────────────────────────────
 export interface QueryResultMeta {
   resultId: string;

@@ -284,6 +284,40 @@ impl SqlDriver for SqlServerDriver {
         Ok(res.total())
     }
 
+    async fn delete_row(
+        &self,
+        schema: &str,
+        table: &str,
+        pk: &[(String, Option<String>)],
+    ) -> DResult<u64> {
+        if pk.is_empty() {
+            return Err(DriverError::Db("cannot delete without a primary key".into()));
+        }
+        // SQL Server has no IS NOT DISTINCT FROM; use the null-safe (= OR both-NULL) idiom.
+        let mut p = 1;
+        let wheres: Vec<std::string::String> = pk
+            .iter()
+            .map(|(name, _)| {
+                let col = quote_ident(name);
+                let w = format!("({col} = @P{p} OR ({col} IS NULL AND @P{p} IS NULL))");
+                p += 1;
+                w
+            })
+            .collect();
+        let sql = format!(
+            "DELETE FROM {}.{} WHERE {}",
+            quote_ident(schema),
+            quote_ident(table),
+            wheres.join(" AND ")
+        );
+        let owned: Vec<Option<std::string::String>> = pk.iter().map(|(_, v)| v.clone()).collect();
+        let params: Vec<&dyn tiberius::ToSql> =
+            owned.iter().map(|o| o as &dyn tiberius::ToSql).collect();
+        let mut c = self.client.lock().await;
+        let res = c.execute(sql, &params).await.map_err(db)?;
+        Ok(res.total())
+    }
+
     async fn run_script(&self, sql: &str) -> DResult<u64> {
         let mut c = self.client.lock().await;
         let res = c.execute(sql, &[]).await.map_err(db)?;

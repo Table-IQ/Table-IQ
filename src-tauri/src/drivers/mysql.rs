@@ -299,6 +299,33 @@ impl SqlDriver for MySqlDriver {
         Ok(q.execute(&self.pool).await.map_err(db)?.rows_affected())
     }
 
+    async fn delete_row(
+        &self,
+        schema: &str,
+        table: &str,
+        pk: &[(String, Option<String>)],
+    ) -> DResult<u64> {
+        if pk.is_empty() {
+            return Err(DriverError::Db("cannot delete without a primary key".into()));
+        }
+        // Null-safe match on the displayed text (CAST AS CHAR), mirroring apply_edit.
+        let wheres: Vec<String> = pk
+            .iter()
+            .map(|(name, _)| format!("CAST({} AS CHAR) <=> ?", quote_ident(name)))
+            .collect();
+        let sql = format!(
+            "DELETE FROM {}.{} WHERE {}",
+            quote_ident(schema),
+            quote_ident(table),
+            wheres.join(" AND ")
+        );
+        let mut q = sqlx::query(&sql);
+        for (_, v) in pk {
+            q = q.bind(v.clone());
+        }
+        Ok(q.execute(&self.pool).await.map_err(db)?.rows_affected())
+    }
+
     async fn run_script(&self, sql: &str) -> DResult<u64> {
         Ok(sqlx::raw_sql(sql).execute(&self.pool).await.map_err(db)?.rows_affected())
     }

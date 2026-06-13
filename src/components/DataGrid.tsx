@@ -20,6 +20,14 @@ import { decodeWindow, WindowCache } from "../lib/arrowWindow";
 import { gridTheme, gridRowTints, editTints } from "../lib/theme";
 import { useTheme } from "../theme/ThemeProvider";
 import type { ForeignKey } from "../lib/commands";
+import {
+  discardAll,
+  listPending,
+  pendingKey,
+  removePending,
+  stageEdit,
+  type PendingMap,
+} from "../lib/stagedEdits";
 
 import { DEFAULT_COL_WIDTH } from "../lib/colWidths";
 import { autoFitWidths } from "../lib/autoFit";
@@ -40,6 +48,10 @@ export interface GridSource {
 
 export interface DataGridHandle {
   scrollToRow: (row: number) => void;
+  /** Commit all staged edits to the DB (TablePlus ⌘S). */
+  commitPending: () => void;
+  /** Drop all staged edits and revert the display. */
+  discardPending: () => void;
 }
 
 interface Props {
@@ -82,8 +94,10 @@ interface Props {
   /** Columns whose values are numeric — rendered right-aligned (TablePlus
    *  parity, Slice 29). */
   rightAlignColumns?: ReadonlySet<string>;
-  /** ⌘S in the grid — re-sync the visible page from the DB (Slice 32). */
+  /** Called after a successful full commit so the parent can re-sync the page. */
   onSave?: () => void;
+  /** Fires whenever the count of staged (uncommitted) edits changes. */
+  onPendingCountChange?: (count: number) => void;
 }
 
 /**
@@ -105,6 +119,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     onColumnResize,
     rightAlignColumns,
     onSave,
+    onPendingCountChange,
   },
   ref,
 ) {
@@ -113,9 +128,15 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   const gridRef = useRef<DataEditorRef>(null);
   const cacheRef = useRef(new WindowCache(PAGE, MAX_PAGES));
   const overlay = useRef(new Map<string, string>()); // optimistic edits: `${row}:${col}` → value
-  // Per-cell save state for the edit feedback tint: amber while saving, green on
-  // success (auto-clears), red on conflict/error (TablePlus parity, Slice 32).
-  const editState = useRef(new Map<string, "saving" | "saved" | "error">());
+  // Staged (uncommitted) edits in the TablePlus batch model — committed/discarded
+  // as a set. `overlay` mirrors their values for display; `pending` drives the bar.
+  const pending = useRef<PendingMap>(new Map());
+  const notifyPending = useCallback(() => {
+    onPendingCountChange?.(pending.current.size);
+  }, [onPendingCountChange]);
+  // Per-cell tint: blue while staged, amber while committing, green on success
+  // (auto-clears), red on conflict/error (TablePlus parity).
+  const editState = useRef(new Map<string, "staged" | "saving" | "saved" | "error">());
   // Undo stack of applied edits ({row,col,prev}) for ⌘Z.
   const undoStack = useRef<Array<{ row: number; col: string; prev: string | null }>>([]);
   // Pending save-state clear timers, keyed by cell — so we can cancel them on
@@ -194,6 +215,11 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     // on every source switch — otherwise a stale tint repaints an unrelated cell
     // and a leftover undo entry would write into a freshly-refetched row.
     editState.current.clear();
+    pending.current = new Map();
+    // notifyPending() is intentionally left out of this effect's deps — the parent
+    // passes a stable setState, and re-running the reset on its identity change
+    // would wipe staged edits unexpectedly.
+    notifyPending();
     undoStack.current = [];
     editSeq.current.clear();
     editTimers.current.forEach((id) => window.clearTimeout(id));
@@ -316,65 +342,88 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     [fkByColumn, onFkClick, onRowSelected, readRow],
   );
 
-  /** Apply one cell edit through `onEdit`, with overlay-aware originals so a
-   *  repeated edit (or an edit on a row with other pending overlays) sends the
-   *  CURRENT value as `orig_value` — otherwise the optimistic concurrency check
-   *  matched nothing and silently reverted (the Slice 32 edit bug). Drives the
-   *  save-state tint and the undo stack. */
+  // Schedule a save-state tint clear, tracking the timer so a source switch /
+  // unmount can cancel it.
+  const clearTintLater = useCallback((key: string, delay: number) => {
+    const prev = editTimers.current.get(key);
+    if (prev !== undefined) window.clearTimeout(prev);
+    const id = window.setTimeout(() => {
+      editTimers.current.delete(key);
+      if (editState.current.get(key) === "saved") {
+        editState.current.delete(key);
+        setVersion((v) => v + 1);
+      }
+    }, delay);
+    editTimers.current.set(key, id);
+  }, []);
+
+  /** Stage one cell edit (TablePlus batch model): mirror the new value into the
+   *  overlay for display, record it in `pending`, and tint it blue. The DB write
+   *  is deferred to {@link commitPending}. `before` (the last-saved value) is
+   *  preserved across re-edits by the staging model so the optimistic match at
+   *  commit still targets the DB value. */
   const applyCellEdit = useCallback(
     (row: number, name: string, newValue: string, pushUndo: boolean) => {
       if (!onEdit) return;
-      const key = `${row}:${name}`;
+      const key = pendingKey(row, name);
       const priorOverlay = overlay.current.get(key);
-      // The value of this cell *before* this edit (last saved value).
       const before = priorOverlay ?? cacheRef.current.getCell(row, name) ?? null;
-      if (before === newValue) return; // no-op
-      // Edited column → its pre-edit value; other (PK) columns → their latest
-      // value (overlay wins over the now-stale cache).
-      const getOriginal = (c: string) =>
-        c === name
-          ? before
-          : (overlay.current.get(`${row}:${c}`) ?? cacheRef.current.getCell(row, c) ?? null);
-      // Token this write; a later edit on the same cell bumps the token, so this
-      // resolver knows it's been superseded and must not touch overlay/state.
-      const seq = (editSeq.current.get(key) ?? 0) + 1;
-      editSeq.current.set(key, seq);
+      if (before === newValue && !pending.current.has(key)) return; // no-op
       overlay.current.set(key, newValue);
-      editState.current.set(key, "saving");
+      pending.current = stageEdit(pending.current, row, name, newValue, before);
+      editState.current.set(key, "staged");
       if (pushUndo) undoStack.current.push({ row, col: name, prev: before });
+      notifyPending();
       setVersion((v) => v + 1);
-      // Schedule a save-state clear, tracking the timer so a source switch /
-      // unmount can cancel it.
-      const clearLater = (delay: number) => {
-        const prev = editTimers.current.get(key);
-        if (prev !== undefined) window.clearTimeout(prev);
-        const id = window.setTimeout(() => {
-          editTimers.current.delete(key);
-          if (editSeq.current.get(key) !== seq) return; // a newer edit owns this cell
-          editState.current.delete(key);
-          setVersion((v) => v + 1);
-        }, delay);
-        editTimers.current.set(key, id);
-      };
-      void onEdit(row, name, newValue, getOriginal).then((keep) => {
-        if (editSeq.current.get(key) !== seq) return; // superseded by a newer edit
-        if (keep) {
-          editState.current.set(key, "saved");
-          setVersion((v) => v + 1);
-          clearLater(1100);
-        } else {
-          // Conflict / error → restore the pre-edit value and flash red.
-          if (priorOverlay !== undefined) overlay.current.set(key, priorOverlay);
-          else overlay.current.delete(key);
-          if (pushUndo) undoStack.current.pop();
-          editState.current.set(key, "error");
-          setVersion((v) => v + 1);
-          clearLater(2000);
-        }
-      });
     },
-    [onEdit],
+    [onEdit, notifyPending],
   );
+
+  /** Commit all staged edits to the DB, in stage order. Drives saving→saved/error
+   *  tints per cell; stops at the first failure, leaving the rest staged so the
+   *  user can fix and retry. Refreshes only when every edit committed. */
+  const commitPending = useCallback(async () => {
+    if (!onEdit) return;
+    const edits = listPending(pending.current);
+    if (edits.length === 0) return;
+    for (const e of edits) {
+      const key = pendingKey(e.row, e.col);
+      editState.current.set(key, "saving");
+      setVersion((v) => v + 1);
+      const getOriginal = (c: string) =>
+        c === e.col
+          ? e.before
+          : (overlay.current.get(`${e.row}:${c}`) ?? cacheRef.current.getCell(e.row, c) ?? null);
+      const keep = await onEdit(e.row, e.col, e.newValue, getOriginal);
+      if (keep) {
+        editState.current.set(key, "saved");
+        pending.current = removePending(pending.current, e.row, e.col);
+        notifyPending();
+        clearTintLater(key, 1100);
+        setVersion((v) => v + 1);
+      } else {
+        editState.current.set(key, "error");
+        setVersion((v) => v + 1);
+        break; // partial-failure: stop, keep remaining staged
+      }
+    }
+    if (pending.current.size === 0) {
+      undoStack.current = [];
+      onSave?.();
+    }
+  }, [onEdit, notifyPending, clearTintLater, onSave]);
+
+  /** Drop every staged edit and revert the display to each cell's saved value. */
+  const discardPending = useCallback(() => {
+    for (const e of discardAll(pending.current)) {
+      overlay.current.delete(pendingKey(e.row, e.col));
+      editState.current.delete(pendingKey(e.row, e.col));
+    }
+    pending.current = new Map();
+    undoStack.current = [];
+    notifyPending();
+    setVersion((v) => v + 1);
+  }, [notifyPending]);
 
   const onCellEdited = useCallback(
     ([col, row]: Item, newCell: EditableGridCell) => {
@@ -412,12 +461,12 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
         undoLastEdit();
       } else if (k === "s") {
         e.preventDefault();
-        onSave?.();
+        void commitPending();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [editable, undoLastEdit, onSave]);
+  }, [editable, undoLastEdit, commitPending]);
 
   // Cancel any pending save-state timers when the grid unmounts.
   useEffect(() => {
@@ -427,6 +476,8 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
 
   useImperativeHandle(ref, () => ({
     scrollToRow: (row: number) => gridRef.current?.scrollTo(0, row, "vertical"),
+    commitPending: () => void commitPending(),
+    discardPending,
   }));
 
   // Update only the dragged column's width in local state so the resize feels
