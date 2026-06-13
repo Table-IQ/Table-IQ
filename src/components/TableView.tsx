@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DataGrid, type DataGridHandle, type GridSource } from "./DataGrid";
 import {
   applyEdit,
+  deleteRow,
   downloadText,
   exportTable,
   fetchTableWindow,
@@ -49,6 +50,17 @@ interface Props {
   object: ObjectInfo;
 }
 
+/** Native confirm via the Tauri dialog plugin (desktop), falling back to the
+ *  browser dialog when running outside the webview (vite preview / tests). */
+async function confirmDestructive(message: string): Promise<boolean> {
+  try {
+    const { confirm } = await import("@tauri-apps/plugin-dialog");
+    return await confirm(message, { title: "Delete row", kind: "warning" });
+  } catch {
+    return typeof window !== "undefined" ? window.confirm(message) : false;
+  }
+}
+
 export function TableView({ connId, schema, object }: Props) {
   const [rowEstimate, setRowEstimate] = useState<number | null>(null);
   const [pk, setPk] = useState<string[] | null>(null);
@@ -72,6 +84,7 @@ export function TableView({ connId, schema, object }: Props) {
     values: Record<string, string> | null;
   } | null>(null);
   const [gridWindowStart, setGridWindowStart] = useState(0);
+  const [pendingCount, setPendingCount] = useState(0);
   const gridRef = useRef<DataGridHandle>(null);
   const openTab = useTabs((s) => s.openTable);
   const engine = useConnections((s) => s.active?.engine ?? "postgres") as Engine;
@@ -446,6 +459,30 @@ export function TableView({ connId, schema, object }: Props) {
         </div>
       )}
 
+      {/* Staged-edits Commit/Discard bar — TablePlus batch model. Appears whenever
+          there are uncommitted cell edits; Commit (⌘S) writes them all, Discard
+          reverts the display. */}
+      {pendingCount > 0 && (
+        <div className="flex items-center gap-2 border-b border-l-2 border-l-primary border-border bg-primary-soft px-3 py-1.5">
+          <span className="text-[11px] font-medium text-primary">
+            {pendingCount} unsaved {pendingCount === 1 ? "change" : "changes"}
+          </span>
+          <ToolbarSpacer />
+          <button
+            onClick={() => gridRef.current?.discardPending()}
+            className="rounded-md border border-border px-2 py-0.5 text-[11px] text-muted hover:text-text"
+          >
+            Discard
+          </button>
+          <button
+            onClick={() => gridRef.current?.commitPending()}
+            className="rounded-md bg-primary px-2.5 py-0.5 text-[11px] font-medium text-white hover:opacity-90"
+          >
+            Commit ⌘S
+          </button>
+        </div>
+      )}
+
       {/* Body */}
       <div className="min-h-0 flex-1">
         {view === "data" ? (
@@ -468,6 +505,7 @@ export function TableView({ connId, schema, object }: Props) {
             }}
             rightAlignColumns={rightAlignColumns}
             onSave={() => setRefreshKey((k) => k + 1)}
+            onPendingCountChange={setPendingCount}
           />
         ) : (
           <StructureView object={object} fks={fks} />
@@ -615,6 +653,24 @@ export function TableView({ connId, schema, object }: Props) {
               .join(" AND ");
             return `DELETE FROM ${qualified} WHERE ${where};`;
           };
+          const deleteRowAction = async () => {
+            if (!pk || pk.length === 0 || !vals) return;
+            const pkPairs = pk.map((c) => [c, vals[c] ?? null] as [string, string | null]);
+            const ok = await confirmDestructive(
+              `Delete this row from ${qualified}? This cannot be undone.`,
+            );
+            if (!ok) return;
+            setNotice(null);
+            try {
+              const { rowsAffected } = await deleteRow(connId, schema, object.name, pkPairs);
+              if (rowsAffected === 0) {
+                setNotice("Delete matched no rows — the row may have already changed.");
+              }
+              setRefreshKey((k) => k + 1);
+            } catch (e) {
+              setNotice(`Delete failed: ${e}`);
+            }
+          };
 
           const items: (ContextMenuItem | "separator")[] = [
             { id: "refresh", label: "Refresh", onSelect: () => setRefreshKey((k) => k + 1) },
@@ -687,6 +743,13 @@ export function TableView({ connId, schema, object }: Props) {
               tone: "danger",
               disabled: !pk || pk.length === 0 || !vals,
               onSelect: () => copy(deleteStmt()),
+            },
+            {
+              id: "delete-row",
+              label: "Delete row",
+              tone: "danger",
+              disabled: !editable || !vals,
+              onSelect: () => void deleteRowAction(),
             },
           ];
           return (
