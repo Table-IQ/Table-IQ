@@ -155,6 +155,9 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   const autoFitDoneRef = useRef(false);
   // Hovered row index drives a faint row highlight (see `getRowThemeOverride`).
   const [hoverRow, setHoverRow] = useState<number | undefined>(undefined);
+  // Clicked row gets a stronger "selected" band (TablePlus parity) — the whole
+  // row highlights, on top of glide's native single-cell focus ring.
+  const [selRow, setSelRow] = useState<number | undefined>(undefined);
 
   const onFetchedRef = useRef(onWindowFetched);
   useEffect(() => {
@@ -226,6 +229,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     editTimers.current.clear();
     autoFitRef.current = {};
     autoFitDoneRef.current = false;
+    setSelRow(undefined); // stale selection must not linger across table/result switches
     if (source.columns && source.columns.length > 0) {
       colNames.current = source.columns;
       setColumns(source.columns.map((c) => ({ title: c, width: widthFor(c) })));
@@ -329,6 +333,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   // Cell click: lift the row to the Inspector and (if applicable) fire FK navigation.
   const onCellClicked = useCallback(
     ([col, row]: Item) => {
+      setSelRow(row);
       if (onRowSelected) {
         onRowSelected(row, readRow(row));
       }
@@ -499,11 +504,12 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   const getRowThemeOverride = useCallback(
     (row: number) => {
       const t = gridRowTints(resolved);
+      if (row === selRow) return { bgCell: t.selected };
       if (row === hoverRow) return { bgCell: t.hover };
       if (row % 2 === 1) return { bgCell: t.zebra };
       return undefined;
     },
-    [resolved, hoverRow],
+    [resolved, hoverRow, selRow],
   );
 
   if (columns.length === 0) {

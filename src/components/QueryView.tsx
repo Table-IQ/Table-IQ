@@ -154,6 +154,23 @@ export function QueryView({ connId }: { connId: string }) {
   const run = useCallback(() => runSql(sqlRef.current), [runSql]);
   const runSelection = useCallback((sqlText: string) => runSql(sqlText), [runSql]);
 
+  // ⌘↵ should run from anywhere in the query tab, not only when the SQL editor is
+  // focused (TablePlus parity). When the editor IS focused, CodeMirror's Mod-Enter
+  // keymap handles it and calls preventDefault — so we bail on defaultPrevented to
+  // avoid a double-run. Typing in another input (e.g. the AI prompt) is left alone.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.key !== "Enter" || e.shiftKey) return;
+      if (e.defaultPrevented) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+      e.preventDefault();
+      run();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [run]);
+
   const cancel = useCallback(async () => {
     const queryId = runningQueryId.current;
     if (!queryId) return;

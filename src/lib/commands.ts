@@ -201,6 +201,15 @@ const mockSchema: SchemaModel = {
         { name: "active_users", kind: "View", columns: [{ name: "id", data_type: "bigint", nullable: false }] },
       ],
     },
+    // A second schema so the sidebar schema dropdown is exercisable in browser
+    // (mock) mode — the dropdown only renders when there's more than one schema.
+    {
+      name: "analytics",
+      objects: [
+        { name: "events", kind: "Table", columns: [{ name: "id", data_type: "bigint", nullable: false }] },
+        { name: "daily_rollup", kind: "View", columns: [{ name: "day", data_type: "date", nullable: false }] },
+      ],
+    },
   ],
 };
 

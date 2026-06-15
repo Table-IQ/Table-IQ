@@ -75,11 +75,15 @@ export function gridTheme(mode: ResolvedTheme) {
  * a faint zebra stripe on odd rows and a neutral hover highlight. Kept subtle —
  * the stripe never reads as strong as `--surface`, so the grid stays data-first.
  */
-export function gridRowTints(mode: ResolvedTheme): { zebra: string; hover: string } {
+export function gridRowTints(
+  mode: ResolvedTheme,
+): { zebra: string; hover: string; selected: string } {
   if (mode === "dark") {
-    return { zebra: "#13151a", hover: "#1a1d24" };
+    // `selected` is an accent-tinted band, clearly stronger than `hover`, so the
+    // clicked row reads as selected behind glide's native cell focus ring.
+    return { zebra: "#13151a", hover: "#1a1d24", selected: "#1e2540" };
   }
-  return { zebra: "#f6f6f7", hover: "#eef0f3" };
+  return { zebra: "#f6f6f7", hover: "#eef0f3", selected: "#e0e7ff" };
 }
 
 /**

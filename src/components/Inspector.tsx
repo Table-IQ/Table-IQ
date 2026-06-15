@@ -224,13 +224,13 @@ function RowDetailView({
           </button>
         )}
       </label>
-      <div className="min-h-0 flex-1 overflow-auto px-3 py-3">
+      <div className="min-h-0 flex-1 overflow-auto px-3 py-1">
         {columns.length === 0 ? (
           <div className="px-1 py-3 text-[11px] text-muted">
             No fields match “{filter}”.
           </div>
         ) : (
-          <ul className="flex flex-col gap-3">
+          <ul className="flex flex-col divide-y divide-border/60">
             {columns.map((c) => (
               <FieldCard
                 key={c.name}
@@ -314,6 +314,8 @@ function FieldCard({
     }, ok ? 900 : 1600);
   };
 
+  // Flat by default (TablePlus density) — a border only surfaces on focus, the
+  // save/error flash, or hover, so the panel reads as divided rows not boxes.
   const border =
     flash === "ok"
       ? "border-ok"
@@ -321,13 +323,13 @@ function FieldCard({
         ? "border-danger"
         : editing
           ? "border-primary"
-          : "border-border hover:border-border-strong";
+          : "border-transparent hover:border-border";
 
   return (
-    <li data-testid="inspector-field" data-field={name} className="flex flex-col gap-1">
+    <li data-testid="inspector-field" data-field={name} className="flex flex-col gap-0.5 py-1.5">
       <div className="flex items-baseline gap-2 px-0.5">
-        <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-muted">{name}</span>
-        <span className="shrink-0 font-mono text-[9.5px] uppercase tracking-wide text-muted-2">
+        <span className="min-w-0 flex-1 truncate text-[11px] text-muted">{name}</span>
+        <span className="shrink-0 font-mono text-[9px] uppercase tracking-wide text-muted-2">
           {type}
         </span>
       </div>
@@ -349,7 +351,7 @@ function FieldCard({
             }
           }}
           spellCheck={false}
-          className={`max-h-40 w-full resize-y rounded-[var(--radius-sm)] border bg-bg px-2 py-1.5 font-mono text-[11.5px] leading-relaxed text-text transition-colors focus:outline-none ${border}`}
+          className={`max-h-40 w-full resize-y rounded-[var(--radius-sm)] border bg-transparent px-1.5 py-0.5 font-mono text-[11.5px] leading-snug text-text transition-colors focus:bg-bg focus:outline-none ${border}`}
         />
       ) : (
         <button
@@ -357,12 +359,12 @@ function FieldCard({
             if (!isNull) navigator.clipboard?.writeText(original);
           }}
           title={isNull ? undefined : "Click to copy"}
-          className="w-full cursor-copy rounded-[var(--radius-sm)] border border-border bg-bg px-2 py-1.5 text-left transition-colors hover:border-border-strong"
+          className={`w-full cursor-copy rounded-[var(--radius-sm)] border bg-transparent px-1.5 py-0.5 text-left transition-colors ${border}`}
         >
           {isNull ? (
             <span className="font-mono text-[11px] italic text-muted-2">NULL</span>
           ) : (
-            <span className="block max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[11.5px] leading-relaxed text-text">
+            <span className="block max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[11.5px] leading-snug text-text">
               {original}
             </span>
           )}

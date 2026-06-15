@@ -38,3 +38,4 @@ vite.config.js
 .claude/finalize-stages.jsonl
 .claude/vite-dev.log
 .claude/*.png
+.claude/qa-shots/
