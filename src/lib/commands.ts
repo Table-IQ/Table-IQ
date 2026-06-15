@@ -824,7 +824,15 @@ export type DdlRequest =
   | { op: "create_table"; table: TableSpec }
   | { op: "drop_table"; schema: string | null; name: string }
   | { op: "add_column"; schema: string | null; table: string; column: ColumnSpec }
-  | { op: "drop_column"; schema: string | null; table: string; column: string };
+  | { op: "drop_column"; schema: string | null; table: string; column: string }
+  | { op: "rename_column"; schema: string | null; table: string; column: string; new_name: string }
+  | {
+      op: "alter_column_type";
+      schema: string | null;
+      table: string;
+      column: string;
+      new_type: string;
+    };
 
 /** Generate the migration SQL for a structure-editor op (preview before applying). */
 export async function generateDdl(engine: Engine, req: DdlRequest): Promise<string> {
@@ -844,6 +852,10 @@ export async function generateDdl(engine: Engine, req: DdlRequest): Promise<stri
       return `CREATE TABLE "${req.table.name}" (\n${cols}${pkLine}\n);`;
     }
     if (req.op === "drop_table") return `DROP TABLE "${req.name}";`;
+    if (req.op === "rename_column")
+      return `ALTER TABLE "${req.table}" RENAME COLUMN "${req.column}" TO "${req.new_name}";`;
+    if (req.op === "alter_column_type")
+      return `ALTER TABLE "${req.table}" ALTER COLUMN "${req.column}" TYPE ${req.new_type};`;
     return "-- preview";
   }
   return invoke<string>("generate_ddl", { engine, req });
