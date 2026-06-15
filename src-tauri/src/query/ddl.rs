@@ -85,6 +85,20 @@ pub enum DdlRequest {
         table: String,
         column: String,
     },
+    RenameColumn {
+        #[serde(default)]
+        schema: Option<String>,
+        table: String,
+        column: String,
+        new_name: String,
+    },
+    AlterColumnType {
+        #[serde(default)]
+        schema: Option<String>,
+        table: String,
+        column: String,
+        new_type: String,
+    },
 }
 
 fn column_def(c: &ColumnSpec, d: Dialect) -> String {
@@ -142,6 +156,45 @@ pub fn drop_column_sql(schema: Option<&str>, table: &str, column: &str, d: Diale
     )
 }
 
+pub fn rename_column_sql(
+    schema: Option<&str>,
+    table: &str,
+    column: &str,
+    new_name: &str,
+    d: Dialect,
+) -> String {
+    // RENAME COLUMN old TO new is uniform across Postgres, MySQL 8+, and SQLite 3.25+.
+    format!(
+        "ALTER TABLE {} RENAME COLUMN {} TO {};",
+        d.qualified(schema, table),
+        d.quote(column),
+        d.quote(new_name)
+    )
+}
+
+pub fn alter_column_type_sql(
+    schema: Option<&str>,
+    table: &str,
+    column: &str,
+    new_type: &str,
+    d: Dialect,
+) -> String {
+    let qt = d.qualified(schema, table);
+    match d {
+        Dialect::Postgres => {
+            format!("ALTER TABLE {} ALTER COLUMN {} TYPE {};", qt, d.quote(column), new_type)
+        }
+        Dialect::MySql => {
+            format!("ALTER TABLE {} MODIFY COLUMN {} {};", qt, d.quote(column), new_type)
+        }
+        // SQLite has no in-place type change — it requires a full table rebuild. Emit a
+        // non-executing note so the preview is honest rather than silently doing nothing.
+        Dialect::Sqlite => {
+            "-- SQLite cannot change a column's type in place (requires a table rebuild).".into()
+        }
+    }
+}
+
 /// Generate the migration SQL for a request (the preview shown before applying).
 pub fn generate(req: &DdlRequest, d: Dialect) -> String {
     match req {
@@ -152,6 +205,12 @@ pub fn generate(req: &DdlRequest, d: Dialect) -> String {
         }
         DdlRequest::DropColumn { schema, table, column } => {
             drop_column_sql(schema.as_deref(), table, column, d)
+        }
+        DdlRequest::RenameColumn { schema, table, column, new_name } => {
+            rename_column_sql(schema.as_deref(), table, column, new_name, d)
+        }
+        DdlRequest::AlterColumnType { schema, table, column, new_type } => {
+            alter_column_type_sql(schema.as_deref(), table, column, new_type, d)
         }
     }
 }
@@ -264,5 +323,62 @@ mod tests {
             name: "t".into(),
         };
         assert_eq!(generate(&req, Dialect::Postgres), "DROP TABLE \"t\";");
+    }
+
+    #[test]
+    fn rename_column_is_uniform_across_dialects() {
+        assert_eq!(
+            rename_column_sql(Some("public"), "users", "old", "new", Dialect::Postgres),
+            "ALTER TABLE \"public\".\"users\" RENAME COLUMN \"old\" TO \"new\";"
+        );
+        assert_eq!(
+            rename_column_sql(Some("app"), "t", "old", "new", Dialect::MySql),
+            "ALTER TABLE `app`.`t` RENAME COLUMN `old` TO `new`;"
+        );
+        // SQLite ignores schema qualification.
+        assert_eq!(
+            rename_column_sql(Some("main"), "t", "old", "new", Dialect::Sqlite),
+            "ALTER TABLE \"t\" RENAME COLUMN \"old\" TO \"new\";"
+        );
+    }
+
+    #[test]
+    fn alter_column_type_is_dialect_specific() {
+        assert_eq!(
+            alter_column_type_sql(Some("public"), "wide", "amount_numeric", "numeric(20,4)", Dialect::Postgres),
+            "ALTER TABLE \"public\".\"wide\" ALTER COLUMN \"amount_numeric\" TYPE numeric(20,4);"
+        );
+        assert_eq!(
+            alter_column_type_sql(None, "t", "amount", "DECIMAL(20,4)", Dialect::MySql),
+            "ALTER TABLE `t` MODIFY COLUMN `amount` DECIMAL(20,4);"
+        );
+        // SQLite can't change a column's type in place — emit an honest, non-executing note.
+        let sqlite = alter_column_type_sql(None, "t", "c", "INTEGER", Dialect::Sqlite);
+        assert!(sqlite.starts_with("-- SQLite"), "got: {sqlite}");
+        assert!(!sqlite.contains("ALTER COLUMN"));
+    }
+
+    #[test]
+    fn generate_dispatches_rename_and_type() {
+        let rename = DdlRequest::RenameColumn {
+            schema: None,
+            table: "t".into(),
+            column: "a".into(),
+            new_name: "b".into(),
+        };
+        assert_eq!(
+            generate(&rename, Dialect::Postgres),
+            "ALTER TABLE \"t\" RENAME COLUMN \"a\" TO \"b\";"
+        );
+        let retype = DdlRequest::AlterColumnType {
+            schema: None,
+            table: "t".into(),
+            column: "a".into(),
+            new_type: "text".into(),
+        };
+        assert_eq!(
+            generate(&retype, Dialect::Postgres),
+            "ALTER TABLE \"t\" ALTER COLUMN \"a\" TYPE text;"
+        );
     }
 }
