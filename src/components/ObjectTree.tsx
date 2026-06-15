@@ -14,26 +14,31 @@ interface Props {
   schema: SchemaModel;
   activeKey: string | null;
   pinned?: string[]; // `${schema}.${table}`
+  /** When set, the tree shows only this schema's objects (sidebar dropdown). */
+  onlySchema?: string;
   onOpen: (schema: string, obj: ObjectInfo) => void;
   onContext?: (e: React.MouseEvent, schema: string, obj: ObjectInfo) => void;
   onPinToggle?: (schema: string, name: string) => void;
 }
 
-export function ObjectTree({ schema, activeKey, pinned = [], onOpen, onContext, onPinToggle }: Props) {
+export function ObjectTree({ schema, activeKey, pinned = [], onlySchema, onOpen, onContext, onPinToggle }: Props) {
   const [query, setQuery] = useState("");
   const filtered = useMemo(() => filterSchema(schema, query), [schema, query]);
 
   // Bucket objects per schema by kind. (Tables vs Views — SchemaModel currently
   // doesn't carry functions/procedures; the section is rendered empty-suppressed.)
+  // When `onlySchema` is set, restrict to that one schema — the active schema is
+  // named by the sidebar dropdown, so its per-schema header is dropped below.
   const sections = useMemo(() => {
     const out: { schema: string; tables: ObjectInfo[]; views: ObjectInfo[] }[] = [];
     for (const s of filtered.schemas) {
+      if (onlySchema && s.name !== onlySchema) continue;
       const tables = s.objects.filter((o) => o.kind === "Table");
       const views = s.objects.filter((o) => o.kind === "View");
       out.push({ schema: s.name, tables, views });
     }
     return out;
-  }, [filtered]);
+  }, [filtered, onlySchema]);
 
   const pinnedSet = useMemo(() => new Set(pinned), [pinned]);
   const pinnedObjs = useMemo(() => {
@@ -113,9 +118,11 @@ export function ObjectTree({ schema, activeKey, pinned = [], onOpen, onContext, 
         )}
         {sections.map((sec) => (
           <div key={sec.schema} className="mb-2">
-            <div className="px-1.5 pt-1 text-[10px] font-semibold uppercase tracking-wider text-muted/80">
-              {sec.schema}
-            </div>
+            {!onlySchema && (
+              <div className="px-1.5 pt-1 text-[10px] font-semibold uppercase tracking-wider text-muted/80">
+                {sec.schema}
+              </div>
+            )}
             {sec.tables.length > 0 && (
               <Section label="Tables" count={sec.tables.length}>
                 {sec.tables.map((o) => renderRow(sec.schema, o))}

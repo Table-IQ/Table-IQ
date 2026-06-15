@@ -128,6 +128,10 @@ export function MainShell() {
   const [showHelp, setShowHelp] = useState(false);
   const [pinned, setPinned] = useState<string[]>([]);
   const [erdFocus, setErdFocus] = useState<string | undefined>(undefined);
+  // Active schema for the sidebar dropdown — the tree shows only this schema's
+  // objects (TablePlus parity). Defaults to the first schema; re-pins to a valid
+  // one whenever the schema model changes (connection / database switch).
+  const [activeSchema, setActiveSchema] = useState<string | undefined>(undefined);
   const [objMenu, setObjMenu] = useState<{
     x: number;
     y: number;
@@ -138,6 +142,12 @@ export function MainShell() {
   const [sidebarMenu, setSidebarMenu] = useState<{ x: number; y: number } | null>(null);
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; tab: Tab } | null>(null);
   const [hydrated, setHydrated] = useState<string | null>(null);
+
+  // Keep the sidebar schema selection valid across connection/database switches.
+  useEffect(() => {
+    const names = schema?.schemas.map((s) => s.name) ?? [];
+    setActiveSchema((cur) => (cur && names.includes(cur) ? cur : names[0]));
+  }, [schema]);
 
   // Hydrate persisted tabs whenever we switch connections. Persist on every tab change
   // afterward.
@@ -518,6 +528,7 @@ export function MainShell() {
                 schema={schema}
                 activeKey={activeKey}
                 pinned={pinned}
+                onlySchema={activeSchema}
                 onOpen={(schemaName, obj) => openTable(schemaName, obj.name)}
                 onContext={(e, schemaName, obj) => {
                   e.preventDefault();
@@ -541,9 +552,28 @@ export function MainShell() {
               >
                 <IconPlus size={12} />
               </button>
-              <span className="font-mono">{schema.schemas[0]?.name ?? "public"}</span>
+              {schema.schemas.length > 1 ? (
+                <select
+                  value={activeSchema ?? ""}
+                  onChange={(e) => setActiveSchema(e.target.value)}
+                  title="Active schema"
+                  className="-ml-0.5 max-w-[120px] cursor-pointer truncate rounded-[var(--radius-sm)] bg-transparent font-mono text-[10px] text-muted hover:text-text focus:outline-none"
+                >
+                  {schema.schemas.map((s) => (
+                    <option key={s.name} value={s.name}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <span className="font-mono">{activeSchema ?? "public"}</span>
+              )}
               <span className="ml-auto">
-                {schema.schemas.reduce((n, s) => n + s.objects.length, 0)} objects
+                {(
+                  schema.schemas.find((s) => s.name === activeSchema)?.objects.length ??
+                  schema.schemas.reduce((n, s) => n + s.objects.length, 0)
+                )}{" "}
+                objects
               </span>
             </div>
           </aside>
