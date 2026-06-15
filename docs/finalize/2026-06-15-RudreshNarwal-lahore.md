@@ -13,7 +13,7 @@
 
 ## Solution summary
 
-Four surgical, frontend-only changes close the feel-gap with TablePlus: clicking a grid cell now highlights the whole row (plus the cell), the right Details panel is denser, the sidebar gets a schema dropdown that filters the object tree, and Cmd+Enter runs a query from anywhere in the query tab (not only when the SQL editor is focused). No new dependencies, no backend changes. Typecheck clean, all 159 existing tests pass, production build succeeds, and all four features were verified live in the browser (mock-backend mode) with zero console errors.
+Three surgical, frontend-only changes close the feel-gap with TablePlus: clicking a grid cell now highlights the whole row (plus the cell), the sidebar gets a schema dropdown that filters the object tree, and Cmd+Enter runs a query from anywhere in the query tab (not only when the SQL editor is focused). A fourth change — densifying the Details panel — was tried and then **reverted on user feedback** (the original textfield view was preferred). No new dependencies, no backend changes. Typecheck clean, all 159 existing tests pass, production build succeeds, and the shipped features were verified live in the browser (mock-backend mode) with zero console errors.
 
 ---
 
@@ -24,12 +24,12 @@ Four surgical, frontend-only changes close the feel-gap with TablePlus: clicking
 - **Screenshot:** ![row+cell highlight](assets/RudreshNarwal-lahore/01-row-and-cell-highlight.png)
 - **File changes:** `src/lib/theme.ts`, `src/components/DataGrid.tsx`
 
-### Feature 2 — Denser Details panel
+### Feature 2 — Details panel (reverted to original on user feedback)
 
 - **Query:** "right panel of detail is better … font size and row height or formfield or paddign or margin".
-- **Solution:** `RowDetailView`/`FieldCard` reworked from spaced bordered cards to TablePlus-style divided rows — label (left) + type (right) on one line, value below, borderless until focus/hover, tighter padding (`py-1.5`, `divide-y`).
-- **Screenshot:** ![dense details panel](assets/RudreshNarwal-lahore/02-details-panel-dense.png) (right panel: `id / amount_numeric / created_at / blob_text / nullable_int`, "Row 5 · 5 of 5 fields")
-- **File changes:** `src/components/Inspector.tsx`
+- **Outcome:** I first densified the panel (borderless divided rows). User feedback: the borderless value field was not visible, and "older textfield view was better." **Reverted `Inspector.tsx` entirely to the original** — visible inset textfield boxes (bordered, `bg-bg`) with the original spacing. Net diff vs `main` for this file is now zero; the original panel stands.
+- **Screenshot:** ![original details panel](assets/RudreshNarwal-lahore/02-details-panel-original.png) (right panel: `id / amount_numeric / created_at / blob_text / nullable_int` as visible bordered fields)
+- **File changes:** none (reverted).
 
 ### Feature 3 — Schema dropdown filters the tree
 
