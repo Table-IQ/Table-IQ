@@ -47,6 +47,7 @@ import {
   exportTable,
   listDatabases,
   listObjects,
+  setConnectionLostHandler,
   switchDatabase,
   type ConnConfig,
   type Engine,
@@ -66,7 +67,15 @@ function findObject(
 }
 
 export function MainShell() {
-  const { active, schema, saved, setActive, setSchema } = useConnections();
+  const { active, schema, saved, setActive, setSchema, disconnected, setDisconnected } =
+    useConnections();
+  const [reconnecting, setReconnecting] = useState(false);
+  // A dropped session (broken pipe, server shutdown, …) raises the reconnect
+  // banner. commands.ts fires this from any live-session invoke that errors.
+  useEffect(() => {
+    setConnectionLostHandler(() => setDisconnected(true));
+    return () => setConnectionLostHandler(null);
+  }, [setDisconnected]);
   // Header color chip resolves from the saved ConnConfig (ConnectedInfo doesn't carry color).
   const activeColor = active ? saved.find((c) => c.id === active.id)?.color ?? null : null;
   const tabsState = useTabs();
@@ -254,6 +263,23 @@ export function MainShell() {
     setActive(null);
   };
 
+  /** Re-open the dropped session in place. Reuses connect() (rebuilds the pool)
+      then refreshes the schema; setActive clears the disconnected flag on success. */
+  const onReconnect = async () => {
+    if (reconnecting) return;
+    setReconnecting(true);
+    try {
+      const info = await connect(active.id);
+      const schemaModel = await listObjects(active.id);
+      setActive(info);
+      setSchema(schemaModel);
+    } catch (e) {
+      console.error("reconnect failed", e);
+    } finally {
+      setReconnecting(false);
+    }
+  };
+
   /** Swap to a different saved connection without leaving the workspace. */
   const onSwapConnection = async (c: ConnConfig) => {
     if (c.id === active.id) return;
@@ -439,6 +465,30 @@ export function MainShell() {
           Disconnect
         </button>
       </header>
+
+      {/* ── RECONNECT BANNER ──────────────────────────────────────────────── */}
+      {/* TablePlus parity: an established session that drops shows a red, clickable
+          strip. The whole bar reconnects; commands.ts flips `disconnected`. */}
+      {disconnected && (
+        <button
+          onClick={() => void onReconnect()}
+          disabled={reconnecting}
+          className="flex h-7 shrink-0 items-center justify-center gap-2 border-b border-danger/40 bg-danger px-3 text-[11px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-70"
+        >
+          <span className="font-mono uppercase tracking-wide opacity-90">
+            {active.engine}
+          </span>
+          <span aria-hidden className="opacity-60">|</span>
+          <span>
+            Database '{active.database}' is disconnected
+          </span>
+          <span aria-hidden className="opacity-60">·</span>
+          <span className="inline-flex items-center gap-1 underline underline-offset-2">
+            {reconnecting && <IconRefresh size={11} className="animate-spin" />}
+            {reconnecting ? "Reconnecting…" : "Tap to reconnect"}
+          </span>
+        </button>
+      )}
 
       {/* ── BODY ─────────────────────────────────────────────────────────── */}
       <div className="flex min-h-0 flex-1">

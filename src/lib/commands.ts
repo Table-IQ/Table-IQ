@@ -1,6 +1,56 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { synthWindowIpc, MOCK_TOTAL_ROWS } from "./mockSource";
 import type { SshConfig } from "./ssh";
+
+// ── connection-loss detection ────────────────────────────────────────────
+// Every Rust command returns its error as `e.to_string()`, so sqlx / the
+// mysql+mongo+redis drivers' native messages reach us verbatim. When an
+// *established* session drops mid-use we flip a flag so MainShell can show the
+// "Tap to reconnect" banner (TablePlus parity). Match is intentionally narrow —
+// SQL/permission errors must NOT raise the banner.
+const CONNECTION_LOST_PHRASES = [
+  "connection refused",
+  "connection reset",
+  "connection closed",
+  "closed the connection",
+  "broken pipe",
+  "pool timed out",
+  "pool closed",
+  "connection timed out",
+  "terminating connection",
+  "no connection to the server",
+  "server has gone away",
+  "lost connection",
+];
+
+export function isConnectionLostError(msg: string): boolean {
+  const m = msg.toLowerCase();
+  return CONNECTION_LOST_PHRASES.some((p) => m.includes(p));
+}
+
+// Commands that legitimately fail when a DB is *initially* unreachable — their
+// errors are surfaced by the connection form, not the banner.
+const LIFECYCLE_CMDS = new Set(["connect", "test_connection", "disconnect"]);
+
+let connectionLostHandler: (() => void) | null = null;
+/** MainShell registers a callback fired when a live session drops. */
+export function setConnectionLostHandler(fn: (() => void) | null): void {
+  connectionLostHandler = fn;
+}
+
+// ponytail: thin wrapper around Tauri's invoke so every existing call site gets
+// connection-loss detection for free. Upgrade path: a dedicated backend health
+// event if false positives appear.
+function invoke<T>(cmd: string, ...rest: unknown[]): Promise<T> {
+  return (tauriInvoke as (c: string, ...a: unknown[]) => Promise<T>)(cmd, ...rest).catch(
+    (e: unknown) => {
+      if (!LIFECYCLE_CMDS.has(cmd) && isConnectionLostError(String((e as { message?: string })?.message ?? e))) {
+        connectionLostHandler?.();
+      }
+      throw e;
+    },
+  );
+}
 
 export type { SshConfig, SshAuth, SshAuthMode } from "./ssh";
 
