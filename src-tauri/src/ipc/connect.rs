@@ -1231,7 +1231,9 @@ pub struct OnboardingState {
     pub onboarded: bool,
 }
 
-fn onboarding_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+fn onboarding_path<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<std::path::PathBuf, String> {
     use tauri::Manager;
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -1239,7 +1241,9 @@ fn onboarding_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String>
 }
 
 #[tauri::command]
-pub fn read_onboarding_state(app: tauri::AppHandle) -> Result<OnboardingState, String> {
+pub fn read_onboarding_state<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<OnboardingState, String> {
     let path = onboarding_path(&app)?;
     if !path.exists() {
         return Ok(OnboardingState::default());
@@ -1249,7 +1253,10 @@ pub fn read_onboarding_state(app: tauri::AppHandle) -> Result<OnboardingState, S
 }
 
 #[tauri::command]
-pub fn write_onboarding_state(app: tauri::AppHandle, state: OnboardingState) -> Result<(), String> {
+pub fn write_onboarding_state<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    state: OnboardingState,
+) -> Result<(), String> {
     let path = onboarding_path(&app)?;
     let text = serde_json::to_string_pretty(&state).map_err(|e| e.to_string())?;
     std::fs::write(&path, text).map_err(|e| e.to_string())

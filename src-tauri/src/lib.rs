@@ -1,5 +1,6 @@
 // TableIQ — Tauri entry.
 pub mod ai;
+pub mod appdir;
 pub mod bench;
 pub mod connections;
 pub mod drivers;
@@ -23,68 +24,75 @@ use ipc::connect::{
     test_connection, write_onboarding_state, ConnState,
 };
 
+/// Every IPC command. Generic over the runtime so the QA bridge (`examples/ipc_bridge.rs`)
+/// can mount the exact same handlers on tauri's MockRuntime.
+pub fn invoke_handler<R: tauri::Runtime>(
+) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
+    tauri::generate_handler![
+        list_connections,
+        save_connection,
+        delete_connection,
+        test_connection,
+        connect,
+        disconnect,
+        list_databases,
+        switch_database,
+        list_objects,
+        open_table,
+        get_table_window,
+        run_query,
+        cancel_query,
+        get_result_window,
+        primary_key,
+        apply_edit,
+        delete_row,
+        export_result,
+        export_table,
+        run_script,
+        generate_ddl,
+        list_saved_queries,
+        save_query,
+        delete_saved_query,
+        query_history,
+        parse_import,
+        import_rows,
+        insert_row,
+        parse_parquet_preview,
+        apply_parquet_import,
+        profile_column,
+        diff_schemas,
+        diff_results,
+        list_plugins,
+        install_sample_plugin,
+        run_plugin_on_result,
+        get_ai_config,
+        save_ai_config,
+        ai_egress_preview,
+        ai_generate_sql,
+        ai_explain_sql,
+        ai_optimize_sql,
+        ai_fix_sql,
+        explain_query,
+        foreign_keys,
+        local_llm_available,
+        kv_scan,
+        kv_get,
+        doc_collections,
+        doc_find,
+        export_connections,
+        import_connections,
+        read_onboarding_state,
+        write_onboarding_state,
+    ]
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(ConnState::new())
-        .invoke_handler(tauri::generate_handler![
-            list_connections,
-            save_connection,
-            delete_connection,
-            test_connection,
-            connect,
-            disconnect,
-            list_databases,
-            switch_database,
-            list_objects,
-            open_table,
-            get_table_window,
-            run_query,
-            cancel_query,
-            get_result_window,
-            primary_key,
-            apply_edit,
-            delete_row,
-            export_result,
-            export_table,
-            run_script,
-            generate_ddl,
-            list_saved_queries,
-            save_query,
-            delete_saved_query,
-            query_history,
-            parse_import,
-            import_rows,
-            insert_row,
-            parse_parquet_preview,
-            apply_parquet_import,
-            profile_column,
-            diff_schemas,
-            diff_results,
-            list_plugins,
-            install_sample_plugin,
-            run_plugin_on_result,
-            get_ai_config,
-            save_ai_config,
-            ai_egress_preview,
-            ai_generate_sql,
-            ai_explain_sql,
-            ai_optimize_sql,
-            ai_fix_sql,
-            explain_query,
-            foreign_keys,
-            local_llm_available,
-            kv_scan,
-            kv_get,
-            doc_collections,
-            doc_find,
-            export_connections,
-            import_connections,
-            read_onboarding_state,
-            write_onboarding_state,
-        ])
+        .invoke_handler(invoke_handler())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

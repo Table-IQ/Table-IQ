@@ -38,11 +38,31 @@ export function setConnectionLostHandler(fn: (() => void) | null): void {
   connectionLostHandler = fn;
 }
 
+// Real-app QA: `VITE_IPC_BRIDGE=1 pnpm dev` sends every command over HTTP to the
+// `ipc_bridge` binary (the real Rust handlers), proxied by vite at /__ipc.
+const BRIDGE = import.meta.env.VITE_IPC_BRIDGE === "1";
+
+async function bridgeInvoke<T>(cmd: string, args?: unknown): Promise<T> {
+  const res = await fetch("/__ipc/" + cmd, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(args ?? {}),
+  });
+  // Raw (binary) responses resolve to an ArrayBuffer, exactly like Tauri's invoke.
+  const octet = res.headers.get("content-type")?.includes("application/octet-stream");
+  const body = octet ? await res.arrayBuffer() : await res.json();
+  if (!res.ok) throw body; // Rust `Err(String)` arrives as a plain string, same as Tauri.
+  return body as T;
+}
+
 // ponytail: thin wrapper around Tauri's invoke so every existing call site gets
 // connection-loss detection for free. Upgrade path: a dedicated backend health
 // event if false positives appear.
 function invoke<T>(cmd: string, ...rest: unknown[]): Promise<T> {
-  return (tauriInvoke as (c: string, ...a: unknown[]) => Promise<T>)(cmd, ...rest).catch(
+  const call = BRIDGE
+    ? bridgeInvoke<T>(cmd, rest[0])
+    : (tauriInvoke as (c: string, ...a: unknown[]) => Promise<T>)(cmd, ...rest);
+  return call.catch(
     (e: unknown) => {
       if (!LIFECYCLE_CMDS.has(cmd) && isConnectionLostError(String((e as { message?: string })?.message ?? e))) {
         connectionLostHandler?.();
@@ -106,7 +126,7 @@ export interface KvValue {
 }
 
 function inTauri(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  return BRIDGE || (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window);
 }
 
 /**
@@ -116,7 +136,7 @@ function inTauri(): boolean {
  * imports the dialog plugin so the browser-mock build never pulls it in.
  */
 export async function pickKeyFile(): Promise<string | null> {
-  if (!inTauri()) return null;
+  if (BRIDGE || !inTauri()) return null; // bridge: no native dialog in a plain browser
   const { open } = await import("@tauri-apps/plugin-dialog");
   const picked = await open({
     multiple: false,

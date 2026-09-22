@@ -11,8 +11,6 @@ use std::path::PathBuf;
 use extism::{Manifest, Plugin, Wasm};
 use serde::Serialize;
 
-const APP_DIR: &str = "ai.rhobots.tableiq";
-
 /// The bundled sample plugin (compiled from `plugins/markdown-export`), installable on demand.
 pub const SAMPLE_WASM: &[u8] = include_bytes!("../../../plugins/markdown-export.wasm");
 
@@ -25,8 +23,7 @@ pub struct PluginInfo {
 }
 
 pub fn plugins_dir() -> PathBuf {
-    let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-    base.join(APP_DIR).join("plugins")
+    crate::appdir::app_dir().join("plugins")
 }
 
 fn load(path: &Path) -> Result<Plugin, String> {

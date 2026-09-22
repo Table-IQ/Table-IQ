@@ -129,8 +129,7 @@ pub struct ConnStore {
 
 impl ConnStore {
     fn path() -> PathBuf {
-        let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-        base.join(KEYRING_SERVICE).join("connections.json")
+        crate::appdir::app_dir().join("connections.json")
     }
 
     pub fn load() -> Self {

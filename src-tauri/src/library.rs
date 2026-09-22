@@ -6,7 +6,6 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-const APP_DIR: &str = "ai.rhobots.tableiq";
 const HISTORY_CAP: usize = 500;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -34,8 +33,7 @@ pub struct QueryLibrary {
 
 impl QueryLibrary {
     fn path() -> PathBuf {
-        let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-        base.join(APP_DIR).join("query_library.json")
+        crate::appdir::app_dir().join("query_library.json")
     }
 
     pub fn load() -> Self {

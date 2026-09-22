@@ -93,10 +93,7 @@ impl Default for AiConfig {
 }
 
 fn config_path() -> std::path::PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("ai.rhobots.tableiq")
-        .join("ai.json")
+    crate::appdir::app_dir().join("ai.json")
 }
 
 pub fn load_config() -> AiConfig {
