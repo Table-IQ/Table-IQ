@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 pub mod doc_mongo;
+pub mod exec;
 pub mod kv_redis;
 pub mod mysql;
 pub mod postgres;
@@ -129,6 +130,33 @@ pub struct ForeignKey {
     pub from_column: String,
     pub to_table: String,
     pub to_column: String,
+}
+
+/// One statement's outcome in a multi-statement run (Task 3). Statements that return no
+/// result set (DML/DDL) leave `columns` empty and `batch` `None`.
+#[derive(Debug, Default)]
+pub struct StmtOutput {
+    /// `(column name, database type name)` for each result column.
+    pub columns: Vec<(String, String)>,
+    /// The capped rows as an all-Utf8 Arrow batch, or `None` when there is no result set.
+    pub batch: Option<arrow::record_batch::RecordBatch>,
+    /// Rows in `batch` (≤ cap).
+    pub row_count: usize,
+    /// Rows the statement actually produced, counted past the cap.
+    pub total_rows: u64,
+    pub truncated: bool,
+    pub rows_affected: Option<u64>,
+    pub exec_ms: u64,
+    pub error: Option<QueryError>,
+    pub notice: Option<String>,
+}
+
+/// A statement error, with a 1-based line/position inside that statement where known.
+#[derive(Debug, Clone, Serialize)]
+pub struct QueryError {
+    pub message: String,
+    pub line: Option<u32>,
+    pub position: Option<u32>,
 }
 
 /// Result of a one-shot query (the batch is held server-side; meta returns to the UI).

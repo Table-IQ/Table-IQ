@@ -35,6 +35,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
+futures-util = "0.3"
 arrow = { version = "53", features = ["ipc"] }
 parquet = { version = "53", default-features = false, features = ["arrow", "snap", "zstd", "lz4", "flate2"] }
 bytes = "1"

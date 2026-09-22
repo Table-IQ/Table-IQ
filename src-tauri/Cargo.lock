@@ -6810,6 +6810,7 @@ dependencies = [
  "bytes",
  "dirs 5.0.1",
  "extism",
+ "futures-util",
  "keyring",
  "mongodb",
  "parquet",
