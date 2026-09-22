@@ -21,12 +21,61 @@ use crate::ssh::SshAuth;
 
 const QUERY_CAP: usize = 50_000;
 
+/// Lock a mutex, recovering from poisoning instead of panicking. A panic in one command
+/// would otherwise poison the map and take down every later command that touches it.
+fn lk<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Query results held server-side for `get_result_window` / `export_result` / `diff_results`.
+///
+/// Bounded twice over — 64 entries and 512 MiB of Arrow buffers — because a result set is
+/// materialised in RAM and a long session would otherwise grow without limit. Oldest first
+/// out. Entries are tagged with their connection id so disconnecting drops them.
+#[derive(Default)]
+pub struct ResultStore {
+    /// Insertion-ordered; the front is the oldest.
+    entries: Vec<(String, String, Arc<RecordBatch>)>, // (result_id, conn_id, batch)
+    bytes: usize,
+}
+
+const RESULT_CAP: usize = 64;
+const RESULT_BYTES: usize = 512 << 20;
+
+impl ResultStore {
+    fn insert(&mut self, result_id: String, conn_id: String, batch: Arc<RecordBatch>) {
+        self.bytes += batch.get_array_memory_size();
+        self.entries.push((result_id, conn_id, batch));
+        while self.entries.len() > RESULT_CAP
+            || (self.bytes > RESULT_BYTES && self.entries.len() > 1)
+        {
+            let (_, _, b) = self.entries.remove(0);
+            self.bytes = self.bytes.saturating_sub(b.get_array_memory_size());
+        }
+    }
+
+    fn get(&self, result_id: &str) -> Option<Arc<RecordBatch>> {
+        self.entries.iter().find(|(id, _, _)| id == result_id).map(|(_, _, b)| b.clone())
+    }
+
+    /// Drop every result belonging to `conn_id` (disconnect / switch database / delete).
+    fn purge(&mut self, conn_id: &str) {
+        self.entries.retain(|(_, c, b)| {
+            let keep = c != conn_id;
+            if !keep {
+                self.bytes = self.bytes.saturating_sub(b.get_array_memory_size());
+            }
+            keep
+        });
+    }
+}
+
 pub struct ConnState {
     store: Mutex<ConnStore>,
     sessions: Mutex<HashMap<String, Arc<dyn SqlDriver>>>,
     kv_sessions: Mutex<HashMap<String, Arc<dyn KvDriver>>>,
     doc_sessions: Mutex<HashMap<String, Arc<dyn DocumentDriver>>>,
-    results: Mutex<HashMap<String, Arc<RecordBatch>>>,
+    results: Mutex<ResultStore>,
     /// Live SSH tunnels keyed by conn id. Dropping a `Tunnel` (on disconnect/delete) tears it down.
     tunnels: Mutex<HashMap<String, Tunnel>>,
     /// In-flight query cancel tokens keyed by client-supplied query id (plan spec #6).
@@ -83,7 +132,7 @@ impl ConnState {
             sessions: Mutex::new(HashMap::new()),
             kv_sessions: Mutex::new(HashMap::new()),
             doc_sessions: Mutex::new(HashMap::new()),
-            results: Mutex::new(HashMap::new()),
+            results: Mutex::new(ResultStore::default()),
             tunnels: Mutex::new(HashMap::new()),
             cancels: Mutex::new(HashMap::new()),
             library: Mutex::new(crate::library::QueryLibrary::load()),
@@ -91,27 +140,21 @@ impl ConnState {
     }
 
     fn session(&self, id: &str) -> Result<Arc<dyn SqlDriver>, String> {
-        self.sessions
-            .lock()
-            .unwrap()
+        lk(&self.sessions)
             .get(id)
             .cloned()
             .ok_or_else(|| "not connected (or not a SQL connection)".to_string())
     }
 
     fn kv_session(&self, id: &str) -> Result<Arc<dyn KvDriver>, String> {
-        self.kv_sessions
-            .lock()
-            .unwrap()
+        lk(&self.kv_sessions)
             .get(id)
             .cloned()
             .ok_or_else(|| "not connected (or not a key-value connection)".to_string())
     }
 
     fn doc_session(&self, id: &str) -> Result<Arc<dyn DocumentDriver>, String> {
-        self.doc_sessions
-            .lock()
-            .unwrap()
+        lk(&self.doc_sessions)
             .get(id)
             .cloned()
             .ok_or_else(|| "not connected (or not a document connection)".to_string())
@@ -133,7 +176,7 @@ pub struct OpenTableInfo {
 
 #[tauri::command]
 pub fn list_connections(state: State<ConnState>) -> Vec<ConnConfig> {
-    state.store.lock().unwrap().connections.clone()
+    lk(&state.store).connections.clone()
 }
 
 #[tauri::command]
@@ -144,7 +187,7 @@ pub fn save_connection(
     ssh_secret: Option<String>,
 ) -> Result<(), String> {
     {
-        let mut store = state.store.lock().unwrap();
+        let mut store = lk(&state.store);
         store.upsert(cfg.clone());
         store.save()?;
     }
@@ -165,13 +208,13 @@ pub fn save_connection(
 /// Export saved connections as a shareable, secret-free JSON bundle.
 #[tauri::command]
 pub fn export_connections(state: State<ConnState>) -> Result<String, String> {
-    state.store.lock().unwrap().export_bundle()
+    lk(&state.store).export_bundle()
 }
 
 /// Import a connection bundle (merge by id); recipients re-enter passwords.
 #[tauri::command]
 pub fn import_connections(state: State<ConnState>, json: String) -> Result<usize, String> {
-    let mut store = state.store.lock().unwrap();
+    let mut store = lk(&state.store);
     let n = store.import_bundle(&json)?;
     store.save()?;
     Ok(n)
@@ -180,14 +223,15 @@ pub fn import_connections(state: State<ConnState>, json: String) -> Result<usize
 #[tauri::command]
 pub fn delete_connection(state: State<ConnState>, id: String) -> Result<(), String> {
     {
-        let mut store = state.store.lock().unwrap();
+        let mut store = lk(&state.store);
         store.remove(&id);
         store.save()?;
     }
-    state.sessions.lock().unwrap().remove(&id);
-    state.kv_sessions.lock().unwrap().remove(&id);
-    state.doc_sessions.lock().unwrap().remove(&id);
-    state.tunnels.lock().unwrap().remove(&id);
+    lk(&state.sessions).remove(&id);
+    lk(&state.kv_sessions).remove(&id);
+    lk(&state.doc_sessions).remove(&id);
+    lk(&state.tunnels).remove(&id);
+    lk(&state.results).purge(&id);
     // Remove both the DB password and any SSH secret for this connection.
     let _ = connections::delete_password(&connections::ssh_secret_account(&id));
     connections::delete_password(&id)
@@ -210,7 +254,7 @@ pub async fn test_connection(cfg: ConnConfig, password: String) -> Result<(), St
 #[tauri::command]
 pub async fn connect(state: State<'_, ConnState>, id: String) -> Result<ConnectedInfo, String> {
     let cfg = {
-        let store = state.store.lock().unwrap();
+        let store = lk(&state.store);
         store
             .connections
             .iter()
@@ -234,15 +278,15 @@ pub async fn connect(state: State<'_, ConnState>, id: String) -> Result<Connecte
             let drv = RedisDriver::connect(&eff.url_with_password(&password))
                 .await
                 .map_err(|e| e.to_string())?;
-            state.kv_sessions.lock().unwrap().insert(id.clone(), Arc::new(drv));
+            lk(&state.kv_sessions).insert(id.clone(), Arc::new(drv));
         } else if eff.engine == "mongodb" {
             let drv = MongoDriver::connect(&eff.url_with_password(&password), &eff.database)
                 .await
                 .map_err(|e| e.to_string())?;
-            state.doc_sessions.lock().unwrap().insert(id.clone(), Arc::new(drv));
+            lk(&state.doc_sessions).insert(id.clone(), Arc::new(drv));
         } else {
             let drv = open_driver(&eff, &password).await?;
-            state.sessions.lock().unwrap().insert(id.clone(), drv);
+            lk(&state.sessions).insert(id.clone(), drv);
         }
         Ok(())
     }
@@ -252,7 +296,7 @@ pub async fn connect(state: State<'_, ConnState>, id: String) -> Result<Connecte
     // so disconnect tears it down.
     result?;
     if let Some(t) = tunnel {
-        state.tunnels.lock().unwrap().insert(id.clone(), t);
+        lk(&state.tunnels).insert(id.clone(), t);
     }
     Ok(ConnectedInfo {
         id,
@@ -264,11 +308,12 @@ pub async fn connect(state: State<'_, ConnState>, id: String) -> Result<Connecte
 
 #[tauri::command]
 pub fn disconnect(state: State<ConnState>, id: String) {
-    state.sessions.lock().unwrap().remove(&id);
-    state.kv_sessions.lock().unwrap().remove(&id);
-    state.doc_sessions.lock().unwrap().remove(&id);
+    lk(&state.sessions).remove(&id);
+    lk(&state.kv_sessions).remove(&id);
+    lk(&state.doc_sessions).remove(&id);
     // Dropping the Tunnel aborts its listener task and disconnects the SSH session.
-    state.tunnels.lock().unwrap().remove(&id);
+    lk(&state.tunnels).remove(&id);
+    lk(&state.results).purge(&id);
 }
 
 /// Enumerate the databases reachable from the active session for `id`. Routes
@@ -278,15 +323,15 @@ pub fn disconnect(state: State<ConnState>, id: String) {
 pub async fn list_databases(state: State<'_, ConnState>, id: String) -> Result<Vec<String>, String> {
     // Probe each session map and clone the Arc out *before* the await — holding
     // a MutexGuard across .await makes the future !Send and Tauri rejects it.
-    let sql = state.sessions.lock().unwrap().get(&id).cloned();
+    let sql = lk(&state.sessions).get(&id).cloned();
     if let Some(drv) = sql {
         return drv.list_databases().await.map_err(|e| e.to_string());
     }
-    let kv = state.kv_sessions.lock().unwrap().get(&id).cloned();
+    let kv = lk(&state.kv_sessions).get(&id).cloned();
     if let Some(drv) = kv {
         return drv.list_databases().await.map_err(|e| e.to_string());
     }
-    let doc = state.doc_sessions.lock().unwrap().get(&id).cloned();
+    let doc = lk(&state.doc_sessions).get(&id).cloned();
     if let Some(drv) = doc {
         return drv.list_databases().await.map_err(|e| e.to_string());
     }
@@ -307,7 +352,7 @@ pub async fn switch_database(
     // Look up the saved config; clone with the database swapped — we do not
     // mutate the persisted store so the user's saved default is preserved.
     let cfg = {
-        let store = state.store.lock().unwrap();
+        let store = lk(&state.store);
         store
             .connections
             .iter()
@@ -321,9 +366,11 @@ pub async fn switch_database(
     // Tear down the current session before opening the new one. We keep the SSH
     // tunnel: it points at the bastion + remote host:port, which is unchanged
     // by switching database. Reopening on the same tunnel avoids an SSH handshake.
-    state.sessions.lock().unwrap().remove(&id);
-    state.kv_sessions.lock().unwrap().remove(&id);
-    state.doc_sessions.lock().unwrap().remove(&id);
+    lk(&state.sessions).remove(&id);
+    lk(&state.kv_sessions).remove(&id);
+    lk(&state.doc_sessions).remove(&id);
+    // Results belong to the old database; keeping them would let the UI page a stale batch.
+    lk(&state.results).purge(&id);
 
     let password = if new_cfg.engine == "sqlite" {
         String::new()
@@ -334,12 +381,7 @@ pub async fn switch_database(
     // Compute the effective config — if a tunnel is alive, retarget host/port at
     // its local forward (matching the original `connect` flow). Pull `local_addr`
     // out under the lock so we don't hold the guard across any awaits below.
-    let tunnel_local = state
-        .tunnels
-        .lock()
-        .unwrap()
-        .get(&id)
-        .map(|t| t.local_addr());
+    let tunnel_local = lk(&state.tunnels).get(&id).map(|t| t.local_addr());
     let eff = if let Some(local) = tunnel_local {
         new_cfg.with_host_port(&local.ip().to_string(), local.port())
     } else {
@@ -350,15 +392,15 @@ pub async fn switch_database(
         let drv = RedisDriver::connect(&eff.url_with_password(&password))
             .await
             .map_err(|e| e.to_string())?;
-        state.kv_sessions.lock().unwrap().insert(id.clone(), Arc::new(drv));
+        lk(&state.kv_sessions).insert(id.clone(), Arc::new(drv));
     } else if eff.engine == "mongodb" {
         let drv = MongoDriver::connect(&eff.url_with_password(&password), &eff.database)
             .await
             .map_err(|e| e.to_string())?;
-        state.doc_sessions.lock().unwrap().insert(id.clone(), Arc::new(drv));
+        lk(&state.doc_sessions).insert(id.clone(), Arc::new(drv));
     } else {
         let drv = open_driver(&eff, &password).await?;
-        state.sessions.lock().unwrap().insert(id.clone(), drv);
+        lk(&state.sessions).insert(id.clone(), drv);
     }
 
     Ok(ConnectedInfo {
@@ -478,57 +520,95 @@ pub async fn delete_row(
         .map_err(|e| e.to_string())
 }
 
+/// One result column of a statement, as sent to the UI.
 #[derive(Serialize)]
-pub struct QueryResultMeta {
-    pub result_id: String,
-    pub columns: Vec<String>,
-    pub row_count: usize,
-    pub truncated: bool,
-    pub exec_ms: u64,
+pub struct ColumnMeta {
+    pub name: String,
+    pub type_name: String,
 }
 
+/// One statement's outcome. `result_id` is present only when the statement returned a result
+/// set; the batch behind it feeds `get_result_window` / `export_result` / `diff_results`.
+#[derive(Serialize)]
+pub struct StatementResultMeta {
+    /// Position in the `statements` array that was submitted.
+    pub index: usize,
+    pub result_id: Option<String>,
+    pub columns: Vec<ColumnMeta>,
+    pub row_count: usize,
+    pub total_rows: u64,
+    pub truncated: bool,
+    pub rows_affected: Option<u64>,
+    pub exec_ms: u64,
+    pub error: Option<crate::drivers::QueryError>,
+    pub notice: Option<String>,
+}
+
+/// Run `statements` as written, one at a time, on one pinned connection. Returns one meta per
+/// statement **executed** — execution stops at the first failing statement, so the array can be
+/// shorter than `statements`, with the failure carried in the last entry's `error`.
 #[tauri::command]
 pub async fn run_query(
     state: State<'_, ConnState>,
     id: String,
-    sql: String,
-    query_id: String,
-) -> Result<QueryResultMeta, String> {
+    statements: Vec<String>,
+    query_id: Option<String>,
+) -> Result<Vec<StatementResultMeta>, String> {
     let drv = state.session(&id)?;
-    // Register a cancel token before the (possibly long) query so `cancel_query` can find it.
+    // Register a cancel token before the (possibly long) run so `cancel_query` can find it.
     let token = CancelToken::new();
-    state.cancels.lock().unwrap().insert(query_id.clone(), token.clone());
-    let res = drv.run_statements(std::slice::from_ref(&sql), QUERY_CAP, &token).await.map(|mut o| o.remove(0)).map(|o| crate::drivers::QueryResult { batch: o.batch.unwrap_or_else(|| arrow::record_batch::RecordBatch::new_empty(Arc::new(arrow::datatypes::Schema::empty()))), truncated: o.truncated, exec_ms: o.exec_ms });
-    state.cancels.lock().unwrap().remove(&query_id);
-    let qr = res.map_err(|e| match e {
-        DriverError::Cancelled => "Query cancelled".to_string(),
-        other => other.to_string(),
-    })?;
-    // Record the successful run in searchable history (best-effort persist).
+    let query_id = query_id.unwrap_or_default();
+    lk(&state.cancels).insert(query_id.clone(), token.clone());
+    let res = drv.run_statements(&statements, QUERY_CAP, &token).await;
+    lk(&state.cancels).remove(&query_id);
+
+    // History records the whole run once, success or failure — the same "one entry per Run
+    // press" semantics the single-statement version had.
     {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
-        let mut lib = state.library.lock().unwrap();
-        lib.record(crate::library::HistoryEntry { sql: sql.clone(), conn_id: id.clone(), ts });
+        let mut lib = lk(&state.library);
+        lib.record(crate::library::HistoryEntry {
+            sql: statements.join(";\n"),
+            conn_id: id.clone(),
+            ts,
+        });
         let _ = lib.save();
     }
-    let columns = qr.batch.schema().fields().iter().map(|f| f.name().clone()).collect();
-    let row_count = qr.batch.num_rows();
-    let result_id = uuid::Uuid::new_v4().to_string();
-    state
-        .results
-        .lock()
-        .unwrap()
-        .insert(result_id.clone(), Arc::new(qr.batch));
-    Ok(QueryResultMeta {
-        result_id,
-        columns,
-        row_count,
-        truncated: qr.truncated,
-        exec_ms: qr.exec_ms,
-    })
+
+    let outs = res.map_err(|e| match e {
+        DriverError::Cancelled => "Query cancelled".to_string(),
+        other => other.to_string(),
+    })?;
+    Ok(outs
+        .into_iter()
+        .enumerate()
+        .map(|(index, o)| {
+            let result_id = o.batch.map(|b| {
+                let rid = uuid::Uuid::new_v4().to_string();
+                lk(&state.results).insert(rid.clone(), id.clone(), Arc::new(b));
+                rid
+            });
+            StatementResultMeta {
+                index,
+                result_id,
+                columns: o
+                    .columns
+                    .into_iter()
+                    .map(|(name, type_name)| ColumnMeta { name, type_name })
+                    .collect(),
+                row_count: o.row_count,
+                total_rows: o.total_rows,
+                truncated: o.truncated,
+                rows_affected: o.rows_affected,
+                exec_ms: o.exec_ms,
+                error: o.error,
+                notice: o.notice,
+            }
+        })
+        .collect())
 }
 
 /// Cancel a running query (server-side) by the client-supplied `query_id`. A no-op if the
@@ -539,7 +619,7 @@ pub async fn cancel_query(
     id: String,
     query_id: String,
 ) -> Result<(), String> {
-    let token = state.cancels.lock().unwrap().get(&query_id).cloned();
+    let token = lk(&state.cancels).get(&query_id).cloned();
     let Some(token) = token else {
         return Ok(()); // already completed/removed
     };
@@ -560,12 +640,8 @@ pub fn get_result_window(
     offset: usize,
     len: usize,
 ) -> Result<Response, String> {
-    let batch = state
-        .results
-        .lock()
-        .unwrap()
+    let batch = lk(&state.results)
         .get(&result_id)
-        .cloned()
         .ok_or_else(|| "no such result".to_string())?;
     let total = batch.num_rows();
     let win = if offset >= total {
@@ -602,12 +678,8 @@ pub fn export_result(
     result_id: String,
     format: String,
 ) -> Result<String, String> {
-    let batch = state
-        .results
-        .lock()
-        .unwrap()
+    let batch = lk(&state.results)
         .get(&result_id)
-        .cloned()
         .ok_or_else(|| "no such result".to_string())?;
     Ok(encode_export(&batch, &format))
 }
@@ -695,12 +767,8 @@ pub fn run_plugin_on_result(
     plugin_id: String,
     result_id: String,
 ) -> Result<String, String> {
-    let batch = state
-        .results
-        .lock()
-        .unwrap()
+    let batch = lk(&state.results)
         .get(&result_id)
-        .cloned()
         .ok_or_else(|| "no such result".to_string())?;
     let columns: Vec<String> = batch.schema().fields().iter().map(|f| f.name().clone()).collect();
     let rows = batch_to_rows(&batch);
@@ -715,10 +783,7 @@ async fn introspect_any(state: &ConnState, id: &str) -> Result<SchemaModel, Stri
     if let Ok(drv) = state.session(id) {
         return drv.introspect().await.map_err(|e| e.to_string());
     }
-    let cfg = state
-        .store
-        .lock()
-        .unwrap()
+    let cfg = lk(&state.store)
         .connections
         .iter()
         .find(|c| c.id == id)
@@ -771,10 +836,10 @@ pub fn diff_results(
     result_b: String,
 ) -> Result<crate::query::diff::RowDiff, String> {
     let (a, b) = {
-        let r = state.results.lock().unwrap();
+        let r = lk(&state.results);
         (
-            r.get(&result_a).cloned().ok_or_else(|| "no such result A".to_string())?,
-            r.get(&result_b).cloned().ok_or_else(|| "no such result B".to_string())?,
+            r.get(&result_a).ok_or_else(|| "no such result A".to_string())?,
+            r.get(&result_b).ok_or_else(|| "no such result B".to_string())?,
         )
     };
     Ok(crate::query::diff::diff_rows(&batch_to_rows(&a), &batch_to_rows(&b)))
@@ -1057,7 +1122,7 @@ use crate::library::{HistoryEntry, SavedQuery};
 
 #[tauri::command]
 pub fn list_saved_queries(state: State<ConnState>) -> Vec<SavedQuery> {
-    state.library.lock().unwrap().saved.clone()
+    lk(&state.library).saved.clone()
 }
 
 /// Save (or update) a named query. Empty `id` mints a new one.
@@ -1073,7 +1138,7 @@ pub fn save_query(
         name,
         sql,
     };
-    let mut lib = state.library.lock().unwrap();
+    let mut lib = lk(&state.library);
     lib.upsert_saved(q.clone());
     lib.save()?;
     Ok(q)
@@ -1081,7 +1146,7 @@ pub fn save_query(
 
 #[tauri::command]
 pub fn delete_saved_query(state: State<ConnState>, id: String) -> Result<(), String> {
-    let mut lib = state.library.lock().unwrap();
+    let mut lib = lk(&state.library);
     lib.remove_saved(&id);
     lib.save()
 }
@@ -1089,7 +1154,7 @@ pub fn delete_saved_query(state: State<ConnState>, id: String) -> Result<(), Str
 /// Searchable run history (case-insensitive substring, newest first; empty = all).
 #[tauri::command]
 pub fn query_history(state: State<ConnState>, search: Option<String>) -> Vec<HistoryEntry> {
-    state.library.lock().unwrap().search_history(&search.unwrap_or_default())
+    lk(&state.library).search_history(&search.unwrap_or_default())
 }
 
 #[derive(Serialize)]
@@ -1262,3 +1327,56 @@ pub fn write_onboarding_state<R: tauri::Runtime>(
     std::fs::write(&path, text).map_err(|e| e.to_string())
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::StringArray;
+    use arrow::datatypes::{DataType, Field, Schema};
+
+    fn batch(n: usize) -> Arc<RecordBatch> {
+        let col: StringArray = (0..n).map(|i| Some(i.to_string())).collect();
+        Arc::new(
+            RecordBatch::try_new(
+                Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, true)])),
+                vec![Arc::new(col)],
+            )
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn result_store_evicts_oldest_past_the_entry_cap() {
+        let mut s = ResultStore::default();
+        for i in 0..(RESULT_CAP + 3) {
+            s.insert(format!("r{i}"), "c1".into(), batch(1));
+        }
+        assert_eq!(s.entries.len(), RESULT_CAP);
+        assert!(s.get("r0").is_none(), "the oldest must be evicted first");
+        assert!(s.get("r2").is_none());
+        assert!(s.get("r3").is_some(), "the newest must survive");
+        assert!(s.get(&format!("r{}", RESULT_CAP + 2)).is_some());
+    }
+
+    #[test]
+    fn result_store_evicts_on_the_byte_budget() {
+        let mut s = ResultStore::default();
+        s.insert("small".into(), "c1".into(), batch(1));
+        // Pretend the store is already at the budget, then add one more.
+        s.bytes = RESULT_BYTES;
+        s.insert("big".into(), "c1".into(), batch(1));
+        assert!(s.get("small").is_none(), "byte budget must evict the oldest");
+        assert!(s.get("big").is_some(), "the newest entry is always kept");
+    }
+
+    #[test]
+    fn result_store_purges_by_connection() {
+        let mut s = ResultStore::default();
+        s.insert("a".into(), "c1".into(), batch(2));
+        s.insert("b".into(), "c2".into(), batch(2));
+        s.purge("c1");
+        assert!(s.get("a").is_none());
+        assert!(s.get("b").is_some());
+        assert_eq!(s.bytes, s.entries.iter().map(|(_, _, b)| b.get_array_memory_size()).sum::<usize>());
+    }
+}

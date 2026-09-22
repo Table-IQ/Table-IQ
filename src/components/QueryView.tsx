@@ -133,7 +133,23 @@ export function QueryView({ connId }: { connId: string }) {
       const queryId = crypto.randomUUID();
       runningQueryId.current = queryId;
       try {
-        const m = await runQuery(connId, sqlText, queryId);
+        // Task 6 builds the real multi-result UI. Until then we send one statement and show
+        // the last output that produced a result set, or the run's error.
+        const outs = await runQuery(connId, [sqlText], queryId);
+        const failed = outs.find((o) => o.error);
+        if (failed?.error) throw new Error(failed.error.message);
+        const last = [...outs].reverse().find((o) => o.resultId);
+        if (!last?.resultId) {
+          setMeta(null);
+          return;
+        }
+        const m: QueryResultMeta = {
+          resultId: last.resultId,
+          columns: last.columns.map((c) => c.name),
+          rowCount: last.rowCount,
+          truncated: last.truncated,
+          execMs: last.execMs,
+        };
         setMeta(m);
         recordResult({
           resultId: m.resultId,

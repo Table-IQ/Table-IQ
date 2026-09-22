@@ -479,6 +479,21 @@ export interface QueryResultMeta {
   execMs: number;
 }
 
+/** One statement's outcome in a multi-statement run (mirrors Rust StatementResultMeta). */
+export interface StatementResultMeta {
+  index: number;
+  /** Present only when the statement returned a result set. */
+  resultId: string | null;
+  columns: { name: string; typeName: string }[];
+  rowCount: number;
+  totalRows: number;
+  truncated: boolean;
+  rowsAffected: number | null;
+  execMs: number;
+  error: { message: string; line: number | null; position: number | null } | null;
+  notice: string | null;
+}
+
 /** RowKey round-trip payload (mirrors Rust EditSpec). */
 export interface EditSpec {
   pk: [string, string | null][];
@@ -487,34 +502,62 @@ export interface EditSpec {
   orig_value: string | null;
 }
 
+/**
+ * Run `statements` as written, one at a time. Returns one meta per statement **executed** —
+ * the run stops at the first failing statement, so the array can be shorter than `statements`
+ * and the failure is carried in the last entry's `error`.
+ */
 export async function runQuery(
   id: string,
-  sql: string,
-  queryId: string,
-): Promise<QueryResultMeta> {
+  statements: string[],
+  queryId?: string,
+): Promise<StatementResultMeta[]> {
   if (!inTauri()) {
-    return {
-      resultId: "mock-q",
-      columns: ["id", "amount_numeric", "blob_text"],
-      rowCount: 50,
-      truncated: false,
-      execMs: 3,
-    };
+    return [
+      {
+        index: 0,
+        resultId: "mock-q",
+        columns: [
+          { name: "id", typeName: "int8" },
+          { name: "amount_numeric", typeName: "numeric" },
+          { name: "blob_text", typeName: "text" },
+        ],
+        rowCount: 50,
+        totalRows: 50,
+        truncated: false,
+        rowsAffected: null,
+        execMs: 3,
+        error: null,
+        notice: null,
+      },
+    ];
   }
-  const m = await invoke<{
-    result_id: string;
-    columns: string[];
-    row_count: number;
-    truncated: boolean;
-    exec_ms: number;
-  }>("run_query", { id, sql, queryId });
-  return {
+  const out = await invoke<
+    {
+      index: number;
+      result_id: string | null;
+      columns: { name: string; type_name: string }[];
+      row_count: number;
+      total_rows: number;
+      truncated: boolean;
+      rows_affected: number | null;
+      exec_ms: number;
+      error: { message: string; line: number | null; position: number | null } | null;
+      notice: string | null;
+    }[]
+  >("run_query", { id, statements, queryId });
+  return out.map((m) => ({
+    index: m.index,
     resultId: m.result_id,
-    columns: m.columns,
+    columns: m.columns.map((c) => ({ name: c.name, typeName: c.type_name })),
     rowCount: m.row_count,
+    totalRows: m.total_rows,
     truncated: m.truncated,
+    rowsAffected: m.rows_affected,
     execMs: m.exec_ms,
-  };
+    error: m.error,
+    notice: m.notice,
+  }));
 }
 
 /** Cancel an in-flight query (server-side) by the same `queryId` passed to runQuery. */
