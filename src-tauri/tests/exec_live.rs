@@ -50,6 +50,7 @@ async fn shared_cases(drv: &dyn SqlDriver, series: &str, t: &str) {
     // ── bare SELECT, trailing semicolon, trailing comment ──────────────────
     let o = one(drv, "SELECT 1;").await;
     assert_eq!(cell(&o, 0, 0).as_deref(), Some("1"), "SELECT 1; must return 1");
+    assert_eq!(o.rows_affected, None, "a result set reports rows, not rows_affected");
     let o = one(drv, "SELECT 1 -- c").await;
     assert_eq!(cell(&o, 0, 0).as_deref(), Some("1"));
 

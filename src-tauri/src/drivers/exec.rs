@@ -216,12 +216,15 @@ where
         }
         let batch = if names.is_empty() { None } else { Some(text_batch(&names, &rows)?) };
         outs.push(StmtOutput {
+            // A statement with a result set reports its rows through `row_count`/`total_rows`.
+            // Postgres' CommandComplete also carries a count for SELECT, but surfacing that as
+            // "rows affected" would have the UI claim `SELECT 1` affected a row.
+            rows_affected: if batch.is_some() { None } else { rows_affected },
             columns: names.into_iter().zip(types).collect(),
             batch,
             row_count: rows.len(),
             total_rows: total,
             truncated: total > rows.len() as u64,
-            rows_affected,
             exec_ms,
             error: None,
             notice: None,

@@ -330,9 +330,8 @@ pub trait SqlDriver: Send + Sync {
     /// Run a single statement and return the legacy one-batch shape. Kept for the internal
     /// callers that only ever run one generated SELECT (`profile_column`, several tests).
     async fn run_query(&self, sql: &str, cap: usize) -> DResult<QueryResult> {
-        let outs = self
-            .run_statements(std::slice::from_ref(&sql.to_string()), cap, &CancelToken::new())
-            .await?;
+        let stmts = [sql.to_string()];
+        let outs = self.run_statements(&stmts, cap, &CancelToken::new()).await?;
         if let Some(e) = outs.iter().find_map(|o| o.error.as_ref()) {
             return Err(DriverError::Db(e.message.clone()));
         }
