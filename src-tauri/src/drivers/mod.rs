@@ -51,7 +51,7 @@ pub struct RowKey {
 
 /// Per-engine cancellation handle (plan spec #6). Carries the server-side identifier
 /// (Postgres backend PID / MySQL connection id) that a *second* connection uses to cancel
-/// the in-flight query. The id is recorded by `run_query_cancellable` once the query's
+/// the in-flight query. The id is recorded by `run_statements` once the query's
 /// connection is known, then read by `cancel`.
 #[derive(Clone, Default)]
 pub struct CancelToken {
@@ -78,7 +78,10 @@ pub struct CursorId(pub String);
 
 #[derive(thiserror::Error, Debug)]
 pub enum DriverError {
-    #[error("db error: {0}")]
+    // Just the database message: the driver `db()` helpers already unwrap
+    // `sqlx::Error::Database` so the UI never sees a doubled
+    // "db error: error returned from database: …" prefix.
+    #[error("{0}")]
     Db(String),
     #[error("query cancelled")]
     Cancelled,
@@ -312,19 +315,43 @@ pub trait SqlDriver: Send + Sync {
         Err(DriverError::NotImplemented)
     }
 
-    /// Run a one-shot query (single statement), capped, as an Arrow result.
-    async fn run_query(&self, sql: &str, cap: usize) -> DResult<QueryResult>;
-
-    /// Run a query that can be cancelled mid-flight via [`SqlDriver::cancel`] using `token`.
-    /// The implementation should record the server-side id into `token` before the work
-    /// begins. Default: ignore cancellation and delegate to [`SqlDriver::run_query`].
-    async fn run_query_cancellable(
+    /// Run `stmts` **as written**, one at a time, capped at `cap` rows each, on a single
+    /// pinned connection. Returns one [`StmtOutput`] per statement executed; execution stops
+    /// at the first failing statement, so the result can be shorter than `stmts`. The
+    /// implementation records the server-side id into `token` before the work begins so
+    /// [`SqlDriver::cancel`] can interrupt it.
+    async fn run_statements(
         &self,
-        sql: &str,
+        stmts: &[String],
         cap: usize,
-        _token: &CancelToken,
-    ) -> DResult<QueryResult> {
-        self.run_query(sql, cap).await
+        token: &CancelToken,
+    ) -> DResult<Vec<StmtOutput>>;
+
+    /// Run a single statement and return the legacy one-batch shape. Kept for the internal
+    /// callers that only ever run one generated SELECT (`profile_column`, several tests).
+    async fn run_query(&self, sql: &str, cap: usize) -> DResult<QueryResult> {
+        let outs = self
+            .run_statements(std::slice::from_ref(&sql.to_string()), cap, &CancelToken::new())
+            .await?;
+        if let Some(e) = outs.iter().find_map(|o| o.error.as_ref()) {
+            return Err(DriverError::Db(e.message.clone()));
+        }
+        let out = outs.into_iter().find(|o| o.batch.is_some());
+        Ok(match out {
+            Some(o) => QueryResult {
+                batch: o.batch.expect("filtered on is_some"),
+                truncated: o.truncated,
+                exec_ms: o.exec_ms,
+            },
+            // A statement with no result set (DML/DDL) has nothing to show here.
+            None => QueryResult {
+                batch: arrow::record_batch::RecordBatch::new_empty(Arc::new(
+                    arrow::datatypes::Schema::empty(),
+                )),
+                truncated: false,
+                exec_ms: 0,
+            },
+        })
     }
 
     /// Cancel the running query identified by `token` (server-side, via a second

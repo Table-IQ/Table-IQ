@@ -498,7 +498,7 @@ pub async fn run_query(
     // Register a cancel token before the (possibly long) query so `cancel_query` can find it.
     let token = CancelToken::new();
     state.cancels.lock().unwrap().insert(query_id.clone(), token.clone());
-    let res = drv.run_query_cancellable(&sql, QUERY_CAP, &token).await;
+    let res = drv.run_statements(std::slice::from_ref(&sql), QUERY_CAP, &token).await.map(|mut o| o.remove(0)).map(|o| crate::drivers::QueryResult { batch: o.batch.unwrap_or_else(|| arrow::record_batch::RecordBatch::new_empty(Arc::new(arrow::datatypes::Schema::empty()))), truncated: o.truncated, exec_ms: o.exec_ms });
     state.cancels.lock().unwrap().remove(&query_id);
     let qr = res.map_err(|e| match e {
         DriverError::Cancelled => "Query cancelled".to_string(),

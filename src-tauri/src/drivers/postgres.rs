@@ -11,23 +11,19 @@ use arrow::array::{ArrayRef, Int64Array, StringArray, TimestampMicrosecondArray}
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
-use sqlx::postgres::{PgPoolOptions, PgRow};
-use sqlx::{Column, Executor, Pool, Postgres, Row};
+use sqlx::postgres::{PgDatabaseError, PgErrorPosition, PgPoolOptions, PgQueryResult, PgRow};
+use sqlx::{Executor, Pool, Postgres, Row};
 
 use super::{
-    build_insert_sql, build_where_clause, CancelToken, ColumnFilter, ColumnInfo, CursorId, DResult,
-    DriverError, EditSpec, ObjectInfo, ObjectKind, QueryResult, SchemaInfo, SchemaModel, SqlDriver,
+    build_insert_sql, build_where_clause, exec, CancelToken, ColumnFilter, ColumnInfo, CursorId,
+    DResult, DriverError, EditSpec, ObjectInfo, ObjectKind, QueryError, SchemaInfo,
+    SchemaModel, SqlDriver, StmtOutput,
 };
 
-/// Map a query error, recognising Postgres' "canceling statement due to user request"
-/// (SQLSTATE 57014) as a clean cancellation rather than a generic DB error.
-fn map_query_err(e: sqlx::Error) -> DriverError {
-    if let sqlx::Error::Database(ref dbe) = e {
-        if dbe.code().as_deref() == Some("57014") {
-            return DriverError::Cancelled;
-        }
-    }
-    DriverError::Db(e.to_string())
+/// Postgres reports "canceling statement due to user request" as SQLSTATE 57014; that is a
+/// clean cancellation, not a query error.
+fn is_cancel(e: &sqlx::Error) -> bool {
+    matches!(e, sqlx::Error::Database(dbe) if dbe.code().as_deref() == Some("57014"))
 }
 
 /// Build a parameterized, identifier-safe optimistic-concurrency UPDATE.
@@ -90,9 +86,53 @@ fn build_delete_sql(schema: &str, table: &str, pk_cols: &[String]) -> String {
     )
 }
 
+/// Unwrap `sqlx::Error::Database` to the bare server message — sqlx otherwise prefixes it with
+/// "error returned from database:", which `DriverError::Db` used to prefix again.
 fn db(e: sqlx::Error) -> DriverError {
-    DriverError::Db(e.to_string())
+    match e.as_database_error() {
+        Some(dbe) => DriverError::Db(dbe.message().to_string()),
+        None => DriverError::Db(e.to_string()),
+    }
 }
+
+/// One cell of a simple-query row. `raw_sql` uses the text protocol, so the bytes are already
+/// the server's display rendering — the same text the old `col::text` cast produced.
+fn pg_cell(row: &PgRow, i: usize) -> Result<Option<String>, sqlx::Error> {
+    use sqlx::ValueRef;
+    let raw = row.try_get_raw(i)?;
+    if raw.is_null() {
+        return Ok(None);
+    }
+    let bytes = raw.as_bytes().map_err(sqlx::Error::Decode)?;
+    Ok(Some(exec::cell_text(bytes)))
+}
+
+/// Per-statement error detail. Postgres reports a 1-based **character** offset into the
+/// statement; we keep it and also derive the 1-based line so the editor can point at it.
+/// A cancellation aborts the whole run instead of becoming a statement error.
+fn pg_stmt_err(e: sqlx::Error, stmt: &str) -> Result<QueryError, DriverError> {
+    if is_cancel(&e) {
+        return Err(DriverError::Cancelled);
+    }
+    let dbe = e.as_database_error();
+    let message = dbe.map_or_else(|| e.to_string(), |d| d.message().to_string());
+    let position = dbe
+        .and_then(|d| d.try_downcast_ref::<PgDatabaseError>())
+        .and_then(|p| match p.position() {
+            Some(PgErrorPosition::Original(n)) => u32::try_from(n).ok(),
+            _ => None,
+        });
+    // Offset → line: count the newlines in the first `position - 1` characters.
+    let line = position.map(|p| {
+        1 + stmt
+            .chars()
+            .take(p.saturating_sub(1) as usize)
+            .filter(|c| *c == '\n')
+            .count() as u32
+    });
+    Ok(QueryError { message, line, position })
+}
+
 
 /// Quote a SQL identifier safely (double-quote, escape embedded quotes).
 fn quote_ident(name: &str) -> String {
@@ -156,6 +196,46 @@ impl PgDriver {
 
 #[async_trait]
 impl SqlDriver for PgDriver {
+    async fn run_statements(
+        &self,
+        stmts: &[String],
+        cap: usize,
+        token: &CancelToken,
+    ) -> DResult<Vec<StmtOutput>> {
+        // Pin one pooled connection for the whole script so we can target it by backend PID,
+        // and so BEGIN/…/COMMIT actually land on the same session.
+        let mut conn = self.pool.acquire().await.map_err(db)?;
+        let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(db)?;
+        token.set_backend_id(pid as i64);
+
+        let res = exec::run_sqlx::<Postgres, _, _, _>(
+            &mut conn,
+            stmts,
+            cap,
+            pg_cell,
+            PgQueryResult::rows_affected,
+            pg_stmt_err,
+        )
+        .await;
+        match res {
+            // A dirty connection (an error, or BEGIN/SET left behind) must not go back to the
+            // pool: closing it makes the server roll back and drop the session state.
+            Ok((outs, reset)) => {
+                if reset {
+                    conn.close_on_drop();
+                }
+                Ok(outs)
+            }
+            Err(e) => {
+                conn.close_on_drop();
+                Err(e)
+            }
+        }
+    }
+
     async fn open_cursor(&self, _sql: &str, page_size: usize) -> DResult<CursorId> {
         let id = format!(
             "cur-{:x}",
@@ -345,90 +425,6 @@ impl SqlDriver for PgDriver {
         text_rows_to_batch(&cols, &rows)
     }
 
-    async fn run_query(&self, sql: &str, cap: usize) -> DResult<QueryResult> {
-        let start = std::time::Instant::now();
-        let wrapped = format!("SELECT * FROM ({sql}) AS _q");
-        // Column names (in order) without executing the full query.
-        let described = self.pool.describe(wrapped.as_str()).await.map_err(db)?;
-        let names: Vec<String> = described.columns().iter().map(|c| c.name().to_string()).collect();
-        if names.is_empty() {
-            let empty = text_rows_to_batch(&[], &[])?;
-            return Ok(QueryResult {
-                batch: empty,
-                truncated: false,
-                exec_ms: start.elapsed().as_millis() as u64,
-            });
-        }
-        let select_list = names
-            .iter()
-            .map(|c| format!("{0}::text AS {0}", quote_ident(c)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let q = format!("SELECT {select_list} FROM ({sql}) AS _q LIMIT $1");
-        let mut rows = sqlx::query(&q)
-            .bind(cap as i64 + 1)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(db)?;
-        let truncated = rows.len() > cap;
-        if truncated {
-            rows.truncate(cap);
-        }
-        let batch = text_rows_to_batch(&names, &rows)?;
-        Ok(QueryResult {
-            batch,
-            truncated,
-            exec_ms: start.elapsed().as_millis() as u64,
-        })
-    }
-
-    async fn run_query_cancellable(
-        &self,
-        sql: &str,
-        cap: usize,
-        token: &CancelToken,
-    ) -> DResult<QueryResult> {
-        let start = std::time::Instant::now();
-        // Pin one pooled connection for the whole query so we can target it by backend PID.
-        let mut conn = self.pool.acquire().await.map_err(db)?;
-        let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
-            .fetch_one(&mut *conn)
-            .await
-            .map_err(db)?;
-        token.set_backend_id(pid as i64);
-
-        let wrapped = format!("SELECT * FROM ({sql}) AS _q");
-        let described = (&mut *conn).describe(wrapped.as_str()).await.map_err(map_query_err)?;
-        let names: Vec<String> = described.columns().iter().map(|c| c.name().to_string()).collect();
-        if names.is_empty() {
-            return Ok(QueryResult {
-                batch: text_rows_to_batch(&[], &[])?,
-                truncated: false,
-                exec_ms: start.elapsed().as_millis() as u64,
-            });
-        }
-        let select_list = names
-            .iter()
-            .map(|c| format!("{0}::text AS {0}", quote_ident(c)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let q = format!("SELECT {select_list} FROM ({sql}) AS _q LIMIT $1");
-        let mut rows = sqlx::query(&q)
-            .bind(cap as i64 + 1)
-            .fetch_all(&mut *conn)
-            .await
-            .map_err(map_query_err)?;
-        let truncated = rows.len() > cap;
-        if truncated {
-            rows.truncate(cap);
-        }
-        let batch = text_rows_to_batch(&names, &rows)?;
-        Ok(QueryResult {
-            batch,
-            truncated,
-            exec_ms: start.elapsed().as_millis() as u64,
-        })
-    }
 
     async fn cancel(&self, token: &CancelToken) -> DResult<()> {
         // No backend id yet means the query hasn't reached the server — nothing to cancel.
@@ -800,7 +796,7 @@ fn text_rows_to_batch(cols: &[String], rows: &[PgRow]) -> DResult<RecordBatch> {
         fields.push(arrow::datatypes::Field::new(c, DataType::Utf8, true));
         let col: StringArray = rows
             .iter()
-            .map(|r| r.get::<Option<String>, _>(c.as_str()))
+            .map(|r| r.try_get::<Option<String>, _>(c.as_str()).unwrap_or_default())
             .collect();
         arrays.push(std::sync::Arc::new(col));
     }

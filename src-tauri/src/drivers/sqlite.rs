@@ -6,16 +6,41 @@ use arrow::array::{ArrayRef, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
-use sqlx::sqlite::{SqlitePoolOptions, SqliteRow};
-use sqlx::{Column, Executor, Row, Sqlite, Pool};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteQueryResult, SqliteRow};
+use sqlx::{Pool, Row, Sqlite};
 
 use super::{
-    build_insert_sql, build_where_clause, ColumnFilter, ColumnInfo, CursorId, DResult, DriverError,
-    EditSpec, ForeignKey, ObjectInfo, ObjectKind, QueryResult, SchemaInfo, SchemaModel, SqlDriver,
+    build_insert_sql, build_where_clause, exec, CancelToken, ColumnFilter, ColumnInfo, CursorId,
+    DResult, DriverError, EditSpec, ForeignKey, ObjectInfo, ObjectKind, QueryError,
+    SchemaInfo, SchemaModel, SqlDriver, StmtOutput,
 };
 
+/// Unwrap `sqlx::Error::Database` to the bare server message — sqlx otherwise prefixes it with
+/// "error returned from database:", which `DriverError::Db` used to prefix again.
 fn db(e: sqlx::Error) -> DriverError {
-    DriverError::Db(e.to_string())
+    match e.as_database_error() {
+        Some(dbe) => DriverError::Db(dbe.message().to_string()),
+        None => DriverError::Db(e.to_string()),
+    }
+}
+
+/// One cell as display text. SQLite is dynamically typed, so we ask for the value's blob
+/// rendering: `sqlite3_value_blob` converts INTEGER/REAL to their TEXT form first, which is
+/// why numbers come back as "42"/"1.5" rather than raw little-endian bytes. Going through
+/// `String` instead would fail to decode a genuine BLOB column.
+fn sqlite_cell(row: &SqliteRow, i: usize) -> Result<Option<String>, sqlx::Error> {
+    Ok(row
+        .try_get_unchecked::<Option<Vec<u8>>, _>(i)?
+        .map(|b| exec::cell_text(&b)))
+}
+
+/// Per-statement error detail. SQLite reports neither a position nor a line, and has no
+/// server-side cancellation, so the message is all there is.
+fn sqlite_stmt_err(e: sqlx::Error, _stmt: &str) -> Result<QueryError, DriverError> {
+    let message = e
+        .as_database_error()
+        .map_or_else(|| e.to_string(), |d| d.message().to_string());
+    Ok(QueryError { message, line: None, position: None })
 }
 
 fn quote_ident(name: &str) -> String {
@@ -29,10 +54,12 @@ pub struct SqliteDriver {
 impl SqliteDriver {
     /// `path` is a filesystem path to the .db file (opened read/write/create).
     pub async fn connect(path: &str) -> DResult<Self> {
-        let url = format!("sqlite://{path}?mode=rwc");
+        // Connect options rather than a `sqlite://{path}?mode=rwc` URL: a path containing
+        // `?`, `#` or spaces would otherwise be mis-parsed as URL syntax.
+        let opts = SqliteConnectOptions::new().filename(path).create_if_missing(true);
         let pool = SqlitePoolOptions::new()
             .max_connections(4)
-            .connect(&url)
+            .connect_with(opts)
             .await
             .map_err(db)?;
         Ok(Self { pool })
@@ -46,9 +73,9 @@ impl SqliteDriver {
         Ok(rows
             .iter()
             .map(|r| ColumnInfo {
-                name: r.get::<String, _>("name"),
-                data_type: r.get::<String, _>("type"),
-                nullable: r.get::<i64, _>("notnull") == 0,
+                name: r.try_get("name").unwrap_or_default(),
+                data_type: r.try_get("type").unwrap_or_default(),
+                nullable: r.try_get::<i64, _>("notnull").unwrap_or(0) == 0,
             })
             .collect())
     }
@@ -59,7 +86,7 @@ fn text_rows_to_batch(cols: &[String], rows: &[SqliteRow]) -> DResult<RecordBatc
     let mut arrays: Vec<ArrayRef> = Vec::with_capacity(cols.len());
     for c in cols {
         fields.push(Field::new(c, DataType::Utf8, true));
-        let col: StringArray = rows.iter().map(|r| r.get::<Option<String>, _>(c.as_str())).collect();
+        let col: StringArray = rows.iter().map(|r| r.try_get::<Option<String>, _>(c.as_str()).unwrap_or_default()).collect();
         arrays.push(Arc::new(col));
     }
     RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays).map_err(|e| DriverError::Db(e.to_string()))
@@ -67,6 +94,40 @@ fn text_rows_to_batch(cols: &[String], rows: &[SqliteRow]) -> DResult<RecordBatc
 
 #[async_trait]
 impl SqlDriver for SqliteDriver {
+    async fn run_statements(
+        &self,
+        stmts: &[String],
+        cap: usize,
+        _token: &CancelToken,
+    ) -> DResult<Vec<StmtOutput>> {
+        // One pooled connection for the whole script so BEGIN/…/COMMIT share a session.
+        // SQLite has no server-side cancellation, so the token is unused.
+        let mut conn = self.pool.acquire().await.map_err(db)?;
+        let res = exec::run_sqlx::<Sqlite, _, _, _>(
+            &mut conn,
+            stmts,
+            cap,
+            sqlite_cell,
+            SqliteQueryResult::rows_affected,
+            sqlite_stmt_err,
+        )
+        .await;
+        match res {
+            // A dirty connection (an error, or BEGIN/PRAGMA left behind) must not go back to
+            // the pool: closing it rolls back and drops the session state.
+            Ok((outs, reset)) => {
+                if reset {
+                    conn.close_on_drop();
+                }
+                Ok(outs)
+            }
+            Err(e) => {
+                conn.close_on_drop();
+                Err(e)
+            }
+        }
+    }
+
     async fn open_cursor(&self, _sql: &str, _page_size: usize) -> DResult<CursorId> {
         Err(DriverError::NotImplemented)
     }
@@ -88,8 +149,8 @@ impl SqlDriver for SqliteDriver {
 
         let mut objects = Vec::new();
         for r in &objs {
-            let name: String = r.get("name");
-            let kind = if r.get::<String, _>("type") == "view" {
+            let name: String = r.try_get("name").map_err(db)?;
+            let kind = if r.try_get::<String, _>("type").map_err(db)? == "view" {
                 ObjectKind::View
             } else {
                 ObjectKind::Table
@@ -139,31 +200,6 @@ impl SqlDriver for SqliteDriver {
         text_rows_to_batch(&cols, &rows)
     }
 
-    async fn run_query(&self, sql: &str, cap: usize) -> DResult<QueryResult> {
-        let start = std::time::Instant::now();
-        let described = self.pool.describe(sql).await.map_err(db)?;
-        let names: Vec<String> = described.columns().iter().map(|c| c.name().to_string()).collect();
-        if names.is_empty() {
-            return Ok(QueryResult {
-                batch: text_rows_to_batch(&[], &[])?,
-                truncated: false,
-                exec_ms: start.elapsed().as_millis() as u64,
-            });
-        }
-        let select_list = names
-            .iter()
-            .map(|c| format!("CAST({0} AS TEXT) AS {0}", quote_ident(c)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let q = format!("SELECT {select_list} FROM ({sql}) AS _q LIMIT ?1");
-        let mut rows = sqlx::query(&q).bind(cap as i64 + 1).fetch_all(&self.pool).await.map_err(db)?;
-        let truncated = rows.len() > cap;
-        if truncated {
-            rows.truncate(cap);
-        }
-        let batch = text_rows_to_batch(&names, &rows)?;
-        Ok(QueryResult { batch, truncated, exec_ms: start.elapsed().as_millis() as u64 })
-    }
 
     async fn primary_key(&self, _schema: &str, table: &str) -> DResult<Vec<String>> {
         let rows = sqlx::query(&format!("PRAGMA table_info({})", quote_ident(table)))
@@ -173,9 +209,9 @@ impl SqlDriver for SqliteDriver {
         let mut pk: Vec<(i64, String)> = rows
             .iter()
             .filter_map(|r| {
-                let p = r.get::<i64, _>("pk");
+                let p = r.try_get::<i64, _>("pk").unwrap_or(0);
                 if p > 0 {
-                    Some((p, r.get::<String, _>("name")))
+                    Some((p, r.try_get("name").unwrap_or_default()))
                 } else {
                     None
                 }
@@ -349,9 +385,11 @@ impl SqlDriver for SqliteDriver {
             for r in rows {
                 out.push(ForeignKey {
                     from_table: t.clone(),
-                    from_column: r.get("from"),
-                    to_table: r.get("table"),
-                    to_column: r.get("to"),
+                    from_column: r.try_get("from").unwrap_or_default(),
+                    to_table: r.try_get("table").unwrap_or_default(),
+                    // `PRAGMA foreign_key_list` returns NULL for `to` when the FK has no
+                    // explicit column list; keep it empty rather than failing the whole ERD.
+                    to_column: r.try_get::<Option<String>, _>("to").unwrap_or_default().unwrap_or_default(),
                 });
             }
         }
@@ -366,7 +404,7 @@ impl SqlDriver for SqliteDriver {
             .fetch_all(&self.pool)
             .await
             .map_err(db)?;
-        Ok(rows.iter().map(|r| r.get::<String, _>("name")).collect())
+        Ok(rows.iter().filter_map(|r| r.try_get::<String, _>("name").ok()).collect())
     }
 }
 

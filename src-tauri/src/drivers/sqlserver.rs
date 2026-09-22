@@ -16,8 +16,9 @@ use tokio::sync::Mutex;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
 use super::{
-    build_insert_sql, build_where_clause, ColumnFilter, ColumnInfo, CursorId, DResult, DriverError,
-    EditSpec, ForeignKey, ObjectInfo, ObjectKind, QueryResult, SchemaInfo, SchemaModel, SqlDriver,
+    build_insert_sql, build_where_clause, CancelToken, ColumnFilter, ColumnInfo, CursorId, DResult,
+    DriverError, EditSpec, ForeignKey, ObjectInfo, ObjectKind, QueryError, QueryResult, SchemaInfo,
+    SchemaModel, SqlDriver, StmtOutput,
 };
 
 type Conn = Client<Compat<TcpStream>>;
@@ -108,6 +109,57 @@ fn to_batch(columns: &[std::string::String], data: &[Vec<Option<std::string::Str
 
 #[async_trait]
 impl SqlDriver for SqlServerDriver {
+    // ponytail: stop-gap until Task 4. This loops the existing single-statement `query_text`
+    // path instead of streaming per statement, so it has no rows_affected, no error position
+    // and no notice, and DML/DDL go through a SELECT-shaped reader. Task 4 gives tiberius a
+    // real multi-statement execution path.
+    async fn run_statements(
+        &self,
+        stmts: &[String],
+        cap: usize,
+        _token: &CancelToken,
+    ) -> DResult<Vec<StmtOutput>> {
+        let mut outs = Vec::with_capacity(stmts.len());
+        for stmt in stmts {
+            let start = std::time::Instant::now();
+            match self.query_text(stmt).await {
+                Ok((cols, mut d)) => {
+                    let total = d.first().map(|c| c.len()).unwrap_or(0);
+                    let truncated = total > cap;
+                    if truncated {
+                        for c in d.iter_mut() {
+                            c.truncate(cap);
+                        }
+                    }
+                    let row_count = d.first().map(|c| c.len()).unwrap_or(0);
+                    let batch = to_batch(&cols, &d)?;
+                    outs.push(StmtOutput {
+                        columns: cols.iter().map(|c| (c.clone(), String::new())).collect(),
+                        batch: Some(batch),
+                        row_count,
+                        total_rows: total as u64,
+                        truncated,
+                        exec_ms: start.elapsed().as_millis() as u64,
+                        ..Default::default()
+                    });
+                }
+                Err(e) => {
+                    outs.push(StmtOutput {
+                        exec_ms: start.elapsed().as_millis() as u64,
+                        error: Some(QueryError {
+                            message: e.to_string(),
+                            line: None,
+                            position: None,
+                        }),
+                        ..Default::default()
+                    });
+                    break;
+                }
+            }
+        }
+        Ok(outs)
+    }
+
     async fn open_cursor(&self, sql: &str, _page_size: usize) -> DResult<CursorId> {
         let id = format!(
             "mssql-cur-{:x}",
