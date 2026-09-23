@@ -134,10 +134,14 @@ pub struct SchemaModel {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ForeignKey {
     /// Schema owning the referencing table — without it the UI mixes up same-named
-    /// tables in different schemas.
+    /// tables in different schemas. `serde(default)` so an older cached/plugin
+    /// payload without the field still deserializes (same as `ColumnInfo::pk`).
+    #[serde(default)]
     pub from_schema: String,
     pub from_table: String,
     pub from_column: String,
+    /// Schema owning the referenced table. `serde(default)`, as above.
+    #[serde(default)]
     pub to_schema: String,
     pub to_table: String,
     pub to_column: String,
@@ -793,5 +797,18 @@ mod order_by_tests {
         let c = vec!["we\"ird".to_string()];
         let s = build_order_by(&[key("we\"ird", false)], &[], &c, &pg_ident).unwrap();
         assert_eq!(s, " ORDER BY _t.\"we\"\"ird\"");
+    }
+
+    /// A payload written before the schema fields existed (a cached bundle, a
+    /// plugin) must still deserialize — the TS side documents them as optional.
+    #[test]
+    fn foreign_key_without_schemas_still_deserializes() {
+        let fk: super::ForeignKey = serde_json::from_str(
+            r#"{"from_table":"orders","from_column":"user_id","to_table":"users","to_column":"id"}"#,
+        )
+        .expect("a schema-less ForeignKey must deserialize");
+        assert_eq!(fk.from_schema, "");
+        assert_eq!(fk.to_schema, "");
+        assert_eq!(fk.from_table, "orders");
     }
 }

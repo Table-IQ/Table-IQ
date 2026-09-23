@@ -364,7 +364,13 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
           onFetchErrorRef.current?.(String(e));
           setVersion((v) => v + 1);
         })
-        .finally(() => inflight.current.delete(page));
+        .finally(() => {
+          // Generation-scoped like the handlers above: a stale fetch must not
+          // delete the in-flight marker the NEW source just put down for the same
+          // page, which would let a duplicate concurrent fetch through. The reset
+          // that bumped the generation already cleared the set.
+          if (gen === generation.current) inflight.current.delete(page);
+        });
     },
     [source, maybeAutoFit, applyColumns],
   );
