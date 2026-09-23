@@ -966,7 +966,9 @@ export function MainShell() {
               id: "show-in-diagram",
               label: "Show in diagram (ERD)",
               onSelect: () => {
-                setErdFocus(obj.name);
+                // The ERD keys its cards `schema.table`, so same-named tables in
+                // two schemas cannot be confused for one another.
+                setErdFocus(`${s}.${obj.name}`);
                 openErd();
               },
             },
