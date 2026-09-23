@@ -308,7 +308,13 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     generation.current += 1;
     failed.current.clear();
     inflight.current.clear();
+    // Server values win over anything still staged — the display would otherwise
+    // show an overlay value the "unsaved changes" bar no longer tracks.
     overlay.current.clear();
+    editState.current.clear();
+    pending.current = new Map();
+    notifyPending();
+    undoStack.current = [];
     setVersion((v) => v + 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source.version]);
