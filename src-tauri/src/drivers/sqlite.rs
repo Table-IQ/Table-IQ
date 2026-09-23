@@ -11,9 +11,10 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteQueryResult, S
 use sqlx::{Pool, Row, Sqlite};
 
 use super::{
-    build_insert_sql, build_order_by, build_where_clause, exec, CancelToken, ColumnFilter,
-    ColumnInfo, CursorId, DResult, DriverError, EditSpec, ForeignKey, ObjectInfo, ObjectKind,
-    QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver, StmtOutput,
+    build_insert_sql, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
+    ColumnFilter, ColumnInfo, CursorId, DResult, DriverError, EditSpec, ForeignKey, IndexInfo,
+    ObjectInfo, ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver,
+    StmtOutput, TableStructure, TriggerInfo,
 };
 
 /// Unwrap `sqlx::Error::Database` to the bare server message — sqlx otherwise prefixes it with
@@ -52,6 +53,26 @@ fn quote_ident(name: &str) -> String {
 /// just its position.
 fn sqlite_placeholder(i: usize, _col: &str) -> String {
     format!("?{i}")
+}
+
+/// `BEFORE INSERT` &c. read back out of a trigger's own DDL. SQLite stores no timing or
+/// event column anywhere — `sqlite_master.sql` is the only record of either.
+///
+/// ponytail: keyword scan of the header (everything before the first ` ON `), so a trigger
+/// *named* e.g. `x ON y` would confuse it. Upgrade path: a real DDL parse, if one ever lands.
+fn timing_event_of(sql: &str) -> String {
+    let head = sql.to_uppercase();
+    let head = head.split_once(" ON ").map_or(head.as_str(), |(h, _)| h);
+    // SQLite's default timing when the DDL omits it is BEFORE.
+    let timing = ["INSTEAD OF", "AFTER", "BEFORE"]
+        .into_iter()
+        .find(|k| head.contains(k))
+        .unwrap_or("BEFORE");
+    let event = ["INSERT", "UPDATE", "DELETE"].into_iter().find(|k| head.contains(k));
+    match event {
+        Some(e) => format!("{timing} {e}"),
+        None => timing.to_string(),
+    }
 }
 
 pub struct SqliteDriver {
@@ -401,6 +422,93 @@ impl SqlDriver for SqliteDriver {
                 }
             })
             .collect())
+    }
+
+    /// Structure tab via the table-valued PRAGMA functions. `schema` is ignored: SQLite has
+    /// one schema per file and the browser always reports it as `main`.
+    async fn describe_table(&self, _schema: &str, table: &str) -> DResult<TableStructure> {
+        let cols = sqlx::query(
+            "SELECT name, type AS data_type, \"notnull\", dflt_value, pk \
+             FROM pragma_table_info(?) ORDER BY cid",
+        )
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        // One row per index column part. `origin = 'pk'` is the implicit index SQLite
+        // builds for a (non-rowid) PRIMARY KEY. `sql` is NULL for those, hence the LEFT JOIN.
+        let idx = sqlx::query(
+            "SELECT l.name AS name, l.\"unique\" AS is_unique, l.origin AS origin, \
+                    i.name AS column_name, m.sql AS definition \
+             FROM pragma_index_list(?) l \
+             JOIN pragma_index_info(l.name) i \
+             LEFT JOIN sqlite_master m ON m.type = 'index' AND m.name = l.name \
+             ORDER BY (l.origin = 'pk') DESC, l.seq, i.seqno",
+        )
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        let trg = sqlx::query(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ? \
+             ORDER BY name",
+        )
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+
+        let mut indexes: Vec<IndexInfo> = Vec::new();
+        // index name -> position in `indexes`, so appending a key part is O(1).
+        let mut index_ix: HashMap<String, usize> = HashMap::new();
+        for r in &idx {
+            let name: String = r.try_get("name").map_err(db)?;
+            let i = match index_ix.get(&name) {
+                Some(i) => *i,
+                None => {
+                    indexes.push(IndexInfo {
+                        primary: r.try_get::<String, _>("origin").map_err(db)? == "pk",
+                        unique: r.try_get::<i64, _>("is_unique").map_err(db)? != 0,
+                        name: name.clone(),
+                        columns: Vec::new(),
+                        definition: r.try_get("definition").map_err(db)?,
+                    });
+                    index_ix.insert(name, indexes.len() - 1);
+                    indexes.len() - 1
+                }
+            };
+            indexes[i].columns.push(r.try_get("column_name").map_err(db)?);
+        }
+
+        Ok(TableStructure {
+            columns: cols
+                .iter()
+                .map(|r| {
+                    Ok(ColumnDetail {
+                        name: r.try_get("name").map_err(db)?,
+                        data_type: r.try_get("data_type").map_err(db)?,
+                        nullable: r.try_get::<i64, _>("notnull").map_err(db)? == 0,
+                        default: r.try_get("dflt_value").map_err(db)?,
+                        // `pk` is the 1-based position within the key, 0 for a non-key column.
+                        is_pk: r.try_get::<i64, _>("pk").map_err(db)? > 0,
+                        // SQLite has no comment facility at all.
+                        comment: None,
+                    })
+                })
+                .collect::<DResult<Vec<_>>>()?,
+            indexes,
+            triggers: trg
+                .iter()
+                .map(|r| {
+                    let sql: Option<String> = r.try_get("sql").map_err(db)?;
+                    Ok(TriggerInfo {
+                        name: r.try_get("name").map_err(db)?,
+                        timing_event: timing_event_of(sql.as_deref().unwrap_or_default()),
+                        definition: sql,
+                    })
+                })
+                .collect::<DResult<Vec<_>>>()?,
+        })
     }
 
     async fn list_databases(&self) -> DResult<Vec<String>> {

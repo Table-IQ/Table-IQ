@@ -10,9 +10,10 @@ use sqlx::mysql::{MySqlDatabaseError, MySqlPoolOptions, MySqlQueryResult, MySqlR
 use sqlx::{MySql, Pool, Row};
 
 use super::{
-    build_insert_sql, build_order_by, build_where_clause, exec, CancelToken, ColumnFilter,
-    ColumnInfo, CursorId, DResult, DriverError, EditSpec, ForeignKey, ObjectInfo, ObjectKind,
-    QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver, StmtOutput,
+    build_insert_sql, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
+    ColumnFilter, ColumnInfo, CursorId, DResult, DriverError, EditSpec, ForeignKey, IndexInfo,
+    ObjectInfo, ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver,
+    StmtOutput, TableStructure, TriggerInfo,
 };
 
 use std::collections::HashMap;
@@ -465,6 +466,114 @@ impl SqlDriver for MySqlDriver {
                 to_column: r.try_get("to_column").unwrap_or_default(),
             })
             .collect())
+    }
+
+    /// Structure tab, from `information_schema`. Schema + table are bound, never
+    /// interpolated; every catalog column is `CAST(… AS CHAR)`-aliased lowercase, as the
+    /// rest of this driver does, because the raw columns come back as binary strings.
+    async fn describe_table(&self, schema: &str, table: &str) -> DResult<TableStructure> {
+        let cols = sqlx::query(
+            "SELECT CAST(COLUMN_NAME AS CHAR) AS name, CAST(COLUMN_TYPE AS CHAR) AS data_type, \
+                    CAST(IS_NULLABLE AS CHAR) AS is_nullable, \
+                    CAST(COLUMN_DEFAULT AS CHAR) AS default_expr, \
+                    CAST(COLUMN_KEY AS CHAR) AS column_key, \
+                    CAST(COLUMN_COMMENT AS CHAR) AS comment \
+             FROM information_schema.columns \
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? \
+             ORDER BY ORDINAL_POSITION",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+
+        // One row per index *column part*, grouped below. PRIMARY sorts first so the key
+        // leads the list (Postgres orders the same way).
+        // ponytail: a functional key part has a NULL COLUMN_NAME (the expression lives in
+        // `EXPRESSION`, which MariaDB's statistics table lacks) — it is skipped rather than
+        // shown. Upgrade path: read EXPRESSION once the MySQL/MariaDB split is branched on.
+        let idx = sqlx::query(
+            "SELECT CAST(INDEX_NAME AS CHAR) AS name, CAST(COLUMN_NAME AS CHAR) AS column_name, \
+                    CAST(NON_UNIQUE AS CHAR) AS non_unique \
+             FROM information_schema.statistics \
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME IS NOT NULL \
+             ORDER BY (INDEX_NAME = 'PRIMARY') DESC, INDEX_NAME, SEQ_IN_INDEX",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+
+        let trg = sqlx::query(
+            "SELECT CAST(TRIGGER_NAME AS CHAR) AS name, \
+                    CONCAT(CAST(ACTION_TIMING AS CHAR), ' ', CAST(EVENT_MANIPULATION AS CHAR)) \
+                      AS timing_event, \
+                    CAST(ACTION_STATEMENT AS CHAR) AS definition \
+             FROM information_schema.triggers \
+             WHERE EVENT_OBJECT_SCHEMA = ? AND EVENT_OBJECT_TABLE = ? \
+             ORDER BY TRIGGER_NAME",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+
+        let mut indexes: Vec<IndexInfo> = Vec::new();
+        // index name -> position in `indexes`, so appending a key part is O(1).
+        let mut index_ix: HashMap<String, usize> = HashMap::new();
+        for r in &idx {
+            let name: String = r.try_get("name").map_err(db)?;
+            let i = match index_ix.get(&name) {
+                Some(i) => *i,
+                None => {
+                    indexes.push(IndexInfo {
+                        primary: name == "PRIMARY",
+                        unique: r.try_get::<String, _>("non_unique").map_err(db)? == "0",
+                        name: name.clone(),
+                        columns: Vec::new(),
+                        // MySQL exposes no per-index DDL (only SHOW CREATE TABLE, whole).
+                        definition: None,
+                    });
+                    index_ix.insert(name, indexes.len() - 1);
+                    indexes.len() - 1
+                }
+            };
+            indexes[i].columns.push(r.try_get("column_name").map_err(db)?);
+        }
+
+        Ok(TableStructure {
+            columns: cols
+                .iter()
+                .map(|r| {
+                    Ok(ColumnDetail {
+                        name: r.try_get("name").map_err(db)?,
+                        data_type: r.try_get("data_type").map_err(db)?,
+                        nullable: r.try_get::<String, _>("is_nullable").map_err(db)? == "YES",
+                        default: r.try_get("default_expr").map_err(db)?,
+                        is_pk: r.try_get::<String, _>("column_key").map_err(db)? == "PRI",
+                        // MySQL stores '' for "no comment"; the UI wants None.
+                        comment: r
+                            .try_get::<Option<String>, _>("comment")
+                            .map_err(db)?
+                            .filter(|c| !c.is_empty()),
+                    })
+                })
+                .collect::<DResult<Vec<_>>>()?,
+            indexes,
+            triggers: trg
+                .iter()
+                .map(|r| {
+                    Ok(TriggerInfo {
+                        name: r.try_get("name").map_err(db)?,
+                        timing_event: r.try_get("timing_event").map_err(db)?,
+                        definition: r.try_get("definition").map_err(db)?,
+                    })
+                })
+                .collect::<DResult<Vec<_>>>()?,
+        })
     }
 
     async fn list_databases(&self) -> DResult<Vec<String>> {
