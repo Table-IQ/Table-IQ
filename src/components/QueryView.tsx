@@ -339,6 +339,9 @@ export function QueryView({
 
   const statusText = () => {
     if (error) return <span className="truncate text-danger">{error}</span>;
+    // The plan replaces the results pane, so the previous run's outcome would
+    // read as this one's.
+    if (plan !== null) return <span>Query plan</span>;
     if (running) {
       return (
         <span className="text-muted">
@@ -553,7 +556,15 @@ export function QueryView({
         left={
           <>
             <StatusDot
-              tone={error || failedMeta ? "danger" : running ? "warn" : selectedMeta ? "ok" : "muted"}
+              tone={
+                error || (plan === null && failedMeta)
+                  ? "danger"
+                  : running
+                    ? "warn"
+                    : selectedMeta || plan !== null
+                      ? "ok"
+                      : "muted"
+              }
             />
             {statusText()}
           </>
