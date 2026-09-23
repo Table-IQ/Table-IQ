@@ -356,36 +356,51 @@ impl SqlDriver for SqliteDriver {
         Ok(q.execute(&self.pool).await.map_err(db)?.rows_affected())
     }
 
-    /// FK edges via `PRAGMA foreign_key_list(<table>)` for each user table.
-    /// SQLite has no central FK catalog, so we iterate sqlite_master and union.
+    /// FK edges via the `pragma_foreign_key_list` table-valued function, joined to
+    /// `sqlite_master` so one query covers every user table. `id` groups a composite
+    /// key's columns and `seq` orders them.
     async fn foreign_keys(&self) -> DResult<Vec<ForeignKey>> {
-        let tables: Vec<String> = sqlx::query_scalar(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+        // `REFERENCES parent` with no column list leaves `to` NULL: it means "the
+        // parent's primary key", matched positionally — pragma_table_info.pk is the
+        // 1-based position within that key, so `seq + 1` is this column's target.
+        let rows = sqlx::query(
+            "SELECT m.name AS from_table, f.id AS fk_id, f.\"from\" AS from_column, \
+                    f.\"table\" AS to_table, \
+                    COALESCE(f.\"to\", \
+                             (SELECT p.name FROM pragma_table_info(f.\"table\") p \
+                               WHERE p.pk = f.seq + 1)) AS to_column \
+             FROM sqlite_master m \
+             JOIN pragma_foreign_key_list(m.name) f \
+             WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%' \
+             ORDER BY m.name, f.id, f.seq",
         )
         .fetch_all(&self.pool)
         .await
         .map_err(db)?;
-        let mut out: Vec<ForeignKey> = Vec::new();
-        for t in tables {
-            let rows = sqlx::query(&format!("PRAGMA foreign_key_list({})", quote_ident(&t)))
-                .fetch_all(&self.pool)
-                .await
-                .map_err(db)?;
-            for r in rows {
-                out.push(ForeignKey {
+        Ok(rows
+            .iter()
+            .map(|r| {
+                let from_table: String = r.try_get("from_table").unwrap_or_default();
+                let fk_id: i64 = r.try_get("fk_id").unwrap_or_default();
+                ForeignKey {
+                    // ponytail: SQLite's pragma exposes no constraint name, so we
+                    // synthesize a stable one from (table, fk id). Enough to group a
+                    // composite key into one ERD edge; it is not the DDL's name.
+                    constraint: format!("fk_{from_table}_{fk_id}"),
                     // SQLite has one schema per attached file; the browser reports `main`.
                     from_schema: "main".into(),
-                    from_table: t.clone(),
-                    from_column: r.try_get("from").unwrap_or_default(),
+                    from_table,
+                    from_column: r.try_get("from_column").unwrap_or_default(),
                     to_schema: "main".into(),
-                    to_table: r.try_get("table").unwrap_or_default(),
-                    // `PRAGMA foreign_key_list` returns NULL for `to` when the FK has no
-                    // explicit column list; keep it empty rather than failing the whole ERD.
-                    to_column: r.try_get::<Option<String>, _>("to").unwrap_or_default().unwrap_or_default(),
-                });
-            }
-        }
-        Ok(out)
+                    to_table: r.try_get("to_table").unwrap_or_default(),
+                    // Still possible to be empty: a parent with no primary key at all.
+                    to_column: r
+                        .try_get::<Option<String>, _>("to_column")
+                        .unwrap_or_default()
+                        .unwrap_or_default(),
+                }
+            })
+            .collect())
     }
 
     async fn list_databases(&self) -> DResult<Vec<String>> {

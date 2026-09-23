@@ -432,9 +432,12 @@ impl SqlDriver for MySqlDriver {
 
     /// FK edges for ERD + cell-level "go to referenced row." Filtered to the active
     /// database; non-FK constraints are excluded via the join to referential_constraints.
+    /// Ordered by constraint then ordinal position, so a composite key's column pairs
+    /// arrive in key order and the ERD can group them into one edge.
     async fn foreign_keys(&self) -> DResult<Vec<ForeignKey>> {
         let rows = sqlx::query(
-            "SELECT CAST(kcu.TABLE_SCHEMA AS CHAR) AS from_schema, \
+            "SELECT CAST(kcu.CONSTRAINT_NAME AS CHAR) AS constraint_name, \
+                    CAST(kcu.TABLE_SCHEMA AS CHAR) AS from_schema, \
                     CAST(kcu.TABLE_NAME AS CHAR) AS from_table, CAST(kcu.COLUMN_NAME AS CHAR) AS from_column, \
                     CAST(kcu.REFERENCED_TABLE_SCHEMA AS CHAR) AS to_schema, \
                     CAST(kcu.REFERENCED_TABLE_NAME AS CHAR) AS to_table, \
@@ -444,7 +447,8 @@ impl SqlDriver for MySqlDriver {
                ON rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME \
               AND rc.CONSTRAINT_SCHEMA = kcu.TABLE_SCHEMA \
              WHERE kcu.TABLE_SCHEMA = DATABASE() \
-               AND kcu.REFERENCED_TABLE_NAME IS NOT NULL",
+               AND kcu.REFERENCED_TABLE_NAME IS NOT NULL \
+             ORDER BY kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.ORDINAL_POSITION",
         )
         .fetch_all(&self.pool)
         .await
@@ -452,6 +456,7 @@ impl SqlDriver for MySqlDriver {
         Ok(rows
             .iter()
             .map(|r| ForeignKey {
+                constraint: r.try_get("constraint_name").unwrap_or_default(),
                 from_schema: r.try_get("from_schema").unwrap_or_default(),
                 from_table: r.try_get("from_table").unwrap_or_default(),
                 from_column: r.try_get("from_column").unwrap_or_default(),

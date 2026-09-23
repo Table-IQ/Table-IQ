@@ -512,10 +512,13 @@ impl SqlDriver for SqlServerDriver {
         Ok(res.total())
     }
 
-    /// FK edges via the `sys.foreign_keys` catalog (joined for column + table names).
+    /// FK edges via the `sys.foreign_keys` catalog (joined for column + table names),
+    /// ordered by constraint then `constraint_column_id` so a composite key's pairs
+    /// arrive in key order.
     /// All metadata returned as Utf8 strings, matching how the rest of the driver renders.
     async fn foreign_keys(&self) -> DResult<Vec<ForeignKey>> {
-        let sql = "SELECT sp.name AS from_schema, tp.name AS from_table, cp.name AS from_column, \
+        let sql = "SELECT fk.name AS constraint_name, \
+                          sp.name AS from_schema, tp.name AS from_table, cp.name AS from_column, \
                           sr.name AS to_schema,   tr.name AS to_table,   cr.name AS to_column \
                    FROM sys.foreign_keys fk \
                    JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id \
@@ -524,17 +527,19 @@ impl SqlDriver for SqlServerDriver {
                    JOIN sys.columns cp ON fkc.parent_object_id     = cp.object_id AND fkc.parent_column_id     = cp.column_id \
                    JOIN sys.tables  tr ON fkc.referenced_object_id = tr.object_id \
                    JOIN sys.schemas sr ON tr.schema_id             = sr.schema_id \
-                   JOIN sys.columns cr ON fkc.referenced_object_id = cr.object_id AND fkc.referenced_column_id = cr.column_id";
+                   JOIN sys.columns cr ON fkc.referenced_object_id = cr.object_id AND fkc.referenced_column_id = cr.column_id \
+                   ORDER BY sp.name, tp.name, fk.name, fkc.constraint_column_id";
         let (_cols, rows) = self.query_text(sql).await?;
         Ok(rows
             .into_iter()
             .map(|r| ForeignKey {
-                from_schema: r[0].clone().unwrap_or_default(),
-                from_table: r[1].clone().unwrap_or_default(),
-                from_column: r[2].clone().unwrap_or_default(),
-                to_schema: r[3].clone().unwrap_or_default(),
-                to_table: r[4].clone().unwrap_or_default(),
-                to_column: r[5].clone().unwrap_or_default(),
+                constraint: r[0].clone().unwrap_or_default(),
+                from_schema: r[1].clone().unwrap_or_default(),
+                from_table: r[2].clone().unwrap_or_default(),
+                from_column: r[3].clone().unwrap_or_default(),
+                to_schema: r[4].clone().unwrap_or_default(),
+                to_table: r[5].clone().unwrap_or_default(),
+                to_column: r[6].clone().unwrap_or_default(),
             })
             .collect())
     }

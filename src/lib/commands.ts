@@ -950,6 +950,9 @@ export async function generateDdl(engine: Engine, req: DdlRequest): Promise<stri
 }
 
 export interface ForeignKey {
+  /** Constraint name. A composite key arrives as one row per column pair, all sharing
+   *  it — the ERD groups on it to draw one edge. Optional (Rust `#[serde(default)]`). */
+  constraint?: string;
   /** Owning schema. Optional: older payloads / the browser mock omit it (Rust `#[serde(default)]`). */
   from_schema?: string;
   from_table: string;
@@ -963,6 +966,7 @@ export async function foreignKeys(id: string): Promise<ForeignKey[]> {
   if (!inTauri())
     return [
       {
+        constraint: "wide_nullable_int_fkey",
         from_schema: "public",
         from_table: "wide",
         from_column: "nullable_int",

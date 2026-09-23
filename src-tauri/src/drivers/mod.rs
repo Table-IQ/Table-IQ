@@ -130,9 +130,14 @@ pub struct SchemaModel {
     pub schemas: Vec<SchemaInfo>,
 }
 
-/// A foreign-key relationship (for the ERD).
+/// One column pair of a foreign-key relationship (for the ERD). A composite key
+/// yields one row per column pair, all sharing `constraint`, in key order.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ForeignKey {
+    /// Constraint name. The ERD groups rows by it so a composite key draws one
+    /// edge, not one per column. `serde(default)` so an older payload still loads.
+    #[serde(default)]
+    pub constraint: String,
     /// Schema owning the referencing table — without it the UI mixes up same-named
     /// tables in different schemas. `serde(default)` so an older cached/plugin
     /// payload without the field still deserializes (same as `ColumnInfo::pk`).
@@ -809,6 +814,7 @@ mod order_by_tests {
         .expect("a schema-less ForeignKey must deserialize");
         assert_eq!(fk.from_schema, "");
         assert_eq!(fk.to_schema, "");
+        assert_eq!(fk.constraint, "");
         assert_eq!(fk.from_table, "orders");
     }
 }

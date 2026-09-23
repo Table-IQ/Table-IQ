@@ -625,20 +625,26 @@ impl SqlDriver for PgDriver {
         Ok(res.rows_affected())
     }
 
+    /// FK edges straight off `pg_constraint`. `information_schema` cannot express a
+    /// composite key: its `key_column_usage`/`constraint_column_usage` join has no
+    /// ordinal key, so a 2-column FK came back as a 4-row cross product. Unnesting
+    /// `conkey`/`confkey` together WITH ORDINALITY pairs them by position instead.
     async fn foreign_keys(&self) -> DResult<Vec<super::ForeignKey>> {
         let rows = sqlx::query(
-            "SELECT tc.table_schema AS from_schema, tc.table_name AS from_table, \
-                    kcu.column_name AS from_column, \
-                    ccu.table_schema AS to_schema, ccu.table_name AS to_table, \
-                    ccu.column_name AS to_column \
-             FROM information_schema.table_constraints tc \
-             JOIN information_schema.key_column_usage kcu \
-               ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema \
-             JOIN information_schema.constraint_column_usage ccu \
-               ON ccu.constraint_name = tc.constraint_name \
-              AND ccu.constraint_schema = tc.constraint_schema \
-             WHERE tc.constraint_type = 'FOREIGN KEY' \
-               AND tc.table_schema NOT IN ('pg_catalog', 'information_schema')",
+            "SELECT c.conname AS constraint_name, \
+                    fs.nspname AS from_schema, ft.relname AS from_table, fa.attname AS from_column, \
+                    ts.nspname AS to_schema,   tt.relname AS to_table,   ta.attname AS to_column \
+             FROM pg_constraint c \
+             JOIN pg_class ft ON ft.oid = c.conrelid \
+             JOIN pg_namespace fs ON fs.oid = ft.relnamespace \
+             JOIN pg_class tt ON tt.oid = c.confrelid \
+             JOIN pg_namespace ts ON ts.oid = tt.relnamespace \
+             CROSS JOIN LATERAL unnest(c.conkey, c.confkey) WITH ORDINALITY AS k(fromattnum, toattnum, ord) \
+             JOIN pg_attribute fa ON fa.attrelid = c.conrelid AND fa.attnum = k.fromattnum \
+             JOIN pg_attribute ta ON ta.attrelid = c.confrelid AND ta.attnum = k.toattnum \
+             WHERE c.contype = 'f' \
+               AND fs.nspname NOT IN ('pg_catalog', 'information_schema') \
+             ORDER BY fs.nspname, ft.relname, c.conname, k.ord",
         )
         .fetch_all(&self.pool)
         .await
@@ -646,6 +652,7 @@ impl SqlDriver for PgDriver {
         Ok(rows
             .iter()
             .map(|r| super::ForeignKey {
+                constraint: r.try_get("constraint_name").unwrap_or_default(),
                 from_schema: r.try_get("from_schema").unwrap_or_default(),
                 from_table: r.try_get("from_table").unwrap_or_default(),
                 from_column: r.try_get("from_column").unwrap_or_default(),
