@@ -59,8 +59,14 @@ describe("quoteIdent per engine", () => {
     expect(quoteIdent("we]ird", "sqlserver")).toBe("[we]]ird]");
   });
 
+  it("escapes embedded double quotes on Postgres and SQLite", () => {
+    expect(quoteIdent('we"ird', "postgres")).toBe('"we""ird"');
+    expect(quoteIdent('we"ird', "sqlite")).toBe('"we""ird"');
+  });
+
   it("defaults to double quotes when no engine is given", () => {
     expect(quoteIdent("users")).toBe('"users"');
+    expect(quoteIdent('we"ird')).toBe('"we""ird"');
   });
 });
 

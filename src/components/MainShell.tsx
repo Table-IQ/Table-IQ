@@ -994,7 +994,10 @@ export function MainShell() {
                 openQuery(
                   engine === "postgres"
                     ? `CREATE TABLE ${q(s)}.${q(`${obj.name}_copy`)} (LIKE ${qualified} INCLUDING ALL);`
-                    : `CREATE TABLE ${q(s)}.${q(`${obj.name}_copy`)} AS SELECT * FROM ${qualified};`,
+                    : engine === "sqlserver"
+                      ? // T-SQL has no CREATE TABLE … AS SELECT; SELECT … INTO is the idiom.
+                        `SELECT * INTO ${q(s)}.${q(`${obj.name}_copy`)} FROM ${qualified};`
+                      : `CREATE TABLE ${q(s)}.${q(`${obj.name}_copy`)} AS SELECT * FROM ${qualified};`,
                 ),
             },
             {

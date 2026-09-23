@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveTheme, gridTheme, gridRowTints, editTints } from "./theme";
+import { resolveTheme, gridTheme, gridRowTints, editTints, nullCellStyle } from "./theme";
 
 describe("resolveTheme", () => {
   it("returns the explicit choice for light/dark", () => {
@@ -55,5 +55,22 @@ describe("editTints", () => {
     const d = editTints("dark");
     expect(new Set([d.saving, d.saved, d.error]).size).toBe(3);
     expect(l.saved).not.toBe(d.saved);
+  });
+});
+
+describe("nullCellStyle", () => {
+  it("dims and italicises the NULL placeholder in both modes", () => {
+    for (const mode of ["light", "dark"] as const) {
+      const s = nullCellStyle(mode);
+      expect(s.baseFontStyle).toContain("italic");
+      // Same muted colour for both of glide's text slots, and never the body text.
+      expect(s.textDark).toBe(s.textLight);
+      expect(s.textDark).not.toBe(gridTheme(mode).textDark);
+    }
+  });
+
+  it("uses the mode's own muted tone", () => {
+    expect(nullCellStyle("light").textDark).toBe("#71717a");
+    expect(nullCellStyle("dark").textDark).toBe("#71757e");
   });
 });
