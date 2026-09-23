@@ -332,9 +332,26 @@ export function MainShell() {
     { id: "n-group", label: "New Group / Role…", onSelect: () => newQueryWith(`CREATE ROLE "new_group";`) },
   ];
 
-  const renderActive = () => {
-    if (!activeTab) {
-      return (
+  // Every query tab stays mounted and is hidden with `display:none` when inactive,
+  // so its editor text, undo history, results and scroll position survive a tab
+  // switch (TablePlus parity). Table/ERD tabs render only while active — their
+  // state is cheap to rebuild and each one holds a server-side cursor.
+  const renderActive = () => (
+    <>
+      {tabs
+        .filter((t) => t.kind === "query")
+        .map((t) => (
+          <div key={t.key} className={t.key === activeKey ? "h-full" : "hidden"}>
+            <QueryView
+              connId={active.id}
+              tabKey={t.key}
+              initialSql={t.sql}
+              engine={active.engine as Engine}
+              active={t.key === activeKey}
+            />
+          </div>
+        ))}
+      {!activeTab && (
         <div className="flex h-full items-center justify-center">
           <div className="max-w-md text-center">
             <Wordmark className="mb-3 justify-center text-base" />
@@ -345,16 +362,23 @@ export function MainShell() {
             </div>
           </div>
         </div>
-      );
-    }
-    if (activeTab.kind === "query") return <QueryView connId={active.id} />;
-    if (activeTab.kind === "erd") return <ErdView connId={active.id} schema={schema} focusTable={erdFocus} />;
-    return activeObj ? (
-      <TableView connId={active.id} schema={activeTab.schema!} object={activeObj} />
-    ) : (
-      <div className="p-6 text-sm text-muted">Table not found.</div>
-    );
-  };
+      )}
+      {activeTab?.kind === "erd" && (
+        <ErdView connId={active.id} schema={schema} focusTable={erdFocus} />
+      )}
+      {activeTab?.kind === "table" &&
+        (activeObj ? (
+          <TableView
+            key={activeTab.key}
+            connId={active.id}
+            schema={activeTab.schema!}
+            object={activeObj}
+          />
+        ) : (
+          <div className="p-6 text-sm text-muted">Table not found.</div>
+        ))}
+    </>
+  );
 
   // Breadcrumb: TablePlus-style monospace strip — no border / bg, just dim · separators
   // and a brighter active-table segment. Compact (h-5) so it fits the 32px titlebar.

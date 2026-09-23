@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { DataGrid, type GridSource } from "./DataGrid";
 import { SqlEditor, type SqlEditorHandle } from "./SqlEditor";
 import { AiSettings } from "./AiSettings";
 import { PlanView } from "./PlanView";
@@ -7,12 +6,20 @@ import { QueryLibraryPanel } from "./QueryLibraryPanel";
 import { ChartView } from "./ChartView";
 import { PluginsPanel } from "./PluginsPanel";
 import { DiffResultsView } from "./DiffResultsView";
+import { MESSAGES_KEY, QueryResults } from "./QueryResults";
 import { useResults } from "../state/resultsStore";
 import { useConnections } from "../state/connectionStore";
+import { useTabs } from "../state/tabsStore";
 import { oneLine } from "../lib/history";
 import { schemaModelToCompletionMap } from "../lib/schemaCompletion";
-import { extractRunTarget } from "../lib/sqlSelection";
-import { splitStatements, type SqlDialect } from "../lib/sqlSplit";
+import { splitStatements, statementAt, type SqlDialect } from "../lib/sqlSplit";
+import {
+  explainStatement,
+  resultTabs,
+  rowCountLabel,
+  transactionKeywords,
+  type RunItem,
+} from "../lib/queryResults";
 import {
   aiEgressPreview,
   aiExplainSql,
@@ -23,16 +30,15 @@ import {
   downloadText,
   explainQuery,
   exportResult,
-  fetchResultWindow,
   runQuery,
-  runScript,
   type Engine,
   type ExportFormat,
-  type QueryResultMeta,
+  type StatementResultMeta,
 } from "../lib/commands";
 import { Toolbar, ToolbarButton, ToolbarDivider, ToolbarSpacer } from "./ui/Toolbar";
 import { StatusBar, StatusDot } from "./ui/StatusBar";
 import { Chip } from "./ui/Chip";
+import { ResizeHandle, clampWidth } from "./ui/ResizeHandle";
 import {
   IconAi,
   IconChevron,
@@ -40,26 +46,65 @@ import {
   IconExport,
   IconPlay,
   IconPlugins,
-  IconRefresh,
   IconStop,
 } from "./ui/Icon";
 
-export function QueryView({ connId }: { connId: string }) {
-  const sqlRef = useRef("SELECT * FROM information_schema.tables LIMIT 100;");
+/** Engine-neutral first line of a fresh query tab — runs on every engine. */
+export const STARTER_SQL = "SELECT 1;";
+
+const EDITOR_H_KEY = "tiq:layout:queryEditorH";
+const EDITOR_H_MIN = 72;
+const EDITOR_H_MAX = 700;
+const EDITOR_H_DEFAULT = 176;
+
+/** One finished run: what was sent, what came back, and the document it came from. */
+interface RunState {
+  items: RunItem[];
+  metas: StatementResultMeta[];
+  doc: string;
+}
+
+function readEditorHeight(): number {
+  if (typeof window === "undefined") return EDITOR_H_DEFAULT;
+  const n = Number(window.localStorage.getItem(EDITOR_H_KEY));
+  return Number.isFinite(n) && n > 0 ? clampWidth(n, EDITOR_H_MIN, EDITOR_H_MAX) : EDITOR_H_DEFAULT;
+}
+
+export function QueryView({
+  connId,
+  tabKey,
+  initialSql,
+  engine,
+  active,
+}: {
+  connId: string;
+  /** Tab identity — the SQL is persisted back onto this tab. */
+  tabKey: string;
+  initialSql?: string;
+  engine?: Engine;
+  /** False while this tab is mounted but hidden: no window-level shortcuts. */
+  active: boolean;
+}) {
+  const sqlRef = useRef(initialSql ?? STARTER_SQL);
   const editorRef = useRef<SqlEditorHandle>(null);
-  const [meta, setMeta] = useState<QueryResultMeta | null>(null);
+  const [run, setRun] = useState<RunState | null>(null);
+  const [selectedKey, setSelectedKey] = useState<string>(MESSAGES_KEY);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  // Mirrored in a ref so the run guard and the window shortcut read the live value.
+  const runningRef = useRef(false);
+  const runSeq = useRef(0);
   const runningQueryId = useRef<string | null>(null);
-  const [txStatus, setTxStatus] = useState<string | null>(null);
+  const [cancelling, setCancelling] = useState(false);
   const [plan, setPlan] = useState<string | null>(null);
-  const [drawer, setDrawer] = useState<"none" | "library" | "chart" | "plugins" | "diff" | "ai" | "aisettings">(
-    "none",
-  );
+  const [editorH, setEditorH] = useState<number>(readEditorHeight);
+  const [drawer, setDrawer] = useState<
+    "none" | "library" | "chart" | "plugins" | "diff" | "ai" | "aisettings"
+  >("none");
   const recordResult = useResults((s) => s.record);
   const recentCount = useResults((s) => s.recents.length);
+  const setTabSql = useTabs((s) => s.setTabSql);
   const schemaModel = useConnections((s) => s.schema);
-  const engine = useConnections((s) => s.active?.engine) as Engine | undefined;
   const completionSchema = useMemo(
     () => schemaModelToCompletionMap(schemaModel),
     [schemaModel],
@@ -69,22 +114,191 @@ export function QueryView({ connId }: { connId: string }) {
   const sqlDialect: SqlDialect =
     engine === "mysql" || engine === "sqlite" || engine === "sqlserver" ? engine : "postgres";
 
-  // One-shot starter SQL (used by the ObjectTree "New Query Selecting…" context item).
-  // Fires at most once per QueryView mount.
   useEffect(() => {
-    const onStarter = (e: Event) => {
-      const sql = (e as CustomEvent<string>).detail;
-      if (!sql) return;
-      sqlRef.current = sql;
-      editorRef.current?.setText(sql);
-    };
-    window.addEventListener("tiq:starter-sql", onStarter);
-    return () => window.removeEventListener("tiq:starter-sql", onStarter);
-  }, []);
+    window.localStorage.setItem(EDITOR_H_KEY, String(editorH));
+  }, [editorH]);
+
+  // Editor text lives on the tab so it survives switching tabs and a reload.
+  // Debounced ~300ms: persisting on every keystroke would rewrite localStorage
+  // (MainShell mirrors the whole tab slice) on every character.
+  const saveTimer = useRef<number | undefined>(undefined);
+  const onSqlChange = useCallback(
+    (v: string) => {
+      sqlRef.current = v;
+      if (saveTimer.current !== undefined) window.clearTimeout(saveTimer.current);
+      saveTimer.current = window.setTimeout(() => setTabSql(tabKey, v), 300);
+    },
+    [setTabSql, tabKey],
+  );
+  useEffect(
+    () => () => {
+      if (saveTimer.current !== undefined) window.clearTimeout(saveTimer.current);
+    },
+    [],
+  );
+
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
   const [egress, setEgress] = useState<string | null>(null);
   const [explanation, setExplanation] = useState<string | null>(null);
+
+  const tabs = useMemo(() => resultTabs(run?.metas ?? []), [run]);
+  const selectedMeta = useMemo(() => {
+    const t = tabs.find((x) => x.resultId === selectedKey);
+    return t ? (run?.metas.find((m) => m.index === t.metaIndex) ?? null) : null;
+  }, [tabs, selectedKey, run]);
+  const failedMeta = run?.metas.find((m) => m.error) ?? null;
+
+  const setEditorText = useCallback(
+    (sql: string) => {
+      sqlRef.current = sql;
+      editorRef.current?.setText(sql);
+      setTabSql(tabKey, sql);
+    },
+    [setTabSql, tabKey],
+  );
+
+  /** The statements a run should send: the selection, the statement under the
+   *  cursor, or (when `all`) every statement in the document. */
+  const targetItems = useCallback(
+    (all: boolean): RunItem[] => {
+      const doc = editorRef.current?.getDoc() ?? sqlRef.current;
+      const stmts = splitStatements(doc, sqlDialect);
+      if (all) return stmts.map((s) => ({ text: s.text, stmt: s }));
+      const sel = editorRef.current?.getSelection() ?? { from: doc.length, to: doc.length };
+      if (sel.from !== sel.to) {
+        const raw = doc.slice(sel.from, sel.to);
+        const from = sel.from + (raw.length - raw.trimStart().length);
+        const text = raw.trim();
+        return text ? [{ text, stmt: { text, from, to: from + text.length } }] : [];
+      }
+      const s = statementAt(stmts, sel.from);
+      return s ? [{ text: s.text, stmt: s }] : [];
+    },
+    [sqlDialect],
+  );
+
+  const runItems = useCallback(
+    async (items: RunItem[]) => {
+      if (items.length === 0 || runningRef.current) return;
+      const doc = editorRef.current?.getDoc() ?? sqlRef.current;
+      const seq = ++runSeq.current;
+      runningRef.current = true;
+      setRunning(true);
+      setCancelling(false);
+      setError(null);
+      setPlan(null);
+      const queryId = crypto.randomUUID();
+      runningQueryId.current = queryId;
+      try {
+        const metas = await runQuery(
+          connId,
+          items.map((i) => i.text),
+          queryId,
+        );
+        if (seq !== runSeq.current) return; // stale completion — a newer run owns the pane
+        setRun({ items, metas, doc });
+        const next = resultTabs(metas);
+        setSelectedKey(next.length ? next[0].resultId : MESSAGES_KEY);
+        for (const t of next) {
+          recordResult({
+            resultId: t.resultId,
+            label: oneLine(items[t.metaIndex]?.text ?? "", 50),
+            ts: Date.now() / 1000,
+          });
+        }
+      } catch (e) {
+        if (seq !== runSeq.current) return;
+        setError(String(e));
+        setRun(null);
+      } finally {
+        if (seq === runSeq.current) {
+          runningRef.current = false;
+          setRunning(false);
+          setCancelling(false);
+          runningQueryId.current = null;
+        }
+      }
+    },
+    [connId, recordResult],
+  );
+
+  // ⌘↵ — the selection, or the statement under the cursor.
+  const runOne = useCallback(() => void runItems(targetItems(false)), [runItems, targetItems]);
+  // ⇧⌘↵ — every statement in the document.
+  const runAll = useCallback(() => void runItems(targetItems(true)), [runItems, targetItems]);
+
+  // ⌘↵ should run from anywhere in the query tab, not only when the SQL editor is
+  // focused (TablePlus parity). When the editor IS focused, CodeMirror's Mod-Enter
+  // keymap handles it and calls preventDefault — so we bail on defaultPrevented to
+  // avoid a double-run. Typing in another input (e.g. the AI prompt) is left alone.
+  useEffect(() => {
+    if (!active) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.key !== "Enter" || e.shiftKey) return;
+      if (e.defaultPrevented || runningRef.current) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+      e.preventDefault();
+      runOne();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [active, runOne]);
+
+  const cancel = useCallback(async () => {
+    const queryId = runningQueryId.current;
+    if (!queryId) return;
+    setCancelling(true);
+    try {
+      await cancelQuery(connId, queryId);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [connId]);
+
+  // TablePlus's "Run in transaction": the same statements, wrapped. The backend
+  // rolls back on error and reports it as a notice, so the results pane shows
+  // both the failing statement and the rollback.
+  const runInTx = useCallback(() => {
+    const items = targetItems(true);
+    if (items.length === 0) return;
+    const { begin, commit } = transactionKeywords(engine ?? "postgres");
+    void runItems([{ text: begin }, ...items, { text: commit }]);
+  }, [engine, runItems, targetItems]);
+
+  const explain = useCallback(async () => {
+    const item = targetItems(false)[0];
+    if (!item) return;
+    const asGrid = explainStatement(item.text, engine ?? "postgres");
+    if (asGrid) {
+      // MySQL / SQLite return the plan as an ordinary result set.
+      void runItems([{ text: asGrid, stmt: item.stmt }]);
+      return;
+    }
+    if (engine === "sqlserver") return; // no supported plan shape — button is hidden
+    if (runningRef.current) return;
+    runningRef.current = true;
+    setRunning(true);
+    setError(null);
+    try {
+      setPlan(await explainQuery(connId, item.text));
+    } catch (e) {
+      setError(`EXPLAIN: ${e}`);
+    } finally {
+      runningRef.current = false;
+      setRunning(false);
+    }
+  }, [connId, engine, runItems, targetItems]);
+
+  const doExport = useCallback(
+    async (fmt: ExportFormat) => {
+      if (!selectedMeta?.resultId) return;
+      const text = await exportResult(selectedMeta.resultId, fmt);
+      downloadText(`result.${fmt}`, text, fmt === "json" ? "application/json" : "text/csv");
+    },
+    [selectedMeta],
+  );
 
   const aiPreview = useCallback(async () => {
     setEgress(await aiEgressPreview(connId).catch((e) => `error: ${e}`));
@@ -95,212 +309,90 @@ export function QueryView({ connId }: { connId: string }) {
     setAiBusy(true);
     setError(null);
     try {
-      const generated = await aiGenerateSql(connId, aiPrompt);
-      sqlRef.current = generated;
-      editorRef.current?.setText(generated);
+      setEditorText(await aiGenerateSql(connId, aiPrompt));
     } catch (e) {
       setError(`AI: ${e}`);
     } finally {
       setAiBusy(false);
     }
-  }, [connId, aiPrompt]);
+  }, [connId, aiPrompt, setEditorText]);
 
   const aiAction = useCallback(
     async (kind: "explain" | "optimize" | "fix") => {
-      const sql = sqlRef.current;
+      const sql = editorRef.current?.getDoc() ?? sqlRef.current;
       if (!sql.trim()) return;
       setAiBusy(true);
       setError(null);
       setExplanation(null);
       try {
         if (kind === "explain") setExplanation(await aiExplainSql(connId, sql));
-        else if (kind === "optimize") {
-          const out = await aiOptimizeSql(connId, sql);
-          sqlRef.current = out;
-          editorRef.current?.setText(out);
-        } else {
-          const out = await aiFixSql(connId, sql, error ?? "");
-          sqlRef.current = out;
-          editorRef.current?.setText(out);
-        }
+        else if (kind === "optimize") setEditorText(await aiOptimizeSql(connId, sql));
+        else setEditorText(await aiFixSql(connId, sql, failedMeta?.error?.message ?? error ?? ""));
       } catch (e) {
         setError(`AI: ${e}`);
       } finally {
         setAiBusy(false);
       }
     },
-    [connId, error],
+    [connId, error, failedMeta, setEditorText],
   );
 
-  const runSql = useCallback(
-    async (statements: string[]) => {
-      setRunning(true);
-      setError(null);
-      setTxStatus(null);
-      setPlan(null);
-      const queryId = crypto.randomUUID();
-      runningQueryId.current = queryId;
-      try {
-        // Task 6 builds the real multi-result UI. Until then we send every statement
-        // and show the last output that produced a result set, or the run's error.
-        const outs = await runQuery(connId, statements, queryId);
-        const failed = outs.find((o) => o.error);
-        if (failed?.error) throw new Error(failed.error.message);
-        const last = [...outs].reverse().find((o) => o.resultId);
-        if (!last?.resultId) {
-          setMeta(null);
-          return;
-        }
-        const m: QueryResultMeta = {
-          resultId: last.resultId,
-          columns: last.columns.map((c) => c.name),
-          rowCount: last.rowCount,
-          truncated: last.truncated,
-          execMs: last.execMs,
-        };
-        setMeta(m);
-        recordResult({
-          resultId: m.resultId,
-          label: oneLine(statements.join("; "), 50),
-          ts: Date.now() / 1000,
-        });
-      } catch (e) {
-        setError(String(e));
-        setMeta(null);
-      } finally {
-        setRunning(false);
-        runningQueryId.current = null;
-      }
-    },
-    [connId, recordResult],
-  );
-
-  // ⌘↵ — run the active selection, or (no selection) the statement under the cursor.
-  const run = useCallback(() => {
-    const doc = editorRef.current?.getDoc() ?? sqlRef.current;
-    const sel = editorRef.current?.getSelection() ?? { from: doc.length, to: doc.length };
-    const target = extractRunTarget(doc, sel.from, sel.to);
-    if (!target.sql.trim()) return;
-    runSql([target.sql]);
-  }, [runSql]);
-
-  // ⇧⌘↵ — run every statement in the document.
-  const runAll = useCallback(() => {
-    const doc = editorRef.current?.getDoc() ?? sqlRef.current;
-    const stmts = splitStatements(doc, sqlDialect).map((s) => s.text);
-    if (stmts.length === 0) return;
-    runSql(stmts);
-  }, [runSql, sqlDialect]);
-
-  // ⌘↵ should run from anywhere in the query tab, not only when the SQL editor is
-  // focused (TablePlus parity). When the editor IS focused, CodeMirror's Mod-Enter
-  // keymap handles it and calls preventDefault — so we bail on defaultPrevented to
-  // avoid a double-run. Typing in another input (e.g. the AI prompt) is left alone.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || e.key !== "Enter" || e.shiftKey) return;
-      if (e.defaultPrevented) return;
-      const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
-      e.preventDefault();
-      run();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [run]);
-
-  const cancel = useCallback(async () => {
-    const queryId = runningQueryId.current;
-    if (!queryId) return;
-    try {
-      await cancelQuery(connId, queryId);
-    } catch (e) {
-      setError(String(e));
+  const statusText = () => {
+    if (error) return <span className="truncate text-danger">{error}</span>;
+    if (running) {
+      return (
+        <span className="text-muted">
+          {cancelling ? "Cancel requested — the server may still finish the statement…" : "Running…"}
+        </span>
+      );
     }
-  }, [connId]);
-
-  const runInTx = useCallback(async () => {
-    setRunning(true);
-    setError(null);
-    setTxStatus(null);
-    try {
-      const { rowsAffected } = await runScript(connId, `BEGIN;\n${sqlRef.current}\nCOMMIT;`);
-      setTxStatus(`committed · ${rowsAffected} rows affected`);
-    } catch (e) {
-      setError(`transaction rolled back: ${e}`);
-    } finally {
-      setRunning(false);
+    if (failedMeta?.error) return <span className="truncate text-danger">Failed</span>;
+    if (selectedMeta) {
+      return (
+        <span>
+          {rowCountLabel(selectedMeta)} · {selectedMeta.execMs} ms
+        </span>
+      );
     }
-  }, [connId]);
-
-  const explain = useCallback(async () => {
-    setRunning(true);
-    setError(null);
-    try {
-      setPlan(await explainQuery(connId, sqlRef.current));
-    } catch (e) {
-      setError(`EXPLAIN: ${e}`);
-    } finally {
-      setRunning(false);
-    }
-  }, [connId]);
-
-  const doExport = useCallback(
-    async (fmt: ExportFormat) => {
-      if (!meta) return;
-      const text = await exportResult(meta.resultId, fmt);
-      downloadText(`result.${fmt}`, text, fmt === "json" ? "application/json" : "text/csv");
-    },
-    [meta],
-  );
-
-  const source = useMemo<GridSource | null>(
-    () =>
-      meta
-        ? {
-            key: meta.resultId,
-            totalRows: meta.rowCount,
-            columns: meta.columns,
-            fetch: (o, l) => fetchResultWindow(meta.resultId, o, l),
-          }
-        : null,
-    [meta],
-  );
+    if (run) return <span>{run.metas.length} statements · done</span>;
+    return <span>idle</span>;
+  };
 
   return (
     <div className="flex h-full flex-col">
       {/* Primary toolbar */}
       <Toolbar>
         {!running ? (
-          <ToolbarButton icon={<IconPlay size={12} />} label="Run" shortcut="⌘↵" onClick={run} />
+          <ToolbarButton icon={<IconPlay size={12} />} label="Run" shortcut="⌘↵" onClick={runOne} />
         ) : (
           <ToolbarButton
             icon={<IconStop size={12} />}
-            label="Cancel"
-            onClick={cancel}
+            label={cancelling ? "Stopping…" : "Stop"}
+            onClick={() => void cancel()}
           />
         )}
-        <ToolbarButton
-          label="Run all"
-          shortcut="⇧⌘↵"
-          onClick={runAll}
-          disabled={running}
-        />
+        <ToolbarButton label="Run all" shortcut="⇧⌘↵" onClick={runAll} disabled={running} />
         <ToolbarButton label="Run in tx" onClick={runInTx} disabled={running} />
-        <ToolbarButton label="Explain" onClick={explain} disabled={running} />
+        {engine !== "sqlserver" && (
+          <ToolbarButton label="Explain" onClick={() => void explain()} disabled={running} />
+        )}
         <ToolbarDivider />
         <ToolbarButton label="Library" onClick={() => setDrawer("library")} />
-        {meta && <ToolbarButton label="Chart" active={drawer === "chart"} onClick={() => setDrawer((d) => (d === "chart" ? "none" : "chart"))} />}
-        {meta && (
+        {selectedMeta && (
+          <ToolbarButton
+            label="Chart"
+            active={drawer === "chart"}
+            onClick={() => setDrawer((d) => (d === "chart" ? "none" : "chart"))}
+          />
+        )}
+        {selectedMeta && (
           <ToolbarButton
             icon={<IconPlugins size={12} />}
             label="Plugins"
             onClick={() => setDrawer("plugins")}
           />
         )}
-        {recentCount >= 2 && (
-          <ToolbarButton label="Diff results" onClick={() => setDrawer("diff")} />
-        )}
+        {recentCount >= 2 && <ToolbarButton label="Diff results" onClick={() => setDrawer("diff")} />}
         <ToolbarDivider />
         <ToolbarButton
           icon={<IconAi size={12} />}
@@ -309,18 +401,15 @@ export function QueryView({ connId }: { connId: string }) {
           onClick={() => setDrawer((d) => (d === "ai" ? "none" : "ai"))}
         />
         <ToolbarSpacer />
-        {meta && (
-          <>
-            {(["csv", "json"] as ExportFormat[]).map((fmt) => (
-              <ToolbarButton
-                key={fmt}
-                icon={<IconExport size={12} />}
-                label={fmt.toUpperCase()}
-                onClick={() => doExport(fmt)}
-              />
-            ))}
-          </>
-        )}
+        {selectedMeta &&
+          (["csv", "json"] as ExportFormat[]).map((fmt) => (
+            <ToolbarButton
+              key={fmt}
+              icon={<IconExport size={12} />}
+              label={fmt.toUpperCase()}
+              onClick={() => void doExport(fmt)}
+            />
+          ))}
       </Toolbar>
 
       {/* AI drawer — collapsible */}
@@ -367,7 +456,7 @@ export function QueryView({ connId }: { connId: string }) {
             </button>
             <button
               onClick={() => aiAction("fix")}
-              disabled={aiBusy || !error}
+              disabled={aiBusy || (!error && !failedMeta)}
               className="rounded-md border border-border px-2 py-1 text-xs text-muted hover:text-text disabled:opacity-50"
             >
               Fix
@@ -405,30 +494,31 @@ export function QueryView({ connId }: { connId: string }) {
         </div>
       )}
 
-      {/* Editor */}
-      <div className="h-44 shrink-0 border-b border-border">
+      {/* Editor — height is user-draggable and persisted (TablePlus parity) */}
+      <div className="shrink-0 overflow-hidden" style={{ height: editorH }}>
         <SqlEditor
           ref={editorRef}
           initial={sqlRef.current}
-          onChange={(v) => (sqlRef.current = v)}
-          onRun={run}
+          onChange={onSqlChange}
+          onRun={runOne}
           onRunAll={runAll}
           schema={completionSchema}
           dialect={engine}
         />
       </div>
+      <ResizeHandle
+        direction="vertical"
+        side="bottom"
+        onResize={(d) => setEditorH((h) => clampWidth(h + d, EDITOR_H_MIN, EDITOR_H_MAX))}
+      />
 
-      {/* Result area */}
+      {/* Results */}
       <div className="min-h-0 flex-1">
         {plan !== null ? (
           <div className="flex h-full flex-col">
             <div className="flex items-center justify-between border-b border-border px-3 py-1 text-[10px] uppercase tracking-wider text-muted">
               <span>Query plan</span>
-              <button
-                onClick={() => setPlan(null)}
-                aria-label="Close plan"
-                className="hover:text-text"
-              >
+              <button onClick={() => setPlan(null)} aria-label="Close plan" className="hover:text-text">
                 <IconClose size={11} />
               </button>
             </div>
@@ -436,22 +526,25 @@ export function QueryView({ connId }: { connId: string }) {
               <PlanView json={plan} />
             </div>
           </div>
-        ) : drawer === "chart" && meta && source ? (
-          <ChartView resultId={meta.resultId} columns={meta.columns} totalRows={meta.rowCount} />
-        ) : source ? (
-          <DataGrid source={source} />
         ) : (
-          <div className="flex h-full items-center justify-center text-sm text-muted">
-            {running ? (
-              <span className="inline-flex items-center gap-2">
-                <IconRefresh size={12} className="animate-spin" /> Running…
-              </span>
-            ) : (
-              <span>
-                Write SQL, then <span className="tiq-kbd">⌘↵</span> to run.
-              </span>
-            )}
-          </div>
+          <QueryResults
+            metas={run?.metas ?? []}
+            items={run?.items ?? []}
+            doc={run?.doc ?? ""}
+            running={running}
+            runError={error}
+            selectedKey={selectedKey}
+            onSelect={setSelectedKey}
+            onJump={(offset) => editorRef.current?.gotoOffset(offset)}
+          >
+            {drawer === "chart" && selectedMeta?.resultId ? (
+              <ChartView
+                resultId={selectedMeta.resultId}
+                columns={selectedMeta.columns.map((c) => c.name)}
+                totalRows={selectedMeta.rowCount}
+              />
+            ) : null}
+          </QueryResults>
         )}
       </div>
 
@@ -459,27 +552,18 @@ export function QueryView({ connId }: { connId: string }) {
       <StatusBar
         left={
           <>
-            <StatusDot tone={error ? "danger" : meta ? "ok" : "muted"} />
-            {error ? (
-              <span className="truncate text-danger">{error}</span>
-            ) : txStatus ? (
-              <span className="text-ok">{txStatus}</span>
-            ) : meta ? (
-              <span>
-                {meta.rowCount.toLocaleString()} rows · {meta.execMs} ms
-                {meta.truncated && <span className="text-warn"> · truncated at 50k</span>}
-              </span>
-            ) : (
-              <span>idle</span>
-            )}
+            <StatusDot
+              tone={error || failedMeta ? "danger" : running ? "warn" : selectedMeta ? "ok" : "muted"}
+            />
+            {statusText()}
           </>
         }
-        center={meta ? <Chip tone="muted">{meta.columns.length} columns</Chip> : null}
+        center={
+          selectedMeta ? <Chip tone="muted">{selectedMeta.columns.length} columns</Chip> : null
+        }
         right={
           <>
-            <span className="text-muted">
-              ⌘↵ run · ⇧⌘↵ run all · ⌘L library
-            </span>
+            <span className="text-muted">⌘↵ run · ⇧⌘↵ run all · ⌘L library</span>
             <button
               onClick={() => setDrawer("ai")}
               className="inline-flex items-center gap-1 text-accent hover:text-text"
@@ -495,15 +579,12 @@ export function QueryView({ connId }: { connId: string }) {
       {drawer === "library" && (
         <QueryLibraryPanel
           currentSql={sqlRef.current}
-          onLoad={(sql) => {
-            sqlRef.current = sql;
-            editorRef.current?.setText(sql);
-          }}
+          onLoad={setEditorText}
           onClose={() => setDrawer("none")}
         />
       )}
-      {drawer === "plugins" && meta && (
-        <PluginsPanel resultId={meta.resultId} onClose={() => setDrawer("none")} />
+      {drawer === "plugins" && selectedMeta?.resultId && (
+        <PluginsPanel resultId={selectedMeta.resultId} onClose={() => setDrawer("none")} />
       )}
       {drawer === "diff" && <DiffResultsView onClose={() => setDrawer("none")} />}
     </div>

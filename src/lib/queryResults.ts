@@ -10,6 +10,13 @@
 import type { Engine, StatementResultMeta } from "./commands";
 import type { SqlStatement } from "./sqlSplit";
 
+/** One statement submitted in a run: the SQL sent, plus its doc coords when it
+ *  came from the editor (a transaction's BEGIN/COMMIT wrapper has none). */
+export interface RunItem {
+  text: string;
+  stmt?: SqlStatement;
+}
+
 export interface ResultTabInfo {
   /** Index into the `metas` array the tab came from. */
   metaIndex: number;
