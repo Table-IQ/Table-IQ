@@ -511,3 +511,55 @@ async fn sqlserver_qa_seed_introspect_structure_paging_and_edit() {
     assert!(dbs.contains(&"tableiq".to_string()), "{dbs:?}");
     assert!(dbs.contains(&"master".to_string()), "{dbs:?}");
 }
+
+/// The `sslmode` → `EncryptionLevel` mapping, checked against what the server actually
+/// negotiated. The old driver hardcoded `Encrypt=false` into an ADO string, so every session
+/// was cleartext whatever the user picked.
+#[tokio::test]
+async fn sqlserver_sslmode_picks_the_negotiated_encryption() {
+    let Ok(ado) = std::env::var("TIQ_MSSQL_URL") else { return };
+    let (host, port, database, user, pass) = parts(&ado);
+    // `encrypt_option` on the server side is the ground truth for this session.
+    let q = "SELECT encrypt_option FROM sys.dm_exec_connections WHERE session_id = @@SPID";
+    for (sslmode, expected) in [("prefer", "TRUE"), ("require", "TRUE"), ("disable", "FALSE")] {
+        let drv = SqlServerDriver::connect(&host, port, &database, &user, &pass, sslmode)
+            .await
+            .unwrap_or_else(|e| panic!("connect with sslmode={sslmode}: {e}"));
+        let out = drv.run_query(q, 1).await.expect("encrypt_option");
+        let got = out.batch.column(0).as_any().downcast_ref::<StringArray>().unwrap().value(0);
+        assert_eq!(got, expected, "sslmode={sslmode} should negotiate encrypt_option={expected}");
+    }
+}
+
+/// A password containing `;` and `=` has no escaping rule in an ADO connection string, so the
+/// old code silently connected as something else. Building the `Config` from the parts fixes it.
+#[tokio::test]
+async fn sqlserver_password_with_semicolons_connects() {
+    let Some(admin) = connect().await else { return };
+    let tok = CancelToken::new();
+    let v = |xs: &[&str]| -> Vec<String> { xs.iter().map(|s| s.to_string()).collect() };
+    const PW: &str = "a;b=c;Password=wrong_Pw1";
+
+    admin
+        .run_statements(
+            &v(&[
+                "IF SUSER_ID('tiq_semi') IS NOT NULL DROP LOGIN tiq_semi",
+                &format!("CREATE LOGIN tiq_semi WITH PASSWORD = '{PW}', CHECK_POLICY = OFF"),
+            ]),
+            10,
+            &tok,
+        )
+        .await
+        .expect("create login");
+
+    let (host, port, database, ..) = parts(&std::env::var("TIQ_MSSQL_URL").unwrap());
+    let drv = SqlServerDriver::connect(&host, port, &database, "tiq_semi", PW, "prefer")
+        .await
+        .expect("a password with `;` and `=` must connect");
+    let who = drv.run_query("SELECT SUSER_SNAME() AS me", 1).await.expect("whoami");
+    let me = who.batch.column(0).as_any().downcast_ref::<StringArray>().unwrap().value(0);
+    assert_eq!(me, "tiq_semi", "connected as the wrong login");
+    drop(drv);
+
+    admin.run_statements(&v(&["DROP LOGIN tiq_semi"]), 10, &tok).await.ok();
+}

@@ -198,7 +198,9 @@ const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 /// is acceptable. `sslmode` is Postgres' vocabulary, which this app reuses for every engine.
 fn encryption_for(sslmode: &str) -> (EncryptionLevel, bool) {
     match sslmode {
-        "disable" => (EncryptionLevel::Off, false),
+        // `Off` still TLS-wraps the login packet (TDS always does), so without `trust_cert`
+        // rustls rejects the self-signed certificate and `disable` cannot connect at all.
+        "disable" => (EncryptionLevel::Off, true),
         "require" => (EncryptionLevel::Required, true),
         // Verifying the chain is the whole point of these two, so no `trust_cert`.
         "verify-ca" | "verify-full" => (EncryptionLevel::Required, false),
@@ -881,7 +883,7 @@ mod tests {
     /// every row travelled in cleartext whatever the user picked.
     #[test]
     fn sslmode_maps_to_an_encryption_level() {
-        assert_eq!(encryption_for("disable"), (EncryptionLevel::Off, false));
+        assert_eq!(encryption_for("disable"), (EncryptionLevel::Off, true));
         assert_eq!(encryption_for("prefer"), (EncryptionLevel::On, true));
         assert_eq!(encryption_for(""), (EncryptionLevel::On, true), "default is `prefer`");
         assert_eq!(encryption_for("nonsense"), (EncryptionLevel::On, true), "default is `prefer`");
