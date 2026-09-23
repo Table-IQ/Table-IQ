@@ -16,9 +16,10 @@ use tokio::sync::Mutex;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
 use super::{
-    build_insert_sql, build_order_by, build_where_clause, CancelToken, ColumnFilter, ColumnInfo,
-    CursorId, DResult, DriverError, EditSpec, ForeignKey, ObjectInfo, ObjectKind, QueryError,
-    QueryResult, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver, StmtOutput,
+    build_insert_sql, build_order_by, build_where_clause, CancelToken, ColumnDetail, ColumnFilter,
+    ColumnInfo, CursorId, DResult, DriverError, EditSpec, ForeignKey, IndexInfo, ObjectInfo,
+    ObjectKind, QueryError, QueryResult, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver,
+    StmtOutput, TableStructure, TriggerInfo,
 };
 
 type Conn = Client<Compat<TcpStream>>;
@@ -56,6 +57,59 @@ fn cell_to_string(cd: &ColumnData) -> Option<String> {
         other => format!("{other:?}").into(),
     }
 }
+
+// ── Structure tab catalog queries (see `SqlDriver::describe_table`) ─────────────────────
+// `@P1` is the quoted, qualified relation name — bound, so no identifier reaches the SQL
+// text. Kept as consts so the unit tests below check the queries actually shipped.
+
+/// `sys.types` carries only the base type name, so the length/precision suffix is rebuilt
+/// here — `max_length` is in **bytes**, which is twice the character count for the N types.
+const STRUCT_COLUMNS_SQL: &str = "\
+SELECT c.name AS name, \
+       t.name + CASE \
+         WHEN t.name IN ('varchar','char','varbinary','binary') \
+           THEN '(' + IIF(c.max_length = -1, 'max', CAST(c.max_length AS varchar(10))) + ')' \
+         WHEN t.name IN ('nvarchar','nchar') \
+           THEN '(' + IIF(c.max_length = -1, 'max', CAST(c.max_length / 2 AS varchar(10))) + ')' \
+         WHEN t.name IN ('decimal','numeric') \
+           THEN '(' + CAST(c.precision AS varchar(10)) + ',' + CAST(c.scale AS varchar(10)) + ')' \
+         ELSE '' END AS data_type, \
+       c.is_nullable AS is_nullable, \
+       d.definition AS default_expr, \
+       CAST(CASE WHEN ic.column_id IS NULL THEN 0 ELSE 1 END AS bit) AS is_pk, \
+       CAST(ep.value AS nvarchar(max)) AS comment \
+FROM sys.columns c \
+JOIN sys.types t ON t.user_type_id = c.user_type_id \
+LEFT JOIN sys.default_constraints d ON d.object_id = c.default_object_id \
+LEFT JOIN sys.extended_properties ep \
+       ON ep.class = 1 AND ep.major_id = c.object_id AND ep.minor_id = c.column_id \
+      AND ep.name = 'MS_Description' \
+LEFT JOIN (sys.indexes pk \
+           JOIN sys.index_columns ic ON ic.object_id = pk.object_id AND ic.index_id = pk.index_id) \
+       ON pk.object_id = c.object_id AND pk.is_primary_key = 1 AND ic.column_id = c.column_id \
+WHERE c.object_id = OBJECT_ID(@P1) \
+ORDER BY c.column_id";
+
+/// One row per index *key* column. INCLUDE columns are not part of the key, and
+/// `index_id = 0` is the heap, so both are excluded.
+const STRUCT_INDEXES_SQL: &str = "\
+SELECT i.name AS name, i.is_unique AS is_unique, i.is_primary_key AS is_primary, \
+       c.name AS column_name \
+FROM sys.indexes i \
+JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id \
+JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id \
+WHERE i.object_id = OBJECT_ID(@P1) AND i.index_id > 0 AND ic.is_included_column = 0 \
+ORDER BY i.is_primary_key DESC, i.name, ic.key_ordinal";
+
+/// One row per trigger *event*, grouped in Rust — `STRING_AGG` would need SQL Server 2017+
+/// and this driver has no live test to prove a version on.
+const STRUCT_TRIGGERS_SQL: &str = "\
+SELECT tr.name AS name, tr.is_instead_of_trigger AS instead_of, te.type_desc AS event_type, \
+       OBJECT_DEFINITION(tr.object_id) AS definition \
+FROM sys.triggers tr \
+JOIN sys.trigger_events te ON te.object_id = tr.object_id \
+WHERE tr.parent_id = OBJECT_ID(@P1) AND tr.is_ms_shipped = 0 \
+ORDER BY tr.name, te.type";
 
 /// Client-side cursor state: the wrapped query + how far we've paged.
 struct CursorState {
@@ -544,6 +598,102 @@ impl SqlDriver for SqlServerDriver {
             .collect())
     }
 
+    /// Structure tab from the `sys.*` catalog. **Not live-tested** — there is no SQL Server
+    /// container in this repo's QA setup; the unit tests below only pin the catalog views
+    /// and join keys the queries use.
+    async fn describe_table(&self, schema: &str, table: &str) -> DResult<TableStructure> {
+        let qualified = format!("{}.{}", quote_ident(schema), quote_ident(table));
+        let mut c = self.client.lock().await;
+        let col_rows = c
+            .query(STRUCT_COLUMNS_SQL, &[&qualified])
+            .await
+            .map_err(db)?
+            .into_first_result()
+            .await
+            .map_err(db)?;
+        let idx_rows = c
+            .query(STRUCT_INDEXES_SQL, &[&qualified])
+            .await
+            .map_err(db)?
+            .into_first_result()
+            .await
+            .map_err(db)?;
+        let trg_rows = c
+            .query(STRUCT_TRIGGERS_SQL, &[&qualified])
+            .await
+            .map_err(db)?
+            .into_first_result()
+            .await
+            .map_err(db)?;
+        drop(c);
+
+        let text = |r: &tiberius::Row, col: &str| {
+            r.get::<&str, _>(col).map(std::string::String::from)
+        };
+        let flag = |r: &tiberius::Row, col: &str| r.get::<bool, _>(col).unwrap_or(false);
+
+        let mut indexes: Vec<IndexInfo> = Vec::new();
+        // index name -> position in `indexes`, so appending a key part is O(1).
+        let mut index_ix: HashMap<std::string::String, usize> = HashMap::new();
+        for r in &idx_rows {
+            let Some(name) = text(r, "name") else { continue };
+            let i = *index_ix.entry(name.clone()).or_insert_with(|| {
+                indexes.push(IndexInfo {
+                    name: name.clone(),
+                    columns: Vec::new(),
+                    unique: flag(r, "is_unique"),
+                    primary: flag(r, "is_primary"),
+                    // SQL Server exposes no index DDL function (OBJECT_DEFINITION covers
+                    // modules only), so the column list is the whole story here.
+                    definition: None,
+                });
+                indexes.len() - 1
+            });
+            if let Some(col) = text(r, "column_name") {
+                indexes[i].columns.push(col);
+            }
+        }
+
+        let mut triggers: Vec<TriggerInfo> = Vec::new();
+        let mut trigger_ix: HashMap<std::string::String, usize> = HashMap::new();
+        for r in &trg_rows {
+            let Some(name) = text(r, "name") else { continue };
+            // SQL Server has no BEFORE triggers — only AFTER and INSTEAD OF.
+            let timing = if flag(r, "instead_of") { "INSTEAD OF" } else { "AFTER" };
+            let i = *trigger_ix.entry(name.clone()).or_insert_with(|| {
+                triggers.push(TriggerInfo {
+                    name: name.clone(),
+                    timing_event: timing.to_string(),
+                    definition: text(r, "definition"),
+                });
+                triggers.len() - 1
+            });
+            if let Some(event) = text(r, "event_type") {
+                let te = &mut triggers[i].timing_event;
+                te.push_str(if te.ends_with(timing) { " " } else { " OR " });
+                te.push_str(&event);
+            }
+        }
+
+        Ok(TableStructure {
+            columns: col_rows
+                .iter()
+                .filter_map(|r| {
+                    Some(ColumnDetail {
+                        name: text(r, "name")?,
+                        data_type: text(r, "data_type").unwrap_or_default(),
+                        nullable: flag(r, "is_nullable"),
+                        default: text(r, "default_expr"),
+                        is_pk: flag(r, "is_pk"),
+                        comment: text(r, "comment"),
+                    })
+                })
+                .collect(),
+            indexes,
+            triggers,
+        })
+    }
+
     async fn list_databases(&self) -> DResult<Vec<String>> {
         // sys.databases is visible from every connection regardless of which DB
         // is currently in scope. We skip the system DBs that SSMS hides by
@@ -586,6 +736,33 @@ mod tests {
             "referenced_object_id",
         ] {
             assert!(sql.contains(needle), "FK query is missing `{needle}`");
+        }
+    }
+
+    /// `describe_table` has no live coverage (no SQL Server container in this repo), so pin
+    /// the shipped queries: the documented catalog views, the bound `OBJECT_ID(@P1)` scope
+    /// — never an interpolated identifier — and the key ordering a composite index needs.
+    #[test]
+    fn structure_queries_use_the_sys_catalog_and_bind_the_relation() {
+        use super::{STRUCT_COLUMNS_SQL, STRUCT_INDEXES_SQL, STRUCT_TRIGGERS_SQL};
+        for needle in [
+            "sys.columns",
+            "sys.types",
+            "sys.default_constraints",
+            "sys.extended_properties",
+            "MS_Description",
+        ] {
+            assert!(STRUCT_COLUMNS_SQL.contains(needle), "columns query is missing `{needle}`");
+        }
+        for needle in ["sys.indexes", "sys.index_columns", "ic.key_ordinal", "is_primary_key"] {
+            assert!(STRUCT_INDEXES_SQL.contains(needle), "index query is missing `{needle}`");
+        }
+        for needle in ["sys.triggers", "sys.trigger_events", "OBJECT_DEFINITION", "is_ms_shipped"]
+        {
+            assert!(STRUCT_TRIGGERS_SQL.contains(needle), "trigger query is missing `{needle}`");
+        }
+        for sql in [STRUCT_COLUMNS_SQL, STRUCT_INDEXES_SQL, STRUCT_TRIGGERS_SQL] {
+            assert!(sql.contains("OBJECT_ID(@P1)"), "the relation must be bound: {sql}");
         }
     }
 }
