@@ -6,20 +6,27 @@ import {
   downloadText,
   exportTable,
   fetchTableWindow,
-  foreignKeys,
   insertRow,
   openTable,
-  primaryKey,
   type ColumnFilter,
   type ExportFormat,
   type FilterOp,
   type ForeignKey,
   type ObjectInfo,
+  type SortKey,
 } from "../lib/commands";
 import { buildEdit } from "../lib/edit";
 import { outgoingForeignKeys } from "../lib/fk";
+import { decodeWindow } from "../lib/arrowWindow";
+import { pagerLabel } from "../lib/pager";
+import { cycleSort } from "../lib/tableSort";
 import { useTabs } from "../state/tabsStore";
-import { useConnections } from "../state/connectionStore";
+import {
+  invalidateTableMeta,
+  loadForeignKeys,
+  loadTableMeta,
+  useConnections,
+} from "../state/connectionStore";
 import { useSelectedRow } from "../state/selectedRowStore";
 import * as colWidths from "../lib/colWidths";
 import { isNumericType } from "../lib/autoFit";
@@ -44,10 +51,16 @@ import {
   IconRefresh,
 } from "./ui/Icon";
 
+/** Rows per page — TablePlus's table pager. One more than this is fetched: the
+ *  extra row is how we know a next page exists without a second query. */
+const PAGE_SIZE = 300;
+
 interface Props {
   connId: string;
   schema: string;
   object: ObjectInfo;
+  /** Which sub-view the tab is on. Owned by the tab so it survives tab switches. */
+  view: "data" | "structure";
 }
 
 /** Native confirm via the Tauri dialog plugin (desktop), falling back to the
@@ -61,15 +74,26 @@ async function confirmDestructive(message: string): Promise<boolean> {
   }
 }
 
-export function TableView({ connId, schema, object }: Props) {
-  const [rowEstimate, setRowEstimate] = useState<number | null>(null);
+export function TableView({ connId, schema, object, view }: Props) {
+  /** Unfiltered/filtered row total. `count: null` means "the engine could not
+   *  count it" — which must never be rendered as 0 rows. */
+  const [total, setTotal] = useState<{ count: number | null; exact: boolean } | null>(null);
   const [pk, setPk] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [fks, setFks] = useState<ForeignKey[]>([]);
   const [showProfile, setShowProfile] = useState(false);
   const [showAlter, setShowAlter] = useState(false);
-  const [view, setView] = useState<"data" | "structure">("data");
+  const [page, setPage] = useState(0);
+  const [sort, setSort] = useState<SortKey | null>(null);
+  /** The fetched window for the current page. `rows` is what the server returned
+   *  (up to PAGE_SIZE + 1); `version` bumps on every re-read so the grid can drop
+   *  its cache without the full reset a new source key does. */
+  const [pageData, setPageData] = useState<{
+    bytes: Uint8Array;
+    rows: number;
+    version: number;
+  } | null>(null);
   const [dirty, setDirty] = useState(0);
   const [refreshKey, setRefreshKey] = useState(0);
   const [filters, setFilters] = useState<ColumnFilter[]>([]);
@@ -83,7 +107,6 @@ export function TableView({ connId, schema, object }: Props) {
     value: string | null;
     values: Record<string, string | null> | null;
   } | null>(null);
-  const [gridWindowStart, setGridWindowStart] = useState(0);
   const [pendingCount, setPendingCount] = useState(0);
   const gridRef = useRef<DataGridHandle>(null);
   const openTab = useTabs((s) => s.openTable);
@@ -109,50 +132,102 @@ export function TableView({ connId, schema, object }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [schema, object.name]);
 
+  /** Re-read this table: its cached count is stale after any write, and the
+   *  visible page has to come back from the server. Deliberately leaves
+   *  `pageData` in place so the grid keeps painting (and keeps its scroll and
+   *  selection) while the new window is in flight. */
+  const refresh = useCallback(() => {
+    invalidateTableMeta(connId, schema, object.name);
+    setRefreshKey((k) => k + 1);
+  }, [connId, schema, object.name]);
+
+  /** Changing the filter set always returns to the first page. */
+  const applyFilters = useCallback((next: ColumnFilter[]) => {
+    setFilters(next);
+    setPage(0);
+  }, []);
+
+  // Primary key + FK edges. Both come from the connection-store caches, shared
+  // with the Inspector.
   useEffect(() => {
     let cancelled = false;
-    setRowEstimate(null);
-    setPk(null);
-    setError(null);
     setNotice(null);
     setDirty(0);
-    openTable(connId, schema, object.name, filters)
-      // Task 8 replaces this with a real pager + "unknown total" affordance; for now an
-      // uncountable table falls back to 0 rows, as it did before.
-      .then((info) => !cancelled && setRowEstimate(info.count ?? 0))
-      .catch((e) => !cancelled && setError(String(e)));
-    primaryKey(connId, schema, object.name)
-      .then((cols) => !cancelled && setPk(cols))
+    loadTableMeta(connId, schema, object.name)
+      .then((m) => !cancelled && setPk(m.pk))
       .catch(() => !cancelled && setPk([]));
-    foreignKeys(connId)
+    loadForeignKeys(connId)
       .then((all) => !cancelled && setFks(outgoingForeignKeys(all, schema, object.name)))
       .catch(() => !cancelled && setFks([]));
     return () => {
       cancelled = true;
     };
-  }, [connId, schema, object.name, refreshKey, filters]);
+  }, [connId, schema, object.name, refreshKey]);
 
-  // "Open structure" from the sidebar context menu switches this view to the
-  // Structure tab when it targets the active table (Slice 31).
+  // Row total for the pager. A count that fails or comes back null is NOT fatal —
+  // the page itself is the authority on what to render, so the label just drops
+  // the "of …" half.
   useEffect(() => {
-    const onStructure = (e: Event) => {
-      const target = (e as CustomEvent<string>).detail;
-      if (target === `${schema}.${object.name}`) setView("structure");
+    let cancelled = false;
+    const counted =
+      filters.length === 0
+        ? loadTableMeta(connId, schema, object.name).then((m) => ({
+            count: m.count,
+            exact: m.exact,
+          }))
+        : openTable(connId, schema, object.name, filters);
+    counted
+      .then((t) => !cancelled && setTotal(t))
+      .catch(() => !cancelled && setTotal({ count: null, exact: false }));
+    return () => {
+      cancelled = true;
     };
-    window.addEventListener("tiq:view-structure", onStructure);
-    return () => window.removeEventListener("tiq:view-structure", onStructure);
-  }, [schema, object.name]);
+  }, [connId, schema, object.name, filters, refreshKey]);
+
+  const order = useMemo(() => (sort ? [sort] : undefined), [sort]);
+  const orderKey = sort ? `${sort.column}:${sort.desc}` : "";
+
+  // The visible page. PAGE_SIZE + 1 rows are asked for: the extra row is how we
+  // know a next page exists without counting.
+  useEffect(() => {
+    let cancelled = false;
+    fetchTableWindow(
+      connId,
+      schema,
+      object.name,
+      page * PAGE_SIZE,
+      PAGE_SIZE + 1,
+      filters,
+      order,
+    )
+      .then(({ bytes }) => {
+        if (cancelled) return;
+        setError(null);
+        // ponytail: the window is decoded here for its row count and again in the
+        // grid for its cells. Two decodes of one 301-row batch is cheaper than a
+        // second round trip; upgrade path is to lift the decode into this view.
+        setPageData((prev) => ({
+          bytes,
+          rows: decodeWindow(bytes).numRows,
+          version: (prev?.version ?? 0) + 1,
+        }));
+      })
+      .catch((e) => !cancelled && setError(String(e)));
+    return () => {
+      cancelled = true;
+    };
+  }, [connId, schema, object.name, page, filters, order, refreshKey]);
 
   // Re-sync the grid when a cell is edited from the Inspector panel (Slice 33),
   // so the data grid reflects the committed value.
   useEffect(() => {
     const onEdited = (e: Event) => {
       const target = (e as CustomEvent<string>).detail;
-      if (target === `${schema}.${object.name}`) setRefreshKey((k) => k + 1);
+      if (target === `${schema}.${object.name}`) refresh();
     };
     window.addEventListener("tiq:row-edited", onEdited);
     return () => window.removeEventListener("tiq:row-edited", onEdited);
-  }, [schema, object.name]);
+  }, [schema, object.name, refresh]);
 
   const editable = object.kind === "Table" && !!pk && pk.length > 0;
 
@@ -200,18 +275,31 @@ export function TableView({ connId, schema, object }: Props) {
     return s;
   }, [object.columns]);
 
+  // Stable identity so a re-read (which rebuilds `source`) doesn't look like a
+  // different column set to the grid, which would cost scroll + selection.
+  const columnNames = useMemo(() => object.columns.map((c) => c.name), [object.columns]);
+  const filterKey = filters.map((f) => `${f.column}${f.op}${f.value ?? ""}`).join("|");
+
+  /** Rows on the visible page — at most PAGE_SIZE, whatever the 301st row says. */
+  const rowsOnPage = pageData ? Math.min(PAGE_SIZE, pageData.rows) : 0;
+  const hasNext = (pageData?.rows ?? 0) > PAGE_SIZE;
+
   const source = useMemo<GridSource | null>(() => {
-    if (rowEstimate === null) return null;
-    // filters are part of the cache key so any change reloads the window.
-    const filterKey = filters.map((f) => `${f.column}${f.op}${f.value ?? ""}`).join("|");
+    if (!pageData) return null;
     return {
-      key: `${connId}.${schema}.${object.name}.${refreshKey}.${filterKey}`,
-      totalRows: rowEstimate,
-      columns: object.columns.map((c) => c.name),
-      fetch: (offset, len) =>
-        fetchTableWindow(connId, schema, object.name, offset, len, filters),
+      // Filters, sort and page identify the rows; a re-read of the same rows
+      // moves `version` instead, which keeps scroll and selection.
+      key: `${connId}.${schema}.${object.name}.${page}.${filterKey}.${orderKey}`,
+      totalRows: Math.min(PAGE_SIZE, pageData.rows),
+      // One cache page holds the whole fetched window, so the grid never pages.
+      pageSize: PAGE_SIZE + 1,
+      version: pageData.version,
+      columns: columnNames,
+      // This view already fetched the window (it needs the 301st row), so the
+      // grid reads the bytes we hold rather than asking again.
+      fetch: () => Promise.resolve({ bytes: pageData.bytes, ms: 0 }),
     };
-  }, [connId, schema, object, rowEstimate, refreshKey, filters]);
+  }, [connId, schema, object.name, page, filterKey, orderKey, columnNames, pageData]);
 
   const commitDraft = useCallback(async () => {
     if (!draft) return;
@@ -223,84 +311,22 @@ export function TableView({ connId, schema, object }: Props) {
     try {
       await insertRow(connId, schema, object.name, values);
       setDraft(null);
-      setRefreshKey((k) => k + 1);
+      refresh();
     } catch (e) {
       setNotice(`Insert failed: ${e}`);
     }
-  }, [connId, schema, object, draft]);
+  }, [connId, schema, object, draft, refresh]);
 
   const cancelDraft = useCallback(() => {
     setDraft(null);
     setNotice(null);
   }, []);
 
-  // Loading / error states still render the table chrome's bottom bar so the
-  // window never flashes a bar-less state (MainShell suppresses its fallback bar
-  // for table tabs, trusting this view to always own one — TablePlus parity).
-  const statusObjectInfo = (
-    <span className="font-mono text-text">
-      <span className="text-muted">{schema}.</span>
-      <span className="font-medium">{object.name}</span>
-    </span>
-  );
-  if (error)
-    return (
-      <div className="flex h-full flex-col">
-        <div className="flex-1 p-6 text-sm text-danger">Failed to open table: {error}</div>
-        <StatusBar
-          left={statusObjectInfo}
-          right={
-            <span className="inline-flex items-center gap-1 text-danger">
-              <StatusDot tone="danger" />
-              <span>error</span>
-            </span>
-          }
-        />
-      </div>
-    );
-  if (!source)
-    return (
-      <div className="flex h-full flex-col">
-        <div className="flex-1 p-6 text-sm text-muted">Opening {object.name}…</div>
-        <StatusBar left={statusObjectInfo} right={<span className="text-muted">opening…</span>} />
-      </div>
-    );
-
-  return (
-    <div className="flex h-full flex-col">
-      {/* Compact action toolbar — Filter/Insert/Structure now live in the status bar
-          (TablePlus parity). This row keeps the secondary actions: Refresh, Profile,
-          Alter, and export. */}
-      <Toolbar>
-        <ToolbarButton
-          icon={<IconRefresh size={12} />}
-          label="Refresh"
-          onClick={() => setRefreshKey((k) => k + 1)}
-        />
-        <ToolbarButton label="Profile" onClick={() => setShowProfile(true)} />
-        {object.kind === "Table" && (
-          <ToolbarButton label="Alter" onClick={() => setShowAlter(true)} />
-        )}
-        <ToolbarSpacer />
-        {(["csv", "json"] as ExportFormat[]).map((fmt) => (
-          <ToolbarButton
-            key={fmt}
-            icon={<IconExport size={12} />}
-            label={fmt.toUpperCase()}
-            onClick={async () => {
-              const text = await exportTable(connId, schema, object.name, fmt);
-              downloadText(
-                `${object.name}.${fmt}`,
-                text,
-                fmt === "json" ? "application/json" : "text/csv",
-              );
-            }}
-          />
-        ))}
-      </Toolbar>
-
-      {/* Filter builder + chip rail (Slice 21 #1). Stacked above the FK rail. */}
-      {(filterDraft || filters.length > 0) && (
+  /** Filter builder + chip rail (Slice 21 #1). Declared before the early returns
+   *  so the error view can show it too — a filter that the engine rejects has to
+   *  stay visible and removable, or the tab is stuck. */
+  const filterRail =
+    filterDraft || filters.length > 0 ? (
         <div className="flex flex-wrap items-center gap-1.5 border-b border-border bg-bg px-3 py-1.5">
           <IconFilter size={11} className="text-primary" />
           <span className="text-[10px] uppercase tracking-wider text-muted">filters</span>
@@ -308,7 +334,7 @@ export function TableView({ connId, schema, object }: Props) {
             <Chip
               key={`${f.column}-${f.op}`}
               tone="primary"
-              onClick={() => setFilters(removeFilter(filters, f.column, f.op))}
+              onClick={() => applyFilters(removeFilter(filters, f.column, f.op))}
               title="Click to remove"
             >
               {chipLabel(f)} ×
@@ -347,7 +373,7 @@ export function TableView({ connId, schema, object }: Props) {
                   onChange={(e) => setFilterDraft({ ...filterDraft, value: e.target.value })}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") {
-                      setFilters(
+                      applyFilters(
                         upsertFilter(filters, {
                           column: filterDraft.column,
                           op: filterDraft.op,
@@ -365,7 +391,7 @@ export function TableView({ connId, schema, object }: Props) {
               )}
               <button
                 onClick={() => {
-                  setFilters(
+                  applyFilters(
                     upsertFilter(filters, {
                       column: filterDraft.column,
                       op: filterDraft.op,
@@ -392,15 +418,115 @@ export function TableView({ connId, schema, object }: Props) {
           )}
           {filters.length > 0 && (
             <button
-              onClick={() => setFilters([])}
+              onClick={() => applyFilters([])}
               className="ml-auto text-[10px] text-muted hover:text-text"
               title="Clear all filters"
             >
               clear all
             </button>
           )}
+      </div>
+    ) : null;
+
+  // Loading / error states still render the table chrome's bottom bar so the
+  // window never flashes a bar-less state (MainShell suppresses its fallback bar
+  // for table tabs, trusting this view to always own one — TablePlus parity).
+  const statusObjectInfo = (
+    <span className="font-mono text-text">
+      <span className="text-muted">{schema}.</span>
+      <span className="font-medium">{object.name}</span>
+    </span>
+  );
+  if (error)
+    return (
+      <div className="flex h-full flex-col">
+        {filterRail}
+        <div className="flex-1 space-y-3 p-6">
+          <div className="font-mono text-sm text-danger">
+            Failed to open {object.name}: {error}
+          </div>
+          {filters.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-[11.5px] text-muted">
+                {filters.length === 1 ? "A filter is" : "Filters are"} applied. If the engine
+                rejected {filters.length === 1 ? "it" : "them"}, clear{" "}
+                {filters.length === 1 ? "it" : "them"} to get back to the table.
+              </p>
+              <button
+                onClick={() => applyFilters([])}
+                className="rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-white hover:opacity-90"
+              >
+                Clear filters
+              </button>
+            </div>
+          )}
+          <button
+            onClick={refresh}
+            className="rounded-md border border-border px-2.5 py-1 text-[11px] text-muted hover:text-text"
+          >
+            Try again
+          </button>
         </div>
-      )}
+        <StatusBar
+          left={statusObjectInfo}
+          right={
+            <span className="inline-flex items-center gap-1 text-danger">
+              <StatusDot tone="danger" />
+              <span>error</span>
+            </span>
+          }
+        />
+      </div>
+    );
+  if (!source)
+    return (
+      <div className="flex h-full flex-col">
+        <div className="flex-1 p-6 text-sm text-muted">Opening {object.name}…</div>
+        <StatusBar left={statusObjectInfo} right={<span className="text-muted">opening…</span>} />
+      </div>
+    );
+
+  return (
+    <div className="flex h-full flex-col">
+      {/* Compact action toolbar — Filter/Insert/Structure now live in the status bar
+          (TablePlus parity). This row keeps the secondary actions: Refresh, Profile,
+          Alter, and export. */}
+      <Toolbar>
+        <ToolbarButton
+          icon={<IconRefresh size={12} />}
+          label="Refresh"
+          onClick={refresh}
+        />
+        <ToolbarButton label="Profile" onClick={() => setShowProfile(true)} />
+        {object.kind === "Table" && (
+          <ToolbarButton label="Alter" onClick={() => setShowAlter(true)} />
+        )}
+        <ToolbarSpacer />
+        {(["csv", "json"] as ExportFormat[]).map((fmt) => (
+          <ToolbarButton
+            key={fmt}
+            icon={<IconExport size={12} />}
+            label={fmt.toUpperCase()}
+            onClick={async () => {
+              const text = await exportTable(
+                connId,
+                schema,
+                object.name,
+                fmt,
+                filters,
+                order,
+              );
+              downloadText(
+                `${object.name}.${fmt}`,
+                text,
+                fmt === "json" ? "application/json" : "text/csv",
+              );
+            }}
+          />
+        ))}
+      </Toolbar>
+
+      {filterRail}
 
       {/* Draft-row rail (Slice 21 #2). Editable inputs for each column; Enter commits. */}
       {draft !== null && editable && (
@@ -450,8 +576,8 @@ export function TableView({ connId, schema, object }: Props) {
           {fks.map((fk, i) => (
             <button
               key={`${fk.from_column}->${fk.to_table}`}
-              onClick={() => openTab(schema, fk.to_table)}
-              title={`${fk.from_column} → ${fk.to_table}.${fk.to_column}`}
+              onClick={() => openTab(fk.to_schema ?? schema, fk.to_table)}
+              title={`${fk.from_column} → ${fk.to_schema ?? schema}.${fk.to_table}.${fk.to_column}`}
               className="text-text/80 transition-colors hover:text-primary"
             >
               {fk.to_table}
@@ -507,12 +633,14 @@ export function TableView({ connId, schema, object }: Props) {
             source={source}
             onEdit={editable ? onEdit : undefined}
             fkByColumn={fkByColumn}
-            onFkClick={(toTable) => openTab(schema, toTable)}
+            onFkClick={(toTable) => {
+              const fk = fks.find((f) => f.to_table === toTable);
+              openTab(fk?.to_schema ?? schema, toTable);
+            }}
             onCellContext={(c) => setCellMenu(c)}
-            onVisibleRangeChange={(start) => setGridWindowStart(start)}
             onRowSelected={(row, values) => {
               if (!values) return; // page not loaded yet — ignore the click
-              setSelectedRow({ schema, table: object.name, row, values });
+              setSelectedRow({ schema, table: object.name, row: page * PAGE_SIZE + row, values });
             }}
             columnWidths={columnWidths}
             onColumnResize={(col, w) => {
@@ -520,8 +648,14 @@ export function TableView({ connId, schema, object }: Props) {
               setColumnWidths(next);
             }}
             rightAlignColumns={rightAlignColumns}
-            onSave={() => setRefreshKey((k) => k + 1)}
+            onSave={refresh}
             onPendingCountChange={setPendingCount}
+            onFetchError={setError}
+            sort={sort}
+            onSort={(column) => {
+              setSort((cur) => cycleSort(cur, column));
+              setPage(0);
+            }}
           />
         ) : (
           <StructureView object={object} fks={fks} />
@@ -543,7 +677,7 @@ export function TableView({ connId, schema, object }: Props) {
                 { value: "structure", label: "Structure" },
               ]}
               value={view}
-              onChange={(v) => setView(v)}
+              onChange={(v) => openTab(schema, object.name, v)}
             />
             <StatusBarButton
               onClick={() => setDraft(draft ? null : {})}
@@ -560,12 +694,17 @@ export function TableView({ connId, schema, object }: Props) {
             <span className="truncate text-warn">{notice}</span>
           ) : (
             <RowPager
-              total={source.totalRows}
-              onPrev={() => gridRef.current?.scrollToRow(Math.max(0, gridWindowStart - 300))}
-              onNext={() =>
-                gridRef.current?.scrollToRow(Math.min(source.totalRows - 1, gridWindowStart + 300))
-              }
-              start={gridWindowStart}
+              label={pagerLabel(page * PAGE_SIZE, rowsOnPage, total?.count ?? null, total?.exact ?? false)}
+              hasPrev={page > 0}
+              hasNext={hasNext}
+              onPrev={() => {
+                setPage((p) => Math.max(0, p - 1));
+                gridRef.current?.scrollToRow(0);
+              }}
+              onNext={() => {
+                setPage((p) => p + 1);
+                gridRef.current?.scrollToRow(0);
+              }}
             />
           )
         }
@@ -630,7 +769,7 @@ export function TableView({ connId, schema, object }: Props) {
           columns={object.columns}
           onClose={() => {
             setShowAlter(false);
-            setRefreshKey((k) => k + 1);
+            refresh();
           }}
         />
       )}
@@ -654,7 +793,7 @@ export function TableView({ connId, schema, object }: Props) {
             const edit = buildEdit(pk, (c) => vals[c] ?? null, cellMenu.col, newValue);
             try {
               await applyEdit(connId, schema, object.name, edit);
-              setRefreshKey((k) => k + 1);
+              refresh();
             } catch (e) {
               setNotice(`Update failed: ${e}`);
             }
@@ -682,14 +821,14 @@ export function TableView({ connId, schema, object }: Props) {
               if (rowsAffected === 0) {
                 setNotice("Delete matched no rows — the row may have already changed.");
               }
-              setRefreshKey((k) => k + 1);
+              refresh();
             } catch (e) {
               setNotice(`Delete failed: ${e}`);
             }
           };
 
           const items: (ContextMenuItem | "separator")[] = [
-            { id: "refresh", label: "Refresh", onSelect: () => setRefreshKey((k) => k + 1) },
+            { id: "refresh", label: "Refresh", onSelect: refresh },
             {
               id: "add-row",
               label: "Add row",
@@ -749,7 +888,7 @@ export function TableView({ connId, schema, object }: Props) {
               id: "quick-filter",
               label: `Filter "${cellMenu.col}" = ${cellMenu.value ?? "NULL"}`,
               onSelect: () =>
-                setFilters(
+                applyFilters(
                   upsertFilter(filters, { column: cellMenu.col, op: "Eq", value: cellMenu.value }),
                 ),
             },
@@ -846,34 +985,28 @@ function StructureView({ object, fks }: { object: ObjectInfo; fks: ForeignKey[] 
   );
 }
 
-/** TablePlus-style row pager — "1-300 of 721 rows" with chevron buttons. */
+/** TablePlus-style row pager — `‹ 1–300 of 1,234 ›`. The label is built by the
+ *  tested {@link pagerLabel}; this only draws it. */
 function RowPager({
-  total,
-  start,
+  label,
+  hasPrev,
+  hasNext,
   onPrev,
   onNext,
 }: {
-  total: number;
-  start: number;
+  label: string;
+  hasPrev: boolean;
+  hasNext: boolean;
   onPrev: () => void;
   onNext: () => void;
 }) {
-  if (total === 0) return null;
-  const PAGE = 300;
-  const from = start + 1;
-  const to = Math.min(total, start + PAGE);
   return (
     <span className="inline-flex items-center gap-1 text-[11px] text-muted">
-      <StatusBarButton onClick={onPrev} disabled={start <= 0} title="Previous page">
+      <StatusBarButton onClick={onPrev} disabled={!hasPrev} title="Previous page">
         <IconChevronLeft size={10} />
       </StatusBarButton>
-      <span className="tabular-nums">
-        <span className="text-text">
-          {from.toLocaleString()}-{to.toLocaleString()}
-        </span>{" "}
-        of {total.toLocaleString()} rows
-      </span>
-      <StatusBarButton onClick={onNext} disabled={to >= total} title="Next page">
+      <span className="tabular-nums text-text">{label}</span>
+      <StatusBarButton onClick={onNext} disabled={!hasNext} title="Next page">
         <IconChevronRight size={10} />
       </StatusBarButton>
     </span>

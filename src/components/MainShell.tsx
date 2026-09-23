@@ -37,7 +37,7 @@ import {
   IconSidebarRight,
   IconStructure,
 } from "./ui/Icon";
-import { useConnections } from "../state/connectionStore";
+import { clearMetaCaches, useConnections } from "../state/connectionStore";
 import { useTabs } from "../state/tabsStore";
 import type { Tab } from "../state/tabsStore";
 import {
@@ -62,6 +62,13 @@ import {
 } from "../lib/tableScript";
 import { markConnected } from "../lib/lastConnected";
 
+/** The schema a connection should open on. Every engine has a conventional
+ *  "your stuff lives here" schema; alphabetical order picks `auth` over
+ *  `public`, which is never what the user meant. */
+function defaultSchema(names: string[]): string | undefined {
+  return ["public", "dbo", "main"].find((n) => names.includes(n)) ?? names[0];
+}
+
 function findObject(
   schema: ReturnType<typeof useConnections.getState>["schema"],
   schemaName: string,
@@ -75,6 +82,7 @@ export function MainShell() {
   const { active, schema, saved, setActive, setSchema, disconnected, setDisconnected } =
     useConnections();
   const [reconnecting, setReconnecting] = useState(false);
+  const [refreshingSchema, setRefreshingSchema] = useState(false);
   // A dropped session (broken pipe, server shutdown, …) raises the reconnect
   // banner. commands.ts fires this from any live-session invoke that errors.
   useEffect(() => {
@@ -134,8 +142,8 @@ export function MainShell() {
   const [pinned, setPinned] = useState<string[]>([]);
   const [erdFocus, setErdFocus] = useState<string | undefined>(undefined);
   // Active schema for the sidebar dropdown — the tree shows only this schema's
-  // objects (TablePlus parity). Defaults to the first schema; re-pins to a valid
-  // one whenever the schema model changes (connection / database switch).
+  // objects (TablePlus parity). Defaults to the engine's conventional schema;
+  // re-pins to a valid one whenever the schema model changes.
   const [activeSchema, setActiveSchema] = useState<string | undefined>(undefined);
   const [objMenu, setObjMenu] = useState<{
     x: number;
@@ -151,7 +159,7 @@ export function MainShell() {
   // Keep the sidebar schema selection valid across connection/database switches.
   useEffect(() => {
     const names = schema?.schemas.map((s) => s.name) ?? [];
-    setActiveSchema((cur) => (cur && names.includes(cur) ? cur : names[0]));
+    setActiveSchema((cur) => (cur && names.includes(cur) ? cur : defaultSchema(names)));
   }, [schema]);
 
   // Hydrate persisted tabs whenever we switch connections. Persist on every tab change
@@ -278,8 +286,24 @@ export function MainShell() {
   const onDisconnect = async () => {
     await disconnect(active.id);
     reset();
+    clearMetaCaches();
     setSchema(null);
     setActive(null);
+  };
+
+  /** Re-introspect the database. The button used to hand `setSchema` the very
+   *  object it already held, so a table created from a Query tab never showed up. */
+  const onRefreshSchema = async () => {
+    if (refreshingSchema) return;
+    setRefreshingSchema(true);
+    try {
+      clearMetaCaches();
+      setSchema(await listObjects(active.id));
+    } catch (e) {
+      console.error("schema refresh failed", e);
+    } finally {
+      setRefreshingSchema(false);
+    }
   };
 
   /** Re-open the dropped session in place. Reuses connect() (rebuilds the pool)
@@ -290,6 +314,7 @@ export function MainShell() {
     try {
       const info = await connect(active.id);
       const schemaModel = await listObjects(active.id);
+      clearMetaCaches();
       setActive(info);
       setSchema(schemaModel);
     } catch (e) {
@@ -308,6 +333,7 @@ export function MainShell() {
       const info = await connect(c.id);
       const schemaModel = await listObjects(c.id);
       markConnected(c.id);
+      clearMetaCaches();
       reset();
       setActive(info);
       setSchema(schemaModel);
@@ -461,6 +487,7 @@ export function MainShell() {
             connId={active.id}
             schema={activeTab.schema!}
             object={activeObj}
+            view={activeTab.view ?? "data"}
           />
         ) : (
           <div className="p-6 text-sm text-muted">Table not found.</div>
@@ -545,11 +572,9 @@ export function MainShell() {
         {/* Right icon groups — actions in one card, the inspector toggle in its own. */}
         <IconGroup>
           <IconButton
-            icon={<IconRefresh size={16} />}
+            icon={<IconRefresh size={16} className={refreshingSchema ? "animate-spin" : undefined} />}
             label="Refresh schema"
-            onClick={() => {
-              setSchema(schema);
-            }}
+            onClick={() => void onRefreshSchema()}
           />
           <IconButton
             icon={<IconDatabase size={16} />}
@@ -887,6 +912,7 @@ export function MainShell() {
               const info = await switchDatabase(active.id, db);
               const schemaModel = await listObjects(active.id);
               markConnected(active.id);
+              clearMetaCaches();
               reset();
               setActive(info);
               setSchema(schemaModel);
@@ -926,12 +952,7 @@ export function MainShell() {
             {
               id: "open-structure",
               label: "Open structure",
-              onSelect: () => {
-                openTable(s, obj.name);
-                window.dispatchEvent(
-                  new CustomEvent("tiq:view-structure", { detail: `${s}.${obj.name}` }),
-                );
-              },
+              onSelect: () => openTable(s, obj.name, "structure"),
             },
             {
               id: "overview",
@@ -1027,7 +1048,7 @@ export function MainShell() {
         <ContextMenu
           x={sidebarMenu.x}
           y={sidebarMenu.y}
-          items={newObjectItems(schema.schemas[0]?.name ?? "public")}
+          items={newObjectItems(activeSchema ?? schema.schemas[0]?.name ?? "public")}
           onClose={() => setSidebarMenu(null)}
         />
       )}

@@ -12,6 +12,7 @@ import {
 
 interface Props {
   schema: SchemaModel;
+  /** Key of the active tab (`table:<schema>.<name>` for a table tab). */
   activeKey: string | null;
   pinned?: string[]; // `${schema}.${table}`
   /** When set, the tree shows only this schema's objects (sidebar dropdown). */
@@ -53,7 +54,9 @@ export function ObjectTree({ schema, activeKey, pinned = [], onlySchema, onOpen,
 
   const renderRow = (sName: string, o: ObjectInfo) => {
     const key = `${sName}.${o.name}`;
-    const active = key === activeKey;
+    // Tab keys are namespaced (`table:public.users`); the bare `schema.table` we
+    // use for pinning never matched one, so nothing ever highlighted.
+    const active = activeKey === `table:${key}`;
     const isView = o.kind === "View";
     const Icon = isView ? IconView : IconTable;
     return (
