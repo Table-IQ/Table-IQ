@@ -16,6 +16,7 @@ import { Onboarding } from "./Onboarding";
 import { Inspector } from "./Inspector";
 import { ContextMenu, type ContextMenuItem } from "./ui/ContextMenu";
 import { ResizeHandle, clampWidth } from "./ui/ResizeHandle";
+import { logError } from "../lib/report";
 import { hydrateForConnection, persistForConnection } from "../lib/tabsPersist";
 import { ToolbarButton, Toolbar, ToolbarDivider, ToolbarSpacer } from "./ui/Toolbar";
 import { StatusBar, StatusDot } from "./ui/StatusBar";
@@ -948,12 +949,16 @@ export function MainShell() {
           }));
           const copy = (str: string) => navigator.clipboard?.writeText(str);
           const exportAs = async (fmt: ExportFormat) => {
-            const text = await exportTable(active.id, s, obj.name, fmt);
-            downloadText(
-              `${obj.name}.${fmt}`,
-              text,
-              fmt === "json" ? "application/json" : "text/csv",
-            );
+            try {
+              const text = await exportTable(active.id, s, obj.name, fmt);
+              await downloadText(
+                `${obj.name}.${fmt}`,
+                text,
+                fmt === "json" ? "application/json" : "text/csv",
+              );
+            } catch (e) {
+              logError(`export ${obj.name} as ${fmt}`, e);
+            }
           };
           const items: (ContextMenuItem | "separator")[] = [
             { id: "open", label: "Open in new tab", onSelect: () => openTable(s, obj.name) },

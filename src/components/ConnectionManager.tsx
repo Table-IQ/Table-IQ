@@ -289,13 +289,17 @@ export function ConnectionManager() {
         <div className="px-5 pb-5">
           <div className="flex flex-col gap-1.5">
             <button
-              onClick={async () =>
-                downloadText(
-                  "tableiq-connections.json",
-                  await exportConnections(),
-                  "application/json",
-                )
-              }
+              onClick={async () => {
+                try {
+                  await downloadText(
+                    "tableiq-connections.json",
+                    await exportConnections(),
+                    "application/json",
+                  );
+                } catch (e) {
+                  setStatus({ kind: "err", msg: `Export failed: ${e}` });
+                }
+              }}
               className="flex h-8 items-center gap-2 rounded-[var(--radius)] border border-border bg-bg/70 px-3 text-[12px] text-text shadow-[var(--shadow-soft)] backdrop-blur-sm transition-colors hover:bg-bg"
               title="Export connections (no passwords)"
             >

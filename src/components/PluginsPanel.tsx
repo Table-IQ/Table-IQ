@@ -97,7 +97,11 @@ export function PluginsPanel({
                 Output
               </span>
               <button
-                onClick={() => downloadText("plugin-output.txt", output, "text/plain")}
+                onClick={() =>
+                  downloadText("plugin-output.txt", output, "text/plain").catch((e) =>
+                    setStatus(`Export failed: ${e}`),
+                  )
+                }
                 className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
               >
                 <IconExport size={11} /> Download

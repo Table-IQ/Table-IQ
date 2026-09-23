@@ -1380,6 +1380,19 @@ pub fn write_onboarding_state<R: tauri::Runtime>(
     crate::appdir::write_atomic(&path, text.as_bytes()).map_err(|e| e.to_string())
 }
 
+/// Write an export to a path the user just picked in the native Save dialog. A webview
+/// cannot write a file, and the `<a download>` blob trick does nothing in WKWebView — so
+/// every CSV/JSON export in the packaged app ends here. Atomic, so a failed write never
+/// replaces an existing file with a truncated one.
+///
+/// The path is arbitrary by design: it comes from the OS file dialog, which is the user's
+/// own choice and the only thing that authorises the write. Nothing else may call this.
+#[tauri::command(async)]
+pub fn write_text_file(path: String, contents: String) -> Result<(), String> {
+    crate::appdir::write_atomic(std::path::Path::new(&path), contents.as_bytes())
+        .map_err(|e| e.to_string())
+}
+
 
 #[cfg(test)]
 mod tests {

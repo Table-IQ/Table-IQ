@@ -288,8 +288,12 @@ export function QueryView({
   const doExport = useCallback(
     async (fmt: ExportFormat) => {
       if (!selectedMeta?.resultId) return;
-      const text = await exportResult(selectedMeta.resultId, fmt);
-      downloadText(`result.${fmt}`, text, fmt === "json" ? "application/json" : "text/csv");
+      try {
+        const text = await exportResult(selectedMeta.resultId, fmt);
+        await downloadText(`result.${fmt}`, text, fmt === "json" ? "application/json" : "text/csv");
+      } catch (e) {
+        setError(`Export: ${e}`);
+      }
     },
     [selectedMeta],
   );

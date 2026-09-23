@@ -1145,8 +1145,21 @@ export function logClientError(message: string): void {
   void invoke("log_client_error", { message }).catch(() => {});
 }
 
-/** Save text to a file (Blob download — works in the WebView and the browser). */
-export function downloadText(filename: string, text: string, mime = "text/plain") {
+/**
+ * Save text to a file. In the packaged app: the native Save dialog, then an atomic write
+ * from Rust — WKWebView ignores an `<a download>` blob link, so the old path silently did
+ * nothing on macOS. In the browser and the QA bridge (a real browser, no Tauri APIs) the
+ * blob download is still the only thing available. Resolves once the file is written, or
+ * immediately if the user cancels the dialog.
+ */
+export async function downloadText(filename: string, text: string, mime = "text/plain") {
+  if (inTauri() && !BRIDGE) {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const path = await save({ defaultPath: filename });
+    if (path === null) return; // cancelled
+    await invoke("write_text_file", { path, contents: text });
+    return;
+  }
   const blob = new Blob([text], { type: mime });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);

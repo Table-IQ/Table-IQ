@@ -512,19 +512,16 @@ export function TableView({ connId, schema, object, view }: Props) {
             icon={<IconExport size={12} />}
             label={fmt.toUpperCase()}
             onClick={async () => {
-              const text = await exportTable(
-                connId,
-                schema,
-                object.name,
-                fmt,
-                filters,
-                order,
-              );
-              downloadText(
-                `${object.name}.${fmt}`,
-                text,
-                fmt === "json" ? "application/json" : "text/csv",
-              );
+              try {
+                const text = await exportTable(connId, schema, object.name, fmt, filters, order);
+                await downloadText(
+                  `${object.name}.${fmt}`,
+                  text,
+                  fmt === "json" ? "application/json" : "text/csv",
+                );
+              } catch (e) {
+                setNotice(`Export failed: ${e}`);
+              }
             }}
           />
         ))}
