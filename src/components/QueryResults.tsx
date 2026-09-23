@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { DataGrid, type GridSource } from "./DataGrid";
 import { Tabs } from "./ui/Panel";
 import { IconRefresh } from "./ui/Icon";
@@ -83,6 +83,14 @@ export function QueryResults({
     };
   }, [selectedMeta]);
 
+  // A page fetch that failed (dropped session, cancelled cursor). The grid
+  // reports it once and stops re-requesting; we surface it instead of leaving
+  // the rows stuck on "Loading…".
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  useEffect(() => {
+    setFetchError(null);
+  }, [source?.key]);
+
   const body = () => {
     if (children) return children;
     if (runError) {
@@ -117,7 +125,7 @@ export function QueryResults({
         </div>
       );
     }
-    if (source) return <DataGrid source={source} />;
+    if (source) return <DataGrid source={source} onFetchError={setFetchError} />;
     return (
       <MessageList messages={messages} items={items} onJump={jumpTo} docLineFor={docLineFor} />
     );
@@ -156,6 +164,12 @@ export function QueryResults({
             Line {docLineFor(failed.index)}
           </span>
         </button>
+      )}
+
+      {fetchError && (
+        <div className="shrink-0 border-b border-danger/30 bg-danger/10 px-3 py-1.5 font-mono text-[11.5px] text-danger">
+          Could not load rows: {fetchError}
+        </div>
       )}
 
       <div className="min-h-0 flex-1">{body()}</div>

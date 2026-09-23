@@ -19,7 +19,7 @@ import {
 import { decodeWindow, WindowCache } from "../lib/arrowWindow";
 import { gridTheme, gridRowTints, editTints, nullCellStyle } from "../lib/theme";
 import { useTheme } from "../theme/ThemeProvider";
-import type { ForeignKey } from "../lib/commands";
+import type { ForeignKey, SortKey } from "../lib/commands";
 import {
   discardAll,
   listPending,
@@ -32,7 +32,12 @@ import {
 import { DEFAULT_COL_WIDTH } from "../lib/colWidths";
 import { autoFitWidths } from "../lib/autoFit";
 
-const PAGE = 200; // rows per fetched window
+/** Same column list, same order? */
+function sameNames(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((n, i) => n === b[i]);
+}
+
+const PAGE = 200; // default rows per fetched window (a source may override)
 const MAX_PAGES = 12; // LRU bound → JS heap stays bounded regardless of total rows
 const AUTO_FIT_SAMPLE = 60; // rows sampled from the first page to size columns to content
 const ROW_HEIGHT = 32; // comfortable TablePlus-like rows (Slice 32 raised from 29)
@@ -43,6 +48,14 @@ export interface GridSource {
   key: string;
   totalRows: number;
   columns?: string[];
+  /** Rows per fetched window. Defaults to {@link PAGE}; a source that already
+   *  pages upstream (TableView) sets it to its own page size so one fetch
+   *  covers the whole visible window. */
+  pageSize?: number;
+  /** Bumped when the same rows must be re-read from the server (Refresh /
+   *  commit / insert / delete). Drops the cache *without* the full reset a new
+   *  `key` does, so scroll, selection and fitted widths survive. */
+  version?: number;
   fetch: (offset: number, len: number) => Promise<{ bytes: Uint8Array; ms: number }>;
 }
 
@@ -98,6 +111,13 @@ interface Props {
   onSave?: () => void;
   /** Fires whenever the count of staged (uncommitted) edits changes. */
   onPendingCountChange?: (count: number) => void;
+  /** A page fetch failed. The page is remembered as failed and never
+   *  re-requested on repaint, so one broken window can't flood the database. */
+  onFetchError?: (msg: string) => void;
+  /** Active sort — drives the ▲/▼ glyph in the header. */
+  sort?: SortKey | null;
+  /** Header click. The parent owns the asc → desc → none cycle. */
+  onSort?: (column: string) => void;
 }
 
 /**
@@ -120,13 +140,24 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     rightAlignColumns,
     onSave,
     onPendingCountChange,
+    onFetchError,
+    sort,
+    onSort,
   },
   ref,
 ) {
   const { resolved } = useTheme();
   const editable = !!onEdit;
   const gridRef = useRef<DataEditorRef>(null);
-  const cacheRef = useRef(new WindowCache(PAGE, MAX_PAGES));
+  const cacheRef = useRef(new WindowCache(source.pageSize ?? PAGE, MAX_PAGES));
+  // Pages whose fetch failed. They are NOT retried on repaint — glide re-asks for
+  // every visible cell on each paint (a mouse move is enough), so without this a
+  // failing page hammers the database until the user navigates away.
+  const failed = useRef(new Set<number>());
+  // Bumped on every source/version change. A fetch that resolves against an older
+  // generation is dropped, so the previous table's rows can never land in this
+  // table's cache.
+  const generation = useRef(0);
   const overlay = useRef(new Map<string, string>()); // optimistic edits: `${row}:${col}` → value
   // Staged (uncommitted) edits in the TablePlus batch model — committed/discarded
   // as a set. `overlay` mirrors their values for display; `pending` drives the bar.
@@ -163,6 +194,16 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   useEffect(() => {
     onFetchedRef.current = onWindowFetched;
   }, [onWindowFetched]);
+  const onFetchErrorRef = useRef(onFetchError);
+  useEffect(() => {
+    onFetchErrorRef.current = onFetchError;
+  }, [onFetchError]);
+  // Read by the stable `applyColumns` so a sort change re-labels the header
+  // without re-creating `ensurePage`.
+  const sortRef = useRef(sort);
+  useEffect(() => {
+    sortRef.current = sort;
+  }, [sort]);
 
   // Mirror columnWidths into a ref so the stable `maybeAutoFit` callback can read
   // the latest persisted widths without re-creating (and churning `ensurePage`).
@@ -174,7 +215,24 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   // A user's persisted drag wins; otherwise use the content-fitted width; only
   // then fall back to the legacy fixed default.
   const widthFor = (name: string) =>
-    columnWidths?.[name] ?? autoFitRef.current[name] ?? DEFAULT_COL_WIDTH;
+    columnWidthsRef.current?.[name] ?? autoFitRef.current[name] ?? DEFAULT_COL_WIDTH;
+
+  /** Rebuild the glide columns from `names`. The sort glyph lives in the *title*
+   *  only — `id` stays the bare column name, so width persistence and the resize
+   *  handler are unaffected by it. */
+  const applyColumns = useCallback((names: string[]) => {
+    const s = sortRef.current;
+    setColumns(
+      names.map((c) => ({
+        id: c,
+        title: s?.column === c ? `${c} ${s.desc ? "▼" : "▲"}` : c,
+        width: widthFor(c),
+      })),
+    );
+    // widthFor reads refs only; re-creating this callback would churn every
+    // effect that rebuilds the header.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Size each not-yet-resized column to its content using a sample of the first
   // loaded page. Runs once per source (guarded by `autoFitDoneRef`); retries on
@@ -205,16 +263,13 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     if (rows.length === 0) return; // first page not decoded yet — retry next fetch
     autoFitRef.current = autoFitWidths(cols, rows, persisted);
     autoFitDoneRef.current = true;
-    setColumns(
-      cols.map((c) => ({
-        title: c,
-        width: persisted[c] ?? autoFitRef.current[c] ?? DEFAULT_COL_WIDTH,
-      })),
-    );
-  }, []);
+    applyColumns(cols);
+  }, [applyColumns]);
   // Reset cache + columns whenever the source changes.
   useEffect(() => {
-    cacheRef.current = new WindowCache(PAGE, MAX_PAGES);
+    cacheRef.current = new WindowCache(source.pageSize ?? PAGE, MAX_PAGES);
+    generation.current += 1;
+    failed.current.clear();
     overlay.current.clear();
     inflight.current.clear();
     // Bare `row:col` edit keys carry no source identity, so they MUST be wiped
@@ -235,49 +290,81 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     setSelRow(undefined); // stale selection must not linger across table/result switches
     if (source.columns && source.columns.length > 0) {
       colNames.current = source.columns;
-      setColumns(source.columns.map((c) => ({ title: c, width: widthFor(c) })));
+      applyColumns(source.columns);
     } else {
       colNames.current = [];
       setColumns([]);
     }
     setVersion((v) => v + 1);
-    // widthFor reads from columnWidths; intentionally not in deps — we re-render
-    // through the separate effect below when columnWidths changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source.key, source.columns]);
+  }, [source.key, source.columns, source.pageSize, applyColumns]);
 
-  // Apply width updates from the parent (e.g. after persistence rehydrates).
+  // Same rows, re-read from the server (Refresh / commit / insert / delete):
+  // drop the cached pages and let the repaint re-fetch. Deliberately does NOT
+  // touch selection, scroll or fitted widths — that is the whole point.
+  useEffect(() => {
+    if (source.version === undefined) return;
+    cacheRef.current = new WindowCache(source.pageSize ?? PAGE, MAX_PAGES);
+    generation.current += 1;
+    failed.current.clear();
+    inflight.current.clear();
+    overlay.current.clear();
+    setVersion((v) => v + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source.version]);
+
+  // Apply width updates from the parent (e.g. after persistence rehydrates) and
+  // re-label the header when the sort changes.
   useEffect(() => {
     if (colNames.current.length === 0) return;
-    setColumns(colNames.current.map((c) => ({ title: c, width: widthFor(c) })));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [columnWidths]);
+    applyColumns(colNames.current);
+  }, [columnWidths, sort, applyColumns]);
 
   const ensurePage = useCallback(
     (page: number) => {
-      if (page < 0 || cacheRef.current.has(page) || inflight.current.has(page)) return;
+      const size = cacheRef.current.pageSize;
+      // Never ask for a page that starts at or past the last row — a wrong total
+      // used to send the grid fetching windows the table doesn't have.
+      if (page < 0 || page * size >= source.totalRows) return;
+      if (cacheRef.current.has(page) || inflight.current.has(page)) return;
+      if (failed.current.has(page)) return;
+      const gen = generation.current;
       inflight.current.add(page);
       source
-        .fetch(page * PAGE, PAGE)
+        .fetch(page * size, size)
         .then(({ bytes, ms }) => {
+          if (gen !== generation.current) return; // source changed mid-flight
           const win = decodeWindow(bytes);
           cacheRef.current.put(page, win);
-          if (colNames.current.length === 0 && win.columns.length > 0) {
-            colNames.current = win.columns;
-            setColumns(win.columns.map((c) => ({ title: c, width: widthFor(c) })));
+          // The first page is the authority on the column list: the sidebar
+          // schema can be stale (or absent for a view), the decoded Arrow window
+          // never is.
+          const names = win.columns;
+          if (
+            names.length > 0 &&
+            (page === 0 || colNames.current.length === 0) &&
+            !sameNames(colNames.current, names)
+          ) {
+            colNames.current = names;
+            applyColumns(names);
           }
           maybeAutoFit();
           onFetchedRef.current?.(ms);
           setVersion((v) => v + 1);
         })
-        .catch(() => {})
+        .catch((e) => {
+          if (gen !== generation.current) return;
+          failed.current.add(page);
+          onFetchErrorRef.current?.(String(e));
+          setVersion((v) => v + 1);
+        })
         .finally(() => inflight.current.delete(page));
     },
-    [source, maybeAutoFit],
+    [source, maybeAutoFit, applyColumns],
   );
 
   useEffect(() => {
-    if (source.totalRows > 0) ensurePage(0);
+    ensurePage(0);
   }, [source.totalRows, ensurePage]);
 
   const getCellContent = useCallback(
@@ -286,7 +373,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
       const ov = name ? overlay.current.get(`${row}:${name}`) : undefined;
       const value = ov ?? (name ? cacheRef.current.getCell(row, name) : undefined);
       if (value === undefined) {
-        const page = Math.floor(row / PAGE);
+        const page = cacheRef.current.pageOf(row);
         ensurePage(page);
         ensurePage(page + 1);
         return { kind: GridCellKind.Loading, allowOverlay: false };
@@ -499,11 +586,11 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   // instant; the parent's persistence handler picks up the final value via
   // `onColumnResize`.
   const onLocalColumnResize = useCallback(
-    (col: GridColumn, newWidth: number) => {
-      setColumns((cs) => cs.map((c) => (c.title === col.title ? { ...c, width: newWidth } : c)));
-      if (onColumnResize && typeof col.title === "string") {
-        onColumnResize(col.title, newWidth);
-      }
+    (_col: GridColumn, newWidth: number, colIndex: number) => {
+      // Key on the column *name*, not the title — the title carries the sort glyph.
+      const name = colNames.current[colIndex];
+      setColumns((cs) => cs.map((c, i) => (i === colIndex ? { ...c, width: newWidth } : c)));
+      if (onColumnResize && name) onColumnResize(name, newWidth);
     },
     [onColumnResize],
   );
@@ -568,6 +655,14 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
           : undefined
       }
       onColumnResize={onLocalColumnResize}
+      onHeaderClicked={
+        onSort
+          ? (colIndex) => {
+              const name = colNames.current[colIndex];
+              if (name) onSort(name);
+            }
+          : undefined
+      }
       rowMarkers="number"
       smoothScrollX
       smoothScrollY
