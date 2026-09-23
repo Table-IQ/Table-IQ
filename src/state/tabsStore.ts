@@ -6,14 +6,19 @@ export interface Tab {
   title: string;
   schema?: string;
   table?: string;
+  /** Query tabs carry their own SQL so it survives tab switches/persistence. */
+  sql?: string;
+  /** Table tabs: which sub-view is showing. Defaults to "data". */
+  view?: "data" | "structure";
 }
 
 interface TabsState {
   tabs: Tab[];
   activeKey: string | null;
   queryCount: number;
-  openTable: (schema: string, table: string) => void;
-  openQuery: () => void;
+  openTable: (schema: string, table: string, view?: Tab["view"]) => void;
+  openQuery: (sql?: string) => void;
+  setTabSql: (key: string, sql: string) => void;
   openErd: () => void;
   close: (key: string) => void;
   setActive: (key: string) => void;
@@ -24,25 +29,36 @@ export const useTabs = create<TabsState>((set) => ({
   tabs: [],
   activeKey: null,
   queryCount: 0,
-  openTable: (schema, table) =>
+  openTable: (schema, table, view) =>
     set((s) => {
       const key = `table:${schema}.${table}`;
-      if (s.tabs.some((t) => t.key === key)) return { activeKey: key };
+      const existing = s.tabs.find((t) => t.key === key);
+      if (existing) {
+        if (!view || existing.view === view) return { activeKey: key };
+        return {
+          tabs: s.tabs.map((t) => (t.key === key ? { ...t, view } : t)),
+          activeKey: key,
+        };
+      }
       return {
-        tabs: [...s.tabs, { key, kind: "table", title: table, schema, table }],
+        tabs: [...s.tabs, { key, kind: "table", title: table, schema, table, view: view ?? "data" }],
         activeKey: key,
       };
     }),
-  openQuery: () =>
+  openQuery: (sql) =>
     set((s) => {
       const n = s.queryCount + 1;
       const key = `query:${n}`;
       return {
-        tabs: [...s.tabs, { key, kind: "query", title: `Query ${n}` }],
+        tabs: [...s.tabs, { key, kind: "query", title: `Query ${n}`, sql }],
         activeKey: key,
         queryCount: n,
       };
     }),
+  setTabSql: (key, sql) =>
+    set((s) => ({
+      tabs: s.tabs.map((t) => (t.key === key ? { ...t, sql } : t)),
+    })),
   openErd: () =>
     set((s) => {
       const key = "erd";

@@ -51,6 +51,29 @@ describe("tabsPersist", () => {
     expect(got).toEqual(slice);
   });
 
+  it("round-trips a query tab's sql and a table tab's view (the whole Tab is persisted)", () => {
+    const slice: PersistedTabs = {
+      tabs: [
+        { key: "query:1", kind: "query", title: "Query 1", sql: "SELECT 1;\nSELECT 2;" },
+        {
+          key: "table:public.users",
+          kind: "table",
+          title: "users",
+          schema: "public",
+          table: "users",
+          view: "structure",
+        },
+      ],
+      activeKey: "query:1",
+      queryCount: 1,
+    };
+    persistForConnection("conn-sql", slice, store);
+    const got = hydrateForConnection("conn-sql", store, schema);
+    expect(got).toEqual(slice);
+    expect(got?.tabs[0].sql).toBe("SELECT 1;\nSELECT 2;");
+    expect(got?.tabs[1].view).toBe("structure");
+  });
+
   it("drops table tabs whose object is gone", () => {
     const tabs: Tab[] = [
       { key: "table:public.users", kind: "table", title: "users", schema: "public", table: "users" },
