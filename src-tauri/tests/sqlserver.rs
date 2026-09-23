@@ -7,13 +7,50 @@
 use arrow::array::StringArray;
 use tableiq_lib::drivers::{sqlserver::SqlServerDriver, EditSpec, SqlDriver};
 
-#[tokio::test]
-async fn sqlserver_driver_browse_query_edit() {
+/// `TIQ_MSSQL_URL` is an ADO connection string (that is what CI and the docs set), while the
+/// driver takes the parts — ADO has no escaping rule for a password containing `;`. Split it
+/// here rather than teaching the driver an ADO parser it would never use in the app.
+/// `Server=tcp:<host>,<port>;User Id=<u>;Password=<p>;Database=<d>;…`
+fn parts(ado: &str) -> (String, u16, String, String, String) {
+    let mut host = "127.0.0.1".to_string();
+    let mut port = 1433u16;
+    let (mut database, mut user, mut pass) = (String::new(), String::new(), String::new());
+    for kv in ado.split(';') {
+        let Some((k, v)) = kv.split_once('=') else { continue };
+        match k.trim().to_lowercase().as_str() {
+            "server" => {
+                let addr = v.trim().strip_prefix("tcp:").unwrap_or(v.trim());
+                let (h, p) = addr.split_once(',').unwrap_or((addr, "1433"));
+                host = h.to_string();
+                port = p.parse().unwrap_or(1433);
+            }
+            "user id" | "uid" | "user" => user = v.trim().to_string(),
+            "password" | "pwd" => pass = v.trim().to_string(),
+            "database" | "initial catalog" => database = v.trim().to_string(),
+            _ => {}
+        }
+    }
+    (host, port, database, user, pass)
+}
+
+/// Connect the way the app does, from the parts of `TIQ_MSSQL_URL`. `sslmode` is left at the
+/// app default (`prefer`), so the live suite exercises a real encrypted TDS session.
+async fn connect() -> Option<SqlServerDriver> {
     let Ok(ado) = std::env::var("TIQ_MSSQL_URL") else {
         eprintln!("skip: no TIQ_MSSQL_URL");
-        return;
+        return None;
     };
-    let drv = SqlServerDriver::connect(&ado).await.expect("connect");
+    let (host, port, database, user, pass) = parts(&ado);
+    Some(
+        SqlServerDriver::connect(&host, port, &database, &user, &pass, "prefer")
+            .await
+            .expect("connect"),
+    )
+}
+
+#[tokio::test]
+async fn sqlserver_driver_browse_query_edit() {
+    let Some(drv) = connect().await else { return };
 
     drv.run_script(
         "IF OBJECT_ID('dbo.tiq_demo','U') IS NOT NULL DROP TABLE dbo.tiq_demo; \

@@ -115,11 +115,19 @@ async fn maybe_open_tunnel(
 
 /// Build the right driver for an engine. `pw` is unused for sqlite.
 async fn open_driver(cfg: &ConnConfig, pw: &str) -> Result<Arc<dyn SqlDriver>, String> {
+    // SQL Server takes the parts, not a URL: tiberius' ADO string has no escaping rule for a
+    // password containing `;` or `=`, and it is where `sslmode` becomes a TDS encryption level.
+    if cfg.engine == "sqlserver" {
+        let drv =
+            SqlServerDriver::connect(&cfg.host, cfg.port, &cfg.database, &cfg.username, pw, &cfg.sslmode)
+                .await
+                .map_err(|e| e.to_string())?;
+        return Ok(Arc::new(drv));
+    }
     let url = cfg.url_with_password(pw);
     let drv: Arc<dyn SqlDriver> = match cfg.engine.as_str() {
         "sqlite" => Arc::new(SqliteDriver::connect(&url).await.map_err(|e| e.to_string())?),
         "mysql" => Arc::new(MySqlDriver::connect(&url).await.map_err(|e| e.to_string())?),
-        "sqlserver" => Arc::new(SqlServerDriver::connect(&url).await.map_err(|e| e.to_string())?),
         _ => Arc::new(PgDriver::connect(&url).await.map_err(|e| e.to_string())?),
     };
     Ok(drv)

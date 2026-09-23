@@ -10,7 +10,7 @@ use arrow::array::{ArrayRef, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
-use tiberius::{Client, ColumnData, Config};
+use tiberius::{AuthMethod, Client, ColumnData, Config, EncryptionLevel};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
@@ -122,11 +122,53 @@ pub struct SqlServerDriver {
     cursors: StdMutex<HashMap<String, CursorState>>,
 }
 
+/// How long to wait for the TCP connect before giving up. Without it an unreachable host
+/// hangs on the OS default (~75s on macOS), which the UI reads as a frozen app.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Map the saved `sslmode` to a TDS encryption level plus whether a self-signed certificate
+/// is acceptable. `sslmode` is Postgres' vocabulary, which this app reuses for every engine.
+fn encryption_for(sslmode: &str) -> (EncryptionLevel, bool) {
+    match sslmode {
+        "disable" => (EncryptionLevel::Off, false),
+        "require" => (EncryptionLevel::Required, true),
+        // Verifying the chain is the whole point of these two, so no `trust_cert`.
+        "verify-ca" | "verify-full" => (EncryptionLevel::Required, false),
+        // `prefer` (the default) and anything unrecognised: encrypt, but accept the
+        // self-signed certificate a stock SQL Server generates at setup.
+        _ => (EncryptionLevel::On, true),
+    }
+}
+
 impl SqlServerDriver {
-    /// Connect using an ADO connection string (built by `ConnConfig::url_with_password`).
-    pub async fn connect(ado: &str) -> DResult<Self> {
-        let config = Config::from_ado_string(ado).map_err(db)?;
-        let tcp = TcpStream::connect(config.get_addr()).await.map_err(db)?;
+    /// Connect to `host:port`. The `tiberius::Config` is built from the parts rather than from
+    /// an ADO connection string: ADO has no escaping rule for `;` or `=`, so a password
+    /// containing either silently connected as something else (or not at all).
+    pub async fn connect(
+        host: &str,
+        port: u16,
+        database: &str,
+        username: &str,
+        password: &str,
+        sslmode: &str,
+    ) -> DResult<Self> {
+        let mut config = Config::new();
+        config.host(host);
+        config.port(port);
+        // An empty database means "the login's default database", which is what SSMS does.
+        if !database.is_empty() {
+            config.database(database);
+        }
+        config.authentication(AuthMethod::sql_server(username, password));
+        let (level, trust) = encryption_for(sslmode);
+        config.encryption(level);
+        if trust {
+            config.trust_cert();
+        }
+        let tcp = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(config.get_addr()))
+            .await
+            .map_err(|_| DriverError::Db(format!("connection to {host}:{port} timed out")))?
+            .map_err(db)?;
         tcp.set_nodelay(true).ok();
         let client = Client::connect(config, tcp.compat_write()).await.map_err(db)?;
         Ok(Self { client: Mutex::new(client), cursors: StdMutex::new(HashMap::new()) })
@@ -711,6 +753,24 @@ impl SqlDriver for SqlServerDriver {
 
 #[cfg(test)]
 mod tests {
+    use super::encryption_for;
+    use tiberius::EncryptionLevel;
+
+    /// `sslmode` is the only TLS knob the UI exposes. The old driver hardcoded
+    /// `Encrypt=false;TrustServerCertificate=true` into an ADO string, so every credential and
+    /// every row travelled in cleartext whatever the user picked.
+    #[test]
+    fn sslmode_maps_to_an_encryption_level() {
+        assert_eq!(encryption_for("disable"), (EncryptionLevel::Off, false));
+        assert_eq!(encryption_for("prefer"), (EncryptionLevel::On, true));
+        assert_eq!(encryption_for(""), (EncryptionLevel::On, true), "default is `prefer`");
+        assert_eq!(encryption_for("nonsense"), (EncryptionLevel::On, true), "default is `prefer`");
+        assert_eq!(encryption_for("require"), (EncryptionLevel::Required, true));
+        // verify-ca / verify-full must NOT accept a self-signed certificate.
+        assert_eq!(encryption_for("verify-ca"), (EncryptionLevel::Required, false));
+        assert_eq!(encryption_for("verify-full"), (EncryptionLevel::Required, false));
+    }
+
     /// Smoke-test that the FK query uses the documented sys.* tables and joins through
     /// foreign_key_columns to resolve both ends. Live verification is gated on the
     /// TIQ_MSSQL_URL env var in the integration test suite.

@@ -70,14 +70,6 @@ impl ConnConfig {
                 };
                 format!("mongodb://{auth}{}:{}", self.host, self.port)
             }
-            "sqlserver" => {
-                // ADO connection string for tiberius. azure-sql-edge uses a self-signed cert.
-                let dbn = if self.database.is_empty() { "master" } else { &self.database };
-                format!(
-                    "Server=tcp:{},{};User Id={};Password={};Database={};TrustServerCertificate=true;Encrypt=false",
-                    self.host, self.port, self.username, password, dbn
-                )
-            }
             "mysql" => format!(
                 "mysql://{}:{}@{}:{}/{}",
                 urlencode(&self.username),
