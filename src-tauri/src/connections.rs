@@ -2,7 +2,7 @@
 //! the OS keychain (never on disk). Postgres only for Slice 1.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -125,20 +125,25 @@ impl ConnStore {
     }
 
     pub fn load() -> Self {
-        let p = Self::path();
-        match fs::read_to_string(&p) {
-            Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
-            Err(_) => Self::default(),
+        Self::load_at(&Self::path())
+    }
+
+    /// Load from an explicit path. A file that exists but does not parse is moved aside
+    /// rather than silently replaced by the next save — see `appdir::quarantine`.
+    fn load_at(p: &Path) -> Self {
+        let Ok(text) = fs::read_to_string(p) else { return Self::default() };
+        match serde_json::from_str(&text) {
+            Ok(store) => store,
+            Err(e) => {
+                crate::appdir::quarantine_corrupt(p, &e.to_string());
+                Self::default()
+            }
         }
     }
 
     pub fn save(&self) -> Result<(), String> {
-        let p = Self::path();
-        if let Some(dir) = p.parent() {
-            fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        }
-        fs::write(&p, serde_json::to_string_pretty(self).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())
+        let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        crate::appdir::write_atomic(&Self::path(), json.as_bytes()).map_err(|e| e.to_string())
     }
 
     pub fn upsert(&mut self, cfg: ConnConfig) {
@@ -382,6 +387,35 @@ mod tests {
     #[test]
     fn ssh_secret_account_derivation() {
         assert_eq!(ssh_secret_account("conn-9"), "ssh:conn-9");
+    }
+
+    /// A `connections.json` that exists but does not parse must be moved aside, never
+    /// silently replaced by the next save — it is the user's entire set of connections.
+    #[test]
+    fn corrupt_store_is_quarantined_not_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("connections.json");
+        std::fs::write(&p, b"{ truncated").unwrap();
+
+        let store = ConnStore::load_at(&p);
+        assert!(store.connections.is_empty(), "a corrupt file loads as empty");
+        assert!(!p.exists(), "the corrupt file must be moved out of the way");
+        let aside: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.starts_with("connections.json.corrupt-"))
+            .collect();
+        assert_eq!(aside.len(), 1, "expected exactly one quarantined file, saw {aside:?}");
+        assert_eq!(std::fs::read_to_string(dir.path().join(&aside[0])).unwrap(), "{ truncated");
+    }
+
+    #[test]
+    fn missing_store_loads_empty_without_quarantining() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("connections.json");
+        assert!(ConnStore::load_at(&p).connections.is_empty());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
     #[test]

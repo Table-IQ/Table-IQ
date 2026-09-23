@@ -1377,7 +1377,7 @@ pub fn write_onboarding_state<R: tauri::Runtime>(
 ) -> Result<(), String> {
     let path = onboarding_path(&app)?;
     let text = serde_json::to_string_pretty(&state).map_err(|e| e.to_string())?;
-    std::fs::write(&path, text).map_err(|e| e.to_string())
+    crate::appdir::write_atomic(&path, text.as_bytes()).map_err(|e| e.to_string())
 }
 
 

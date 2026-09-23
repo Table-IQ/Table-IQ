@@ -104,12 +104,8 @@ pub fn load_config() -> AiConfig {
 }
 
 pub fn save_config(cfg: &AiConfig) -> Result<(), String> {
-    let p = config_path();
-    if let Some(dir) = p.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(p, serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())
+    let json = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
+    crate::appdir::write_atomic(&config_path(), json.as_bytes()).map_err(|e| e.to_string())
 }
 
 /// Keychain account for a provider's API key.

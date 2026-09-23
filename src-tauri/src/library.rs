@@ -2,7 +2,7 @@
 //! History is recorded automatically when a query runs (capped, consecutive-dupes skipped).
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -37,19 +37,24 @@ impl QueryLibrary {
     }
 
     pub fn load() -> Self {
-        match fs::read_to_string(Self::path()) {
-            Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
-            Err(_) => Self::default(),
+        Self::load_at(&Self::path())
+    }
+
+    /// Load from an explicit path; a corrupt file is quarantined, not overwritten.
+    fn load_at(p: &Path) -> Self {
+        let Ok(text) = fs::read_to_string(p) else { return Self::default() };
+        match serde_json::from_str(&text) {
+            Ok(lib) => lib,
+            Err(e) => {
+                crate::appdir::quarantine_corrupt(p, &e.to_string());
+                Self::default()
+            }
         }
     }
 
     pub fn save(&self) -> Result<(), String> {
-        let p = Self::path();
-        if let Some(dir) = p.parent() {
-            fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        }
-        fs::write(&p, serde_json::to_string_pretty(self).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())
+        let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        crate::appdir::write_atomic(&Self::path(), json.as_bytes()).map_err(|e| e.to_string())
     }
 
     pub fn upsert_saved(&mut self, q: SavedQuery) {
@@ -136,6 +141,26 @@ mod tests {
         assert_eq!(lib.history.len(), HISTORY_CAP);
         // Oldest entries were dropped; newest survives.
         assert_eq!(lib.history.last().unwrap().sql, format!("select {}", HISTORY_CAP + 49));
+    }
+
+    /// Same contract as `connections.json`: a corrupt library is preserved, not overwritten.
+    #[test]
+    fn corrupt_library_is_quarantined_not_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("query_library.json");
+        std::fs::write(&p, b"[not an object]").unwrap();
+
+        let lib = QueryLibrary::load_at(&p);
+        assert!(lib.saved.is_empty() && lib.history.is_empty());
+        assert!(!p.exists());
+        assert_eq!(
+            std::fs::read_dir(dir.path())
+                .unwrap()
+                .flatten()
+                .filter(|e| e.file_name().to_string_lossy().starts_with("query_library.json.corrupt-"))
+                .count(),
+            1
+        );
     }
 
     #[test]
