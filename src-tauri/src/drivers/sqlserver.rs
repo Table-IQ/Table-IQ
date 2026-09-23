@@ -1,6 +1,8 @@
 //! SQL Server `SqlDriver` via tiberius (TDS). Display-first browse: every cell is stringified to
 //! Utf8 (consistent with the other drivers). A single pinned connection behind an async mutex —
-//! pooling/cancellation are follow-ups. Inline edit is not yet implemented (browse + query + DDL).
+//! pooling is a follow-up, and cancellation needs a second connection to send an ATTENTION on,
+//! so it stays `NotImplemented`. Covered live by `tests/sqlserver.rs` (gated on `TIQ_MSSQL_URL`)
+//! against the seed in `docker/sqlserver/qa.sql`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -761,9 +763,8 @@ impl SqlDriver for SqlServerDriver {
             .collect())
     }
 
-    /// Structure tab from the `sys.*` catalog. **Not live-tested** — there is no SQL Server
-    /// container in this repo's QA setup; the unit tests below only pin the catalog views
-    /// and join keys the queries use.
+    /// Structure tab from the `sys.*` catalog. The unit tests below pin the catalog views and
+    /// join keys; `tests/sqlserver.rs` checks the result against the QA seed.
     async fn describe_table(&self, schema: &str, table: &str) -> DResult<TableStructure> {
         let qualified = format!("{}.{}", quote_ident(schema), quote_ident(table));
         let mut c = self.client.lock().await;
@@ -985,9 +986,9 @@ mod tests {
         }
     }
 
-    /// `describe_table` has no live coverage (no SQL Server container in this repo), so pin
-    /// the shipped queries: the documented catalog views, the bound `OBJECT_ID(@P1)` scope
-    /// — never an interpolated identifier — and the key ordering a composite index needs.
+    /// Pin the shipped queries even though `tests/sqlserver.rs` now covers them live: the
+    /// documented catalog views, the bound `OBJECT_ID(@P1)` scope — never an interpolated
+    /// identifier — and the key ordering a composite index needs.
     #[test]
     fn structure_queries_use_the_sys_catalog_and_bind_the_relation() {
         use super::{STRUCT_COLUMNS_SQL, STRUCT_INDEXES_SQL, STRUCT_TRIGGERS_SQL};

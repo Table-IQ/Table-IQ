@@ -1,11 +1,17 @@
-//! Slice 14/15 integration: SQL Server (tiberius) driver against a live azure-sql-edge container.
-//! Browse/query/introspect/PK/row-estimate + inline-edit round-trip, in one sequential test (the
-//! two halves do DDL on the same DB, so they must not run concurrently). Gated on TIQ_MSSQL_URL:
+//! SQL Server (tiberius) driver against a live container. Browse, query, multi-statement
+//! execution, introspection, structure, foreign keys, paging, counts and inline edit. Gated on
+//! TIQ_MSSQL_URL; the seeded test needs `docker/sqlserver/qa.sql` applied (see its header).
+//!
+//!   docker run -d --name tableiq-mssql --platform linux/amd64 -e ACCEPT_EULA=Y \
+//!     -e MSSQL_SA_PASSWORD=TableIQ_pw1 -p 51433:1433 mcr.microsoft.com/mssql/server:2022-latest
 //!   TIQ_MSSQL_URL="Server=tcp:127.0.0.1,51433;User Id=sa;Password=TableIQ_pw1;Database=master;TrustServerCertificate=true;Encrypt=false" \
 //!     cargo test --test sqlserver -- --nocapture
 
 use arrow::array::{Array, StringArray};
-use tableiq_lib::drivers::{sqlserver::SqlServerDriver, CancelToken, DriverError, EditSpec, SqlDriver};
+use tableiq_lib::drivers::{
+    sqlserver::SqlServerDriver, CancelToken, ColumnFilter, DriverError, EditSpec, FilterOp,
+    ObjectKind, SortKey, SqlDriver,
+};
 
 /// `TIQ_MSSQL_URL` is an ADO connection string (that is what CI and the docs set), while the
 /// driver takes the parts — ADO has no escaping rule for a password containing `;`. Split it
@@ -35,17 +41,23 @@ fn parts(ado: &str) -> (String, u16, String, String, String) {
 
 /// Connect the way the app does, from the parts of `TIQ_MSSQL_URL`. `sslmode` is left at the
 /// app default (`prefer`), so the live suite exercises a real encrypted TDS session.
-async fn connect() -> Option<SqlServerDriver> {
+/// `db` overrides the database in the URL (`None` keeps it).
+async fn connect_to(db: Option<&str>) -> Option<SqlServerDriver> {
     let Ok(ado) = std::env::var("TIQ_MSSQL_URL") else {
         eprintln!("skip: no TIQ_MSSQL_URL");
         return None;
     };
     let (host, port, database, user, pass) = parts(&ado);
+    let database = db.map_or(database, std::string::ToString::to_string);
     Some(
         SqlServerDriver::connect(&host, port, &database, &user, &pass, "prefer")
             .await
             .expect("connect"),
     )
+}
+
+async fn connect() -> Option<SqlServerDriver> {
+    connect_to(None).await
 }
 
 #[tokio::test]
@@ -326,4 +338,176 @@ async fn sqlserver_foreign_keys_and_databases_are_read_column_major() {
     )
     .await
     .ok();
+}
+
+/// End-to-end against the QA seed (`docker/sqlserver/qa.sql`, applied to the `tableiq`
+/// database): introspection, `describe_table`, `foreign_keys`, counts, ordering/paging,
+/// inline edit, and the display rendering of every scalar type the seed carries.
+#[tokio::test]
+async fn sqlserver_qa_seed_introspect_structure_paging_and_edit() {
+    let Some(drv) = connect_to(Some("tableiq")).await else { return };
+
+    // ── introspect ──────────────────────────────────────────────────────────
+    let model = drv.introspect().await.expect("introspect");
+    let schema = |n: &str| model.schemas.iter().find(|s| s.name == n);
+    let names = || model.schemas.iter().map(|s| s.name.as_str()).collect::<Vec<_>>();
+    for n in ["auth", "billing", "dbo"] {
+        assert!(schema(n).is_some(), "schema {n} missing from {:?}", names());
+    }
+    // Known gap, not a Task 4 change: `introspect` derives its schema list from
+    // INFORMATION_SCHEMA.TABLES, so the seeded-but-empty `staging` schema is invisible here.
+    // Postgres walks pg_namespace and does show its `empty_schema`.
+    assert!(schema("staging").is_none(), "an empty schema is not listed today: {:?}", names());
+    let dbo = schema("dbo").unwrap();
+    let view = dbo.objects.iter().find(|o| o.name == "customer_orders").expect("view");
+    assert_eq!(view.kind, ObjectKind::View);
+    let customers = dbo.objects.iter().find(|o| o.name == "customers").expect("customers");
+    assert_eq!(customers.columns.len(), 9);
+    let id = customers.columns.iter().find(|c| c.name == "id").expect("id column");
+    assert!(id.pk && !id.nullable, "id is the PK and NOT NULL: {id:?}");
+    let nickname = customers.columns.iter().find(|c| c.name == "nickname").expect("nickname");
+    assert!(!nickname.pk && nickname.nullable);
+
+    // ── describe_table: columns, default, comment, indexes ──────────────────
+    let st = drv.describe_table("dbo", "customers").await.expect("describe customers");
+    let col = |n: &str| st.columns.iter().find(|c| c.name == n).unwrap_or_else(|| panic!("no column {n}"));
+    assert_eq!(col("name").data_type, "nvarchar(255)", "the length suffix is rebuilt");
+    assert_eq!(col("balance").data_type, "decimal(12,2)");
+    assert_eq!(col("uid").data_type, "uniqueidentifier");
+    assert!(col("balance").default.is_some(), "balance has a DEFAULT");
+    assert_eq!(
+        col("balance").comment.as_deref(),
+        Some("Running account balance in local currency."),
+        "MS_Description is the comment"
+    );
+    assert!(col("id").is_pk && !col("name").is_pk);
+    let uidx = st.indexes.iter().find(|i| i.name == "customers_uid_key").expect("unique index");
+    assert!(uidx.unique && !uidx.primary);
+    assert_eq!(uidx.columns, vec!["uid"]);
+    assert!(st.indexes.iter().any(|i| i.primary && i.columns == vec!["id"]), "PK index: {:?}", st.indexes);
+    assert!(st.triggers.is_empty(), "customers has no trigger");
+
+    // Composite PK reads back in key order.
+    let items = drv.describe_table("dbo", "order_items").await.expect("describe order_items");
+    let pk = items.indexes.iter().find(|i| i.primary).expect("composite PK");
+    assert_eq!(pk.columns, vec!["order_id", "line_no"]);
+
+    // Trigger.
+    let orders = drv.describe_table("dbo", "orders").await.expect("describe orders");
+    let trg = orders.triggers.iter().find(|t| t.name == "trg_orders_set_note").expect("trigger");
+    assert_eq!(trg.timing_event, "AFTER INSERT", "SQL Server has no BEFORE triggers");
+    assert!(trg.definition.as_deref().unwrap_or("").contains("inserted"), "the body is exposed");
+
+    // ── foreign_keys: self, cross-schema, composite ─────────────────────────
+    let fks = drv.foreign_keys().await.expect("foreign_keys");
+    let by = |n: &str| fks.iter().filter(|f| f.constraint == n).collect::<Vec<_>>();
+    let selfie = by("fk_users_manager");
+    assert_eq!(selfie.len(), 1);
+    assert_eq!((selfie[0].from_table.as_str(), selfie[0].to_table.as_str()), ("users", "users"));
+    let cross = by("fk_customers_user");
+    assert_eq!(cross.len(), 1);
+    assert_eq!((cross[0].from_schema.as_str(), cross[0].to_schema.as_str()), ("dbo", "auth"));
+    let cross2 = by("fk_invoices_order");
+    assert_eq!((cross2[0].from_schema.as_str(), cross2[0].to_schema.as_str()), ("billing", "dbo"));
+    let comp = by("fk_shipments_item");
+    assert_eq!(comp.len(), 2, "a composite FK is one edge per column pair");
+    assert_eq!(
+        comp.iter().map(|f| (f.from_column.as_str(), f.to_column.as_str())).collect::<Vec<_>>(),
+        vec![("order_id", "order_id"), ("line_no", "line_no")],
+        "in key order"
+    );
+
+    // ── counts ──────────────────────────────────────────────────────────────
+    let c = drv.count_rows("dbo", "orders", &[]).await.expect("count");
+    assert_eq!(c.count, Some(300), "sys.partitions estimate");
+    assert!(!c.exact, "the unfiltered count is the stats estimate");
+    let filtered = drv
+        .count_rows(
+            "dbo",
+            "order_items",
+            &[ColumnFilter { column: "line_no".into(), op: FilterOp::Eq, value: Some("1".into()) }],
+        )
+        .await
+        .expect("filtered count");
+    assert_eq!(filtered.count, Some(300), "one line 1 per order");
+    assert!(filtered.exact, "a filtered count is exact");
+
+    // ── ordering + paging ───────────────────────────────────────────────────
+    let desc = [SortKey { column: "id".into(), desc: true }];
+    let page1 = drv.open_window_filtered("dbo", "orders", 0, 3, &[], &desc).await.expect("page1");
+    let page2 = drv.open_window_filtered("dbo", "orders", 3, 3, &[], &desc).await.expect("page2");
+    let ids = |b: &arrow::record_batch::RecordBatch| -> Vec<String> {
+        let c = b.column(b.schema().index_of("id").unwrap());
+        let a = c.as_any().downcast_ref::<StringArray>().unwrap();
+        (0..b.num_rows()).map(|i| a.value(i).to_string()).collect()
+    };
+    assert_eq!(ids(&page1), vec!["300", "299", "298"]);
+    assert_eq!(ids(&page2), vec!["297", "296", "295"], "OFFSET paging is stable");
+
+    // A filter narrows the window and the NULL-safe operators work.
+    let nulls = drv
+        .open_window_filtered(
+            "auth",
+            "users",
+            0,
+            10,
+            &[ColumnFilter { column: "manager_id".into(), op: FilterOp::IsNull, value: None }],
+            &[],
+        )
+        .await
+        .expect("null filter");
+    assert_eq!(nulls.num_rows(), 10, "ids 1-5 plus every 9th have no manager");
+
+    // ── display rendering of the seeded scalar types ────────────────────────
+    let geo = drv
+        .open_window_filtered("dbo", "geo", 0, 3, &[], &[SortKey { column: "id".into(), desc: false }])
+        .await
+        .expect("geo");
+    let text = |name: &str, row: usize| -> Option<String> {
+        let c = geo.column(geo.schema().index_of(name).unwrap());
+        let a = c.as_any().downcast_ref::<StringArray>().unwrap();
+        (!a.is_null(row)).then(|| a.value(row).to_string())
+    };
+    assert_eq!(text("doc", 0).as_deref(), Some("<note>1</note>"));
+    assert_eq!(text("on_date", 0).as_deref(), Some("2026-09-23"));
+    assert_eq!(text("at_time", 0).as_deref(), Some("13:45:07.250"));
+    assert_eq!(text("stamp", 0).as_deref(), Some("2026-09-23 13:45:07.250"));
+    assert_eq!(text("stamp_tz", 0).as_deref(), Some("2026-09-23 13:45:07.250 +05:30"));
+    assert_eq!(text("legacy", 0).as_deref(), Some("2026-09-23 13:45:07"));
+    assert_eq!(text("ratio", 0).as_deref(), Some("-12.345678"), "a negative decimal keeps one sign");
+    assert_eq!(text("token", 0).as_deref(), Some("01923f4a-5b6c-7d8e-9f01-23456789abcd"));
+    assert_eq!(text("ratio", 1).as_deref(), Some("0.000001"), "a sub-unit decimal keeps its 0");
+    for c in ["doc", "on_date", "at_time", "stamp", "stamp_tz", "legacy", "ratio", "token"] {
+        assert!(text(c, 2).is_none(), "row 3 is NULL in {c}");
+    }
+
+    // ── inline edit round-trip on the seeded table ──────────────────────────
+    let pk = drv.primary_key("dbo", "customers").await.expect("pk");
+    assert_eq!(pk, vec!["id".to_string()]);
+    let edit = EditSpec {
+        pk: vec![("id".into(), Some("2".into()))],
+        column: "nickname".into(),
+        new_value: Some("edited".into()),
+        orig_value: Some("nick2".into()),
+    };
+    assert_eq!(drv.apply_edit("dbo", "customers", &edit).await.expect("edit"), 1);
+    let back = EditSpec { orig_value: Some("edited".into()), new_value: Some("nick2".into()), ..edit };
+    assert_eq!(drv.apply_edit("dbo", "customers", &back).await.expect("restore"), 1);
+
+    // A NULL original value must match through the null-safe WHERE, not silently miss.
+    let null_edit = EditSpec {
+        pk: vec![("id".into(), Some("3".into()))],
+        column: "nickname".into(),
+        new_value: Some("was null".into()),
+        orig_value: None,
+    };
+    assert_eq!(drv.apply_edit("dbo", "customers", &null_edit).await.expect("null edit"), 1);
+    let undo =
+        EditSpec { orig_value: Some("was null".into()), new_value: None, ..null_edit };
+    assert_eq!(drv.apply_edit("dbo", "customers", &undo).await.expect("undo"), 1);
+
+    // ── the seeded database shows up in the database list ───────────────────
+    let dbs = drv.list_databases().await.expect("list_databases");
+    assert!(dbs.contains(&"tableiq".to_string()), "{dbs:?}");
+    assert!(dbs.contains(&"master".to_string()), "{dbs:?}");
 }
