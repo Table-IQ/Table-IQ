@@ -106,6 +106,17 @@ fn stmt_error(e: &tiberius::error::Error) -> QueryError {
     }
 }
 
+/// Read one column of a catalog row as text. `try_get`, not `get`: `Row::get` is
+/// `try_get(idx).unwrap()` internally, so a decode or type mismatch panics the whole app.
+fn text(r: &tiberius::Row, col: &str) -> DResult<Option<std::string::String>> {
+    Ok(r.try_get::<&str, _>(col).map_err(db)?.map(std::string::String::from))
+}
+
+/// Read one `bit` column of a catalog row; a SQL NULL reads as false.
+fn flag(r: &tiberius::Row, col: &str) -> DResult<bool> {
+    Ok(r.try_get::<bool, _>(col).map_err(db)?.unwrap_or(false))
+}
+
 /// `@@ROWCOUNT` for the statement just run. It is session state, so it survives into the next
 /// batch on the same (pinned) connection.
 async fn rowcount(c: &mut Conn) -> Option<u64> {
@@ -242,7 +253,13 @@ impl SqlServerDriver {
             .into_first_result()
             .await
             .map_err(db)?;
-        Ok(rows.iter().filter_map(|r| r.get::<&str, _>(0).map(|s| s.to_string())).collect())
+        let mut names = Vec::with_capacity(rows.len());
+        for r in &rows {
+            if let Some(n) = r.try_get::<&str, _>(0).map_err(db)? {
+                names.push(n.to_string());
+            }
+        }
+        Ok(names)
     }
 
     /// Run `sql` and return (column names, **column-major** stringified data — `data[col][row]`).
@@ -535,7 +552,10 @@ impl SqlDriver for SqlServerDriver {
             .into_first_result()
             .await
             .map_err(db)?;
-        let n = rows.first().and_then(|r| r.get::<i64, _>(0)).unwrap_or(0);
+        let n = match rows.first() {
+            Some(r) => r.try_get::<i64, _>(0).map_err(db)?.unwrap_or(0),
+            None => 0,
+        };
         Ok(RowCount { count: Some(n.max(0)), exact: true })
     }
 
@@ -547,7 +567,13 @@ impl SqlDriver for SqlServerDriver {
                  WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY' AND tc.TABLE_SCHEMA = @P1 AND tc.TABLE_NAME = @P2 \
                  ORDER BY kcu.ORDINAL_POSITION";
         let rows = c.query(q, &[&schema, &table]).await.map_err(db)?.into_first_result().await.map_err(db)?;
-        Ok(rows.iter().filter_map(|r| r.get::<&str, _>(0).map(|s| s.to_string())).collect())
+        let mut pk = Vec::with_capacity(rows.len());
+        for r in &rows {
+            if let Some(n) = r.try_get::<&str, _>(0).map_err(db)? {
+                pk.push(n.to_string());
+            }
+        }
+        Ok(pk)
     }
 
     async fn apply_edit(&self, schema: &str, table: &str, edit: &EditSpec) -> DResult<u64> {
@@ -716,17 +742,21 @@ impl SqlDriver for SqlServerDriver {
                    JOIN sys.schemas sr ON tr.schema_id             = sr.schema_id \
                    JOIN sys.columns cr ON fkc.referenced_object_id = cr.object_id AND fkc.referenced_column_id = cr.column_id \
                    ORDER BY sp.name, tp.name, fk.name, fkc.constraint_column_id";
-        let (_cols, rows) = self.query_text(sql).await?;
-        Ok(rows
-            .into_iter()
-            .map(|r| ForeignKey {
-                constraint: r[0].clone().unwrap_or_default(),
-                from_schema: r[1].clone().unwrap_or_default(),
-                from_table: r[2].clone().unwrap_or_default(),
-                from_column: r[3].clone().unwrap_or_default(),
-                to_schema: r[4].clone().unwrap_or_default(),
-                to_table: r[5].clone().unwrap_or_default(),
-                to_column: r[6].clone().unwrap_or_default(),
+        // `query_text` hands back **column-major** data (`data[col][row]`), so walk the rows
+        // by index. Reading it row-major built one bogus edge per result *column*, and panicked
+        // outright whenever the FK count was under the column count.
+        let (_cols, data) = self.query_text(sql).await?;
+        let at = |c: usize, i: usize| data[c][i].clone().unwrap_or_default();
+        let rows = data.first().map(|c| c.len()).unwrap_or(0);
+        Ok((0..rows)
+            .map(|i| ForeignKey {
+                constraint: at(0, i),
+                from_schema: at(1, i),
+                from_table: at(2, i),
+                from_column: at(3, i),
+                to_schema: at(4, i),
+                to_table: at(5, i),
+                to_column: at(6, i),
             })
             .collect())
     }
@@ -760,29 +790,28 @@ impl SqlDriver for SqlServerDriver {
             .map_err(db)?;
         drop(c);
 
-        let text = |r: &tiberius::Row, col: &str| {
-            r.get::<&str, _>(col).map(std::string::String::from)
-        };
-        let flag = |r: &tiberius::Row, col: &str| r.get::<bool, _>(col).unwrap_or(false);
-
         let mut indexes: Vec<IndexInfo> = Vec::new();
         // index name -> position in `indexes`, so appending a key part is O(1).
         let mut index_ix: HashMap<std::string::String, usize> = HashMap::new();
         for r in &idx_rows {
-            let Some(name) = text(r, "name") else { continue };
-            let i = *index_ix.entry(name.clone()).or_insert_with(|| {
-                indexes.push(IndexInfo {
-                    name: name.clone(),
-                    columns: Vec::new(),
-                    unique: flag(r, "is_unique"),
-                    primary: flag(r, "is_primary"),
-                    // SQL Server exposes no index DDL function (OBJECT_DEFINITION covers
-                    // modules only), so the column list is the whole story here.
-                    definition: None,
-                });
-                indexes.len() - 1
-            });
-            if let Some(col) = text(r, "column_name") {
+            let Some(name) = text(r, "name")? else { continue };
+            let i = match index_ix.get(&name) {
+                Some(&i) => i,
+                None => {
+                    indexes.push(IndexInfo {
+                        name: name.clone(),
+                        columns: Vec::new(),
+                        unique: flag(r, "is_unique")?,
+                        primary: flag(r, "is_primary")?,
+                        // SQL Server exposes no index DDL function (OBJECT_DEFINITION covers
+                        // modules only), so the column list is the whole story here.
+                        definition: None,
+                    });
+                    index_ix.insert(name, indexes.len() - 1);
+                    indexes.len() - 1
+                }
+            };
+            if let Some(col) = text(r, "column_name")? {
                 indexes[i].columns.push(col);
             }
         }
@@ -790,41 +819,42 @@ impl SqlDriver for SqlServerDriver {
         let mut triggers: Vec<TriggerInfo> = Vec::new();
         let mut trigger_ix: HashMap<std::string::String, usize> = HashMap::new();
         for r in &trg_rows {
-            let Some(name) = text(r, "name") else { continue };
+            let Some(name) = text(r, "name")? else { continue };
             // SQL Server has no BEFORE triggers — only AFTER and INSTEAD OF.
-            let timing = if flag(r, "instead_of") { "INSTEAD OF" } else { "AFTER" };
-            let i = *trigger_ix.entry(name.clone()).or_insert_with(|| {
-                triggers.push(TriggerInfo {
-                    name: name.clone(),
-                    timing_event: timing.to_string(),
-                    definition: text(r, "definition"),
-                });
-                triggers.len() - 1
-            });
-            if let Some(event) = text(r, "event_type") {
+            let timing = if flag(r, "instead_of")? { "INSTEAD OF" } else { "AFTER" };
+            let i = match trigger_ix.get(&name) {
+                Some(&i) => i,
+                None => {
+                    triggers.push(TriggerInfo {
+                        name: name.clone(),
+                        timing_event: timing.to_string(),
+                        definition: text(r, "definition")?,
+                    });
+                    trigger_ix.insert(name, triggers.len() - 1);
+                    triggers.len() - 1
+                }
+            };
+            if let Some(event) = text(r, "event_type")? {
                 let te = &mut triggers[i].timing_event;
                 te.push_str(if te.ends_with(timing) { " " } else { " OR " });
                 te.push_str(&event);
             }
         }
 
-        Ok(TableStructure {
-            columns: col_rows
-                .iter()
-                .filter_map(|r| {
-                    Some(ColumnDetail {
-                        name: text(r, "name")?,
-                        data_type: text(r, "data_type").unwrap_or_default(),
-                        nullable: flag(r, "is_nullable"),
-                        default: text(r, "default_expr"),
-                        is_pk: flag(r, "is_pk"),
-                        comment: text(r, "comment"),
-                    })
-                })
-                .collect(),
-            indexes,
-            triggers,
-        })
+        let mut columns = Vec::with_capacity(col_rows.len());
+        for r in &col_rows {
+            let Some(name) = text(r, "name")? else { continue };
+            columns.push(ColumnDetail {
+                name,
+                data_type: text(r, "data_type")?.unwrap_or_default(),
+                nullable: flag(r, "is_nullable")?,
+                default: text(r, "default_expr")?,
+                is_pk: flag(r, "is_pk")?,
+                comment: text(r, "comment")?,
+            });
+        }
+
+        Ok(TableStructure { columns, indexes, triggers })
     }
 
     async fn list_databases(&self) -> DResult<Vec<String>> {
@@ -834,11 +864,9 @@ impl SqlDriver for SqlServerDriver {
         let sql = "SELECT name FROM sys.databases \
                    WHERE database_id > 4 OR name = 'master' \
                    ORDER BY CASE WHEN name = 'master' THEN 0 ELSE 1 END, name";
-        let (_cols, rows) = self.query_text(sql).await?;
-        Ok(rows
-            .into_iter()
-            .filter_map(|r| r.into_iter().next().flatten())
-            .collect())
+        // Column-major: the whole list is the single column, not the first row of each.
+        let (_cols, data) = self.query_text(sql).await?;
+        Ok(data.into_iter().next().unwrap_or_default().into_iter().flatten().collect())
     }
 }
 

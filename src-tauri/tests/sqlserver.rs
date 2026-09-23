@@ -256,3 +256,74 @@ async fn sqlserver_run_statements_affected_cap_errors_and_cancel() {
 
     drv.run_statements(&v(&["DROP TABLE dbo.tiq_stmts"]), 10, &tok).await.ok();
 }
+
+/// `foreign_keys` and `list_databases` read `query_text`, whose data is **column-major**.
+/// Reading it row-major produced one bogus `ForeignKey` per result *column* (so the ERD was
+/// garbage) and only ever the first database.
+#[tokio::test]
+async fn sqlserver_foreign_keys_and_databases_are_read_column_major() {
+    let Some(drv) = connect().await else { return };
+    let tok = CancelToken::new();
+    let v = |xs: &[&str]| -> Vec<String> { xs.iter().map(|s| s.to_string()).collect() };
+
+    let setup = v(&[
+        "IF OBJECT_ID('tiq_other.tiq_fk_far','U') IS NOT NULL DROP TABLE tiq_other.tiq_fk_far",
+        "IF OBJECT_ID('dbo.tiq_fk_child','U') IS NOT NULL DROP TABLE dbo.tiq_fk_child",
+        "IF OBJECT_ID('dbo.tiq_fk_parent','U') IS NOT NULL DROP TABLE dbo.tiq_fk_parent",
+        // CREATE SCHEMA must be the first statement in its batch, hence the EXEC wrapper.
+        "IF SCHEMA_ID('tiq_other') IS NULL EXEC('CREATE SCHEMA tiq_other')",
+        "CREATE TABLE dbo.tiq_fk_parent (a INT NOT NULL, b INT NOT NULL, \
+           CONSTRAINT pk_tiq_fk_parent PRIMARY KEY (a, b))",
+        "CREATE TABLE dbo.tiq_fk_child (id INT PRIMARY KEY, a INT, b INT, boss_id INT, \
+           CONSTRAINT fk_tiq_child_parent FOREIGN KEY (a, b) REFERENCES dbo.tiq_fk_parent (a, b), \
+           CONSTRAINT fk_tiq_child_self FOREIGN KEY (boss_id) REFERENCES dbo.tiq_fk_child (id))",
+        "CREATE TABLE tiq_other.tiq_fk_far (id INT PRIMARY KEY, child_id INT, \
+           CONSTRAINT fk_tiq_far_child FOREIGN KEY (child_id) REFERENCES dbo.tiq_fk_child (id))",
+        "IF DB_ID('tiq_list_qa') IS NULL CREATE DATABASE tiq_list_qa",
+    ]);
+    let outs = drv.run_statements(&setup, 10, &tok).await.expect("setup");
+    assert_eq!(outs.len(), setup.len(), "setup failed: {:#?}", outs.last());
+
+    let fks = drv.foreign_keys().await.expect("foreign_keys");
+    let mine: Vec<_> = fks.iter().filter(|f| f.constraint.starts_with("fk_tiq_")).collect();
+    assert_eq!(mine.len(), 4, "one edge per key column, not one per result column: {mine:#?}");
+
+    // Composite FK: two edges under one constraint, in key order.
+    let comp: Vec<_> = mine.iter().filter(|f| f.constraint == "fk_tiq_child_parent").collect();
+    assert_eq!(comp.len(), 2, "a composite FK is one edge per column pair: {comp:#?}");
+    assert_eq!(comp[0].from_table, "tiq_fk_child");
+    assert_eq!(comp[0].to_table, "tiq_fk_parent");
+    assert_eq!((comp[0].from_column.as_str(), comp[0].to_column.as_str()), ("a", "a"));
+    assert_eq!((comp[1].from_column.as_str(), comp[1].to_column.as_str()), ("b", "b"));
+
+    // Cross-schema FK: both ends keep their own schema.
+    let far = mine.iter().find(|f| f.constraint == "fk_tiq_far_child").expect("cross-schema fk");
+    assert_eq!((far.from_schema.as_str(), far.to_schema.as_str()), ("tiq_other", "dbo"));
+    assert_eq!((far.from_table.as_str(), far.to_table.as_str()), ("tiq_fk_far", "tiq_fk_child"));
+
+    // Self FK.
+    let me = mine.iter().find(|f| f.constraint == "fk_tiq_child_self").expect("self fk");
+    assert_eq!((me.from_table.as_str(), me.to_table.as_str()), ("tiq_fk_child", "tiq_fk_child"));
+    assert_eq!((me.from_column.as_str(), me.to_column.as_str()), ("boss_id", "id"));
+
+    let dbs = drv.list_databases().await.expect("list_databases");
+    assert!(dbs.contains(&"master".to_string()), "{dbs:?}");
+    assert!(
+        dbs.contains(&"tiq_list_qa".to_string()),
+        "every database must be listed, not just the first: {dbs:?}"
+    );
+
+    drv.run_statements(
+        &v(&[
+            "DROP TABLE tiq_other.tiq_fk_far",
+            "DROP TABLE dbo.tiq_fk_child",
+            "DROP TABLE dbo.tiq_fk_parent",
+            "DROP SCHEMA tiq_other",
+            "DROP DATABASE tiq_list_qa",
+        ]),
+        10,
+        &tok,
+    )
+    .await
+    .ok();
+}
