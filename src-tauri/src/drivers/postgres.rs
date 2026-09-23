@@ -190,6 +190,9 @@ impl PgDriver {
         // timestamptz/float render differently between the two queries, so a
         // correct edit would silently match 0 rows. UTC + ISO + max float digits
         // make the text form deterministic and stable across the pool.
+        // `standard_conforming_strings` is pinned for a different reason: it makes a
+        // backslash an ordinary character in a literal, which is what the import path's
+        // `sql_literal` assumes when it escapes only the quote.
         let pool = PgPoolOptions::new()
             .max_connections(4)
             .acquire_timeout(std::time::Duration::from_secs(10))
@@ -197,7 +200,8 @@ impl PgDriver {
                 Box::pin(async move {
                     conn.execute(
                         "SET TimeZone = 'UTC'; SET DateStyle = 'ISO, MDY'; \
-                         SET extra_float_digits = 3;",
+                         SET extra_float_digits = 3; \
+                         SET standard_conforming_strings = on;",
                     )
                     .await
                     .map(|_| ())

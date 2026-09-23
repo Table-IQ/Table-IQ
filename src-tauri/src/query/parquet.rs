@@ -49,6 +49,7 @@ pub fn arrow_type_to_sql(dialect: Dialect, dt: &DataType) -> String {
             Dialect::Postgres => "boolean".into(),
             Dialect::MySql => "tinyint(1)".into(),
             Dialect::Sqlite => "INTEGER".into(),
+            Dialect::SqlServer => "bit".into(),
         },
         Int8 | Int16 | UInt8 => match dialect {
             Dialect::Sqlite => "INTEGER".into(),
@@ -66,11 +67,13 @@ pub fn arrow_type_to_sql(dialect: Dialect, dt: &DataType) -> String {
             Dialect::Postgres => "real".into(),
             Dialect::MySql => "float".into(),
             Dialect::Sqlite => "REAL".into(),
+            Dialect::SqlServer => "real".into(),
         },
         Float64 => match dialect {
             Dialect::Postgres => "double precision".into(),
             Dialect::MySql => "double".into(),
             Dialect::Sqlite => "REAL".into(),
+            Dialect::SqlServer => "float".into(),
         },
         Decimal128(p, s) | Decimal256(p, s) => match dialect {
             Dialect::Sqlite => "NUMERIC".into(),
@@ -79,12 +82,14 @@ pub fn arrow_type_to_sql(dialect: Dialect, dt: &DataType) -> String {
         Utf8 | LargeUtf8 => match dialect {
             Dialect::MySql => "longtext".into(),
             Dialect::Sqlite => "TEXT".into(),
+            Dialect::SqlServer => "nvarchar(max)".into(),
             _ => "text".into(),
         },
         Binary | LargeBinary | FixedSizeBinary(_) => match dialect {
             Dialect::Postgres => "bytea".into(),
             Dialect::MySql => "longblob".into(),
             Dialect::Sqlite => "BLOB".into(),
+            Dialect::SqlServer => "varbinary(max)".into(),
         },
         Date32 | Date64 => match dialect {
             Dialect::Sqlite => "TEXT".into(),
@@ -99,16 +104,20 @@ pub fn arrow_type_to_sql(dialect: Dialect, dt: &DataType) -> String {
             (Dialect::Postgres, false) => "timestamp".into(),
             (Dialect::MySql, _) => "datetime(6)".into(),
             (Dialect::Sqlite, _) => "TEXT".into(),
+            (Dialect::SqlServer, true) => "datetimeoffset".into(),
+            (Dialect::SqlServer, false) => "datetime2".into(),
         },
         // Composite / nullable container types collapse to JSON / text.
         Struct(_) | List(_) | LargeList(_) | FixedSizeList(_, _) | Map(_, _) => match dialect {
             Dialect::Postgres => "jsonb".into(),
             Dialect::MySql => "json".into(),
             Dialect::Sqlite => "TEXT".into(),
+            Dialect::SqlServer => "nvarchar(max)".into(),
         },
         _ => match dialect {
             Dialect::MySql => "longtext".into(),
             Dialect::Sqlite => "TEXT".into(),
+            Dialect::SqlServer => "nvarchar(max)".into(),
             _ => "text".into(),
         },
     }

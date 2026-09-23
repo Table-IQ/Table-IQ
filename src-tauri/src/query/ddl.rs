@@ -12,6 +12,7 @@ pub enum Dialect {
     Postgres,
     MySql,
     Sqlite,
+    SqlServer,
 }
 
 impl Dialect {
@@ -19,14 +20,16 @@ impl Dialect {
         match engine {
             "mysql" => Dialect::MySql,
             "sqlite" => Dialect::Sqlite,
+            "sqlserver" => Dialect::SqlServer,
             _ => Dialect::Postgres,
         }
     }
 
-    /// Quote a SQL identifier (backticks for MySQL, double-quotes elsewhere).
+    /// Quote a SQL identifier (backticks for MySQL, brackets for MSSQL, double-quotes else).
     pub fn quote(&self, ident: &str) -> String {
         match self {
             Dialect::MySql => format!("`{}`", ident.replace('`', "``")),
+            Dialect::SqlServer => format!("[{}]", ident.replace(']', "]]")),
             _ => format!("\"{}\"", ident.replace('"', "\"\"")),
         }
     }
@@ -191,6 +194,9 @@ pub fn alter_column_type_sql(
         // non-executing note so the preview is honest rather than silently doing nothing.
         Dialect::Sqlite => {
             "-- SQLite cannot change a column's type in place (requires a table rebuild).".into()
+        }
+        Dialect::SqlServer => {
+            format!("ALTER TABLE {} ALTER COLUMN {} {};", qt, d.quote(column), new_type)
         }
     }
 }
