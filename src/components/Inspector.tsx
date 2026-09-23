@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { applyEdit, type ForeignKey, type ObjectInfo } from "../lib/commands";
 import { buildEdit } from "../lib/edit";
 import { incomingForeignKeys, outgoingForeignKeys } from "../lib/fk";
+import { logError } from "../lib/report";
 import { Tabs } from "./ui/Panel";
 import { Chip } from "./ui/Chip";
 import { IconClose, IconKey, IconLink, IconSearch } from "./ui/Icon";
@@ -57,14 +58,14 @@ export function Inspector({
     // one round trip between this panel and the TableView, not two each.
     loadForeignKeys(connId)
       .then((all) => !cancelled && setFks(all))
-      .catch(() => {});
+      .catch((e) => logError("inspector: foreign keys", e));
     loadTableMeta(connId, schema, object.name)
       .then((m) => {
         if (cancelled) return;
         setRows({ count: m.count, exact: m.exact });
         setPk(m.pk);
       })
-      .catch(() => {});
+      .catch((e) => logError("inspector: table meta", e));
     return () => {
       cancelled = true;
     };

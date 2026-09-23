@@ -1140,6 +1140,8 @@ export async function writeOnboardingState(state: OnboardingState): Promise<void
  */
 export function logClientError(message: string): void {
   if (!inTauri()) return;
+  // The only swallowed rejection left in src/: this *is* the reporting path, so there is
+  // nowhere left to report to — and throwing here would mask the error being logged.
   void invoke("log_client_error", { message }).catch(() => {});
 }
 

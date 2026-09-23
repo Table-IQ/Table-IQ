@@ -135,7 +135,9 @@ export function ConnectionManager() {
   const setKeyPath = (path: string) => setSsh({ auth: { mode: "keyfile", path } });
 
   useEffect(() => {
-    listConnections().then(setSaved).catch(() => {});
+    listConnections()
+      .then(setSaved)
+      .catch((e) => setStatus({ kind: "err", msg: `Could not load saved connections: ${e}` }));
   }, [setSaved]);
 
   // ⌘N opens the new-connection sheet. MainShell handles ⌘N for new query once
@@ -154,7 +156,10 @@ export function ConnectionManager() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sheetOpen]);
 
-  const refresh = () => listConnections().then(setSaved).catch(() => {});
+  const refresh = () =>
+    listConnections()
+      .then(setSaved)
+      .catch((e) => setStatus({ kind: "err", msg: `Could not load saved connections: ${e}` }));
   // Clear a green/red test result the moment the user changes anything, so the
   // feedback never goes stale against edited values.
   const clearStatus = () =>

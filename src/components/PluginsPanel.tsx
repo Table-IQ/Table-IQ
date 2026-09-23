@@ -20,7 +20,10 @@ export function PluginsPanel({
   const [output, setOutput] = useState<string | null>(null);
   const [status, setStatus] = useState<string>("");
 
-  const refresh = useCallback(() => listPlugins().then(setPlugins).catch(() => {}), []);
+  const refresh = useCallback(
+    () => listPlugins().then(setPlugins).catch((e) => setStatus(`Could not list plugins: ${e}`)),
+    [],
+  );
   useEffect(() => {
     refresh();
   }, [refresh]);

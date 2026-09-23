@@ -8,6 +8,7 @@ import {
   type SavedQuery,
 } from "../lib/commands";
 import { formatRelative, oneLine } from "../lib/history";
+import { logError } from "../lib/report";
 import { IconClose, IconSearch } from "./ui/Icon";
 
 /**
@@ -28,12 +29,15 @@ export function QueryLibraryPanel({
   const [name, setName] = useState("");
   const [search, setSearch] = useState("");
 
-  const refreshSaved = useCallback(() => listSavedQueries().then(setSaved).catch(() => {}), []);
+  const refreshSaved = useCallback(
+    () => listSavedQueries().then(setSaved).catch((e) => logError("query library: saved", e)),
+    [],
+  );
   useEffect(() => {
     refreshSaved();
   }, [refreshSaved]);
   useEffect(() => {
-    queryHistory(search).then(setHistory).catch(() => {});
+    queryHistory(search).then(setHistory).catch((e) => logError("query library: history", e));
   }, [search]);
 
   const doSave = async () => {

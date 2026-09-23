@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { listConnections, type ConnConfig } from "../lib/commands";
+import { logError } from "../lib/report";
 import { useConnections } from "../state/connectionStore";
 import { IconChevronLeft, IconPlus } from "./ui/Icon";
 
@@ -13,7 +14,7 @@ export function ConnectionRail({ onAdd, onCollapse }: { onAdd?: () => void; onCo
   const [hover, setHover] = useState<string | null>(null);
 
   useEffect(() => {
-    listConnections().then(setSaved).catch(() => {});
+    listConnections().then(setSaved).catch((e) => logError("connection rail: list", e));
   }, [setSaved]);
 
   const initials = (c: ConnConfig) =>
