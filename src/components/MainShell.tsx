@@ -5,6 +5,7 @@ import { ObjectTree } from "./ObjectTree";
 import { TableView } from "./TableView";
 import { QueryView } from "./QueryView";
 import { ErdView } from "./ErdView";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { StructureEditor } from "./StructureEditor";
 import { ImportDialog } from "./ImportDialog";
 import { DiffView } from "./DiffView";
@@ -456,13 +457,17 @@ export function MainShell() {
         .filter((t) => t.kind === "query")
         .map((t) => (
           <div key={t.key} className={t.key === activeKey ? "h-full" : "hidden"}>
-            <QueryView
-              connId={active.id}
-              tabKey={t.key}
-              initialSql={t.sql}
-              engine={active.engine as Engine}
-              active={t.key === activeKey}
-            />
+            {/* One boundary per tab body: a crash in one tab must not take the
+                window with it. Keyed by tab so reopening a tab clears the panel. */}
+            <ErrorBoundary label={`query tab ${t.key}`}>
+              <QueryView
+                connId={active.id}
+                tabKey={t.key}
+                initialSql={t.sql}
+                engine={active.engine as Engine}
+                active={t.key === activeKey}
+              />
+            </ErrorBoundary>
           </div>
         ))}
       {!activeTab && (
@@ -478,17 +483,20 @@ export function MainShell() {
         </div>
       )}
       {activeTab?.kind === "erd" && (
-        <ErdView connId={active.id} schema={schema} focusTable={erdFocus} />
+        <ErrorBoundary key={activeTab.key} label={`erd tab ${activeTab.key}`}>
+          <ErdView connId={active.id} schema={schema} focusTable={erdFocus} />
+        </ErrorBoundary>
       )}
       {activeTab?.kind === "table" &&
         (activeObj ? (
-          <TableView
-            key={activeTab.key}
-            connId={active.id}
-            schema={activeTab.schema!}
-            object={activeObj}
-            view={activeTab.view ?? "data"}
-          />
+          <ErrorBoundary key={activeTab.key} label={`table tab ${activeTab.key}`}>
+            <TableView
+              connId={active.id}
+              schema={activeTab.schema!}
+              object={activeObj}
+              view={activeTab.view ?? "data"}
+            />
+          </ErrorBoundary>
         ) : (
           <div className="p-6 text-sm text-muted">Table not found.</div>
         ))}
