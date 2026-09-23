@@ -11,6 +11,8 @@ import { useResults } from "../state/resultsStore";
 import { useConnections } from "../state/connectionStore";
 import { oneLine } from "../lib/history";
 import { schemaModelToCompletionMap } from "../lib/schemaCompletion";
+import { extractRunTarget } from "../lib/sqlSelection";
+import { splitStatements, type SqlDialect } from "../lib/sqlSplit";
 import {
   aiEgressPreview,
   aiExplainSql,
@@ -24,6 +26,7 @@ import {
   fetchResultWindow,
   runQuery,
   runScript,
+  type Engine,
   type ExportFormat,
   type QueryResultMeta,
 } from "../lib/commands";
@@ -56,10 +59,15 @@ export function QueryView({ connId }: { connId: string }) {
   const recordResult = useResults((s) => s.record);
   const recentCount = useResults((s) => s.recents.length);
   const schemaModel = useConnections((s) => s.schema);
+  const engine = useConnections((s) => s.active?.engine) as Engine | undefined;
   const completionSchema = useMemo(
     () => schemaModelToCompletionMap(schemaModel),
     [schemaModel],
   );
+  // sqlSplit's dialect union excludes redis/mongodb (they don't reach this tab kind
+  // today); default to postgres, matching SqlEditor's own CodeMirror-dialect fallback.
+  const sqlDialect: SqlDialect =
+    engine === "mysql" || engine === "sqlite" || engine === "sqlserver" ? engine : "postgres";
 
   // One-shot starter SQL (used by the ObjectTree "New Query Selecting…" context item).
   // Fires at most once per QueryView mount.
@@ -125,7 +133,7 @@ export function QueryView({ connId }: { connId: string }) {
   );
 
   const runSql = useCallback(
-    async (sqlText: string) => {
+    async (statements: string[]) => {
       setRunning(true);
       setError(null);
       setTxStatus(null);
@@ -133,9 +141,9 @@ export function QueryView({ connId }: { connId: string }) {
       const queryId = crypto.randomUUID();
       runningQueryId.current = queryId;
       try {
-        // Task 6 builds the real multi-result UI. Until then we send one statement and show
-        // the last output that produced a result set, or the run's error.
-        const outs = await runQuery(connId, [sqlText], queryId);
+        // Task 6 builds the real multi-result UI. Until then we send every statement
+        // and show the last output that produced a result set, or the run's error.
+        const outs = await runQuery(connId, statements, queryId);
         const failed = outs.find((o) => o.error);
         if (failed?.error) throw new Error(failed.error.message);
         const last = [...outs].reverse().find((o) => o.resultId);
@@ -153,7 +161,7 @@ export function QueryView({ connId }: { connId: string }) {
         setMeta(m);
         recordResult({
           resultId: m.resultId,
-          label: oneLine(sqlText, 50),
+          label: oneLine(statements.join("; "), 50),
           ts: Date.now() / 1000,
         });
       } catch (e) {
@@ -167,8 +175,22 @@ export function QueryView({ connId }: { connId: string }) {
     [connId, recordResult],
   );
 
-  const run = useCallback(() => runSql(sqlRef.current), [runSql]);
-  const runSelection = useCallback((sqlText: string) => runSql(sqlText), [runSql]);
+  // ⌘↵ — run the active selection, or (no selection) the statement under the cursor.
+  const run = useCallback(() => {
+    const doc = editorRef.current?.getDoc() ?? sqlRef.current;
+    const sel = editorRef.current?.getSelection() ?? { from: doc.length, to: doc.length };
+    const target = extractRunTarget(doc, sel.from, sel.to);
+    if (!target.sql.trim()) return;
+    runSql([target.sql]);
+  }, [runSql]);
+
+  // ⇧⌘↵ — run every statement in the document.
+  const runAll = useCallback(() => {
+    const doc = editorRef.current?.getDoc() ?? sqlRef.current;
+    const stmts = splitStatements(doc, sqlDialect).map((s) => s.text);
+    if (stmts.length === 0) return;
+    runSql(stmts);
+  }, [runSql, sqlDialect]);
 
   // ⌘↵ should run from anywhere in the query tab, not only when the SQL editor is
   // focused (TablePlus parity). When the editor IS focused, CodeMirror's Mod-Enter
@@ -259,14 +281,9 @@ export function QueryView({ connId }: { connId: string }) {
           />
         )}
         <ToolbarButton
-          label="Run selection"
+          label="Run all"
           shortcut="⇧⌘↵"
-          onClick={() => {
-            // Fall back to running everything when no selection helper is available
-            // (button mirrors the keyboard shortcut for discoverability).
-            const doc = sqlRef.current;
-            runSelection(doc);
-          }}
+          onClick={runAll}
           disabled={running}
         />
         <ToolbarButton label="Run in tx" onClick={runInTx} disabled={running} />
@@ -395,8 +412,9 @@ export function QueryView({ connId }: { connId: string }) {
           initial={sqlRef.current}
           onChange={(v) => (sqlRef.current = v)}
           onRun={run}
-          onRunSelection={runSelection}
+          onRunAll={runAll}
           schema={completionSchema}
+          dialect={engine}
         />
       </div>
 
@@ -460,7 +478,7 @@ export function QueryView({ connId }: { connId: string }) {
         right={
           <>
             <span className="text-muted">
-              ⌘↵ run · ⇧⌘↵ run selection · ⌘L library
+              ⌘↵ run · ⇧⌘↵ run all · ⌘L library
             </span>
             <button
               onClick={() => setDrawer("ai")}
