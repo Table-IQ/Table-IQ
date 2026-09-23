@@ -49,8 +49,11 @@ export const useTabs = create<TabsState>((set) => ({
     set((s) => {
       const n = s.queryCount + 1;
       const key = `query:${n}`;
+      // Guard: this action is handed straight to onClick in a few places, where
+      // React would otherwise pass the click event in as `sql`.
+      const text = typeof sql === "string" ? sql : undefined;
       return {
-        tabs: [...s.tabs, { key, kind: "query", title: `Query ${n}`, sql }],
+        tabs: [...s.tabs, { key, kind: "query", title: `Query ${n}`, sql: text }],
         activeKey: key,
         queryCount: n,
       };

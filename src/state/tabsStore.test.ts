@@ -19,6 +19,11 @@ describe("tabsStore", () => {
     expect(useTabs.getState().tabs[0].sql).toBeUndefined();
   });
 
+  it("openQuery ignores a non-string argument (onClick hands it the event)", () => {
+    (useTabs.getState().openQuery as (sql?: unknown) => void)({ type: "click" });
+    expect(useTabs.getState().tabs[0].sql).toBeUndefined();
+  });
+
   it("setTabSql updates only the targeted tab's sql", () => {
     useTabs.getState().openQuery("SELECT 1;");
     useTabs.getState().openQuery("SELECT 2;");

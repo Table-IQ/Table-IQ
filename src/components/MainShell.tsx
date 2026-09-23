@@ -249,7 +249,7 @@ export function MainShell() {
       }
     }
     list.push(
-      { id: "act:query", label: "New Query", hint: "⌘T", run: openQuery },
+      { id: "act:query", label: "New Query", hint: "⌘T", run: () => openQuery() },
       { id: "act:erd", label: "Open Schema Diagram (ERD)", hint: "action", run: openErd },
       { id: "act:table", label: "New Table…", hint: "action", run: () => setShowStructure(true) },
       { id: "act:import", label: "Import CSV / JSON…", hint: "action", run: () => setShowImport(true) },
@@ -702,7 +702,7 @@ export function MainShell() {
         <main className="flex min-w-0 flex-1 flex-col">
           {/* Primary action toolbar */}
           <Toolbar>
-            <ToolbarButton icon={<IconPlus />} label="Query" shortcut="⌘T" onClick={openQuery} />
+            <ToolbarButton icon={<IconPlus />} label="Query" shortcut="⌘T" onClick={() => openQuery()} />
             <ToolbarButton icon={<IconErd />} label="ERD" onClick={openErd} />
             <ToolbarButton
               icon={<IconStructure />}
