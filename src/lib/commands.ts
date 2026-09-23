@@ -1047,13 +1047,6 @@ export async function aiFixSql(id: string, sql: string, error: string): Promise<
   return invoke<string>("ai_fix_sql", { id, sql, error });
 }
 
-/** Row count for the inspector / status bar; 0 when the engine could not produce one. */
-export async function rowEstimate(id: string, schema: string, table: string): Promise<number> {
-  if (!inTauri()) return MOCK_TOTAL_ROWS;
-  const info = await invoke<{ count: number | null }>("open_table", { id, schema, table });
-  return info.count ?? 0;
-}
-
 // ── Onboarding state (first-launch marker) ─────────────────────────────────
 export interface OnboardingState {
   onboarded: boolean;

@@ -1,18 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  applyEdit,
-  foreignKeys,
-  primaryKey,
-  rowEstimate,
-  type ForeignKey,
-  type ObjectInfo,
-} from "../lib/commands";
+import { applyEdit, type ForeignKey, type ObjectInfo } from "../lib/commands";
 import { buildEdit } from "../lib/edit";
 import { incomingForeignKeys, outgoingForeignKeys } from "../lib/fk";
 import { Tabs } from "./ui/Panel";
 import { Chip } from "./ui/Chip";
 import { IconClose, IconKey, IconLink, IconSearch } from "./ui/Icon";
 import { useSelectedRow } from "../state/selectedRowStore";
+import { loadForeignKeys, loadTableMeta } from "../state/connectionStore";
 
 /**
  * Right-side metadata inspector. Two modes:
@@ -41,7 +35,7 @@ export function Inspector({
 }) {
   const [tab, setTab] = useState("details");
   const [fks, setFks] = useState<ForeignKey[]>([]);
-  const [rows, setRows] = useState<number | null>(null);
+  const [rows, setRows] = useState<{ count: number | null; exact: boolean } | null>(null);
   const [fieldFilter, setFieldFilter] = useState("");
   const [pk, setPk] = useState<string[]>([]);
   const selectedRow = useSelectedRow((s) => s.row);
@@ -59,13 +53,18 @@ export function Inspector({
     setRows(null);
     setPk([]);
     if (!object || !schema) return;
-    foreignKeys(connId).then((all) => !cancelled && setFks(all)).catch(() => {});
-    rowEstimate(connId, schema, object.name).then((n) => !cancelled && setRows(n)).catch(() => {});
-    if (object.kind === "Table") {
-      primaryKey(connId, schema, object.name)
-        .then((cols) => !cancelled && setPk(cols))
-        .catch(() => !cancelled && setPk([]));
-    }
+    // Both reads come from the connection-store caches, so opening a table costs
+    // one round trip between this panel and the TableView, not two each.
+    loadForeignKeys(connId)
+      .then((all) => !cancelled && setFks(all))
+      .catch(() => {});
+    loadTableMeta(connId, schema, object.name)
+      .then((m) => {
+        if (cancelled) return;
+        setRows({ count: m.count, exact: m.exact });
+        setPk(m.pk);
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
@@ -327,7 +326,15 @@ function FieldCard({
           : "border-border hover:border-border-strong";
 
   return (
-    <li data-testid="inspector-field" data-field={name} className="flex flex-col gap-1">
+    <li
+      data-testid="inspector-field"
+      data-field={name}
+      className="flex flex-col gap-1"
+      // A 873-column row renders 873 of these. `content-visibility: auto` lets the
+      // browser skip layout/paint for the ones scrolled out of view; the size hint
+      // keeps the scrollbar honest.
+      style={{ contentVisibility: "auto", containIntrinsicSize: "auto 52px" }}
+    >
       <div className="flex items-baseline gap-2 px-0.5">
         <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-muted">{name}</span>
         <span className="shrink-0 font-mono text-[9.5px] uppercase tracking-wide text-muted-2">
@@ -386,7 +393,7 @@ function ObjectMetadataView({
 }: {
   object: ObjectInfo;
   schema?: string;
-  rows: number | null;
+  rows: { count: number | null; exact: boolean } | null;
   outgoing: ForeignKey[];
   incoming: ForeignKey[];
 }) {
@@ -396,12 +403,19 @@ function ObjectMetadataView({
       <Field label="Kind" value={<Chip tone={object.kind === "Table" ? "primary" : "muted"}>{object.kind}</Chip>} />
       <Field label="Columns" value={<span className="text-text">{object.columns.length}</span>} />
       <Field
-        label="Row estimate"
+        label="Rows"
         value={
           rows === null ? (
             <span className="text-muted">…</span>
+          ) : rows.count === null ? (
+            <span className="text-muted" title="This engine could not count the rows in time">
+              unknown
+            </span>
           ) : (
-            <span className="text-text">{rows.toLocaleString()}</span>
+            <span className="text-text" title={rows.exact ? undefined : "Estimated from the statistics catalog"}>
+              {rows.exact ? "" : "~"}
+              {rows.count.toLocaleString()}
+            </span>
           )
         }
       />
