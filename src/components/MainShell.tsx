@@ -54,7 +54,12 @@ import {
   type ExportFormat,
   type ObjectInfo,
 } from "../lib/commands";
-import { buildTableScript, quoteIdent, type ScriptColumn } from "../lib/tableScript";
+import {
+  buildTableScript,
+  quoteIdent,
+  selectStarter,
+  type ScriptColumn,
+} from "../lib/tableScript";
 import { markConnected } from "../lib/lastConnected";
 
 function findObject(
@@ -199,6 +204,10 @@ export function MainShell() {
   // Keyboard shortcuts. ⌘O is new — Open Connection picker (TablePlus parity).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // CodeMirror's own keymap (⌘D multi-cursor, ⌘[ / ⌘] indent, ⌘K) runs first
+      // and calls preventDefault when the SQL editor is focused — the workspace
+      // shortcuts must not fire on top of it.
+      if (e.defaultPrevented) return;
       const meta = e.metaKey || e.ctrlKey;
       if (meta && e.key.toLowerCase() === "k") {
         e.preventDefault();
@@ -315,22 +324,101 @@ export function MainShell() {
     setPinned((p) => (p.includes(key) ? p.filter((x) => x !== key) : [...p, key]));
   };
 
-  // Open a new query tab pre-filled with `sql` (the QueryView hydrates the
-  // one-shot starter event). Shared by the table menu + the sidebar "+" menu.
-  const newQueryWith = (sql: string) => {
-    openQuery();
-    window.dispatchEvent(new CustomEvent("tiq:starter-sql", { detail: sql }));
+  const engine = active.engine as Engine;
+  const q = (name: string) => quoteIdent(name, engine);
+  /** "New …" items for a schema — used by the sidebar foot "+" and table menu.
+   *  Each template is written in the connected engine's dialect; items the engine
+   *  has no equivalent for (SQLite routines, materialized views) are left out. */
+  const newObjectItems = (s: string): ContextMenuItem[] => {
+    const items: ContextMenuItem[] = [
+      { id: "n-table", label: "New Table…", onSelect: () => setShowStructure(true) },
+      {
+        id: "n-view",
+        label: "New View…",
+        onSelect: () => openQuery(`CREATE VIEW ${q(s)}.${q("new_view")} AS\nSELECT 1;`),
+      },
+    ];
+    if (engine === "postgres") {
+      items.push(
+        {
+          id: "n-mview",
+          label: "New Materialized View…",
+          onSelect: () =>
+            openQuery(`CREATE MATERIALIZED VIEW ${q(s)}.${q("new_mview")} AS\nSELECT 1;`),
+        },
+        {
+          id: "n-fn",
+          label: "New Function…",
+          onSelect: () =>
+            openQuery(
+              `CREATE FUNCTION ${q(s)}.${q("new_fn")}()\nRETURNS void AS $$\nBEGIN\n  -- …\nEND;\n$$ LANGUAGE plpgsql;`,
+            ),
+        },
+        {
+          id: "n-proc",
+          label: "New Procedure…",
+          onSelect: () =>
+            openQuery(
+              `CREATE PROCEDURE ${q(s)}.${q("new_proc")}()\nLANGUAGE plpgsql AS $$\nBEGIN\n  -- …\nEND;\n$$;`,
+            ),
+        },
+      );
+    } else if (engine === "mysql") {
+      // Single-statement bodies: MySQL's BEGIN…END form needs a DELIMITER change,
+      // which our statement splitter (and most drivers) can't carry.
+      items.push(
+        {
+          id: "n-fn",
+          label: "New Function…",
+          onSelect: () =>
+            openQuery(`CREATE FUNCTION ${q("new_fn")}() RETURNS INT DETERMINISTIC\nRETURN 1;`),
+        },
+        {
+          id: "n-proc",
+          label: "New Procedure…",
+          onSelect: () => openQuery(`CREATE PROCEDURE ${q("new_proc")}()\nSELECT 1;`),
+        },
+      );
+    } else if (engine === "sqlserver") {
+      items.push(
+        {
+          id: "n-fn",
+          label: "New Function…",
+          onSelect: () =>
+            openQuery(
+              `CREATE FUNCTION ${q(s)}.${q("new_fn")}()\nRETURNS int\nAS\nBEGIN\n  RETURN 1\nEND`,
+            ),
+        },
+        {
+          id: "n-proc",
+          label: "New Procedure…",
+          onSelect: () =>
+            openQuery(`CREATE PROCEDURE ${q(s)}.${q("new_proc")}\nAS\nBEGIN\n  SELECT 1\nEND`),
+        },
+      );
+    }
+    if (engine !== "sqlite") {
+      items.push({
+        id: "n-schema",
+        label: engine === "mysql" ? "New Database…" : "New Schema…",
+        onSelect: () =>
+          openQuery(
+            engine === "mysql"
+              ? `CREATE DATABASE ${q("new_database")};`
+              : `CREATE SCHEMA ${q("new_schema")};`,
+          ),
+      });
+      items.push({
+        id: "n-group",
+        label: "New Group / Role…",
+        onSelect: () =>
+          openQuery(
+            engine === "mysql" ? `CREATE ROLE 'new_group';` : `CREATE ROLE ${q("new_group")};`,
+          ),
+      });
+    }
+    return items;
   };
-  /** "New …" items for a schema — used by the sidebar foot "+" and table menu. */
-  const newObjectItems = (s: string): ContextMenuItem[] => [
-    { id: "n-table", label: "New Table…", onSelect: () => setShowStructure(true) },
-    { id: "n-view", label: "New View…", onSelect: () => newQueryWith(`CREATE VIEW ${quoteIdent(s)}."new_view" AS\nSELECT 1;`) },
-    { id: "n-mview", label: "New Materialized View…", onSelect: () => newQueryWith(`CREATE MATERIALIZED VIEW ${quoteIdent(s)}."new_mview" AS\nSELECT 1;`) },
-    { id: "n-fn", label: "New Function…", onSelect: () => newQueryWith(`CREATE FUNCTION ${quoteIdent(s)}."new_fn"()\nRETURNS void AS $$\nBEGIN\n  -- …\nEND;\n$$ LANGUAGE plpgsql;`) },
-    { id: "n-proc", label: "New Procedure…", onSelect: () => newQueryWith(`CREATE PROCEDURE ${quoteIdent(s)}."new_proc"()\nLANGUAGE plpgsql AS $$\nBEGIN\n  -- …\nEND;\n$$;`) },
-    { id: "n-schema", label: "New Schema…", onSelect: () => newQueryWith(`CREATE SCHEMA "new_schema";`) },
-    { id: "n-group", label: "New Group / Role…", onSelect: () => newQueryWith(`CREATE ROLE "new_group";`) },
-  ];
 
   // Every query tab stays mounted and is hidden with `display:none` when inactive,
   // so its editor text, undo history, results and scroll position survive a tab
@@ -818,7 +906,7 @@ export function MainShell() {
           const { schema: s, obj } = objMenu;
           const key = `${s}.${obj.name}`;
           const isPinned = pinned.includes(key);
-          const qualified = `${quoteIdent(s)}.${quoteIdent(obj.name)}`;
+          const qualified = `${q(s)}.${q(obj.name)}`;
           const scriptCols: ScriptColumn[] = obj.columns.map((c) => ({
             name: c.name,
             data_type: c.data_type,
@@ -874,10 +962,10 @@ export function MainShell() {
               id: "copy-script",
               label: "Copy script as",
               children: [
-                { id: "cs-create", label: "CREATE", onSelect: () => copy(buildTableScript("create", s, obj.name, scriptCols)) },
-                { id: "cs-select", label: "SELECT", onSelect: () => copy(buildTableScript("select", s, obj.name, scriptCols)) },
-                { id: "cs-drop", label: "DROP", onSelect: () => copy(buildTableScript("drop", s, obj.name, scriptCols)) },
-                { id: "cs-truncate", label: "TRUNCATE", onSelect: () => copy(buildTableScript("truncate", s, obj.name, scriptCols)) },
+                { id: "cs-create", label: "CREATE", onSelect: () => copy(buildTableScript("create", s, obj.name, scriptCols, engine)) },
+                { id: "cs-select", label: "SELECT", onSelect: () => copy(buildTableScript("select", s, obj.name, scriptCols, engine)) },
+                { id: "cs-drop", label: "DROP", onSelect: () => copy(buildTableScript("drop", s, obj.name, scriptCols, engine)) },
+                { id: "cs-truncate", label: "TRUNCATE", onSelect: () => copy(buildTableScript("truncate", s, obj.name, scriptCols, engine)) },
               ],
             },
             {
@@ -896,25 +984,30 @@ export function MainShell() {
             {
               id: "new-query",
               label: "New query selecting from this",
-              onSelect: () => newQueryWith(`SELECT * FROM ${qualified} LIMIT 100;`),
+              onSelect: () => openQuery(selectStarter(s, obj.name, engine)),
             },
             "separator",
             {
               id: "clone",
               label: "Clone (open as query)",
-              onSelect: () => newQueryWith(`CREATE TABLE ${quoteIdent(s)}.${quoteIdent(`${obj.name}_copy`)} (LIKE ${qualified} INCLUDING ALL);`),
+              onSelect: () =>
+                openQuery(
+                  engine === "postgres"
+                    ? `CREATE TABLE ${q(s)}.${q(`${obj.name}_copy`)} (LIKE ${qualified} INCLUDING ALL);`
+                    : `CREATE TABLE ${q(s)}.${q(`${obj.name}_copy`)} AS SELECT * FROM ${qualified};`,
+                ),
             },
             {
               id: "truncate",
               label: "Truncate (open as query)",
               tone: "danger",
-              onSelect: () => newQueryWith(buildTableScript("truncate", s, obj.name, scriptCols)),
+              onSelect: () => openQuery(buildTableScript("truncate", s, obj.name, scriptCols, engine)),
             },
             {
               id: "drop",
               label: "Drop (open as query)",
               tone: "danger",
-              onSelect: () => newQueryWith(buildTableScript("drop", s, obj.name, scriptCols)),
+              onSelect: () => openQuery(buildTableScript("drop", s, obj.name, scriptCols, engine)),
             },
           ];
           return (
@@ -964,7 +1057,7 @@ export function MainShell() {
                 if (tabMenu.tab.kind === "table" && tabMenu.tab.schema && tabMenu.tab.table) {
                   openTable(tabMenu.tab.schema, tabMenu.tab.table);
                 } else if (tabMenu.tab.kind === "query") {
-                  openQuery();
+                  openQuery(tabMenu.tab.sql);
                 } else if (tabMenu.tab.kind === "erd") {
                   openErd();
                 }
