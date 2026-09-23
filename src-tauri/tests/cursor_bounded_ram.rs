@@ -1,8 +1,10 @@
 //! Integration test for the cursor windowing path (plan spec #2): paging the full
 //! 1M-row result must keep Rust RAM bounded — it must NOT materialize everything.
 //!
-//! Requires a running Postgres with the seeded `wide` table. Gated on `TIQ_PG_URL`:
-//!   TIQ_PG_URL=postgres://postgres:tableiq@127.0.0.1:55432/tableiq \
+//! Requires a running Postgres with the *full* `wide` table. Gated on `TIQ_PG_URL` plus
+//! `TIQ_PG_FULL_SEED`, because this is the one test that needs all 1,000,000 rows and CI
+//! seeds `wide` small (`psql -v rows=…`) rather than spending minutes on a million inserts:
+//!   TIQ_PG_URL=postgres://postgres:tableiq@127.0.0.1:55432/tableiq TIQ_PG_FULL_SEED=1 \
 //!     cargo test --test cursor_bounded_ram -- --nocapture
 
 use tableiq_lib::bench::process_rss;
@@ -14,6 +16,10 @@ async fn cursor_pages_full_set_with_bounded_ram() {
         eprintln!("skip: no TIQ_PG_URL set");
         return;
     };
+    if std::env::var("TIQ_PG_FULL_SEED").is_err() {
+        eprintln!("skip: no TIQ_PG_FULL_SEED — `wide` is not the full 1M-row dataset");
+        return;
+    }
 
     let drv = PgDriver::connect(&url).await.expect("connect");
     let cur = drv

@@ -34,8 +34,8 @@ async fn introspect_finds_public_wide_with_columns() {
     assert!(colnames.contains(&"amount_numeric"));
     assert!(colnames.contains(&"nullable_int"));
     // nullable_int is nullable; id is not
-    assert!(wide.columns.iter().find(|c| c.name == "id").unwrap().nullable == false);
-    assert!(wide.columns.iter().find(|c| c.name == "nullable_int").unwrap().nullable == true);
+    assert!(!wide.columns.iter().find(|c| c.name == "id").unwrap().nullable);
+    assert!(wide.columns.iter().find(|c| c.name == "nullable_int").unwrap().nullable);
 }
 
 #[tokio::test]

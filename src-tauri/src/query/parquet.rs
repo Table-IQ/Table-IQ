@@ -230,6 +230,8 @@ fn batch_to_text(batch: &RecordBatch, max: usize) -> Vec<Vec<Option<String>>> {
     let mut out: Vec<Vec<Option<String>>> = vec![Vec::with_capacity(batch.num_columns()); n];
     for ci in 0..batch.num_columns() {
         let col = batch.column(ci);
+        // `r` indexes both the arrow column and the row being built.
+        #[allow(clippy::needless_range_loop)]
         for r in 0..n {
             let v = if col.is_null(r) {
                 None

@@ -472,6 +472,8 @@ impl SqlDriver for SqlServerDriver {
         let mut object_ix: HashMap<(std::string::String, std::string::String), usize> =
             HashMap::new();
         let tn = t.first().map(|c| c.len()).unwrap_or(0);
+        // `t` is column-major: one index addresses three parallel vectors, not one slice.
+        #[allow(clippy::needless_range_loop)]
         for i in 0..tn {
             let schema = t[0][i].clone().unwrap_or_default();
             let name = t[1][i].clone().unwrap_or_default();
@@ -488,6 +490,7 @@ impl SqlDriver for SqlServerDriver {
             schemas[si].objects.push(ObjectInfo { name, kind, columns: vec![] });
         }
         let cn = col.first().map(|c| c.len()).unwrap_or(0);
+        #[allow(clippy::needless_range_loop)] // column-major, as above
         for i in 0..cn {
             let schema = col[0][i].clone().unwrap_or_default();
             let table = col[1][i].clone().unwrap_or_default();
@@ -719,7 +722,7 @@ impl SqlDriver for SqlServerDriver {
         }
         let (sql, binds) =
             build_insert_sql(schema, table, values, &quote_ident, &mssql_placeholder, true);
-        let owned: Vec<Option<std::string::String>> = binds.iter().cloned().collect();
+        let owned: Vec<Option<std::string::String>> = binds.to_vec();
         let params: Vec<&dyn tiberius::ToSql> =
             owned.iter().map(|o| o as &dyn tiberius::ToSql).collect();
         let mut c = self.client.lock().await;

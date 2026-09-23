@@ -805,6 +805,71 @@ impl SqlDriver for PgDriver {
     }
 }
 
+/// Build an all-Utf8 (nullable) Arrow batch from text-cast rows.
+fn text_rows_to_batch(cols: &[String], rows: &[PgRow]) -> DResult<RecordBatch> {
+    let mut fields = Vec::with_capacity(cols.len());
+    let mut arrays: Vec<arrow::array::ArrayRef> = Vec::with_capacity(cols.len());
+    for c in cols {
+        fields.push(arrow::datatypes::Field::new(c, DataType::Utf8, true));
+        let col: StringArray = rows
+            .iter()
+            .map(|r| r.try_get::<Option<String>, _>(c.as_str()).unwrap_or_default())
+            .collect();
+        arrays.push(std::sync::Arc::new(col));
+    }
+    RecordBatch::try_new(std::sync::Arc::new(arrow::datatypes::Schema::new(fields)), arrays)
+        .map_err(|e| DriverError::Db(e.to_string()))
+}
+
+/// `try_get`, naming the column in the error. `Row::get` panics on a missing or mistyped
+/// column, which in a Tauri command means the whole app goes down over one odd result set.
+fn cell<'a, T>(row: &'a PgRow, col: &str) -> DResult<T>
+where
+    T: sqlx::Decode<'a, sqlx::Postgres> + sqlx::Type<sqlx::Postgres>,
+{
+    row.try_get(col).map_err(|e| DriverError::Db(format!("column {col}: {e}")))
+}
+
+fn rows_to_batch(rows: &[PgRow]) -> DResult<RecordBatch> {
+    let n = rows.len();
+    let (mut id, mut amount, mut created_us) = (Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n));
+    let (mut blob_text, mut nullable_int) = (Vec::with_capacity(n), Vec::with_capacity(n));
+    for r in rows {
+        id.push(cell::<i64>(r, "id")?);
+        amount.push(cell::<String>(r, "amount_numeric")?);
+        created_us.push(cell::<i64>(r, "created_us")?);
+        blob_text.push(cell::<String>(r, "blob_text")?);
+        nullable_int.push(cell::<Option<i64>>(r, "nullable_int")?);
+    }
+    let ids = Int64Array::from(id);
+    let amounts = StringArray::from(amount);
+    let created = TimestampMicrosecondArray::from(created_us).with_timezone("UTC");
+    let blob = StringArray::from(blob_text);
+    let nint = Int64Array::from(nullable_int);
+
+    let schema = Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        // exact text (plan spec #3 — no decimal float round-trip)
+        Field::new("amount_numeric", DataType::Utf8, false),
+        Field::new(
+            "created_at",
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            false,
+        ),
+        Field::new("blob_text", DataType::Utf8, false),
+        Field::new("nullable_int", DataType::Int64, true),
+    ]);
+
+    let cols: Vec<ArrayRef> = vec![
+        Arc::new(ids),
+        Arc::new(amounts),
+        Arc::new(created),
+        Arc::new(blob),
+        Arc::new(nint),
+    ];
+    RecordBatch::try_new(Arc::new(schema), cols).map_err(|e| DriverError::Db(e.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{build_delete_sql, build_update_sql};
@@ -941,69 +1006,4 @@ mod tests {
             start.elapsed()
         );
     }
-}
-
-/// Build an all-Utf8 (nullable) Arrow batch from text-cast rows.
-fn text_rows_to_batch(cols: &[String], rows: &[PgRow]) -> DResult<RecordBatch> {
-    let mut fields = Vec::with_capacity(cols.len());
-    let mut arrays: Vec<arrow::array::ArrayRef> = Vec::with_capacity(cols.len());
-    for c in cols {
-        fields.push(arrow::datatypes::Field::new(c, DataType::Utf8, true));
-        let col: StringArray = rows
-            .iter()
-            .map(|r| r.try_get::<Option<String>, _>(c.as_str()).unwrap_or_default())
-            .collect();
-        arrays.push(std::sync::Arc::new(col));
-    }
-    RecordBatch::try_new(std::sync::Arc::new(arrow::datatypes::Schema::new(fields)), arrays)
-        .map_err(|e| DriverError::Db(e.to_string()))
-}
-
-/// `try_get`, naming the column in the error. `Row::get` panics on a missing or mistyped
-/// column, which in a Tauri command means the whole app goes down over one odd result set.
-fn cell<'a, T>(row: &'a PgRow, col: &str) -> DResult<T>
-where
-    T: sqlx::Decode<'a, sqlx::Postgres> + sqlx::Type<sqlx::Postgres>,
-{
-    row.try_get(col).map_err(|e| DriverError::Db(format!("column {col}: {e}")))
-}
-
-fn rows_to_batch(rows: &[PgRow]) -> DResult<RecordBatch> {
-    let n = rows.len();
-    let (mut id, mut amount, mut created_us) = (Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n));
-    let (mut blob_text, mut nullable_int) = (Vec::with_capacity(n), Vec::with_capacity(n));
-    for r in rows {
-        id.push(cell::<i64>(r, "id")?);
-        amount.push(cell::<String>(r, "amount_numeric")?);
-        created_us.push(cell::<i64>(r, "created_us")?);
-        blob_text.push(cell::<String>(r, "blob_text")?);
-        nullable_int.push(cell::<Option<i64>>(r, "nullable_int")?);
-    }
-    let ids = Int64Array::from(id);
-    let amounts = StringArray::from(amount);
-    let created = TimestampMicrosecondArray::from(created_us).with_timezone("UTC");
-    let blob = StringArray::from(blob_text);
-    let nint = Int64Array::from(nullable_int);
-
-    let schema = Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        // exact text (plan spec #3 — no decimal float round-trip)
-        Field::new("amount_numeric", DataType::Utf8, false),
-        Field::new(
-            "created_at",
-            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
-            false,
-        ),
-        Field::new("blob_text", DataType::Utf8, false),
-        Field::new("nullable_int", DataType::Int64, true),
-    ]);
-
-    let cols: Vec<ArrayRef> = vec![
-        Arc::new(ids),
-        Arc::new(amounts),
-        Arc::new(created),
-        Arc::new(blob),
-        Arc::new(nint),
-    ];
-    RecordBatch::try_new(Arc::new(schema), cols).map_err(|e| DriverError::Db(e.to_string()))
 }

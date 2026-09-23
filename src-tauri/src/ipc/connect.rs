@@ -129,6 +129,12 @@ async fn open_driver(cfg: &ConnConfig, pw: &str) -> Result<Arc<dyn SqlDriver>, S
     Ok(drv)
 }
 
+impl Default for ConnState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ConnState {
     pub fn new() -> Self {
         Self {
@@ -497,6 +503,7 @@ pub async fn open_table(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // the argument list is the IPC contract
 pub async fn get_table_window(
     state: State<'_, ConnState>,
     id: String,
@@ -1088,6 +1095,7 @@ pub async fn parse_parquet_preview(
 /// `import_rows` codepath. `column_mapping[i] = (file_col_index, target_name)`; columns
 /// not in the mapping are skipped. Returns rows inserted.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // the argument list is the IPC contract
 pub async fn apply_parquet_import(
     state: State<'_, ConnState>,
     id: String,
@@ -1107,9 +1115,7 @@ pub async fn apply_parquet_import(
     // Validate identifiers up front whether or not we're creating the table,
     // so a bad table/column name never reaches the engine via quoted-but-trusted
     // interpolation. (Quoting catches it, but explicit is better than implicit.)
-    if let Err(e) = validate_target_idents(schema.as_deref(), &table, &column_mapping) {
-        return Err(e);
-    }
+    validate_target_idents(schema.as_deref(), &table, &column_mapping)?;
     let drv = state.session(&id)?;
     let dialect = crate::query::ddl::Dialect::from_engine(&engine);
 
@@ -1127,8 +1133,7 @@ pub async fn apply_parquet_import(
             schema.as_deref(),
             &table,
             &cols,
-        )
-        .map_err(|e| e)?;
+        )?;
         drv.run_script(&ddl).await.map_err(|e| e.to_string())?;
     }
 

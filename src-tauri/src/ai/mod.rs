@@ -70,7 +70,7 @@ pub fn extract_sql(raw: &str) -> String {
     let t = raw.trim();
     if let Some(rest) = t.strip_prefix("```") {
         // drop an optional language tag on the first line, then take up to the closing fence
-        let body = rest.splitn(2, '\n').nth(1).unwrap_or("");
+        let body = rest.split_once('\n').map_or("", |(_, body)| body);
         let end = body.find("```").unwrap_or(body.len());
         return body[..end].trim().to_string();
     }

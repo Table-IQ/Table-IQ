@@ -53,10 +53,10 @@ pub fn synth_batch(start_id: i64, rows: usize, min_cols: usize) -> RecordBatch {
     // nullable_int : NULL-heavy (every 3rd is null)
     fields.push(Field::new("nullable_int", DataType::Int64, true));
     cols.push(Arc::new(Int64Array::from_iter((0..rows).map(|i| {
-        if (start_id as usize + i) % 3 == 0 {
+        if (start_id as usize + i).is_multiple_of(3) {
             None
         } else {
-            Some((start_id + i as i64) as i64)
+            Some(start_id + i as i64)
         }
     }))));
 

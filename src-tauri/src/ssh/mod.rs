@@ -14,7 +14,7 @@ pub mod tunnel;
 pub use tunnel::Tunnel;
 
 /// How we authenticate to the SSH bastion.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum SshAuth {
     /// Password auth; the password is read from the keychain (`ssh:<conn_id>`), never stored here.
@@ -32,13 +32,8 @@ pub enum SshAuth {
         passphrase: Option<String>,
     },
     /// Delegate to the running ssh-agent (no stored secret).
+    #[default]
     Agent,
-}
-
-impl Default for SshAuth {
-    fn default() -> Self {
-        SshAuth::Agent
-    }
 }
 
 /// SSH bastion config embedded (optionally) on a `ConnConfig`.
