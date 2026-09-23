@@ -12,11 +12,13 @@ import { useConnections } from "../state/connectionStore";
 import { useTabs } from "../state/tabsStore";
 import { oneLine } from "../lib/history";
 import { schemaModelToCompletionMap } from "../lib/schemaCompletion";
-import { splitStatements, statementAt, type SqlDialect } from "../lib/sqlSplit";
+import type { SqlDialect } from "../lib/sqlSplit";
 import {
   explainStatement,
   resultTabs,
   rowCountLabel,
+  runAllTargets,
+  runTargets,
   transactionKeywords,
   type RunItem,
 } from "../lib/queryResults";
@@ -163,17 +165,9 @@ export function QueryView({
   const targetItems = useCallback(
     (all: boolean): RunItem[] => {
       const doc = editorRef.current?.getDoc() ?? sqlRef.current;
-      const stmts = splitStatements(doc, sqlDialect);
-      if (all) return stmts.map((s) => ({ text: s.text, stmt: s }));
+      if (all) return runAllTargets(doc, sqlDialect);
       const sel = editorRef.current?.getSelection() ?? { from: doc.length, to: doc.length };
-      if (sel.from !== sel.to) {
-        const raw = doc.slice(sel.from, sel.to);
-        const from = sel.from + (raw.length - raw.trimStart().length);
-        const text = raw.trim();
-        return text ? [{ text, stmt: { text, from, to: from + text.length } }] : [];
-      }
-      const s = statementAt(stmts, sel.from);
-      return s ? [{ text: s.text, stmt: s }] : [];
+      return runTargets(doc, sqlDialect, sel.from, sel.to);
     },
     [sqlDialect],
   );

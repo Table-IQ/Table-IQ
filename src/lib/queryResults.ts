@@ -8,7 +8,7 @@
  * carries `rowsAffected` and no `resultId`.
  */
 import type { Engine, StatementResultMeta } from "./commands";
-import type { SqlStatement } from "./sqlSplit";
+import { splitStatements, statementAt, type SqlDialect, type SqlStatement } from "./sqlSplit";
 
 /** One statement submitted in a run: the SQL sent, plus its doc coords when it
  *  came from the editor (a transaction's BEGIN/COMMIT wrapper has none). */
@@ -124,4 +124,38 @@ export function explainStatement(sql: string, engine: Engine): string | null {
   if (engine === "mysql") return `EXPLAIN ${body}`;
   if (engine === "sqlite") return `EXPLAIN QUERY PLAN ${body}`;
   return null;
+}
+
+/** Every statement in the document — what ⇧⌘↵ (Run all) sends. */
+export function runAllTargets(doc: string, dialect: SqlDialect): RunItem[] {
+  return splitStatements(doc, dialect).map((s) => ({ text: s.text, stmt: s }));
+}
+
+/**
+ * What ⌘↵ (Run) sends, TablePlus-style:
+ *  - no selection → the statement under the cursor (`statementAt`, so a cursor
+ *    sitting just after a `;` still finds that statement);
+ *  - a selection covering more than one statement → each of them, so the drivers
+ *    (which take one statement at a time) don't choke on a `;` mid-string;
+ *  - any other selection → exactly what's highlighted, trimmed, so running a
+ *    sub-expression keeps working.
+ */
+export function runTargets(
+  doc: string,
+  dialect: SqlDialect,
+  selFrom: number,
+  selTo: number,
+): RunItem[] {
+  const stmts = splitStatements(doc, dialect);
+  if (selFrom === selTo) {
+    const s = statementAt(stmts, selFrom);
+    return s ? [{ text: s.text, stmt: s }] : [];
+  }
+  const covered = stmts.filter((s) => s.to > selFrom && s.from < selTo);
+  if (covered.length > 1) return covered.map((s) => ({ text: s.text, stmt: s }));
+  const raw = doc.slice(selFrom, selTo);
+  const text = raw.trim();
+  if (!text) return [];
+  const from = selFrom + (raw.length - raw.trimStart().length);
+  return [{ text, stmt: { text, from, to: from + text.length } }];
 }

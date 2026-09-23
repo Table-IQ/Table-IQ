@@ -4,7 +4,9 @@ import {
   explainStatement,
   resultTabs,
   rowCountLabel,
+  runAllTargets,
   runMessages,
+  runTargets,
   transactionKeywords,
 } from "./queryResults";
 import type { StatementResultMeta } from "./commands";
@@ -151,5 +153,40 @@ describe("explainStatement", () => {
     // Postgres keeps the JSON PlanView path; SQL Server is unsupported.
     expect(explainStatement("SELECT 1", "postgres")).toBeNull();
     expect(explainStatement("SELECT 1", "sqlserver")).toBeNull();
+  });
+});
+
+describe("runTargets", () => {
+  const doc = "SELECT 1;\nSELECT 2;\nSELECT 3;";
+
+  it("runs the statement under the cursor when there is no selection", () => {
+    // Cursor right after the first `;` — the headline TablePlus behaviour.
+    expect(runTargets(doc, "postgres", 9, 9)).toEqual([
+      { text: "SELECT 1", stmt: { text: "SELECT 1", from: 0, to: 8 } },
+    ]);
+  });
+
+  it("runs every statement a multi-statement selection touches", () => {
+    const items = runTargets(doc, "postgres", 3, 22); // mid-1 … mid-3
+    expect(items.map((i) => i.text)).toEqual(["SELECT 1", "SELECT 2", "SELECT 3"]);
+  });
+
+  it("runs a partial selection verbatim (trimmed), keeping its doc coords", () => {
+    const items = runTargets("SELECT 1, 2;", "postgres", 6, 11);
+    expect(items).toEqual([{ text: "1, 2", stmt: { text: "1, 2", from: 7, to: 11 } }]);
+  });
+
+  it("returns nothing for an empty document or a whitespace-only selection", () => {
+    expect(runTargets("", "postgres", 0, 0)).toEqual([]);
+    expect(runTargets("  \n ", "postgres", 0, 4)).toEqual([]);
+  });
+});
+
+describe("runAllTargets", () => {
+  it("returns every statement in document order", () => {
+    expect(runAllTargets("SELECT 1;\nUPDATE t SET a = 1;", "postgres").map((i) => i.text)).toEqual([
+      "SELECT 1",
+      "UPDATE t SET a = 1",
+    ]);
   });
 });
