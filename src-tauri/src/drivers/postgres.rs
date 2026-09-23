@@ -308,7 +308,7 @@ impl SqlDriver for PgDriver {
                 .unwrap()
                 .as_nanos()
         );
-        self.cursors.lock().unwrap().insert(
+        crate::lk(&self.cursors).insert(
             id.clone(),
             CursorState {
                 last_id: 0,
@@ -321,7 +321,7 @@ impl SqlDriver for PgDriver {
     async fn fetch_next(&self, cursor: &CursorId, n: usize) -> DResult<RecordBatch> {
         // Read cursor state without holding the lock across the await.
         let (last_id, page) = {
-            let map = self.cursors.lock().unwrap();
+            let map = crate::lk(&self.cursors);
             let s = map
                 .get(&cursor.0)
                 .ok_or_else(|| DriverError::Db("unknown cursor".into()))?;
@@ -348,7 +348,7 @@ impl SqlDriver for PgDriver {
         if let Some(ids) = batch.column(0).as_any().downcast_ref::<Int64Array>() {
             if !ids.is_empty() {
                 let max = ids.value(ids.len() - 1);
-                if let Some(s) = self.cursors.lock().unwrap().get_mut(&cursor.0) {
+                if let Some(s) = crate::lk(&self.cursors).get_mut(&cursor.0) {
                     s.last_id = max;
                 }
             }
@@ -357,7 +357,7 @@ impl SqlDriver for PgDriver {
     }
 
     async fn close_cursor(&self, cursor: &CursorId) -> DResult<()> {
-        self.cursors.lock().unwrap().remove(&cursor.0);
+        crate::lk(&self.cursors).remove(&cursor.0);
         Ok(())
     }
 
@@ -953,16 +953,31 @@ fn text_rows_to_batch(cols: &[String], rows: &[PgRow]) -> DResult<RecordBatch> {
         .map_err(|e| DriverError::Db(e.to_string()))
 }
 
+/// `try_get`, naming the column in the error. `Row::get` panics on a missing or mistyped
+/// column, which in a Tauri command means the whole app goes down over one odd result set.
+fn cell<'a, T>(row: &'a PgRow, col: &str) -> DResult<T>
+where
+    T: sqlx::Decode<'a, sqlx::Postgres> + sqlx::Type<sqlx::Postgres>,
+{
+    row.try_get(col).map_err(|e| DriverError::Db(format!("column {col}: {e}")))
+}
+
 fn rows_to_batch(rows: &[PgRow]) -> DResult<RecordBatch> {
-    let ids = Int64Array::from_iter_values(rows.iter().map(|r| r.get::<i64, _>("id")));
-    let amounts =
-        StringArray::from_iter_values(rows.iter().map(|r| r.get::<String, _>("amount_numeric")));
-    let created = TimestampMicrosecondArray::from_iter_values(
-        rows.iter().map(|r| r.get::<i64, _>("created_us")),
-    )
-    .with_timezone("UTC");
-    let blob = StringArray::from_iter_values(rows.iter().map(|r| r.get::<String, _>("blob_text")));
-    let nint = Int64Array::from_iter(rows.iter().map(|r| r.get::<Option<i64>, _>("nullable_int")));
+    let n = rows.len();
+    let (mut id, mut amount, mut created_us) = (Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n));
+    let (mut blob_text, mut nullable_int) = (Vec::with_capacity(n), Vec::with_capacity(n));
+    for r in rows {
+        id.push(cell::<i64>(r, "id")?);
+        amount.push(cell::<String>(r, "amount_numeric")?);
+        created_us.push(cell::<i64>(r, "created_us")?);
+        blob_text.push(cell::<String>(r, "blob_text")?);
+        nullable_int.push(cell::<Option<i64>>(r, "nullable_int")?);
+    }
+    let ids = Int64Array::from(id);
+    let amounts = StringArray::from(amount);
+    let created = TimestampMicrosecondArray::from(created_us).with_timezone("UTC");
+    let blob = StringArray::from(blob_text);
+    let nint = Int64Array::from(nullable_int);
 
     let schema = Schema::new(vec![
         Field::new("id", DataType::Int64, false),

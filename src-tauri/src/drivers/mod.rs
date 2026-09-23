@@ -64,11 +64,11 @@ impl CancelToken {
     }
     /// Record the server-side id (PG backend PID / MySQL connection id) for this query.
     pub fn set_backend_id(&self, id: i64) {
-        *self.backend_id.lock().unwrap() = Some(id);
+        *crate::lk(&self.backend_id) = Some(id);
     }
     /// The recorded server-side id, or `None` if the query hasn't started yet.
     pub fn backend_id(&self) -> Option<i64> {
-        *self.backend_id.lock().unwrap()
+        *crate::lk(&self.backend_id)
     }
 }
 
