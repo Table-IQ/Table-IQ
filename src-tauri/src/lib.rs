@@ -10,6 +10,12 @@ pub mod plugins;
 pub mod query;
 pub mod ssh;
 
+/// Lock a mutex, recovering from poisoning instead of panicking. A panic while one lock is
+/// held would otherwise poison it and take down every later caller that touches it.
+pub(crate) fn lk<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 use ipc::connect::{
     ai_egress_preview, ai_explain_sql, ai_fix_sql, ai_generate_sql, ai_optimize_sql, apply_edit,
     cancel_query, connect, delete_connection, delete_row, describe_table,

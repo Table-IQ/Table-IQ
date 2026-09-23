@@ -11,6 +11,7 @@ use tauri::State;
 use arrow::record_batch::RecordBatch;
 
 use crate::connections::{self, ConnConfig, ConnStore};
+use crate::lk;
 use crate::drivers::{
     doc_mongo::MongoDriver, kv_redis::RedisDriver, mysql::MySqlDriver, postgres::PgDriver,
     sqlite::SqliteDriver, sqlserver::SqlServerDriver, CancelToken, ColumnFilter, DocumentDriver,
@@ -21,11 +22,6 @@ use crate::ssh::SshAuth;
 
 const QUERY_CAP: usize = 50_000;
 
-/// Lock a mutex, recovering from poisoning instead of panicking. A panic in one command
-/// would otherwise poison the map and take down every later command that touches it.
-fn lk<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
 
 /// Query results held server-side for `get_result_window` / `export_result` / `diff_results`.
 ///
