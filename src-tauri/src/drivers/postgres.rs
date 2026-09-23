@@ -177,9 +177,15 @@ impl PgDriver {
         // "pool timed out while waiting for an open connection", hiding the cause.
         {
             use sqlx::Connection;
-            let probe = sqlx::postgres::PgConnection::connect(url)
-                .await
-                .map_err(|e| DriverError::Db(e.to_string()))?;
+            let probe = tokio::time::timeout(
+                super::CONNECT_TIMEOUT,
+                sqlx::postgres::PgConnection::connect(url),
+            )
+            .await
+            .map_err(|_| {
+                DriverError::Db(format!("timed out connecting to {}", super::url_host_port(url)))
+            })?
+            .map_err(|e| DriverError::Db(e.to_string()))?;
             let _ = probe.close().await;
         }
         // Pin the session GUCs that affect `col::text` rendering on EVERY pooled

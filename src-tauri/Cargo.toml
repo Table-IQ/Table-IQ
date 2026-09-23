@@ -57,3 +57,10 @@ extism = "1"
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "mysql", "sqlite", "json"] }
 tempfile = "3"
 
+# Release size + speed: strip symbols, thin LTO, one codegen unit. `panic = "unwind"` stays —
+# the panic hook in `applog` needs unwinding to log and chain before the process goes down.
+[profile.release]
+strip = "symbols"
+lto = "thin"
+codegen-units = 1
+panic = "unwind"

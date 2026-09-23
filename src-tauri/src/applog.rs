@@ -124,8 +124,8 @@ mod tests {
     fn opens_for_append_and_creates_the_directory() {
         let dir = tempfile::tempdir().unwrap();
         let logs = dir.path().join("logs");
-        write!(open_log(&logs).unwrap(), "one\n").unwrap();
-        write!(open_log(&logs).unwrap(), "two\n").unwrap();
+        writeln!(open_log(&logs).unwrap(), "one").unwrap();
+        writeln!(open_log(&logs).unwrap(), "two").unwrap();
         let body = std::fs::read_to_string(logs.join(LOG_NAME)).unwrap();
         assert_eq!(body, "one\ntwo\n", "the second open must append, not truncate");
     }
@@ -135,7 +135,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(LOG_NAME), vec![b'x'; (MAX_BYTES + 1) as usize]).unwrap();
         let mut f = open_log(dir.path()).unwrap();
-        write!(f, "fresh\n").unwrap();
+        writeln!(f, "fresh").unwrap();
         assert_eq!(
             std::fs::metadata(dir.path().join("tableiq.log.1")).unwrap().len(),
             MAX_BYTES + 1,

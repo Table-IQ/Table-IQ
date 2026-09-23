@@ -72,6 +72,18 @@ impl CancelToken {
     }
 }
 
+/// How long a driver waits for the initial connection before giving up. Without it a dropped
+/// packet to an unreachable host leaves the UI spinning on the OS TCP timeout (~75s on macOS).
+pub(crate) const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// `host:port` out of a `scheme://user:pw@host:port/db` URL, for error messages. Everything
+/// before the authority's last `@` is dropped, so the password can never reach a message.
+pub(crate) fn url_host_port(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let authority = rest.split(['/', '?']).next().unwrap_or(rest);
+    authority.rsplit_once('@').map_or(authority, |(_, h)| h)
+}
+
 /// A live cursor over a SQL result, paged by [`SqlDriver::fetch_next`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CursorId(pub String);
@@ -868,5 +880,22 @@ mod order_by_tests {
         assert_eq!(fk.to_schema, "");
         assert_eq!(fk.constraint, "");
         assert_eq!(fk.from_table, "orders");
+    }
+}
+
+#[cfg(test)]
+mod url_tests {
+    use super::*;
+
+    /// The connect-timeout message carries this, so a password must never survive it.
+    #[test]
+    fn url_host_port_keeps_only_the_authority() {
+        assert_eq!(
+            url_host_port("postgres://u:p%40ss@db.internal:5432/app?sslmode=require"),
+            "db.internal:5432"
+        );
+        assert_eq!(url_host_port("mysql://root:secret@127.0.0.1:53306/tableiq"), "127.0.0.1:53306");
+        assert_eq!(url_host_port("postgres://db.internal:5432/app"), "db.internal:5432");
+        assert_eq!(url_host_port("127.0.0.1:5432"), "127.0.0.1:5432");
     }
 }

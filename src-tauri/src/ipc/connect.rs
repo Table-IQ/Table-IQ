@@ -187,7 +187,7 @@ pub fn list_connections(state: State<ConnState>) -> Vec<ConnConfig> {
     lk(&state.store).connections.clone()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_connection(
     state: State<ConnState>,
     cfg: ConnConfig,
@@ -214,13 +214,13 @@ pub fn save_connection(
 }
 
 /// Export saved connections as a shareable, secret-free JSON bundle.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn export_connections(state: State<ConnState>) -> Result<String, String> {
     lk(&state.store).export_bundle()
 }
 
 /// Import a connection bundle (merge by id); recipients re-enter passwords.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn import_connections(state: State<ConnState>, json: String) -> Result<usize, String> {
     let mut store = lk(&state.store);
     let n = store.import_bundle(&json)?;
@@ -228,7 +228,7 @@ pub fn import_connections(state: State<ConnState>, json: String) -> Result<usize
     Ok(n)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_connection(state: State<ConnState>, id: String) -> Result<(), String> {
     {
         let mut store = lk(&state.store);
@@ -663,7 +663,7 @@ pub async fn cancel_query(
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_result_window(
     state: State<ConnState>,
     result_id: String,
@@ -702,7 +702,7 @@ fn encode_export(batch: &RecordBatch, format: &str) -> String {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn export_result(
     state: State<ConnState>,
     result_id: String,
@@ -795,19 +795,19 @@ pub fn generate_ddl(engine: String, req: crate::query::ddl::DdlRequest) -> Strin
 
 // ── WASM plugins (Extism) ──────────────────────────────────────────────────
 /// List installed plugins (`.wasm` in the plugins dir).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_plugins() -> Vec<crate::plugins::PluginInfo> {
     crate::plugins::list()
 }
 
 /// Install the bundled sample plugin; returns its path.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn install_sample_plugin() -> Result<String, String> {
     crate::plugins::install_sample().map(|p| p.to_string_lossy().to_string())
 }
 
 /// Run a plugin's `transform` over a stored result set; returns the plugin's string output.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn run_plugin_on_result(
     state: State<ConnState>,
     plugin_id: String,
@@ -875,7 +875,7 @@ fn batch_to_rows(batch: &RecordBatch) -> Vec<Vec<Option<String>>> {
 }
 
 /// Diff two stored result sets by full-row equality.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn diff_results(
     state: State<ConnState>,
     result_a: String,
@@ -961,7 +961,7 @@ pub struct ImportPreview {
 }
 
 /// Parse CSV/JSON text into columns + inferred types + rows (for the mapping UI). Pure.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn parse_import(text: String, format: String) -> Result<ImportPreview, String> {
     use crate::query::import;
     let parsed = match format.as_str() {
@@ -1166,13 +1166,13 @@ pub async fn apply_parquet_import(
 // ── Saved queries + history ────────────────────────────────────────────────
 use crate::library::{HistoryEntry, SavedQuery};
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_saved_queries(state: State<ConnState>) -> Vec<SavedQuery> {
     lk(&state.library).saved.clone()
 }
 
 /// Save (or update) a named query. Empty `id` mints a new one.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_query(
     state: State<ConnState>,
     id: Option<String>,
@@ -1198,7 +1198,7 @@ pub fn delete_saved_query(state: State<ConnState>, id: String) -> Result<(), Str
 }
 
 /// Searchable run history (case-insensitive substring, newest first; empty = all).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn query_history(state: State<ConnState>, search: Option<String>) -> Vec<HistoryEntry> {
     lk(&state.library).search_history(&search.unwrap_or_default())
 }
@@ -1245,7 +1245,7 @@ pub async fn local_llm_available() -> bool {
     ai::provider::ollama_available().await
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_ai_config(
     provider: String,
     model: String,
