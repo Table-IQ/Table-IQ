@@ -1,6 +1,7 @@
 // TableIQ — Tauri entry.
 pub mod ai;
 pub mod appdir;
+pub mod applog;
 pub mod bench;
 pub mod connections;
 pub mod drivers;
@@ -24,7 +25,7 @@ use ipc::connect::{
     doc_collections, doc_find, explain_query, export_connections, foreign_keys, import_connections,
     apply_parquet_import, import_rows, insert_row, install_sample_plugin, kv_get, kv_scan,
     list_connections, list_databases, list_objects, list_plugins, list_saved_queries,
-    local_llm_available, open_table, parse_import, parse_parquet_preview, primary_key,
+    local_llm_available, log_client_error, open_table, parse_import, parse_parquet_preview, primary_key,
     profile_column, query_history, read_onboarding_state, run_plugin_on_result, run_query,
     run_script, save_ai_config, save_connection, save_query, delete_saved_query, switch_database,
     test_connection, write_onboarding_state, ConnState,
@@ -82,6 +83,7 @@ pub fn invoke_handler<R: tauri::Runtime>(
         foreign_keys,
         describe_table,
         local_llm_available,
+        log_client_error,
         kv_scan,
         kv_get,
         doc_collections,
@@ -95,6 +97,7 @@ pub fn invoke_handler<R: tauri::Runtime>(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    applog::init();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())

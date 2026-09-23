@@ -302,6 +302,9 @@ pub async fn connect(state: State<'_, ConnState>, id: String) -> Result<Connecte
 
     // On driver failure the tunnel is dropped here (closed). On success, keep it alive in state
     // so disconnect tears it down.
+    if let Err(e) = &result {
+        crate::applog::log("error", &format!("connect {} ({}) failed: {e}", cfg.name, cfg.engine));
+    }
     result?;
     if let Some(t) = tunnel {
         lk(&state.tunnels).insert(id.clone(), t);
@@ -1198,6 +1201,13 @@ pub fn delete_saved_query(state: State<ConnState>, id: String) -> Result<(), Str
 #[tauri::command]
 pub fn query_history(state: State<ConnState>, search: Option<String>) -> Vec<HistoryEntry> {
     lk(&state.library).search_history(&search.unwrap_or_default())
+}
+
+/// Record a front-end error in the app log. The UI's global error handlers call this, so a
+/// crash in the webview leaves a trace next to the backend's own lines.
+#[tauri::command]
+pub fn log_client_error(message: String) {
+    crate::applog::log("error", &format!("ui: {message}"));
 }
 
 #[derive(Serialize)]

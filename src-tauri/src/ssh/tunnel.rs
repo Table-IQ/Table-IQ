@@ -134,12 +134,15 @@ impl Handler for TunnelHandler {
                         Some(format!("cannot record the SSH host key in {}: {e}", store.display()));
                     return Ok(false);
                 }
-                eprintln!(
-                    "[tableiq ssh] learned host key for {}:{} (SHA256:{}) into {}",
-                    self.host,
-                    self.port,
-                    server_public_key.fingerprint(),
-                    store.display()
+                crate::applog::log(
+                    "warn",
+                    &format!(
+                        "trusting NEW ssh host key for {}:{} (SHA256:{}) — recorded in {}",
+                        self.host,
+                        self.port,
+                        server_public_key.fingerprint(),
+                        store.display()
+                    ),
                 );
                 Ok(true)
             }

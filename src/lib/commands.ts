@@ -1133,6 +1133,16 @@ export async function writeOnboardingState(state: OnboardingState): Promise<void
   await invoke("write_onboarding_state", { state });
 }
 
+/**
+ * Record a front-end error in the app log (`app_dir()/logs/tableiq.log`). Fire-and-forget:
+ * a logging failure must never mask the error being logged, and outside Tauri there is no
+ * backend to write to.
+ */
+export function logClientError(message: string): void {
+  if (!inTauri()) return;
+  void invoke("log_client_error", { message }).catch(() => {});
+}
+
 /** Save text to a file (Blob download — works in the WebView and the browser). */
 export function downloadText(filename: string, text: string, mime = "text/plain") {
   const blob = new Blob([text], { type: mime });

@@ -19,6 +19,7 @@ const ALLOWED_ORIGINS: [&str; 2] = ["http://localhost:1420", "http://127.0.0.1:1
 type Reply = (&'static str, &'static str, Vec<u8>);
 
 fn main() {
+    tableiq_lib::applog::init();
     let mut ctx = mock_context(noop_assets());
     // Onboarding uses app_config_dir() = config_dir().join(identifier). An absolute identifier
     // replaces that path, so onboarding also lands in app_dir() and honours TIQ_CONFIG_DIR.
