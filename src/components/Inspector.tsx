@@ -8,6 +8,7 @@ import {
   type ObjectInfo,
 } from "../lib/commands";
 import { buildEdit } from "../lib/edit";
+import { incomingForeignKeys, outgoingForeignKeys } from "../lib/fk";
 import { Tabs } from "./ui/Panel";
 import { Chip } from "./ui/Chip";
 import { IconClose, IconKey, IconLink, IconSearch } from "./ui/Icon";
@@ -93,8 +94,8 @@ export function Inspector({
     }
   };
 
-  const outgoing = object ? fks.filter((f) => f.from_table === object.name) : [];
-  const incoming = object ? fks.filter((f) => f.to_table === object.name) : [];
+  const outgoing = object && schema ? outgoingForeignKeys(fks, schema, object.name) : [];
+  const incoming = object && schema ? incomingForeignKeys(fks, schema, object.name) : [];
 
   // Field-card filter for row-detail mode — narrows by column-name substring,
   // case-insensitive. Memoised so typing doesn't re-walk the column list on every

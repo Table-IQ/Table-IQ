@@ -133,8 +133,12 @@ pub struct SchemaModel {
 /// A foreign-key relationship (for the ERD).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ForeignKey {
+    /// Schema owning the referencing table — without it the UI mixes up same-named
+    /// tables in different schemas.
+    pub from_schema: String,
     pub from_table: String,
     pub from_column: String,
+    pub to_schema: String,
     pub to_table: String,
     pub to_column: String,
 }

@@ -373,8 +373,11 @@ impl SqlDriver for SqliteDriver {
                 .map_err(db)?;
             for r in rows {
                 out.push(ForeignKey {
+                    // SQLite has one schema per attached file; the browser reports `main`.
+                    from_schema: "main".into(),
                     from_table: t.clone(),
                     from_column: r.try_get("from").unwrap_or_default(),
+                    to_schema: "main".into(),
                     to_table: r.try_get("table").unwrap_or_default(),
                     // `PRAGMA foreign_key_list` returns NULL for `to` when the FK has no
                     // explicit column list; keep it empty rather than failing the whole ERD.

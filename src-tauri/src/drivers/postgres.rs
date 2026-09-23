@@ -627,8 +627,10 @@ impl SqlDriver for PgDriver {
 
     async fn foreign_keys(&self) -> DResult<Vec<super::ForeignKey>> {
         let rows = sqlx::query(
-            "SELECT tc.table_name AS from_table, kcu.column_name AS from_column, \
-                    ccu.table_name AS to_table, ccu.column_name AS to_column \
+            "SELECT tc.table_schema AS from_schema, tc.table_name AS from_table, \
+                    kcu.column_name AS from_column, \
+                    ccu.table_schema AS to_schema, ccu.table_name AS to_table, \
+                    ccu.column_name AS to_column \
              FROM information_schema.table_constraints tc \
              JOIN information_schema.key_column_usage kcu \
                ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema \
@@ -643,8 +645,10 @@ impl SqlDriver for PgDriver {
         Ok(rows
             .iter()
             .map(|r| super::ForeignKey {
+                from_schema: r.try_get("from_schema").unwrap_or_default(),
                 from_table: r.try_get("from_table").unwrap_or_default(),
                 from_column: r.try_get("from_column").unwrap_or_default(),
+                to_schema: r.try_get("to_schema").unwrap_or_default(),
                 to_table: r.try_get("to_table").unwrap_or_default(),
                 to_column: r.try_get("to_column").unwrap_or_default(),
             })

@@ -515,22 +515,26 @@ impl SqlDriver for SqlServerDriver {
     /// FK edges via the `sys.foreign_keys` catalog (joined for column + table names).
     /// All metadata returned as Utf8 strings, matching how the rest of the driver renders.
     async fn foreign_keys(&self) -> DResult<Vec<ForeignKey>> {
-        let sql = "SELECT tp.name AS from_table, cp.name AS from_column, \
-                          tr.name AS to_table,   cr.name AS to_column \
+        let sql = "SELECT sp.name AS from_schema, tp.name AS from_table, cp.name AS from_column, \
+                          sr.name AS to_schema,   tr.name AS to_table,   cr.name AS to_column \
                    FROM sys.foreign_keys fk \
                    JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id \
                    JOIN sys.tables  tp ON fkc.parent_object_id     = tp.object_id \
+                   JOIN sys.schemas sp ON tp.schema_id             = sp.schema_id \
                    JOIN sys.columns cp ON fkc.parent_object_id     = cp.object_id AND fkc.parent_column_id     = cp.column_id \
                    JOIN sys.tables  tr ON fkc.referenced_object_id = tr.object_id \
+                   JOIN sys.schemas sr ON tr.schema_id             = sr.schema_id \
                    JOIN sys.columns cr ON fkc.referenced_object_id = cr.object_id AND fkc.referenced_column_id = cr.column_id";
         let (_cols, rows) = self.query_text(sql).await?;
         Ok(rows
             .into_iter()
             .map(|r| ForeignKey {
-                from_table: r[0].clone().unwrap_or_default(),
-                from_column: r[1].clone().unwrap_or_default(),
-                to_table: r[2].clone().unwrap_or_default(),
-                to_column: r[3].clone().unwrap_or_default(),
+                from_schema: r[0].clone().unwrap_or_default(),
+                from_table: r[1].clone().unwrap_or_default(),
+                from_column: r[2].clone().unwrap_or_default(),
+                to_schema: r[3].clone().unwrap_or_default(),
+                to_table: r[4].clone().unwrap_or_default(),
+                to_column: r[5].clone().unwrap_or_default(),
             })
             .collect())
     }
@@ -557,18 +561,21 @@ mod tests {
     /// TIQ_MSSQL_URL env var in the integration test suite.
     #[test]
     fn fk_query_uses_sys_foreign_keys() {
-        let sql = "SELECT tp.name AS from_table, cp.name AS from_column, \
-                          tr.name AS to_table,   cr.name AS to_column \
+        let sql = "SELECT sp.name AS from_schema, tp.name AS from_table, cp.name AS from_column, \
+                          sr.name AS to_schema,   tr.name AS to_table,   cr.name AS to_column \
                    FROM sys.foreign_keys fk \
                    JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id \
                    JOIN sys.tables  tp ON fkc.parent_object_id     = tp.object_id \
+                   JOIN sys.schemas sp ON tp.schema_id             = sp.schema_id \
                    JOIN sys.columns cp ON fkc.parent_object_id     = cp.object_id AND fkc.parent_column_id     = cp.column_id \
                    JOIN sys.tables  tr ON fkc.referenced_object_id = tr.object_id \
+                   JOIN sys.schemas sr ON tr.schema_id             = sr.schema_id \
                    JOIN sys.columns cr ON fkc.referenced_object_id = cr.object_id AND fkc.referenced_column_id = cr.column_id";
         for needle in [
             "sys.foreign_keys",
             "sys.foreign_key_columns",
             "sys.tables",
+            "sys.schemas",
             "sys.columns",
             "parent_object_id",
             "referenced_object_id",

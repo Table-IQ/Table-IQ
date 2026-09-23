@@ -26,6 +26,9 @@ async fn foreign_keys_are_discovered() {
         .expect("should find fk_child → fk_parent");
     assert_eq!(edge.from_column, "parent_id");
     assert_eq!(edge.to_column, "id");
+    // Both ends carry their schema, so the UI can tell `public.x` from `other.x`.
+    assert_eq!(edge.from_schema, "public");
+    assert_eq!(edge.to_schema, "public");
 
     sqlx::query("DROP TABLE fk_child").execute(&pool).await.unwrap();
     sqlx::query("DROP TABLE fk_parent").execute(&pool).await.unwrap();

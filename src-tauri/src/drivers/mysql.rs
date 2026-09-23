@@ -434,7 +434,9 @@ impl SqlDriver for MySqlDriver {
     /// database; non-FK constraints are excluded via the join to referential_constraints.
     async fn foreign_keys(&self) -> DResult<Vec<ForeignKey>> {
         let rows = sqlx::query(
-            "SELECT CAST(kcu.TABLE_NAME AS CHAR) AS from_table, CAST(kcu.COLUMN_NAME AS CHAR) AS from_column, \
+            "SELECT CAST(kcu.TABLE_SCHEMA AS CHAR) AS from_schema, \
+                    CAST(kcu.TABLE_NAME AS CHAR) AS from_table, CAST(kcu.COLUMN_NAME AS CHAR) AS from_column, \
+                    CAST(kcu.REFERENCED_TABLE_SCHEMA AS CHAR) AS to_schema, \
                     CAST(kcu.REFERENCED_TABLE_NAME AS CHAR) AS to_table, \
                     CAST(kcu.REFERENCED_COLUMN_NAME AS CHAR) AS to_column \
              FROM information_schema.key_column_usage kcu \
@@ -450,8 +452,10 @@ impl SqlDriver for MySqlDriver {
         Ok(rows
             .iter()
             .map(|r| ForeignKey {
+                from_schema: r.try_get("from_schema").unwrap_or_default(),
                 from_table: r.try_get("from_table").unwrap_or_default(),
                 from_column: r.try_get("from_column").unwrap_or_default(),
+                to_schema: r.try_get("to_schema").unwrap_or_default(),
                 to_table: r.try_get("to_table").unwrap_or_default(),
                 to_column: r.try_get("to_column").unwrap_or_default(),
             })

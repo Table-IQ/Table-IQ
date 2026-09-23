@@ -950,15 +950,27 @@ export async function generateDdl(engine: Engine, req: DdlRequest): Promise<stri
 }
 
 export interface ForeignKey {
+  /** Owning schema. Optional: older payloads / the browser mock omit it (Rust `#[serde(default)]`). */
+  from_schema?: string;
   from_table: string;
   from_column: string;
+  to_schema?: string;
   to_table: string;
   to_column: string;
 }
 
 export async function foreignKeys(id: string): Promise<ForeignKey[]> {
   if (!inTauri())
-    return [{ from_table: "wide", from_column: "nullable_int", to_table: "users", to_column: "id" }];
+    return [
+      {
+        from_schema: "public",
+        from_table: "wide",
+        from_column: "nullable_int",
+        to_schema: "public",
+        to_table: "users",
+        to_column: "id",
+      },
+    ];
   return invoke<ForeignKey[]>("foreign_keys", { id });
 }
 

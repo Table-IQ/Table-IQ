@@ -125,7 +125,7 @@ export function TableView({ connId, schema, object }: Props) {
       .then((cols) => !cancelled && setPk(cols))
       .catch(() => !cancelled && setPk([]));
     foreignKeys(connId)
-      .then((all) => !cancelled && setFks(outgoingForeignKeys(all, object.name)))
+      .then((all) => !cancelled && setFks(outgoingForeignKeys(all, schema, object.name)))
       .catch(() => !cancelled && setFks([]));
     return () => {
       cancelled = true;
