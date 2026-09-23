@@ -67,7 +67,7 @@ function rowCount(columns: number): number {
   return columns > MAX_ROWS ? shown + 1 : shown;
 }
 
-export function cardHeight(columns: number): number {
+function cardHeight(columns: number): number {
   return HEADER_H + rowCount(columns) * ROW_H;
 }
 
