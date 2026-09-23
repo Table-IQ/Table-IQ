@@ -978,6 +978,67 @@ export async function foreignKeys(id: string): Promise<ForeignKey[]> {
   return invoke<ForeignKey[]>("foreign_keys", { id });
 }
 
+// ── Structure tab (columns / indexes / triggers) ──────────────────────────
+/** One column as the Structure tab shows it. Mirrors the Rust `ColumnDetail`. */
+export interface ColumnDetail {
+  name: string;
+  data_type: string;
+  nullable: boolean;
+  /** The DEFAULT expression, or null when the column has none. */
+  default: string | null;
+  is_pk: boolean;
+  comment: string | null;
+}
+export interface IndexInfo {
+  name: string;
+  columns: string[];
+  unique: boolean;
+  /** This index *is* the primary key. */
+  primary: boolean;
+  definition: string | null;
+}
+export interface TriggerInfo {
+  name: string;
+  /** When it fires, e.g. `BEFORE INSERT`. */
+  timing_event: string;
+  definition: string | null;
+}
+export interface TableStructure {
+  columns: ColumnDetail[];
+  indexes: IndexInfo[];
+  triggers: TriggerInfo[];
+}
+
+/** A driver that can't answer `describe_table` rejects with Rust's `NotImplemented`
+ *  message. The Structure tab shows a note for it rather than an error. */
+export function isNotImplementedError(e: unknown): boolean {
+  return String((e as { message?: string })?.message ?? e).toLowerCase().includes("not implemented");
+}
+
+export async function describeTable(
+  id: string,
+  schema: string,
+  table: string,
+): Promise<TableStructure> {
+  if (!inTauri())
+    return {
+      columns: [
+        { name: "id", data_type: "bigint", nullable: false, default: "nextval('wide_id_seq')", is_pk: true, comment: null },
+        { name: "amount_numeric", data_type: "numeric(12,2)", nullable: false, default: "0", is_pk: false, comment: "Running total." },
+        { name: "created_at", data_type: "timestamptz", nullable: false, default: "now()", is_pk: false, comment: null },
+        { name: "nullable_int", data_type: "integer", nullable: true, default: null, is_pk: false, comment: null },
+      ],
+      indexes: [
+        { name: "wide_pkey", columns: ["id"], unique: true, primary: true, definition: "CREATE UNIQUE INDEX wide_pkey ON public.wide USING btree (id)" },
+        { name: "wide_created_at_idx", columns: ["created_at"], unique: false, primary: false, definition: "CREATE INDEX wide_created_at_idx ON public.wide USING btree (created_at)" },
+      ],
+      triggers: [
+        { name: "trg_wide_touch", timing_event: "BEFORE UPDATE", definition: "CREATE TRIGGER trg_wide_touch BEFORE UPDATE ON public.wide FOR EACH ROW EXECUTE FUNCTION touch()" },
+      ],
+    };
+  return invoke<TableStructure>("describe_table", { id, schema, table });
+}
+
 export async function explainQuery(id: string, sql: string): Promise<string> {
   if (!inTauri())
     return JSON.stringify([

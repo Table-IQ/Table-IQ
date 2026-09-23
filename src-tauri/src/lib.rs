@@ -12,7 +12,7 @@ pub mod ssh;
 
 use ipc::connect::{
     ai_egress_preview, ai_explain_sql, ai_fix_sql, ai_generate_sql, ai_optimize_sql, apply_edit,
-    cancel_query, connect, delete_connection, delete_row,
+    cancel_query, connect, delete_connection, delete_row, describe_table,
     disconnect, diff_results, diff_schemas, export_result, export_table, generate_ddl,
     get_ai_config, get_result_window, get_table_window,
     doc_collections, doc_find, explain_query, export_connections, foreign_keys, import_connections,
@@ -74,6 +74,7 @@ pub fn invoke_handler<R: tauri::Runtime>(
         ai_fix_sql,
         explain_query,
         foreign_keys,
+        describe_table,
         local_llm_available,
         kv_scan,
         kv_get,

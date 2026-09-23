@@ -755,6 +755,19 @@ pub async fn foreign_keys(
     drv.foreign_keys().await.map_err(|e| e.to_string())
 }
 
+/// One table's columns + indexes + triggers (the Structure tab). An engine that can't
+/// answer returns `DriverError::NotImplemented`, which the UI turns into a small note.
+#[tauri::command]
+pub async fn describe_table(
+    state: State<'_, ConnState>,
+    id: String,
+    schema: String,
+    table: String,
+) -> Result<crate::drivers::TableStructure, String> {
+    let drv = state.session(&id)?;
+    drv.describe_table(&schema, &table).await.map_err(|e| e.to_string())
+}
+
 /// Query plan as JSON text (frontend renders the tree). Postgres for now.
 #[tauri::command]
 pub async fn explain_query(

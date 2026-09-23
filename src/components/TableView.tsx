@@ -1,19 +1,23 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { DataGrid, type DataGridHandle, type GridSource } from "./DataGrid";
 import {
   applyEdit,
   deleteRow,
+  describeTable,
   downloadText,
   exportTable,
   fetchTableWindow,
   insertRow,
+  isNotImplementedError,
   openTable,
+  type ColumnDetail,
   type ColumnFilter,
   type ExportFormat,
   type FilterOp,
   type ForeignKey,
   type ObjectInfo,
   type SortKey,
+  type TableStructure,
 } from "../lib/commands";
 import { buildEdit } from "../lib/edit";
 import { outgoingForeignKeys } from "../lib/fk";
@@ -658,7 +662,7 @@ export function TableView({ connId, schema, object, view }: Props) {
             }}
           />
         ) : (
-          <StructureView object={object} fks={fks} />
+          <StructureView connId={connId} schema={schema} object={object} fks={fks} />
         )}
       </div>
 
@@ -920,15 +924,63 @@ export function TableView({ connId, schema, object, view }: Props) {
   );
 }
 
-function StructureView({ object, fks }: { object: ObjectInfo; fks: ForeignKey[] }) {
-  // Structure sub-tabs (TablePlus parity). Columns is live; Indexes/Triggers need
-  // backend introspection (deferred — shown with a note so the tab is discoverable).
+function StructureView({
+  connId,
+  schema,
+  object,
+  fks,
+}: {
+  connId: string;
+  schema: string;
+  object: ObjectInfo;
+  fks: ForeignKey[];
+}) {
+  // Structure sub-tabs (TablePlus parity), all three served by one `describe_table`.
   const [tab, setTab] = useState<"columns" | "indexes" | "triggers">("columns");
-  const subTabs: { id: typeof tab; label: string }[] = [
-    { id: "columns", label: "Columns" },
-    { id: "indexes", label: "Indexes" },
-    { id: "triggers", label: "Triggers" },
+  const [structure, setStructure] = useState<TableStructure | null>(null);
+  /** Why there is nothing to show: the engine can't answer, or the call failed. */
+  const [note, setNote] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    setStructure(null);
+    setNote(null);
+    describeTable(connId, schema, object.name)
+      .then((s) => {
+        if (live) setStructure(s);
+      })
+      .catch((e: unknown) => {
+        if (!live) return;
+        setNote(
+          isNotImplementedError(e)
+            ? "This connection doesn't report indexes or triggers."
+            : String((e as { message?: string })?.message ?? e),
+        );
+      });
+    return () => {
+      live = false;
+    };
+  }, [connId, schema, object.name]);
+
+  const subTabs: { id: typeof tab; label: string; count?: number }[] = [
+    { id: "columns", label: "Columns", count: object.columns.length },
+    { id: "indexes", label: "Indexes", count: structure?.indexes.length },
+    { id: "triggers", label: "Triggers", count: structure?.triggers.length },
   ];
+  // The catalog list is richer (default, comment), but the browse model already has the
+  // names and types — so Columns renders at once and fills in, and still works for an
+  // engine whose `describe_table` says NotImplemented.
+  const columns: ColumnDetail[] =
+    structure?.columns ??
+    object.columns.map((c) => ({
+      name: c.name,
+      data_type: c.data_type,
+      nullable: c.nullable,
+      default: null,
+      is_pk: c.pk ?? false,
+      comment: null,
+    }));
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex shrink-0 items-center gap-1 border-b border-border px-3 py-1.5">
@@ -943,45 +995,133 @@ function StructureView({ object, fks }: { object: ObjectInfo; fks: ForeignKey[] 
             }`}
           >
             {t.label}
+            {t.count !== undefined && (
+              <span className="ml-1 tabular-nums opacity-60">{t.count}</span>
+            )}
           </button>
         ))}
       </div>
       <div className="min-h-0 flex-1 overflow-auto p-4">
-        {tab === "columns" ? (
-          <div className="overflow-hidden rounded-md border border-border bg-bg">
-            <table className="w-full text-xs">
-              <thead className="border-b border-border bg-surface text-left text-[11px] text-muted">
-                <tr>
-                  <th className="px-3 py-1.5 font-medium">Name</th>
-                  <th className="px-3 py-1.5 font-medium">Type</th>
-                  <th className="px-3 py-1.5 font-medium">Nullable</th>
-                  <th className="px-3 py-1.5 font-medium">References</th>
+        {tab === "columns" && (
+          <StructTable head={["Name", "Type", "Nullable", "Default", "References", "Comment"]}>
+            {columns.map((c) => {
+              const fk = fks.find((f) => f.from_column === c.name);
+              return (
+                <tr key={c.name}>
+                  <td className="whitespace-nowrap px-3 py-1.5 font-mono text-text">
+                    {c.name}
+                    {c.is_pk && (
+                      <span className="ml-1.5 align-middle">
+                        <Chip tone="muted" title="Primary key">
+                          PK
+                        </Chip>
+                      </span>
+                    )}
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-1.5 text-muted">{c.data_type}</td>
+                  <td className="px-3 py-1.5 text-muted">{c.nullable ? "yes" : "no"}</td>
+                  <td className="px-3 py-1.5 font-mono text-[11px] text-muted">
+                    <Ellipsis text={c.default} />
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-1.5 font-mono text-[11px] text-primary">
+                    {fk ? `${fk.to_table}.${fk.to_column}` : ""}
+                  </td>
+                  <td className="px-3 py-1.5 text-muted">
+                    <Ellipsis text={c.comment} />
+                  </td>
                 </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {object.columns.map((c) => {
-                  const fk = fks.find((f) => f.from_column === c.name);
-                  return (
-                    <tr key={c.name}>
-                      <td className="px-3 py-1.5 font-mono text-text">{c.name}</td>
-                      <td className="px-3 py-1.5 text-muted">{c.data_type}</td>
-                      <td className="px-3 py-1.5 text-muted">{c.nullable ? "yes" : "no"}</td>
-                      <td className="px-3 py-1.5 font-mono text-[11px] text-primary">
-                        {fk ? `${fk.to_table}.${fk.to_column}` : ""}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="rounded-md border border-dashed border-border p-6 text-center text-[12px] text-muted">
-            {tab === "indexes" ? "Index" : "Trigger"} introspection is coming soon.
-          </div>
+              );
+            })}
+          </StructTable>
         )}
+
+        {tab === "indexes" &&
+          (note ? (
+            <StructNote>{note}</StructNote>
+          ) : !structure ? (
+            <StructNote>Loading…</StructNote>
+          ) : structure.indexes.length === 0 ? (
+            <StructNote>No indexes on this {object.kind.toLowerCase()}.</StructNote>
+          ) : (
+            <StructTable head={["Name", "Columns", "Type", "Definition"]}>
+              {structure.indexes.map((i) => (
+                <tr key={i.name}>
+                  <td className="whitespace-nowrap px-3 py-1.5 font-mono text-text">{i.name}</td>
+                  <td className="px-3 py-1.5 font-mono text-[11px] text-muted">
+                    {i.columns.join(", ")}
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-1.5 text-muted">
+                    {i.primary ? "PRIMARY" : i.unique ? "UNIQUE" : "INDEX"}
+                  </td>
+                  <td className="px-3 py-1.5 font-mono text-[11px] text-muted">
+                    <Ellipsis text={i.definition} />
+                  </td>
+                </tr>
+              ))}
+            </StructTable>
+          ))}
+
+        {tab === "triggers" &&
+          (note ? (
+            <StructNote>{note}</StructNote>
+          ) : !structure ? (
+            <StructNote>Loading…</StructNote>
+          ) : structure.triggers.length === 0 ? (
+            <StructNote>No triggers on this {object.kind.toLowerCase()}.</StructNote>
+          ) : (
+            <StructTable head={["Name", "When", "Definition"]}>
+              {structure.triggers.map((t) => (
+                <tr key={t.name}>
+                  <td className="whitespace-nowrap px-3 py-1.5 font-mono text-text">{t.name}</td>
+                  <td className="whitespace-nowrap px-3 py-1.5 text-muted">{t.timing_event}</td>
+                  <td className="px-3 py-1.5 font-mono text-[11px] text-muted">
+                    <Ellipsis text={t.definition} />
+                  </td>
+                </tr>
+              ))}
+            </StructTable>
+          ))}
       </div>
     </div>
+  );
+}
+
+/** The Structure tab's one table chrome — dense rows, quiet header (DESIGN.md). */
+function StructTable({ head, children }: { head: string[]; children: ReactNode }) {
+  return (
+    <div className="overflow-hidden rounded-md border border-border bg-bg">
+      <table className="w-full text-xs">
+        <thead className="border-b border-border bg-surface text-left text-[11px] text-muted">
+          <tr>
+            {head.map((h) => (
+              <th key={h} className="px-3 py-1.5 font-medium">
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-border">{children}</tbody>
+      </table>
+    </div>
+  );
+}
+
+/** Loading / empty / "this engine can't answer" — never a blank panel. */
+function StructNote({ children }: { children: ReactNode }) {
+  return (
+    <div className="rounded-md border border-dashed border-border p-6 text-center text-[12px] text-muted">
+      {children}
+    </div>
+  );
+}
+
+/** A one-line cell: an em-dash for nothing, the full text on hover for something long. */
+function Ellipsis({ text }: { text: string | null }) {
+  if (!text) return <span className="text-muted-2">—</span>;
+  return (
+    <span className="block max-w-[38ch] truncate" title={text}>
+      {text}
+    </span>
   );
 }
 
