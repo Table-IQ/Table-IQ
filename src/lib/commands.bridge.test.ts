@@ -62,3 +62,18 @@ describe("IPC bridge invoke", () => {
     await expect(cmds.listConnections()).resolves.toEqual([]); // the mock would return "Local Postgres"
   });
 });
+
+// The Structure tab's two failure branches both arrive as a rejected string from Rust:
+// `DriverError::NotImplemented` renders a note, anything else renders the message.
+describe("isNotImplementedError", () => {
+  it("matches the DriverError::NotImplemented message a driver rejects with", async () => {
+    reply(JSON.stringify("not implemented"), 400, "application/json");
+    const e = await cmds.describeTable("c1", "public", "orders").catch((x: unknown) => x);
+    expect(cmds.isNotImplementedError(e)).toBe(true);
+  });
+
+  it("does not match a real database error, which must be shown verbatim", () => {
+    expect(cmds.isNotImplementedError('relation "nope" does not exist')).toBe(false);
+    expect(cmds.isNotImplementedError(new Error("permission denied for table orders"))).toBe(false);
+  });
+});
