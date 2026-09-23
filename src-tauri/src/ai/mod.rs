@@ -130,8 +130,8 @@ mod tests {
                     name: "users".into(),
                     kind: ObjectKind::Table,
                     columns: vec![
-                        ColumnInfo { name: "id".into(), data_type: "bigint".into(), nullable: false },
-                        ColumnInfo { name: "email".into(), data_type: "text".into(), nullable: true },
+                        ColumnInfo { name: "id".into(), data_type: "bigint".into(), nullable: false, pk: true },
+                        ColumnInfo { name: "email".into(), data_type: "text".into(), nullable: true, pk: false },
                     ],
                 }],
             }],

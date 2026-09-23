@@ -97,6 +97,10 @@ pub struct ColumnInfo {
     pub name: String,
     pub data_type: String,
     pub nullable: bool,
+    /// Part of the primary key. `serde(default)` so an older cached/plugin payload
+    /// without the field still deserializes.
+    #[serde(default)]
+    pub pk: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -202,11 +206,77 @@ pub struct ColumnFilter {
     pub value: Option<String>,
 }
 
+/// One ORDER BY term requested by the grid header.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SortKey {
+    pub column: String,
+    #[serde(default)]
+    pub desc: bool,
+}
+
+/// A table's row count. `count: None` means the engine could neither count in time nor
+/// offer a usable estimate; `exact: false` means it came from the stats catalog.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RowCount {
+    pub count: Option<i64>,
+    pub exact: bool,
+}
+
+/// Build the ORDER BY for one page of a table, or `""` for none. The table is aliased
+/// `_t`, so every term is qualified `_t.<quoted col>` and sorts on the real typed column
+/// rather than the `::text` output alias.
+///
+/// The requested `order` comes first, then any primary-key column not already named — the
+/// tiebreaker that makes OFFSET paging stable. With no sort and no PK there is **no**
+/// ORDER BY at all: the hard-coded `ORDER BY 1` this replaces failed outright when the
+/// first column had no btree ordering (`json`) and re-sorted the whole table on every page.
+///
+/// A sort column is rejected unless it appears in `columns` (the table's real catalog
+/// column list) — the one place a user-supplied identifier reaches the SQL text.
+pub fn build_order_by(
+    order: &[SortKey],
+    pk: &[String],
+    columns: &[String],
+    quote_ident: &dyn Fn(&str) -> String,
+) -> DResult<String> {
+    let mut terms: Vec<String> = Vec::new();
+    let mut seen: Vec<&str> = Vec::new();
+    for k in order {
+        if !columns.iter().any(|c| c == &k.column) {
+            return Err(DriverError::Db(format!("unknown sort column {}", k.column)));
+        }
+        if seen.contains(&k.column.as_str()) {
+            continue;
+        }
+        seen.push(&k.column);
+        let dir = if k.desc { " DESC" } else { "" };
+        terms.push(format!("_t.{}{dir}", quote_ident(&k.column)));
+    }
+    for c in pk {
+        if seen.contains(&c.as_str()) {
+            continue;
+        }
+        seen.push(c);
+        terms.push(format!("_t.{}", quote_ident(c)));
+    }
+    Ok(if terms.is_empty() {
+        String::new()
+    } else {
+        format!(" ORDER BY {}", terms.join(", "))
+    })
+}
+
 /// Build a parameterized WHERE fragment from a filter set. Returns `(sql, binds)` where
 /// `sql` is "" for an empty filter set, otherwise a "<col> <op> <ph> AND …" string with
-/// no leading "WHERE" (callers wrap as needed). `quote_ident` and `placeholder` are
-/// engine-specific helpers; `start_idx` is the first placeholder index to allocate
-/// (1 for PG `$1`, 1 for MSSQL `@P1`, 1 for SQLite `?1`, ignored for MySQL `?`).
+/// no leading "WHERE" (callers wrap as needed). `start_idx` is the first placeholder index
+/// to allocate (1 for PG `$1`, 1 for MSSQL `@P1`, 1 for SQLite `?1`, ignored for MySQL `?`).
+///
+/// `placeholder(idx, column)` also receives the column so an engine that will not coerce a
+/// text bind can type it — Postgres emits `$n::<udt>`, without which a filter on a bigint
+/// column raises "operator does not exist: bigint = text". `""` is passed as the column for
+/// a comparison that is textual by construction (LIKE/ILIKE), asking for a text bind.
+/// `text_expr(column)` renders the left side of those textual comparisons (PG casts to
+/// `col::text`; the engines that coerce return the plain quoted column).
 ///
 /// `ILike` translates to a cross-engine `LOWER(col) LIKE LOWER(val)` form so a non-PG
 /// engine never sees an unsupported keyword. PG keeps that translation too (correct +
@@ -214,7 +284,8 @@ pub struct ColumnFilter {
 pub fn build_where_clause(
     filters: &[ColumnFilter],
     quote_ident: &dyn Fn(&str) -> String,
-    placeholder: &dyn Fn(usize) -> String,
+    placeholder: &dyn Fn(usize, &str) -> String,
+    text_expr: &dyn Fn(&str) -> String,
     start_idx: usize,
 ) -> (String, Vec<Option<String>>) {
     if filters.is_empty() {
@@ -228,9 +299,14 @@ pub fn build_where_clause(
         match f.op {
             FilterOp::IsNull => parts.push(format!("{col} IS NULL")),
             FilterOp::IsNotNull => parts.push(format!("{col} IS NOT NULL")),
-            FilterOp::ILike => {
-                let ph = placeholder(idx);
-                parts.push(format!("LOWER({col}) LIKE LOWER({ph})"));
+            FilterOp::Like | FilterOp::ILike => {
+                let lhs = text_expr(&f.column);
+                let ph = placeholder(idx, "");
+                parts.push(if f.op == FilterOp::Like {
+                    format!("{lhs} LIKE {ph}")
+                } else {
+                    format!("LOWER({lhs}) LIKE LOWER({ph})")
+                });
                 binds.push(f.value.clone());
                 idx += 1;
             }
@@ -242,10 +318,9 @@ pub fn build_where_clause(
                     FilterOp::Le => "<=",
                     FilterOp::Gt => ">",
                     FilterOp::Ge => ">=",
-                    FilterOp::Like => "LIKE",
-                    _ => unreachable!("null/ILike handled above"),
+                    _ => unreachable!("null/LIKE ops handled above"),
                 };
-                let ph = placeholder(idx);
+                let ph = placeholder(idx, &f.column);
                 parts.push(format!("{col} {sym} {ph}"));
                 binds.push(f.value.clone());
                 idx += 1;
@@ -271,38 +346,35 @@ pub trait SqlDriver: Send + Sync {
 
     /// Browse the connection's schemas → tables/views → columns.
     async fn introspect(&self) -> DResult<SchemaModel>;
-    /// Fast (approximate) row count for a table. With filters, falls back to an
-    /// exact `COUNT(*)` (engine stats catalogs are unfiltered).
-    async fn row_estimate(&self, schema: &str, table: &str) -> DResult<i64>;
-    /// Filtered row count. Default: ignore filters and delegate to `row_estimate`
-    /// (preserves prior behaviour for engines that haven't been updated yet).
-    async fn row_estimate_filtered(
+    /// Row count for a table under `filters`. Engines that can be slow bound the exact
+    /// `COUNT(*)` with a 2s server-side timeout and fall back to their stats catalog
+    /// (`exact: false`), or to `None` when even that has nothing to offer.
+    async fn count_rows(
         &self,
         schema: &str,
         table: &str,
-        _filters: &[ColumnFilter],
-    ) -> DResult<i64> {
-        self.row_estimate(schema, table).await
-    }
-    /// Read a window of rows from a table as Arrow (read-only browse).
-    async fn open_window(
-        &self,
-        schema: &str,
-        table: &str,
-        offset: usize,
-        len: usize,
-    ) -> DResult<arrow::record_batch::RecordBatch>;
-    /// Filtered window read. Default: ignore filters and delegate to `open_window`
-    /// (preserves prior behaviour for engines that haven't been updated yet).
+        filters: &[ColumnFilter],
+    ) -> DResult<RowCount>;
+    /// Read a window of rows from a table as Arrow (read-only browse), filtered and
+    /// ordered. See [`build_order_by`] for what `order` means when it is empty.
     async fn open_window_filtered(
         &self,
         schema: &str,
         table: &str,
         offset: usize,
         len: usize,
-        _filters: &[ColumnFilter],
+        filters: &[ColumnFilter],
+        order: &[SortKey],
+    ) -> DResult<arrow::record_batch::RecordBatch>;
+    /// Unfiltered, unsorted window read (the natural/PK order).
+    async fn open_window(
+        &self,
+        schema: &str,
+        table: &str,
+        offset: usize,
+        len: usize,
     ) -> DResult<arrow::record_batch::RecordBatch> {
-        self.open_window(schema, table, offset, len).await
+        self.open_window_filtered(schema, table, offset, len, &[], &[]).await
     }
     /// Insert a single row built from `(column, text_value)` pairs.
     /// Default: unsupported (KV/Document drivers don't reach here).
@@ -444,11 +516,12 @@ pub fn build_insert_sql(
     table: &str,
     values: &[(String, Option<String>)],
     quote_ident: &dyn Fn(&str) -> String,
-    placeholder: &dyn Fn(usize) -> String,
+    placeholder: &dyn Fn(usize, &str) -> String,
     qualify_schema: bool,
 ) -> (String, Vec<Option<String>>) {
     let cols: Vec<String> = values.iter().map(|(c, _)| quote_ident(c)).collect();
-    let phs: Vec<String> = (1..=values.len()).map(placeholder).collect();
+    let phs: Vec<String> =
+        values.iter().enumerate().map(|(i, (c, _))| placeholder(i + 1, c)).collect();
     let binds: Vec<Option<String>> = values.iter().map(|(_, v)| v.clone()).collect();
     let qualified = if qualify_schema {
         format!("{}.{}", quote_ident(schema), quote_ident(table))
@@ -471,28 +544,39 @@ mod tests {
     fn pg_ident(n: &str) -> String {
         format!("\"{}\"", n.replace('"', "\"\""))
     }
-    fn pg_ph(i: usize) -> String {
-        format!("${i}")
+    /// Stand-in for the real Postgres placeholder: type the bind as the column's udt so
+    /// `bigint = $1` doesn't become `bigint = text`. `""` (LIKE/ILIKE) falls back to text.
+    fn pg_ph(i: usize, col: &str) -> String {
+        let udt = match col {
+            "age" => "int4",
+            "x" => "int8",
+            "id" => "int8",
+            _ => "text",
+        };
+        format!("${i}::{udt}")
+    }
+    fn pg_text(col: &str) -> String {
+        format!("{}::text", pg_ident(col))
     }
     fn mysql_ident(n: &str) -> String {
         format!("`{}`", n.replace('`', "``"))
     }
-    fn mysql_ph(_i: usize) -> String {
+    fn mysql_ph(_i: usize, _c: &str) -> String {
         "?".to_string()
     }
-    fn sqlite_ph(i: usize) -> String {
+    fn sqlite_ph(i: usize, _c: &str) -> String {
         format!("?{i}")
     }
     fn mssql_ident(n: &str) -> String {
         format!("[{}]", n.replace(']', "]]"))
     }
-    fn mssql_ph(i: usize) -> String {
+    fn mssql_ph(i: usize, _c: &str) -> String {
         format!("@P{i}")
     }
 
     #[test]
     fn where_clause_empty_filters() {
-        let (sql, binds) = build_where_clause(&[], &pg_ident, &pg_ph, 1);
+        let (sql, binds) = build_where_clause(&[], &pg_ident, &pg_ph, &pg_text, 1);
         assert_eq!(sql, "");
         assert!(binds.is_empty());
     }
@@ -504,10 +588,12 @@ mod tests {
             ColumnFilter { column: "age".into(), op: FilterOp::Ge, value: Some("18".into()) },
             ColumnFilter { column: "email".into(), op: FilterOp::IsNotNull, value: None },
         ];
-        let (sql, binds) = build_where_clause(&f, &pg_ident, &pg_ph, 1);
+        let (sql, binds) = build_where_clause(&f, &pg_ident, &pg_ph, &pg_text, 1);
+        // Each bind carries the column's own type: without `::int4` the `age` comparison
+        // reaches Postgres as `bigint >= text` and raises "operator does not exist".
         assert_eq!(
             sql,
-            "\"name\" = $1 AND \"age\" >= $2 AND \"email\" IS NOT NULL"
+            "\"name\" = $1::text AND \"age\" >= $2::int4 AND \"email\" IS NOT NULL"
         );
         assert_eq!(binds, vec![Some("a".into()), Some("18".into())]);
     }
@@ -518,7 +604,7 @@ mod tests {
             ColumnFilter { column: "x".into(), op: FilterOp::Lt, value: Some("5".into()) },
             ColumnFilter { column: "y".into(), op: FilterOp::Like, value: Some("%foo%".into()) },
         ];
-        let (sql, binds) = build_where_clause(&f, &mysql_ident, &mysql_ph, 1);
+        let (sql, binds) = build_where_clause(&f, &mysql_ident, &mysql_ph, &mysql_ident, 1);
         assert_eq!(sql, "`x` < ? AND `y` LIKE ?");
         assert_eq!(binds, vec![Some("5".into()), Some("%foo%".into())]);
     }
@@ -529,7 +615,7 @@ mod tests {
             ColumnFilter { column: "a".into(), op: FilterOp::Ne, value: Some("1".into()) },
             ColumnFilter { column: "b".into(), op: FilterOp::IsNull, value: None },
         ];
-        let (sql, binds) = build_where_clause(&f, &pg_ident, &sqlite_ph, 3);
+        let (sql, binds) = build_where_clause(&f, &pg_ident, &sqlite_ph, &pg_ident, 3);
         assert_eq!(sql, "\"a\" <> ?3 AND \"b\" IS NULL");
         assert_eq!(binds, vec![Some("1".into())]);
     }
@@ -541,7 +627,7 @@ mod tests {
             op: FilterOp::Eq,
             value: Some("v".into()),
         }];
-        let (sql, _binds) = build_where_clause(&f, &mssql_ident, &mssql_ph, 1);
+        let (sql, _binds) = build_where_clause(&f, &mssql_ident, &mssql_ph, &mssql_ident, 1);
         assert_eq!(sql, "[col]]name] = @P1");
     }
 
@@ -552,8 +638,8 @@ mod tests {
             op: FilterOp::ILike,
             value: Some("%Bob%".into()),
         }];
-        let (sql, binds) = build_where_clause(&f, &pg_ident, &pg_ph, 1);
-        assert_eq!(sql, "LOWER(\"name\") LIKE LOWER($1)");
+        let (sql, binds) = build_where_clause(&f, &pg_ident, &pg_ph, &pg_text, 1);
+        assert_eq!(sql, "LOWER(\"name\"::text) LIKE LOWER($1::text)");
         assert_eq!(binds, vec![Some("%Bob%".into())]);
     }
 
@@ -564,9 +650,10 @@ mod tests {
             ("name".to_string(), Some("a".into())),
         ];
         let (sql, binds) = build_insert_sql("public", "users", &vals, &pg_ident, &pg_ph, true);
+        // Typed binds: "+ Row" into a bigint column used to fail as a text insert.
         assert_eq!(
             sql,
-            "INSERT INTO \"public\".\"users\" (\"id\", \"name\") VALUES ($1, $2)"
+            "INSERT INTO \"public\".\"users\" (\"id\", \"name\") VALUES ($1::int8, $2::text)"
         );
         assert_eq!(binds.len(), 2);
         assert_eq!(binds[0], Some("1".into()));
@@ -628,5 +715,79 @@ mod tests {
         };
         assert!(matches!(k.by, KeyBy::PrimaryKey(_)));
         assert_eq!(k.original.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod order_by_tests {
+    use super::*;
+
+    fn pg_ident(n: &str) -> String {
+        format!("\"{}\"", n.replace('"', "\"\""))
+    }
+    fn cols() -> Vec<String> {
+        ["id", "name", "payload"].iter().map(|s| s.to_string()).collect()
+    }
+    fn key(c: &str, desc: bool) -> SortKey {
+        SortKey { column: c.into(), desc }
+    }
+
+    #[test]
+    fn no_sort_no_pk_emits_no_order_by() {
+        // `json_first` has a json first column and no PK: the old hard-coded
+        // `ORDER BY 1` raised "could not identify an ordering operator for type json".
+        let s = build_order_by(&[], &[], &cols(), &pg_ident).unwrap();
+        assert_eq!(s, "");
+    }
+
+    #[test]
+    fn no_sort_orders_by_the_primary_key() {
+        let s = build_order_by(&[], &["id".into()], &cols(), &pg_ident).unwrap();
+        assert_eq!(s, " ORDER BY _t.\"id\"");
+    }
+
+    #[test]
+    fn sort_key_wins_and_pk_is_the_tiebreaker() {
+        let s = build_order_by(&[key("name", false)], &["id".into()], &cols(), &pg_ident).unwrap();
+        assert_eq!(s, " ORDER BY _t.\"name\", _t.\"id\"");
+    }
+
+    #[test]
+    fn descending_sort_renders_desc() {
+        let s = build_order_by(&[key("name", true)], &["id".into()], &cols(), &pg_ident).unwrap();
+        assert_eq!(s, " ORDER BY _t.\"name\" DESC, _t.\"id\"");
+    }
+
+    #[test]
+    fn sorting_on_the_pk_does_not_duplicate_it() {
+        let s = build_order_by(&[key("id", true)], &["id".into()], &cols(), &pg_ident).unwrap();
+        assert_eq!(s, " ORDER BY _t.\"id\" DESC");
+    }
+
+    #[test]
+    fn composite_pk_appends_every_key_column() {
+        let c: Vec<String> = ["order_id", "line_no", "sku"].iter().map(|s| s.to_string()).collect();
+        let s = build_order_by(
+            &[key("sku", false)],
+            &["order_id".into(), "line_no".into()],
+            &c,
+            &pg_ident,
+        )
+        .unwrap();
+        assert_eq!(s, " ORDER BY _t.\"sku\", _t.\"order_id\", _t.\"line_no\"");
+    }
+
+    #[test]
+    fn unknown_sort_column_is_rejected_before_it_reaches_sql() {
+        let err = build_order_by(&[key("id; DROP TABLE t", false)], &[], &cols(), &pg_ident)
+            .expect_err("a column that is not in the table must be refused");
+        assert!(err.to_string().contains("id; DROP TABLE t"), "got {err}");
+    }
+
+    #[test]
+    fn a_valid_column_name_is_still_quoted() {
+        let c = vec!["we\"ird".to_string()];
+        let s = build_order_by(&[key("we\"ird", false)], &[], &c, &pg_ident).unwrap();
+        assert_eq!(s, " ORDER BY _t.\"we\"\"ird\"");
     }
 }

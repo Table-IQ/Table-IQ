@@ -93,6 +93,8 @@ export interface ColumnInfo {
   name: string;
   data_type: string;
   nullable: boolean;
+  /** Part of the primary key. Optional: older payloads omit it (Rust `#[serde(default)]`). */
+  pk?: boolean;
 }
 export type ObjectKind = "Table" | "View";
 export interface ObjectInfo {
@@ -407,20 +409,30 @@ export interface ColumnFilter {
   value: string | null;
 }
 
+/** One ORDER BY term for a table window. Matches the Rust `SortKey` serde shape. */
+export interface SortKey {
+  column: string;
+  desc: boolean;
+}
+
+/**
+ * Row count for a table under `filters`. `count` is null when the engine could neither
+ * count in time nor offer an estimate; `exact` is false when it came from the stats
+ * catalog rather than a COUNT(*).
+ */
 export async function openTable(
   id: string,
   schema: string,
   table: string,
   filters?: ColumnFilter[],
-): Promise<{ rowEstimate: number }> {
-  if (!inTauri()) return { rowEstimate: MOCK_TOTAL_ROWS };
-  const info = await invoke<{ row_estimate: number }>("open_table", {
+): Promise<{ count: number | null; exact: boolean }> {
+  if (!inTauri()) return { count: MOCK_TOTAL_ROWS, exact: true };
+  return invoke<{ count: number | null; exact: boolean }>("open_table", {
     id,
     schema,
     table,
     filters: filters && filters.length ? filters : null,
   });
-  return { rowEstimate: info.row_estimate };
 }
 
 export async function fetchTableWindow(
@@ -430,6 +442,7 @@ export async function fetchTableWindow(
   offset: number,
   len: number,
   filters?: ColumnFilter[],
+  order?: SortKey[],
 ): Promise<{ bytes: Uint8Array; ms: number }> {
   const t0 = performance.now();
   if (!inTauri()) {
@@ -442,6 +455,7 @@ export async function fetchTableWindow(
     offset,
     len,
     filters: filters && filters.length ? filters : null,
+    order: order && order.length ? order : null,
   });
   return { bytes: new Uint8Array(ab), ms: performance.now() - t0 };
 }
@@ -609,6 +623,7 @@ export async function exportTable(
   table: string,
   format: ExportFormat,
   filters?: ColumnFilter[],
+  order?: SortKey[],
 ): Promise<string> {
   if (!inTauri()) return format === "json" ? '[{"id":"1"}]' : "id\n1\n";
   return invoke<string>("export_table", {
@@ -617,6 +632,7 @@ export async function exportTable(
     table,
     format,
     filters: filters && filters.length ? filters : null,
+    order: order && order.length ? order : null,
   });
 }
 
@@ -1019,11 +1035,11 @@ export async function aiFixSql(id: string, sql: string, error: string): Promise<
   return invoke<string>("ai_fix_sql", { id, sql, error });
 }
 
-/** Cheap row-estimate for the inspector / status bar (engine native). */
+/** Row count for the inspector / status bar; 0 when the engine could not produce one. */
 export async function rowEstimate(id: string, schema: string, table: string): Promise<number> {
   if (!inTauri()) return MOCK_TOTAL_ROWS;
-  const info = await invoke<{ row_estimate: number }>("open_table", { id, schema, table });
-  return info.row_estimate;
+  const info = await invoke<{ count: number | null }>("open_table", { id, schema, table });
+  return info.count ?? 0;
 }
 
 // ── Onboarding state (first-launch marker) ─────────────────────────────────

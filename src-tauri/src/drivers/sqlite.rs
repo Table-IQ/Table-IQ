@@ -1,5 +1,6 @@
 //! SQLite `SqlDriver`. One logical schema ("main"); catalog via sqlite_master + PRAGMA.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow::array::{ArrayRef, StringArray};
@@ -10,9 +11,9 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteQueryResult, S
 use sqlx::{Pool, Row, Sqlite};
 
 use super::{
-    build_insert_sql, build_where_clause, exec, CancelToken, ColumnFilter, ColumnInfo, CursorId,
-    DResult, DriverError, EditSpec, ForeignKey, ObjectInfo, ObjectKind, QueryError,
-    SchemaInfo, SchemaModel, SqlDriver, StmtOutput,
+    build_insert_sql, build_order_by, build_where_clause, exec, CancelToken, ColumnFilter,
+    ColumnInfo, CursorId, DResult, DriverError, EditSpec, ForeignKey, ObjectInfo, ObjectKind,
+    QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver, StmtOutput,
 };
 
 /// Unwrap `sqlx::Error::Database` to the bare server message — sqlx otherwise prefixes it with
@@ -47,6 +48,12 @@ fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
+/// SQLite is dynamically typed and coerces a text bind on its own, so a placeholder is
+/// just its position.
+fn sqlite_placeholder(i: usize, _col: &str) -> String {
+    format!("?{i}")
+}
+
 pub struct SqliteDriver {
     pool: Pool<Sqlite>,
 }
@@ -76,6 +83,7 @@ impl SqliteDriver {
                 name: r.try_get("name").unwrap_or_default(),
                 data_type: r.try_get("type").unwrap_or_default(),
                 nullable: r.try_get::<i64, _>("notnull").unwrap_or(0) == 0,
+                pk: r.try_get::<i64, _>("pk").unwrap_or(0) > 0,
             })
             .collect())
     }
@@ -138,68 +146,119 @@ impl SqlDriver for SqliteDriver {
         Ok(())
     }
 
+    /// One query for the whole catalog: `sqlite_master` joined to the table-valued
+    /// `pragma_table_info`, instead of a PRAGMA round trip per object.
     async fn introspect(&self) -> DResult<SchemaModel> {
-        let objs = sqlx::query(
-            "SELECT name, type FROM sqlite_master \
-             WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        let rows = sqlx::query(
+            "SELECT m.name AS object_name, m.type AS object_type, p.name AS column_name, \
+                    p.type AS column_type, p.\"notnull\" AS \"notnull\", p.pk AS pk \
+             FROM sqlite_master m JOIN pragma_table_info(m.name) p \
+             WHERE m.type IN ('table','view') AND m.name NOT LIKE 'sqlite_%' \
+             ORDER BY m.name, p.cid",
         )
         .fetch_all(&self.pool)
         .await
         .map_err(db)?;
 
-        let mut objects = Vec::new();
-        for r in &objs {
-            let name: String = r.try_get("name").map_err(db)?;
-            let kind = if r.try_get::<String, _>("type").map_err(db)? == "view" {
-                ObjectKind::View
-            } else {
-                ObjectKind::Table
+        let mut objects: Vec<ObjectInfo> = Vec::new();
+        // object name -> index into `objects`, so attaching a column is O(1).
+        let mut object_ix: HashMap<String, usize> = HashMap::new();
+        for r in &rows {
+            let name: String = r.try_get("object_name").map_err(db)?;
+            let i = match object_ix.get(&name) {
+                Some(i) => *i,
+                None => {
+                    let kind = if r.try_get::<String, _>("object_type").map_err(db)? == "view" {
+                        ObjectKind::View
+                    } else {
+                        ObjectKind::Table
+                    };
+                    objects.push(ObjectInfo { name: name.clone(), kind, columns: Vec::new() });
+                    object_ix.insert(name, objects.len() - 1);
+                    objects.len() - 1
+                }
             };
-            let columns = self.columns_of(&name).await?;
-            objects.push(ObjectInfo { name, kind, columns });
+            objects[i].columns.push(ColumnInfo {
+                name: r.try_get("column_name").map_err(db)?,
+                data_type: r.try_get("column_type").map_err(db)?,
+                nullable: r.try_get::<i64, _>("notnull").map_err(db)? == 0,
+                pk: r.try_get::<i64, _>("pk").map_err(db)? > 0,
+            });
         }
         Ok(SchemaModel {
             schemas: vec![SchemaInfo { name: "main".into(), objects }],
         })
     }
 
-    async fn row_estimate(&self, _schema: &str, table: &str) -> DResult<i64> {
-        let n: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {}", quote_ident(table)))
-            .fetch_one(&self.pool)
-            .await
-            .map_err(db)?;
-        Ok(n)
+    /// SQLite is local: an exact `COUNT(*)` is always affordable.
+    async fn count_rows(
+        &self,
+        _schema: &str,
+        table: &str,
+        filters: &[ColumnFilter],
+    ) -> DResult<RowCount> {
+        let (where_sql, binds) = build_where_clause(
+            filters,
+            &quote_ident,
+            &sqlite_placeholder,
+            &quote_ident,
+            1,
+        );
+        let q = format!(
+            "SELECT COUNT(*) FROM {}{}",
+            quote_ident(table),
+            if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },
+        );
+        let mut qy = sqlx::query_scalar::<_, i64>(&q);
+        for b in &binds {
+            qy = qy.bind(b.clone());
+        }
+        Ok(RowCount { count: Some(qy.fetch_one(&self.pool).await.map_err(db)?), exact: true })
     }
 
-    async fn open_window(
+    async fn open_window_filtered(
         &self,
         _schema: &str,
         table: &str,
         offset: usize,
         len: usize,
+        filters: &[ColumnFilter],
+        order: &[SortKey],
     ) -> DResult<RecordBatch> {
-        let cols: Vec<String> = self.columns_of(table).await?.into_iter().map(|c| c.name).collect();
+        let cols: Vec<String> =
+            self.columns_of(table).await?.into_iter().map(|c| c.name).collect();
         if cols.is_empty() {
             return Err(DriverError::Db(format!("no such table {table}")));
         }
+        let pk = self.primary_key(_schema, table).await?;
+        let order_sql = build_order_by(order, &pk, &cols, &quote_ident)?;
         let select_list = cols
             .iter()
             .map(|c| format!("CAST({0} AS TEXT) AS {0}", quote_ident(c)))
             .collect::<Vec<_>>()
             .join(", ");
-        let q = format!(
-            "SELECT {select_list} FROM (SELECT * FROM {} ORDER BY 1 LIMIT ?1 OFFSET ?2) AS _w",
-            quote_ident(table)
+        let (where_sql, binds) = build_where_clause(
+            filters,
+            &quote_ident,
+            &sqlite_placeholder,
+            &quote_ident,
+            1,
         );
-        let rows = sqlx::query(&q)
-            .bind(len as i64)
-            .bind(offset as i64)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(db)?;
+        let off_ph = format!("?{}", binds.len() + 1);
+        let lim_ph = format!("?{}", binds.len() + 2);
+        let q = format!(
+            "SELECT {select_list} FROM (SELECT * FROM {} AS _t{}{order_sql} LIMIT {lim_ph} OFFSET {off_ph}) AS _w",
+            quote_ident(table),
+            if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },
+        );
+        let mut qy = sqlx::query(&q);
+        for b in &binds {
+            qy = qy.bind(b.clone());
+        }
+        qy = qy.bind(offset as i64).bind(len as i64);
+        let rows = qy.fetch_all(&self.pool).await.map_err(db)?;
         text_rows_to_batch(&cols, &rows)
     }
-
 
     async fn primary_key(&self, _schema: &str, table: &str) -> DResult<Vec<String>> {
         let rows = sqlx::query(&format!("PRAGMA table_info({})", quote_ident(table)))
@@ -279,70 +338,6 @@ impl SqlDriver for SqliteDriver {
         Ok(sqlx::raw_sql(sql).execute(&self.pool).await.map_err(db)?.rows_affected())
     }
 
-    async fn open_window_filtered(
-        &self,
-        _schema: &str,
-        table: &str,
-        offset: usize,
-        len: usize,
-        filters: &[ColumnFilter],
-    ) -> DResult<RecordBatch> {
-        if filters.is_empty() {
-            return self.open_window(_schema, table, offset, len).await;
-        }
-        let cols: Vec<String> =
-            self.columns_of(table).await?.into_iter().map(|c| c.name).collect();
-        if cols.is_empty() {
-            return Err(DriverError::Db(format!("no such table {table}")));
-        }
-        let select_list = cols
-            .iter()
-            .map(|c| format!("CAST({0} AS TEXT) AS {0}", quote_ident(c)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let (where_sql, binds) =
-            build_where_clause(filters, &quote_ident, &|i| format!("?{i}"), 1);
-        let off_ph = format!("?{}", binds.len() + 1);
-        let lim_ph = format!("?{}", binds.len() + 2);
-        let q = format!(
-            "SELECT {select_list} FROM (SELECT * FROM {} WHERE {} ORDER BY 1 LIMIT {} OFFSET {}) AS _w",
-            quote_ident(table),
-            where_sql,
-            lim_ph,
-            off_ph
-        );
-        let mut qy = sqlx::query(&q);
-        for b in &binds {
-            qy = qy.bind(b.clone());
-        }
-        qy = qy.bind(offset as i64).bind(len as i64);
-        let rows = qy.fetch_all(&self.pool).await.map_err(db)?;
-        text_rows_to_batch(&cols, &rows)
-    }
-
-    async fn row_estimate_filtered(
-        &self,
-        _schema: &str,
-        table: &str,
-        filters: &[ColumnFilter],
-    ) -> DResult<i64> {
-        if filters.is_empty() {
-            return self.row_estimate(_schema, table).await;
-        }
-        let (where_sql, binds) =
-            build_where_clause(filters, &quote_ident, &|i| format!("?{i}"), 1);
-        let q = format!(
-            "SELECT COUNT(*) FROM {} WHERE {}",
-            quote_ident(table),
-            where_sql
-        );
-        let mut qy = sqlx::query_scalar::<_, i64>(&q);
-        for b in &binds {
-            qy = qy.bind(b.clone());
-        }
-        Ok(qy.fetch_one(&self.pool).await.map_err(db)?.max(0))
-    }
-
     async fn insert_row(
         &self,
         _schema: &str,
@@ -352,14 +347,8 @@ impl SqlDriver for SqliteDriver {
         if values.is_empty() {
             return Err(DriverError::Db("no columns to insert".into()));
         }
-        let (sql, binds) = build_insert_sql(
-            _schema,
-            table,
-            values,
-            &quote_ident,
-            &|i| format!("?{i}"),
-            false,
-        );
+        let (sql, binds) =
+            build_insert_sql(_schema, table, values, &quote_ident, &sqlite_placeholder, false);
         let mut q = sqlx::query(&sql);
         for b in &binds {
             q = q.bind(b.clone());

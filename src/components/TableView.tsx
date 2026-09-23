@@ -117,7 +117,9 @@ export function TableView({ connId, schema, object }: Props) {
     setNotice(null);
     setDirty(0);
     openTable(connId, schema, object.name, filters)
-      .then((info) => !cancelled && setRowEstimate(info.rowEstimate))
+      // Task 8 replaces this with a real pager + "unknown total" affordance; for now an
+      // uncountable table falls back to 0 rows, as it did before.
+      .then((info) => !cancelled && setRowEstimate(info.count ?? 0))
       .catch((e) => !cancelled && setError(String(e)));
     primaryKey(connId, schema, object.name)
       .then((cols) => !cancelled && setPk(cols))

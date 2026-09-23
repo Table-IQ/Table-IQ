@@ -14,7 +14,7 @@ use crate::connections::{self, ConnConfig, ConnStore};
 use crate::drivers::{
     doc_mongo::MongoDriver, kv_redis::RedisDriver, mysql::MySqlDriver, postgres::PgDriver,
     sqlite::SqliteDriver, sqlserver::SqlServerDriver, CancelToken, ColumnFilter, DocumentDriver,
-    DriverError, EditSpec, KeyInfo, KvDriver, KvValue, SchemaModel, SqlDriver,
+    DriverError, EditSpec, KeyInfo, KvDriver, KvValue, SchemaModel, SortKey, SqlDriver,
 };
 use crate::ssh::tunnel::{RemoteTarget, Tunnel};
 use crate::ssh::SshAuth;
@@ -169,9 +169,13 @@ pub struct ConnectedInfo {
     pub engine: String,
 }
 
+/// What the grid needs to size its scrollbar. `count: null` means the engine could not
+/// count the table in time and had no usable estimate either; `exact: false` means the
+/// number came from the stats catalog and only approximates the table.
 #[derive(Serialize)]
 pub struct OpenTableInfo {
-    pub row_estimate: i64,
+    pub count: Option<i64>,
+    pub exact: bool,
 }
 
 #[tauri::command]
@@ -363,15 +367,6 @@ pub async fn switch_database(
     let mut new_cfg = cfg.clone();
     new_cfg.database = database;
 
-    // Tear down the current session before opening the new one. We keep the SSH
-    // tunnel: it points at the bastion + remote host:port, which is unchanged
-    // by switching database. Reopening on the same tunnel avoids an SSH handshake.
-    lk(&state.sessions).remove(&id);
-    lk(&state.kv_sessions).remove(&id);
-    lk(&state.doc_sessions).remove(&id);
-    // Results belong to the old database; keeping them would let the UI page a stale batch.
-    lk(&state.results).purge(&id);
-
     let password = if new_cfg.engine == "sqlite" {
         String::new()
     } else {
@@ -388,19 +383,48 @@ pub async fn switch_database(
         new_cfg.clone()
     };
 
-    if eff.engine == "redis" {
-        let drv = RedisDriver::connect(&eff.url_with_password(&password))
-            .await
-            .map_err(|e| e.to_string())?;
-        lk(&state.kv_sessions).insert(id.clone(), Arc::new(drv));
+    // Connect to the NEW database first; only a successful session replaces the old one.
+    // Tearing the old session down up front left a failed switch (typo'd/dropped database,
+    // no permission) with no session at all — every later command then answered
+    // "not connected". We keep the SSH tunnel either way: it points at the bastion +
+    // remote host:port, which switching database does not change.
+    enum NewSession {
+        Kv(Arc<dyn KvDriver>),
+        Doc(Arc<dyn DocumentDriver>),
+        Sql(Arc<dyn SqlDriver>),
+    }
+    let session = if eff.engine == "redis" {
+        NewSession::Kv(Arc::new(
+            RedisDriver::connect(&eff.url_with_password(&password))
+                .await
+                .map_err(|e| e.to_string())?,
+        ))
     } else if eff.engine == "mongodb" {
-        let drv = MongoDriver::connect(&eff.url_with_password(&password), &eff.database)
-            .await
-            .map_err(|e| e.to_string())?;
-        lk(&state.doc_sessions).insert(id.clone(), Arc::new(drv));
+        NewSession::Doc(Arc::new(
+            MongoDriver::connect(&eff.url_with_password(&password), &eff.database)
+                .await
+                .map_err(|e| e.to_string())?,
+        ))
     } else {
-        let drv = open_driver(&eff, &password).await?;
-        lk(&state.sessions).insert(id.clone(), drv);
+        NewSession::Sql(open_driver(&eff, &password).await?)
+    };
+
+    // Swap: drop whatever the old session was, then install the new one.
+    lk(&state.sessions).remove(&id);
+    lk(&state.kv_sessions).remove(&id);
+    lk(&state.doc_sessions).remove(&id);
+    // Results belong to the old database; keeping them would let the UI page a stale batch.
+    lk(&state.results).purge(&id);
+    match session {
+        NewSession::Kv(d) => {
+            lk(&state.kv_sessions).insert(id.clone(), d);
+        }
+        NewSession::Doc(d) => {
+            lk(&state.doc_sessions).insert(id.clone(), d);
+        }
+        NewSession::Sql(d) => {
+            lk(&state.sessions).insert(id.clone(), d);
+        }
     }
 
     Ok(ConnectedInfo {
@@ -461,11 +485,8 @@ pub async fn open_table(
 ) -> Result<OpenTableInfo, String> {
     let drv = state.session(&id)?;
     let f = filters.unwrap_or_default();
-    let row_estimate = drv
-        .row_estimate_filtered(&schema, &table, &f)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(OpenTableInfo { row_estimate })
+    let c = drv.count_rows(&schema, &table, &f).await.map_err(|e| e.to_string())?;
+    Ok(OpenTableInfo { count: c.count, exact: c.exact })
 }
 
 #[tauri::command]
@@ -477,11 +498,13 @@ pub async fn get_table_window(
     offset: usize,
     len: usize,
     filters: Option<Vec<ColumnFilter>>,
+    order: Option<Vec<SortKey>>,
 ) -> Result<Response, String> {
     let drv = state.session(&id)?;
     let f = filters.unwrap_or_default();
+    let o = order.unwrap_or_default();
     let batch = drv
-        .open_window_filtered(&schema, &table, offset, len, &f)
+        .open_window_filtered(&schema, &table, offset, len, &f, &o)
         .await
         .map_err(|e| e.to_string())?;
     let bytes = crate::query::window::encode_ipc(&batch).map_err(|e| e.to_string())?;
@@ -692,12 +715,15 @@ pub async fn export_table(
     table: String,
     format: String,
     filters: Option<Vec<ColumnFilter>>,
+    order: Option<Vec<SortKey>>,
 ) -> Result<String, String> {
     let drv = state.session(&id)?;
     let f = filters.unwrap_or_default();
-    // Export up to the same cap as queries (bounded).
+    let o = order.unwrap_or_default();
+    // Export up to the same cap as queries (bounded), through the same filtered+ordered
+    // window the grid shows.
     let batch = drv
-        .open_window_filtered(&schema, &table, 0, QUERY_CAP, &f)
+        .open_window_filtered(&schema, &table, 0, QUERY_CAP, &f, &o)
         .await
         .map_err(|e| e.to_string())?;
     Ok(encode_export(&batch, &format))

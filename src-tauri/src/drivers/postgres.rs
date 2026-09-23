@@ -15,9 +15,9 @@ use sqlx::postgres::{PgDatabaseError, PgErrorPosition, PgPoolOptions, PgQueryRes
 use sqlx::{Executor, Pool, Postgres, Row};
 
 use super::{
-    build_insert_sql, build_where_clause, exec, CancelToken, ColumnFilter, ColumnInfo, CursorId,
-    DResult, DriverError, EditSpec, ObjectInfo, ObjectKind, QueryError, SchemaInfo,
-    SchemaModel, SqlDriver, StmtOutput,
+    build_insert_sql, build_order_by, build_where_clause, exec, CancelToken, ColumnFilter,
+    ColumnInfo, CursorId, DResult, DriverError, EditSpec, ObjectInfo, ObjectKind, QueryError,
+    RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver, StmtOutput,
 };
 
 /// Postgres reports "canceling statement due to user request" as SQLSTATE 57014; that is a
@@ -139,6 +139,24 @@ fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
+/// Placeholder factory for [`build_where_clause`] / [`build_insert_sql`]: `$n::<udt>`.
+/// Postgres will not coerce a text bind, so every value carries its column's own type —
+/// without this a filter on a bigint column raises "operator does not exist: bigint = text"
+/// and "+ Row" into any non-text column fails the same way. A column the map doesn't know
+/// (`""`, which the builder passes for the LIKE/ILIKE comparisons that are textual by
+/// construction) falls back to `text`.
+fn pg_placeholder(udts: &HashMap<String, String>) -> impl Fn(usize, &str) -> String + '_ {
+    move |i, col| {
+        format!("${i}::{}", quote_ident(udts.get(col).map_or("text", String::as_str)))
+    }
+}
+
+/// Left side of a LIKE/ILIKE comparison. Postgres has no `bigint LIKE text` operator at
+/// all, so the column is compared on its text rendering.
+fn pg_text_expr(col: &str) -> String {
+    format!("{}::text", quote_ident(col))
+}
+
 pub struct PgDriver {
     pool: Pool<Postgres>,
     cursors: Mutex<HashMap<String, CursorState>>,
@@ -191,6 +209,47 @@ impl PgDriver {
             pool,
             cursors: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Ordered `(column, udt_name)` for one relation — the single catalog lookup that gives
+    /// both the browse column list and the cast target for every typed bind. Read from
+    /// `pg_attribute` rather than `information_schema.columns`, which hides materialized
+    /// views (the browser lists them, so the grid has to be able to open them).
+    /// Empty ⇒ no such relation.
+    async fn column_udts(&self, schema: &str, table: &str) -> DResult<Vec<(String, String)>> {
+        let rows = sqlx::query(
+            "SELECT a.attname AS column_name, t.typname AS udt_name \
+             FROM pg_class c \
+             JOIN pg_namespace n ON n.oid = c.relnamespace \
+             JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped \
+             JOIN pg_type t ON t.oid = a.atttypid \
+             WHERE n.nspname = $1 AND c.relname = $2 \
+             ORDER BY a.attnum",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        rows.iter()
+            .map(|r| Ok((r.try_get("column_name").map_err(db)?, r.try_get("udt_name").map_err(db)?)))
+            .collect()
+    }
+
+    /// The planner's row estimate. `-1` means "never ANALYZEd" (and is what every view
+    /// carries), so this is only ever a fallback for a `COUNT(*)` that timed out.
+    async fn reltuples(&self, schema: &str, table: &str) -> DResult<Option<f32>> {
+        Ok(sqlx::query_scalar(
+            "SELECT reltuples FROM pg_class c \
+             JOIN pg_namespace n ON n.oid = c.relnamespace \
+             WHERE n.nspname = $1 AND c.relname = $2",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?
+        .flatten())
     }
 }
 
@@ -297,108 +356,146 @@ impl SqlDriver for PgDriver {
         Ok(())
     }
 
+    /// One catalog pass over `pg_namespace ⋈ pg_class ⋈ pg_attribute`. `information_schema`
+    /// (what this replaces) hid materialized views and empty schemas, lost every type
+    /// detail (`character varying` with no length, `ARRAY`, `USER-DEFINED`) and needed an
+    /// O(n²) scan to attach each column to its table.
     async fn introspect(&self) -> DResult<SchemaModel> {
-        let tables = sqlx::query(
-            "SELECT table_schema, table_name, table_type \
-             FROM information_schema.tables \
-             WHERE table_schema NOT IN ('pg_catalog', 'information_schema') \
-             ORDER BY table_schema, table_name",
+        let rows = sqlx::query(
+            "SELECT n.nspname AS schema_name, \
+                    c.relname AS object_name, \
+                    c.relkind::text AS relkind, \
+                    a.attname AS column_name, \
+                    format_type(a.atttypid, a.atttypmod) AS data_type, \
+                    a.attnotnull AS notnull, \
+                    COALESCE(i.indisprimary, false) AS is_pk \
+             FROM pg_namespace n \
+             LEFT JOIN pg_class c \
+               ON c.relnamespace = n.oid AND c.relkind IN ('r', 'p', 'v', 'm', 'f') \
+             LEFT JOIN pg_attribute a \
+               ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped \
+             LEFT JOIN pg_index i \
+               ON i.indrelid = c.oid AND i.indisprimary AND a.attnum = ANY(i.indkey) \
+             WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') \
+               AND n.nspname NOT LIKE 'pg\\_toast%' \
+             ORDER BY n.nspname, c.relname, a.attnum",
         )
         .fetch_all(&self.pool)
         .await
         .map_err(db)?;
 
-        let columns = sqlx::query(
-            "SELECT table_schema, table_name, column_name, data_type, is_nullable \
-             FROM information_schema.columns \
-             WHERE table_schema NOT IN ('pg_catalog', 'information_schema') \
-             ORDER BY table_schema, table_name, ordinal_position",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db)?;
-
-        // schema name -> (object name -> ObjectInfo), preserving insertion order.
-        use std::collections::BTreeMap;
-        let mut schemas: BTreeMap<String, Vec<ObjectInfo>> = BTreeMap::new();
-        let mut index: std::collections::HashMap<(String, String), (usize, usize)> =
-            std::collections::HashMap::new();
-
-        for r in &tables {
-            let schema: String = r.get("table_schema");
-            let name: String = r.get("table_name");
-            let ttype: String = r.get("table_type");
-            let kind = if ttype == "VIEW" {
-                ObjectKind::View
-            } else {
-                ObjectKind::Table
+        // The rows arrive grouped by the ORDER BY; the two maps index into the vectors so
+        // attaching a column is O(1) instead of a linear scan of the schema's objects.
+        let mut schemas: Vec<SchemaInfo> = Vec::new();
+        let mut schema_ix: HashMap<String, usize> = HashMap::new();
+        let mut object_ix: HashMap<(String, String), usize> = HashMap::new();
+        for r in &rows {
+            let schema: String = r.try_get("schema_name").map_err(db)?;
+            let si = *schema_ix.entry(schema.clone()).or_insert_with(|| {
+                // An empty non-system schema still gets a node (LEFT JOIN ⇒ all columns NULL).
+                schemas.push(SchemaInfo { name: schema.clone(), objects: Vec::new() });
+                schemas.len() - 1
+            });
+            let Some(object): Option<String> = r.try_get("object_name").map_err(db)? else {
+                continue;
             };
-            let list = schemas.entry(schema.clone()).or_default();
-            index.insert((schema, name.clone()), (0, list.len()));
-            list.push(ObjectInfo {
-                name,
-                kind,
-                columns: Vec::new(),
+            let oi = match object_ix.get(&(schema.clone(), object.clone())) {
+                Some(i) => *i,
+                None => {
+                    // Materialized views ('m') browse exactly like views.
+                    let kind = match r.try_get::<String, _>("relkind").map_err(db)?.as_str() {
+                        "v" | "m" => ObjectKind::View,
+                        _ => ObjectKind::Table,
+                    };
+                    schemas[si].objects.push(ObjectInfo {
+                        name: object.clone(),
+                        kind,
+                        columns: Vec::new(),
+                    });
+                    let i = schemas[si].objects.len() - 1;
+                    object_ix.insert((schema.clone(), object.clone()), i);
+                    i
+                }
+            };
+            // A relation with no columns (a 0-column table) yields one all-NULL column row.
+            let Some(column): Option<String> = r.try_get("column_name").map_err(db)? else {
+                continue;
+            };
+            schemas[si].objects[oi].columns.push(ColumnInfo {
+                name: column,
+                data_type: r.try_get("data_type").map_err(db)?,
+                nullable: !r.try_get::<bool, _>("notnull").map_err(db)?,
+                pk: r.try_get("is_pk").map_err(db)?,
             });
         }
+        Ok(SchemaModel { schemas })
+    }
 
-        for r in &columns {
-            let schema: String = r.get("table_schema");
-            let table: String = r.get("table_name");
-            if let Some(list) = schemas.get_mut(&schema) {
-                if let Some(obj) = list.iter_mut().find(|o| o.name == table) {
-                    obj.columns.push(ColumnInfo {
-                        name: r.get("column_name"),
-                        data_type: r.get("data_type"),
-                        nullable: r.get::<String, _>("is_nullable") == "YES",
-                    });
-                }
-            }
+    /// Exact `COUNT(*)` under a 2s server-side timeout, falling back to the planner's
+    /// estimate. The `reltuples` shortcut this replaces reported **0** for a table that
+    /// had never been ANALYZEd and for every view (both carry `reltuples = -1`), so the
+    /// grid then fetched nothing.
+    async fn count_rows(
+        &self,
+        schema: &str,
+        table: &str,
+        filters: &[ColumnFilter],
+    ) -> DResult<RowCount> {
+        let udts: HashMap<String, String> =
+            self.column_udts(schema, table).await?.into_iter().collect();
+        let (where_sql, binds) = build_where_clause(
+            filters,
+            &quote_ident,
+            &pg_placeholder(&udts),
+            &pg_text_expr,
+            1,
+        );
+        let q = format!(
+            "SELECT COUNT(*)::bigint FROM {}.{}{}",
+            quote_ident(schema),
+            quote_ident(table),
+            if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },
+        );
+        // SET LOCAL needs a transaction; it also reverts on its own when this one ends.
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        sqlx::query("SET LOCAL statement_timeout = 2000")
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        let mut qy = sqlx::query_scalar::<_, i64>(&q);
+        for b in &binds {
+            qy = qy.bind(b.clone());
         }
-
-        Ok(SchemaModel {
-            schemas: schemas
-                .into_iter()
-                .map(|(name, objects)| SchemaInfo { name, objects })
-                .collect(),
-        })
+        let res = qy.fetch_one(&mut *tx).await;
+        let _ = tx.rollback().await;
+        match res {
+            Ok(n) => Ok(RowCount { count: Some(n), exact: true }),
+            // 57014 here is the statement_timeout firing — this query carries no cancel token.
+            Err(e) if is_cancel(&e) => Ok(match self.reltuples(schema, table).await? {
+                Some(est) if est >= 0.0 => RowCount { count: Some(est as i64), exact: false },
+                _ => RowCount { count: None, exact: false },
+            }),
+            Err(e) => Err(db(e)),
+        }
     }
 
-    async fn row_estimate(&self, schema: &str, table: &str) -> DResult<i64> {
-        let est: Option<f32> = sqlx::query_scalar(
-            "SELECT reltuples FROM pg_class c \
-             JOIN pg_namespace n ON n.oid = c.relnamespace \
-             WHERE n.nspname = $1 AND c.relname = $2",
-        )
-        .bind(schema)
-        .bind(table)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(db)?
-        .flatten();
-        Ok(est.map(|f| f as i64).unwrap_or(0).max(0))
-    }
-
-    async fn open_window(
+    async fn open_window_filtered(
         &self,
         schema: &str,
         table: &str,
         offset: usize,
         len: usize,
+        filters: &[ColumnFilter],
+        order: &[SortKey],
     ) -> DResult<RecordBatch> {
-        // Column order from the catalog (also validates the table exists).
-        let cols: Vec<String> = sqlx::query_scalar(
-            "SELECT column_name FROM information_schema.columns \
-             WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position",
-        )
-        .bind(schema)
-        .bind(table)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db)?;
-        if cols.is_empty() {
+        let udts = self.column_udts(schema, table).await?;
+        if udts.is_empty() {
             return Err(DriverError::Db(format!("no such table {schema}.{table}")));
         }
+        let cols: Vec<String> = udts.iter().map(|(c, _)| c.clone()).collect();
+        let udts: HashMap<String, String> = udts.into_iter().collect();
+        let pk = self.primary_key(schema, table).await?;
+        let order_sql = build_order_by(order, &pk, &cols, &quote_ident)?;
 
         // Display-first browse: cast every column to text (lossless string view,
         // consistent with the decimal-as-text rule). Identifiers are quoted.
@@ -407,24 +504,34 @@ impl SqlDriver for PgDriver {
             .map(|c| format!("{0}::text AS {0}", quote_ident(c)))
             .collect::<Vec<_>>()
             .join(", ");
-        // Order on the REAL first column (numeric/native) in a subquery, THEN cast to
-        // text — ordering by the text cast would sort numbers lexicographically.
+        // Filter binds come first ($1..), then the offset/limit.
+        let (where_sql, binds) = build_where_clause(
+            filters,
+            &quote_ident,
+            &pg_placeholder(&udts),
+            &pg_text_expr,
+            1,
+        );
+        let off_ph = format!("${}", binds.len() + 1);
+        let lim_ph = format!("${}", binds.len() + 2);
+        // Order (and filter) on the REAL columns inside the subquery, THEN cast to text —
+        // ordering by the text cast would sort numbers lexicographically.
         let q = format!(
             "SELECT {select_list} FROM \
-             (SELECT * FROM {}.{} ORDER BY 1 OFFSET $1 LIMIT $2) AS _w",
+             (SELECT * FROM {}.{} AS _t{}{order_sql} OFFSET {off_ph} LIMIT {lim_ph}) AS _w",
             quote_ident(schema),
-            quote_ident(table)
+            quote_ident(table),
+            if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },
         );
-        let rows = sqlx::query(&q)
-            .bind(offset as i64)
-            .bind(len as i64)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(db)?;
+        let mut qy = sqlx::query(&q);
+        for b in &binds {
+            qy = qy.bind(b.clone());
+        }
+        qy = qy.bind(offset as i64).bind(len as i64);
+        let rows = qy.fetch_all(&self.pool).await.map_err(db)?;
 
         text_rows_to_batch(&cols, &rows)
     }
-
 
     async fn cancel(&self, token: &CancelToken) -> DResult<()> {
         // No backend id yet means the query hasn't reached the server — nothing to cancel.
@@ -457,19 +564,8 @@ impl SqlDriver for PgDriver {
 
     async fn apply_edit(&self, schema: &str, table: &str, edit: &EditSpec) -> DResult<u64> {
         // udt_name per column (valid cast targets: int8, numeric, timestamptz, …).
-        let udts: std::collections::HashMap<String, String> = sqlx::query(
-            "SELECT column_name, udt_name FROM information_schema.columns \
-             WHERE table_schema = $1 AND table_name = $2",
-        )
-        .bind(schema)
-        .bind(table)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db)?
-        .into_iter()
-        .map(|r| (r.get::<String, _>("column_name"), r.get::<String, _>("udt_name")))
-        .collect();
-
+        let udts: HashMap<String, String> =
+            self.column_udts(schema, table).await?.into_iter().collect();
         let udt = |c: &str| udts.get(c).cloned().unwrap_or_else(|| "text".into());
         let set_udt = udt(&edit.column);
         let pk_with_udt: Vec<(String, String)> =
@@ -508,80 +604,6 @@ impl SqlDriver for PgDriver {
         Ok(sqlx::raw_sql(sql).execute(&self.pool).await.map_err(db)?.rows_affected())
     }
 
-    async fn open_window_filtered(
-        &self,
-        schema: &str,
-        table: &str,
-        offset: usize,
-        len: usize,
-        filters: &[ColumnFilter],
-    ) -> DResult<RecordBatch> {
-        if filters.is_empty() {
-            return self.open_window(schema, table, offset, len).await;
-        }
-        let cols: Vec<String> = sqlx::query_scalar(
-            "SELECT column_name FROM information_schema.columns \
-             WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position",
-        )
-        .bind(schema)
-        .bind(table)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db)?;
-        if cols.is_empty() {
-            return Err(DriverError::Db(format!("no such table {schema}.{table}")));
-        }
-
-        let select_list = cols
-            .iter()
-            .map(|c| format!("{0}::text AS {0}", quote_ident(c)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        // Build the WHERE in PG style; binds start at $1 (filters), then offset/len go last.
-        let (where_sql, binds) = build_where_clause(filters, &quote_ident, &|i| format!("${i}"), 1);
-        let off_ph = format!("${}", binds.len() + 1);
-        let lim_ph = format!("${}", binds.len() + 2);
-        let q = format!(
-            "SELECT {select_list} FROM \
-             (SELECT * FROM {}.{} WHERE {} ORDER BY 1 OFFSET {} LIMIT {}) AS _w",
-            quote_ident(schema),
-            quote_ident(table),
-            where_sql,
-            off_ph,
-            lim_ph
-        );
-        let mut q = sqlx::query(&q);
-        for b in &binds {
-            q = q.bind(b.clone());
-        }
-        q = q.bind(offset as i64).bind(len as i64);
-        let rows = q.fetch_all(&self.pool).await.map_err(db)?;
-        text_rows_to_batch(&cols, &rows)
-    }
-
-    async fn row_estimate_filtered(
-        &self,
-        schema: &str,
-        table: &str,
-        filters: &[ColumnFilter],
-    ) -> DResult<i64> {
-        if filters.is_empty() {
-            return self.row_estimate(schema, table).await;
-        }
-        let (where_sql, binds) = build_where_clause(filters, &quote_ident, &|i| format!("${i}"), 1);
-        let q = format!(
-            "SELECT COUNT(*)::bigint FROM {}.{} WHERE {}",
-            quote_ident(schema),
-            quote_ident(table),
-            where_sql
-        );
-        let mut q = sqlx::query_scalar::<_, i64>(&q);
-        for b in &binds {
-            q = q.bind(b.clone());
-        }
-        Ok(q.fetch_one(&self.pool).await.map_err(db)?.max(0))
-    }
-
     async fn insert_row(
         &self,
         schema: &str,
@@ -591,8 +613,10 @@ impl SqlDriver for PgDriver {
         if values.is_empty() {
             return Err(DriverError::Db("no columns to insert".into()));
         }
+        let udts: HashMap<String, String> =
+            self.column_udts(schema, table).await?.into_iter().collect();
         let (sql, binds) =
-            build_insert_sql(schema, table, values, &quote_ident, &|i| format!("${i}"), true);
+            build_insert_sql(schema, table, values, &quote_ident, &pg_placeholder(&udts), true);
         let mut q = sqlx::query(&sql);
         for b in &binds {
             q = q.bind(b.clone());
@@ -619,10 +643,10 @@ impl SqlDriver for PgDriver {
         Ok(rows
             .iter()
             .map(|r| super::ForeignKey {
-                from_table: r.get("from_table"),
-                from_column: r.get("from_column"),
-                to_table: r.get("to_table"),
-                to_column: r.get("to_column"),
+                from_table: r.try_get("from_table").unwrap_or_default(),
+                from_column: r.try_get("from_column").unwrap_or_default(),
+                to_table: r.try_get("to_table").unwrap_or_default(),
+                to_column: r.try_get("to_column").unwrap_or_default(),
             })
             .collect())
     }

@@ -54,9 +54,11 @@ async fn sqlserver_driver_browse_query_edit() {
         .unwrap();
     assert_eq!(names.value(0), "Ada");
 
-    // Row estimate from sys.partitions.
-    let est = drv.row_estimate("dbo", "tiq_demo").await.expect("estimate");
+    // Row count from sys.partitions (an estimate, so `exact` is false).
+    let c = drv.count_rows("dbo", "tiq_demo", &[]).await.expect("count");
+    let est = c.count.expect("a table must report a count");
     assert!(est >= 3, "estimate {est} should be >= 3");
+    assert!(!c.exact, "the sys.partitions count is an estimate");
 
     // ── Inline-edit round-trip (Slice 15) ──
     // Optimistic edit: name 'Ada' → 'Grace' for id=1.

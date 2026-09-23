@@ -16,9 +16,9 @@ use tokio::sync::Mutex;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
 use super::{
-    build_insert_sql, build_where_clause, CancelToken, ColumnFilter, ColumnInfo, CursorId, DResult,
-    DriverError, EditSpec, ForeignKey, ObjectInfo, ObjectKind, QueryError, QueryResult, SchemaInfo,
-    SchemaModel, SqlDriver, StmtOutput,
+    build_insert_sql, build_order_by, build_where_clause, CancelToken, ColumnFilter, ColumnInfo,
+    CursorId, DResult, DriverError, EditSpec, ForeignKey, ObjectInfo, ObjectKind, QueryError,
+    QueryResult, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver, StmtOutput,
 };
 
 type Conn = Client<Compat<TcpStream>>;
@@ -30,6 +30,12 @@ fn db<E: std::fmt::Display>(e: E) -> DriverError {
 /// Bracket-quote a SQL Server identifier (escape embedded `]`).
 fn quote_ident(name: &str) -> String {
     format!("[{}]", name.replace(']', "]]"))
+}
+
+/// Tiberius binds `@P1, @P2, …` in declared order; SQL Server converts a text value to the
+/// target column type implicitly (display-first design), so no cast is added.
+fn mssql_placeholder(i: usize, _col: &str) -> String {
+    format!("@P{i}")
 }
 
 /// Stringify one cell for display. Date/time/xml fall back to a debug rendering (follow-up).
@@ -70,6 +76,22 @@ impl SqlServerDriver {
         tcp.set_nodelay(true).ok();
         let client = Client::connect(config, tcp.compat_write()).await.map_err(db)?;
         Ok(Self { client: Mutex::new(client), cursors: StdMutex::new(HashMap::new()) })
+    }
+
+    /// Ordered column names for one relation (empty ⇒ no such relation), used to validate
+    /// a requested sort column before it reaches the SQL text.
+    async fn columns_of(&self, schema: &str, table: &str) -> DResult<Vec<std::string::String>> {
+        let mut c = self.client.lock().await;
+        let q = "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS \
+                 WHERE TABLE_SCHEMA = @P1 AND TABLE_NAME = @P2 ORDER BY ORDINAL_POSITION";
+        let rows = c
+            .query(q, &[&schema, &table])
+            .await
+            .map_err(db)?
+            .into_first_result()
+            .await
+            .map_err(db)?;
+        Ok(rows.iter().filter_map(|r| r.get::<&str, _>(0).map(|s| s.to_string())).collect())
     }
 
     /// Run `sql` and return (column names, column-major stringified data).
@@ -207,15 +229,28 @@ impl SqlDriver for SqlServerDriver {
                  ORDER BY TABLE_SCHEMA, TABLE_NAME",
             )
             .await?;
+        // LEFT JOIN through the PK constraint so a non-key column still yields its row.
         let (_, col) = self
             .query_text(
-                "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE, IS_NULLABLE \
-                 FROM INFORMATION_SCHEMA.COLUMNS ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION",
+                "SELECT c.TABLE_SCHEMA, c.TABLE_NAME, c.COLUMN_NAME, c.DATA_TYPE, c.IS_NULLABLE, \
+                        CASE WHEN k.COLUMN_NAME IS NULL THEN 0 ELSE 1 END AS IS_PK \
+                 FROM INFORMATION_SCHEMA.COLUMNS c \
+                 LEFT JOIN (INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc \
+                            JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE k \
+                              ON k.CONSTRAINT_NAME = tc.CONSTRAINT_NAME \
+                             AND k.TABLE_SCHEMA = tc.TABLE_SCHEMA \
+                             AND tc.CONSTRAINT_TYPE = 'PRIMARY KEY') \
+                   ON k.TABLE_SCHEMA = c.TABLE_SCHEMA AND k.TABLE_NAME = c.TABLE_NAME \
+                  AND k.COLUMN_NAME = c.COLUMN_NAME \
+                 ORDER BY c.TABLE_SCHEMA, c.TABLE_NAME, c.ORDINAL_POSITION",
             )
             .await?;
 
-        use std::collections::BTreeMap;
-        let mut schemas: BTreeMap<std::string::String, Vec<ObjectInfo>> = BTreeMap::new();
+        let mut schemas: Vec<SchemaInfo> = Vec::new();
+        // (schema | schema+object) -> index, so attaching a column is O(1).
+        let mut schema_ix: HashMap<std::string::String, usize> = HashMap::new();
+        let mut object_ix: HashMap<(std::string::String, std::string::String), usize> =
+            HashMap::new();
         let tn = t.first().map(|c| c.len()).unwrap_or(0);
         for i in 0..tn {
             let schema = t[0][i].clone().unwrap_or_default();
@@ -225,56 +260,82 @@ impl SqlDriver for SqlServerDriver {
             } else {
                 ObjectKind::Table
             };
-            schemas.entry(schema).or_default().push(ObjectInfo { name, kind, columns: vec![] });
+            let si = *schema_ix.entry(schema.clone()).or_insert_with(|| {
+                schemas.push(SchemaInfo { name: schema.clone(), objects: Vec::new() });
+                schemas.len() - 1
+            });
+            object_ix.insert((schema, name.clone()), schemas[si].objects.len());
+            schemas[si].objects.push(ObjectInfo { name, kind, columns: vec![] });
         }
         let cn = col.first().map(|c| c.len()).unwrap_or(0);
         for i in 0..cn {
             let schema = col[0][i].clone().unwrap_or_default();
             let table = col[1][i].clone().unwrap_or_default();
-            if let Some(list) = schemas.get_mut(&schema) {
-                if let Some(o) = list.iter_mut().find(|o| o.name == table) {
-                    o.columns.push(ColumnInfo {
-                        name: col[2][i].clone().unwrap_or_default(),
-                        data_type: col[3][i].clone().unwrap_or_default(),
-                        nullable: col[4][i].as_deref() == Some("YES"),
-                    });
-                }
+            let (Some(&si), Some(&oi)) = (
+                schema_ix.get(&schema),
+                object_ix.get(&(schema.clone(), table.clone())),
+            ) else {
+                continue;
+            };
+            schemas[si].objects[oi].columns.push(ColumnInfo {
+                name: col[2][i].clone().unwrap_or_default(),
+                data_type: col[3][i].clone().unwrap_or_default(),
+                nullable: col[4][i].as_deref() == Some("YES"),
+                pk: col[5][i].as_deref() == Some("1"),
+            });
+        }
+        Ok(SchemaModel { schemas })
+    }
+
+    /// `sys.partitions` is an O(1) read of the maintained row count, but it is only an
+    /// estimate and only exists for a real table — a view (or any filter) needs the
+    /// exact count.
+    async fn count_rows(
+        &self,
+        schema: &str,
+        table: &str,
+        filters: &[ColumnFilter],
+    ) -> DResult<RowCount> {
+        if filters.is_empty() {
+            let q = format!(
+                "SELECT SUM(p.rows) AS n FROM sys.partitions p \
+                 JOIN sys.objects o ON p.object_id = o.object_id \
+                 JOIN sys.schemas s ON o.schema_id = s.schema_id \
+                 WHERE o.type = 'U' AND s.name = '{}' AND o.name = '{}' AND p.index_id IN (0,1)",
+                schema.replace('\'', "''"),
+                table.replace('\'', "''")
+            );
+            let (_, d) = self.query_text(&q).await?;
+            if let Some(n) = d
+                .first()
+                .and_then(|c| c.first())
+                .and_then(|o| o.as_ref())
+                .and_then(|s| s.parse::<i64>().ok())
+            {
+                return Ok(RowCount { count: Some(n.max(0)), exact: false });
             }
         }
-        Ok(SchemaModel {
-            schemas: schemas.into_iter().map(|(name, objects)| SchemaInfo { name, objects }).collect(),
-        })
-    }
-
-    async fn row_estimate(&self, schema: &str, table: &str) -> DResult<i64> {
+        let (where_sql, binds) =
+            build_where_clause(filters, &quote_ident, &mssql_placeholder, &quote_ident, 1);
         let q = format!(
-            "SELECT SUM(p.rows) AS n FROM sys.partitions p \
-             JOIN sys.tables t ON p.object_id = t.object_id \
-             JOIN sys.schemas s ON t.schema_id = s.schema_id \
-             WHERE s.name = '{}' AND t.name = '{}' AND p.index_id IN (0,1)",
-            schema.replace('\'', "''"),
-            table.replace('\'', "''")
-        );
-        let (_, d) = self.query_text(&q).await?;
-        let est = d
-            .first()
-            .and_then(|c| c.first())
-            .and_then(|o| o.as_ref())
-            .and_then(|s| s.parse::<i64>().ok())
-            .unwrap_or(0);
-        Ok(est.max(0))
-    }
-
-    async fn open_window(&self, schema: &str, table: &str, offset: usize, len: usize) -> DResult<RecordBatch> {
-        let q = format!(
-            "SELECT * FROM {}.{} ORDER BY (SELECT NULL) OFFSET {} ROWS FETCH NEXT {} ROWS ONLY",
+            "SELECT COUNT_BIG(*) AS n FROM {}.{}{}",
             quote_ident(schema),
             quote_ident(table),
-            offset,
-            len
+            if where_sql.is_empty() { std::string::String::new() } else { format!(" WHERE {where_sql}") },
         );
-        let (cols, d) = self.query_text(&q).await?;
-        to_batch(&cols, &d)
+        let owned: Vec<Option<std::string::String>> = binds.to_vec();
+        let params: Vec<&dyn tiberius::ToSql> =
+            owned.iter().map(|o| o as &dyn tiberius::ToSql).collect();
+        let mut c = self.client.lock().await;
+        let rows = c
+            .query(q, &params)
+            .await
+            .map_err(db)?
+            .into_first_result()
+            .await
+            .map_err(db)?;
+        let n = rows.first().and_then(|r| r.get::<i64, _>(0)).unwrap_or(0);
+        Ok(RowCount { count: Some(n.max(0)), exact: true })
     }
 
     async fn run_query(&self, sql: &str, cap: usize) -> DResult<QueryResult> {
@@ -383,22 +444,29 @@ impl SqlDriver for SqlServerDriver {
         offset: usize,
         len: usize,
         filters: &[ColumnFilter],
+        order: &[SortKey],
     ) -> DResult<RecordBatch> {
-        if filters.is_empty() {
-            return self.open_window(schema, table, offset, len).await;
+        let cols = self.columns_of(schema, table).await?;
+        if cols.is_empty() {
+            return Err(DriverError::Db(format!("no such table {schema}.{table}")));
         }
+        let pk = self.primary_key(schema, table).await?;
+        // OFFSET/FETCH is only legal after an ORDER BY, so a table with neither a sort
+        // nor a PK falls back to the no-op `(SELECT NULL)`.
+        let order_sql = match build_order_by(order, &pk, &cols, &quote_ident)?.as_str() {
+            "" => " ORDER BY (SELECT NULL)".to_string(),
+            s => s.to_string(),
+        };
         // Tiberius uses @P1, @P2, … in declared order; we bind text values.
         let (where_sql, binds) =
-            build_where_clause(filters, &quote_ident, &|i| format!("@P{i}"), 1);
+            build_where_clause(filters, &quote_ident, &mssql_placeholder, &quote_ident, 1);
         let q = format!(
-            "SELECT * FROM {}.{} WHERE {} ORDER BY (SELECT NULL) OFFSET {} ROWS FETCH NEXT {} ROWS ONLY",
+            "SELECT * FROM {}.{} AS _t{}{order_sql} OFFSET {offset} ROWS FETCH NEXT {len} ROWS ONLY",
             quote_ident(schema),
             quote_ident(table),
-            where_sql,
-            offset,
-            len
+            if where_sql.is_empty() { std::string::String::new() } else { format!(" WHERE {where_sql}") },
         );
-        let owned: Vec<Option<std::string::String>> = binds.iter().cloned().collect();
+        let owned: Vec<Option<std::string::String>> = binds.to_vec();
         let params: Vec<&dyn tiberius::ToSql> =
             owned.iter().map(|o| o as &dyn tiberius::ToSql).collect();
         let mut c = self.client.lock().await;
@@ -425,41 +493,6 @@ impl SqlDriver for SqlServerDriver {
         to_batch(&columns, &data)
     }
 
-    async fn row_estimate_filtered(
-        &self,
-        schema: &str,
-        table: &str,
-        filters: &[ColumnFilter],
-    ) -> DResult<i64> {
-        if filters.is_empty() {
-            return self.row_estimate(schema, table).await;
-        }
-        let (where_sql, binds) =
-            build_where_clause(filters, &quote_ident, &|i| format!("@P{i}"), 1);
-        let q = format!(
-            "SELECT COUNT_BIG(*) AS n FROM {}.{} WHERE {}",
-            quote_ident(schema),
-            quote_ident(table),
-            where_sql
-        );
-        let owned: Vec<Option<std::string::String>> = binds.iter().cloned().collect();
-        let params: Vec<&dyn tiberius::ToSql> =
-            owned.iter().map(|o| o as &dyn tiberius::ToSql).collect();
-        let mut c = self.client.lock().await;
-        let rows = c
-            .query(q, &params)
-            .await
-            .map_err(db)?
-            .into_first_result()
-            .await
-            .map_err(db)?;
-        let n = rows
-            .first()
-            .and_then(|r| r.get::<i64, _>(0))
-            .unwrap_or(0);
-        Ok(n.max(0))
-    }
-
     async fn insert_row(
         &self,
         schema: &str,
@@ -469,14 +502,8 @@ impl SqlDriver for SqlServerDriver {
         if values.is_empty() {
             return Err(DriverError::Db("no columns to insert".into()));
         }
-        let (sql, binds) = build_insert_sql(
-            schema,
-            table,
-            values,
-            &quote_ident,
-            &|i| format!("@P{i}"),
-            true,
-        );
+        let (sql, binds) =
+            build_insert_sql(schema, table, values, &quote_ident, &mssql_placeholder, true);
         let owned: Vec<Option<std::string::String>> = binds.iter().cloned().collect();
         let params: Vec<&dyn tiberius::ToSql> =
             owned.iter().map(|o| o as &dyn tiberius::ToSql).collect();
