@@ -30,8 +30,10 @@ export function ChartView({
       const labels: string[] = [];
       const values: string[] = [];
       for (let r = 0; r < w.numRows; r++) {
-        labels.push(w.getCell(r, xCol));
-        values.push(w.getCell(r, yCol));
+        // NULL cells chart as empty — Task 6 owns real NULL rendering; charting a
+        // missing label/value as "" preserves this component's prior behavior.
+        labels.push(w.getCell(r, xCol) ?? "");
+        values.push(w.getCell(r, yCol) ?? "");
       }
       if (!cancelled) setPoints(buildSeries(labels, values).slice(0, MAX_BARS));
     })().catch(() => !cancelled && setPoints([]));

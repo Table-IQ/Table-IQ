@@ -194,7 +194,9 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
           complete = false;
           break;
         }
-        row[c] = v;
+        // Width-fitting only cares about rendered width; NULL measures as empty
+        // (Task 6 owns real NULL rendering in the grid itself).
+        row[c] = v ?? "";
       }
       if (!complete) break;
       rows.push(row);
@@ -304,8 +306,10 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
             : undefined;
       return {
         kind: GridCellKind.Text,
-        data: value,
-        displayData: display,
+        // glide-data-grid's TextCell requires plain strings; NULL renders as empty
+        // for now (Task 6 owns real NULL rendering — a distinct visual affordance).
+        data: value ?? "",
+        displayData: display ?? "",
         allowOverlay: editable,
         readonly: !editable,
         contentAlign: numeric ? "right" : undefined,
@@ -325,7 +329,8 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
       const ov = overlay.current.get(`${row}:${name}`);
       const v = ov ?? cacheRef.current.getCell(row, name);
       if (v === undefined) return null; // page miss — caller should retry later
-      out[name] = v;
+      // Row-detail/copy consumers expect strings; NULL reads as empty for now.
+      out[name] = v ?? "";
     }
     return out;
   }, []);
