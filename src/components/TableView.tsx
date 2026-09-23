@@ -81,7 +81,7 @@ export function TableView({ connId, schema, object }: Props) {
     col: string;
     row: number;
     value: string | null;
-    values: Record<string, string> | null;
+    values: Record<string, string | null> | null;
   } | null>(null);
   const [gridWindowStart, setGridWindowStart] = useState(0);
   const [pendingCount, setPendingCount] = useState(0);

@@ -17,7 +17,7 @@ import {
   useState,
 } from "react";
 import { decodeWindow, WindowCache } from "../lib/arrowWindow";
-import { gridTheme, gridRowTints, editTints } from "../lib/theme";
+import { gridTheme, gridRowTints, editTints, nullCellStyle } from "../lib/theme";
 import { useTheme } from "../theme/ThemeProvider";
 import type { ForeignKey } from "../lib/commands";
 import {
@@ -75,7 +75,7 @@ interface Props {
     col: string;
     row: number;
     value: string | null;
-    values: Record<string, string> | null;
+    values: Record<string, string | null> | null;
     x: number;
     y: number;
   }) => void;
@@ -84,7 +84,7 @@ interface Props {
   /** Fires on any cell click with the whole row's values map. Used by the
    *  Inspector's row-detail mode (Slice 27). Receives `null` when the row's
    *  page hasn't loaded yet (the caller should ignore null). */
-  onRowSelected?: (row: number, values: Record<string, string> | null) => void;
+  onRowSelected?: (row: number, values: Record<string, string | null> | null) => void;
   /** Per-column width overrides, keyed by column name. Missing entries fall
    *  back to {@link DEFAULT_COL_WIDTH}. (Slice 28 — TablePlus parity). */
   columnWidths?: Record<string, number>;
@@ -194,8 +194,9 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
           complete = false;
           break;
         }
-        // Width-fitting only cares about rendered width; NULL measures as empty
-        // (Task 6 owns real NULL rendering in the grid itself).
+        // Width-fitting only cares about rendered width; the `NULL` placeholder
+        // is narrower than the default column width, so measuring it as empty is
+        // close enough and keeps autoFit's Record<string, string> shape.
         row[c] = v ?? "";
       }
       if (!complete) break;
@@ -290,26 +291,29 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
         ensurePage(page + 1);
         return { kind: GridCellKind.Loading, allowOverlay: false };
       }
+      const isNull = value === null;
       const fk = name ? fkByColumn?.get(name) : undefined;
-      const display = fk && value !== null && value !== "" ? `→ ${value}` : value;
+      const display = fk && !isNull && value !== "" ? `→ ${value}` : value;
       // Numeric columns right-align (TablePlus parity) — but never an FK cell,
       // whose `→ value` affordance reads left-to-right.
       const numeric = !fk && name ? rightAlignColumns?.has(name) : false;
       // Save-state tint: amber while writing, green on save, red on error.
       const save = name ? editState.current.get(`${row}:${name}`) : undefined;
       const saveBg = save ? editTints(resolved)[save] : undefined;
+      // A SQL NULL prints a dimmed italic `NULL`; an empty string stays blank.
       const themeOverride =
         saveBg !== undefined
-          ? { bgCell: saveBg }
-          : fk
-            ? { textDark: "var(--primary)", textLight: "var(--primary)" }
-            : undefined;
+          ? { bgCell: saveBg, ...(isNull ? nullCellStyle(resolved) : {}) }
+          : isNull
+            ? nullCellStyle(resolved)
+            : fk
+              ? { textDark: "var(--primary)", textLight: "var(--primary)" }
+              : undefined;
       return {
         kind: GridCellKind.Text,
-        // glide-data-grid's TextCell requires plain strings; NULL renders as empty
-        // for now (Task 6 owns real NULL rendering — a distinct visual affordance).
+        // `data` is what the overlay editor opens with, so a NULL edits from empty.
         data: value ?? "",
-        displayData: display ?? "",
+        displayData: isNull ? "NULL" : (display ?? ""),
         allowOverlay: editable,
         readonly: !editable,
         contentAlign: numeric ? "right" : undefined,
@@ -320,17 +324,18 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   );
 
   /** Build the full {col → value} map for `row` by walking columns through the
-   *  cache + overlay. Returns null if the row's page hasn't loaded yet. */
-  const readRow = useCallback((row: number): Record<string, string> | null => {
+   *  cache + overlay. A SQL NULL stays `null` (never ""), so the Inspector and
+   *  the copy/INSERT helpers can tell it apart from an empty string. Returns
+   *  null if the row's page hasn't loaded yet. */
+  const readRow = useCallback((row: number): Record<string, string | null> | null => {
     const cols = colNames.current;
     if (cols.length === 0) return null;
-    const out: Record<string, string> = {};
+    const out: Record<string, string | null> = {};
     for (const name of cols) {
       const ov = overlay.current.get(`${row}:${name}`);
       const v = ov ?? cacheRef.current.getCell(row, name);
       if (v === undefined) return null; // page miss — caller should retry later
-      // Row-detail/copy consumers expect strings; NULL reads as empty for now.
-      out[name] = v ?? "";
+      out[name] = v;
     }
     return out;
   }, []);

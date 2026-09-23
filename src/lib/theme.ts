@@ -114,3 +114,18 @@ export function loadThemeChoice(): ThemeChoice {
 export function saveThemeChoice(choice: ThemeChoice): void {
   if (typeof localStorage !== "undefined") localStorage.setItem(STORAGE_KEY, choice);
 }
+
+/**
+ * Per-cell overrides that make a SQL NULL read as *absent* rather than empty:
+ * a dimmed italic `NULL` (DESIGN.md `--muted-2`), clearly different from an
+ * empty string, which stays blank. Hex rather than `var(--muted-2)` because the
+ * grid paints on a canvas, where CSS custom properties do not resolve.
+ */
+export function nullCellStyle(mode: ResolvedTheme): {
+  textDark: string;
+  textLight: string;
+  baseFontStyle: string;
+} {
+  const color = mode === "dark" ? "#71757e" : "#71717a";
+  return { textDark: color, textLight: color, baseFontStyle: "italic 11.5px" };
+}

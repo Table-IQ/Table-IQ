@@ -193,7 +193,7 @@ function RowDetailView({
   pkCols,
   onCommit,
 }: {
-  row: { schema: string; table: string; row: number; values: Record<string, string> };
+  row: { schema: string; table: string; row: number; values: Record<string, string | null> };
   columns: { name: string; data_type: string; nullable: boolean }[];
   totalCols: number;
   filter: string;
@@ -273,12 +273,14 @@ function FieldCard({
 }: {
   name: string;
   type: string;
-  value: string | undefined;
+  /** `null` is a SQL NULL, `undefined` means the column isn't in the row map. */
+  value: string | null | undefined;
   editable: boolean;
   onCommit: (newValue: string) => Promise<boolean>;
 }) {
   const original = value ?? "";
-  const isNull = value === undefined || value === "";
+  // NULL reads as absent; an empty string renders as an (empty) value box.
+  const isNull = value == null;
   const [draft, setDraft] = useState(original);
   const [editing, setEditing] = useState(false);
   const [flash, setFlash] = useState<"ok" | "err" | null>(null);
@@ -336,6 +338,7 @@ function FieldCard({
           rows={1}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
+          placeholder={isNull ? "NULL" : undefined}
           onFocus={() => setEditing(true)}
           onBlur={commit}
           onKeyDown={(e) => {
@@ -349,7 +352,7 @@ function FieldCard({
             }
           }}
           spellCheck={false}
-          className={`max-h-40 w-full resize-y rounded-[var(--radius-sm)] border bg-bg px-2 py-1.5 font-mono text-[11.5px] leading-relaxed text-text transition-colors focus:outline-none ${border}`}
+          className={`max-h-40 w-full resize-y rounded-[var(--radius-sm)] border bg-bg px-2 py-1.5 font-mono text-[11.5px] leading-relaxed text-text transition-colors placeholder:italic placeholder:text-muted-2 focus:outline-none ${border}`}
         />
       ) : (
         <button

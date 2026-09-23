@@ -14,8 +14,8 @@ export interface SelectedRow {
   table: string;
   /** Zero-based row index within the active result. */
   row: number;
-  /** Column-name → cell value as string (null → empty string per WindowCache.getCell). */
-  values: Record<string, string>;
+  /** Column-name → cell value. A SQL NULL is `null`, distinct from an empty string. */
+  values: Record<string, string | null>;
 }
 
 interface SelectedRowState {

@@ -30,8 +30,8 @@ export function ChartView({
       const labels: string[] = [];
       const values: string[] = [];
       for (let r = 0; r < w.numRows; r++) {
-        // NULL cells chart as empty — Task 6 owns real NULL rendering; charting a
-        // missing label/value as "" preserves this component's prior behavior.
+        // A NULL label/value isn't plottable, so it charts as empty and is
+        // dropped by buildSeries — the grid is where NULL renders as NULL.
         labels.push(w.getCell(r, xCol) ?? "");
         values.push(w.getCell(r, yCol) ?? "");
       }
