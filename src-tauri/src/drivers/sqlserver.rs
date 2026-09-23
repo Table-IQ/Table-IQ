@@ -16,9 +16,9 @@ use tokio::sync::Mutex;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
 use super::{
-    build_insert_sql, build_order_by, build_where_clause, CancelToken, ColumnDetail, ColumnFilter,
-    ColumnInfo, CursorId, DResult, DriverError, EditSpec, ForeignKey, IndexInfo, ObjectInfo,
-    ObjectKind, QueryError, QueryResult, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver,
+    build_insert_sql, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
+    ColumnFilter, ColumnInfo, CursorId, DResult, DriverError, EditSpec, ForeignKey, IndexInfo,
+    ObjectInfo, ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver,
     StmtOutput, TableStructure, TriggerInfo,
 };
 
@@ -39,9 +39,33 @@ fn mssql_placeholder(i: usize, _col: &str) -> String {
     format!("@P{i}")
 }
 
-/// Stringify one cell for display. Date/time/xml fall back to a debug rendering (follow-up).
-fn cell_to_string(cd: &ColumnData) -> Option<String> {
+/// Render a `DECIMAL`/`NUMERIC` from its raw value and scale. tiberius' own `Display` builds
+/// the text from `int_part()` and `dec_part()`, which both carry the sign — so it renders
+/// -12.34 as `-12.-34`.
+fn numeric_to_string(n: &tiberius::numeric::Numeric) -> std::string::String {
+    let (value, scale) = (n.value(), n.scale() as usize);
+    if scale == 0 {
+        return value.to_string();
+    }
+    // Zero-pad so a value smaller than one scale unit still has an integer digit (0.05).
+    let digits = format!("{:0>width$}", value.unsigned_abs(), width = scale + 1);
+    let (int, frac) = digits.split_at(digits.len() - scale);
+    format!("{}{int}.{frac}", if value < 0 { "-" } else { "" })
+}
+
+/// Stringify one cell for display. Date/time render ISO with a space separator, matching how
+/// the text-protocol drivers (Postgres, MySQL) hand their timestamps over. `%.f` prints the
+/// fractional seconds only when the value has any.
+fn cell_to_string(cd: &ColumnData<'static>) -> Option<String> {
+    use tiberius::time::chrono as ch;
+    use tiberius::FromSql;
     use ColumnData::*;
+    const DATE: &str = "%Y-%m-%d";
+    const TIME: &str = "%H:%M:%S%.f";
+    const DATETIME: &str = "%Y-%m-%d %H:%M:%S%.f";
+    const DATETIME_TZ: &str = "%Y-%m-%d %H:%M:%S%.f %:z";
+    // A `from_sql` failure would mean tiberius disagreed with its own variant, which cannot
+    // happen from the arms below; render it as NULL rather than panicking on the unwrap.
     match cd {
         U8(v) => v.map(|x| x.to_string()),
         I16(v) => v.map(|x| x.to_string()),
@@ -53,9 +77,40 @@ fn cell_to_string(cd: &ColumnData) -> Option<String> {
         String(v) => v.as_ref().map(|s| s.to_string()),
         Guid(v) => v.map(|g| g.to_string()),
         Binary(v) => v.as_ref().map(|b| b.iter().map(|x| format!("{x:02x}")).collect()),
-        Numeric(v) => v.as_ref().map(|n| n.to_string()),
-        other => format!("{other:?}").into(),
+        Numeric(v) => v.as_ref().map(numeric_to_string),
+        Xml(v) => v.as_ref().map(|x| x.to_string()),
+        Date(_) => ch::NaiveDate::from_sql(cd).ok().flatten().map(|d| d.format(DATE).to_string()),
+        Time(_) => ch::NaiveTime::from_sql(cd).ok().flatten().map(|t| t.format(TIME).to_string()),
+        DateTime(_) | SmallDateTime(_) | DateTime2(_) => ch::NaiveDateTime::from_sql(cd)
+            .ok()
+            .flatten()
+            .map(|d| d.format(DATETIME).to_string()),
+        DateTimeOffset(_) => ch::DateTime::<ch::FixedOffset>::from_sql(cd)
+            .ok()
+            .flatten()
+            .map(|d| d.format(DATETIME_TZ).to_string()),
     }
+}
+
+/// Turn a tiberius error into a per-statement [`QueryError`]. A server error carries the
+/// 1-based line inside the batch — and each statement is sent as its own batch, so that is
+/// the line inside the statement the user wrote.
+fn stmt_error(e: &tiberius::error::Error) -> QueryError {
+    match e {
+        tiberius::error::Error::Server(t) => QueryError {
+            message: t.message().to_string(),
+            line: (t.line() > 0).then(|| t.line()),
+            position: None,
+        },
+        _ => QueryError { message: e.to_string(), line: None, position: None },
+    }
+}
+
+/// `@@ROWCOUNT` for the statement just run. It is session state, so it survives into the next
+/// batch on the same (pinned) connection.
+async fn rowcount(c: &mut Conn) -> Option<u64> {
+    let row = c.simple_query("SELECT @@ROWCOUNT").await.ok()?.into_row().await.ok()??;
+    row.try_get::<i32, _>(0).ok().flatten().map(|n| n.max(0) as u64)
 }
 
 // ── Structure tab catalog queries (see `SqlDriver::describe_table`) ─────────────────────
@@ -190,19 +245,29 @@ impl SqlServerDriver {
         Ok(rows.iter().filter_map(|r| r.get::<&str, _>(0).map(|s| s.to_string())).collect())
     }
 
-    /// Run `sql` and return (column names, column-major stringified data).
+    /// Run `sql` and return (column names, **column-major** stringified data — `data[col][row]`).
+    /// Rows are stringified as they arrive off the wire, so the `Vec<Row>` that
+    /// `into_first_result` would build never exists alongside the text.
     async fn query_text(&self, sql: &str) -> DResult<(Vec<std::string::String>, Vec<Vec<Option<std::string::String>>>)> {
+        use futures_util::StreamExt;
+        use tiberius::QueryItem;
         let mut c = self.client.lock().await;
-        let rows = c.simple_query(sql).await.map_err(db)?.into_first_result().await.map_err(db)?;
+        let mut stream = c.simple_query(sql).await.map_err(db)?;
         let mut columns: Vec<std::string::String> = Vec::new();
         let mut data: Vec<Vec<Option<std::string::String>>> = Vec::new();
-        for (ri, row) in rows.iter().enumerate() {
-            if ri == 0 {
-                columns = row.columns().iter().map(|col| col.name().to_string()).collect();
-                data = vec![Vec::new(); columns.len()];
-            }
-            for (ci, (_col, cd)) in row.cells().enumerate() {
-                data[ci].push(cell_to_string(cd));
+        while let Some(item) = stream.next().await {
+            match item.map_err(db)? {
+                QueryItem::Metadata(meta) if meta.result_index() == 0 => {
+                    columns = meta.columns().iter().map(|col| col.name().to_string()).collect();
+                    data = vec![Vec::new(); columns.len()];
+                }
+                QueryItem::Row(row) if row.result_index() == 0 => {
+                    for (ci, (_col, cd)) in row.cells().enumerate() {
+                        data[ci].push(cell_to_string(cd));
+                    }
+                }
+                // A helper query only ever reads its first result set.
+                _ => {}
             }
         }
         Ok((columns, data))
@@ -227,53 +292,93 @@ fn to_batch(columns: &[std::string::String], data: &[Vec<Option<std::string::Str
 
 #[async_trait]
 impl SqlDriver for SqlServerDriver {
-    // ponytail: stop-gap until Task 4. This loops the existing single-statement `query_text`
-    // path instead of streaming per statement, so it has no rows_affected, no error position
-    // and no notice, and DML/DDL go through a SELECT-shaped reader. Task 4 gives tiberius a
-    // real multi-statement execution path.
+    /// One `simple_query` batch per statement, streamed: rows past `cap` are counted but never
+    /// materialised. tiberius only surfaces a server error at the *end* of the response, so the
+    /// stream is always drained to the end — which is also what leaves the connection clean.
     async fn run_statements(
         &self,
         stmts: &[String],
         cap: usize,
         _token: &CancelToken,
     ) -> DResult<Vec<StmtOutput>> {
+        use futures_util::StreamExt;
+        use tiberius::QueryItem;
+
+        // One pinned connection, so BEGIN/…/COMMIT across statements lands on the same session.
+        let mut c = self.client.lock().await;
         let mut outs = Vec::with_capacity(stmts.len());
         for stmt in stmts {
             let start = std::time::Instant::now();
-            match self.query_text(stmt).await {
-                Ok((cols, mut d)) => {
-                    let total = d.first().map(|c| c.len()).unwrap_or(0);
-                    let truncated = total > cap;
-                    if truncated {
-                        for c in d.iter_mut() {
-                            c.truncate(cap);
+            let (mut names, mut types): (Vec<std::string::String>, Vec<std::string::String>) =
+                (Vec::new(), Vec::new());
+            let mut rows: Vec<Vec<Option<std::string::String>>> = Vec::new();
+            let mut total: u64 = 0;
+            let mut failed: Option<tiberius::error::Error> = None;
+
+            match c.simple_query(stmt.as_str()).await {
+                // An error before any metadata is raised by `simple_query` itself.
+                Err(e) => failed = Some(e),
+                Ok(mut stream) => {
+                    while let Some(item) = stream.next().await {
+                        match item {
+                            Ok(QueryItem::Metadata(meta)) if meta.result_index() == 0 => {
+                                for col in meta.columns() {
+                                    names.push(col.name().to_string());
+                                    // tiberius exposes the TDS type category only — there is no
+                                    // declared `nvarchar(50)` in the result metadata.
+                                    types.push(format!("{:?}", col.column_type()));
+                                }
+                                names = exec::dedup_names(&names);
+                            }
+                            Ok(QueryItem::Row(row)) if row.result_index() == 0 => {
+                                total += 1;
+                                // Past the cap the row is still consumed, only the decode is skipped.
+                                if rows.len() < cap {
+                                    rows.push(row.cells().map(|(_, cd)| cell_to_string(cd)).collect());
+                                }
+                            }
+                            // ponytail: only a statement's first result set is shown; a second
+                            // one (a stored procedure returning several) is drained and dropped.
+                            // Upgrade path: one StmtOutput per result set.
+                            Ok(_) => {}
+                            Err(e) => {
+                                failed = Some(e);
+                                break;
+                            }
                         }
                     }
-                    let row_count = d.first().map(|c| c.len()).unwrap_or(0);
-                    let batch = to_batch(&cols, &d)?;
-                    outs.push(StmtOutput {
-                        columns: cols.iter().map(|c| (c.clone(), String::new())).collect(),
-                        batch: Some(batch),
-                        row_count,
-                        total_rows: total as u64,
-                        truncated,
-                        exec_ms: start.elapsed().as_millis() as u64,
-                        ..Default::default()
-                    });
-                }
-                Err(e) => {
-                    outs.push(StmtOutput {
-                        exec_ms: start.elapsed().as_millis() as u64,
-                        error: Some(QueryError {
-                            message: e.to_string(),
-                            line: None,
-                            position: None,
-                        }),
-                        ..Default::default()
-                    });
-                    break;
                 }
             }
+            let exec_ms = start.elapsed().as_millis() as u64;
+            if let Some(e) = failed {
+                // The pinned session outlives the failed batch, so an aborted transaction would
+                // otherwise hold its locks over every statement that follows it.
+                if let Ok(mut s) = c.simple_query("IF @@TRANCOUNT > 0 ROLLBACK").await {
+                    while s.next().await.is_some() {}
+                }
+                outs.push(StmtOutput {
+                    exec_ms,
+                    error: Some(stmt_error(&e)),
+                    ..Default::default()
+                });
+                break;
+            }
+            // ponytail: tiberius' QueryStream drops the DONE tokens that carry the row count, so
+            // it takes a second round-trip. Upgrade path: a tiberius API that surfaces DONE.
+            // A statement with a result set reports its rows through `row_count` instead —
+            // surfacing @@ROWCOUNT there would have the UI claim `SELECT 1` affected a row.
+            let rows_affected = if names.is_empty() { rowcount(&mut c).await } else { None };
+            outs.push(StmtOutput {
+                rows_affected,
+                batch: if names.is_empty() { None } else { Some(exec::text_batch(&names, &rows)?) },
+                columns: names.into_iter().zip(types).collect(),
+                row_count: rows.len(),
+                total_rows: total,
+                truncated: total > rows.len() as u64,
+                exec_ms,
+                error: None,
+                notice: None,
+            });
         }
         Ok(outs)
     }
@@ -432,20 +537,6 @@ impl SqlDriver for SqlServerDriver {
             .map_err(db)?;
         let n = rows.first().and_then(|r| r.get::<i64, _>(0)).unwrap_or(0);
         Ok(RowCount { count: Some(n.max(0)), exact: true })
-    }
-
-    async fn run_query(&self, sql: &str, cap: usize) -> DResult<QueryResult> {
-        let start = std::time::Instant::now();
-        let (cols, mut d) = self.query_text(sql).await?;
-        let nrows = d.first().map(|c| c.len()).unwrap_or(0);
-        let truncated = nrows > cap;
-        if truncated {
-            for c in d.iter_mut() {
-                c.truncate(cap);
-            }
-        }
-        let batch = to_batch(&cols, &d)?;
-        Ok(QueryResult { batch, truncated, exec_ms: start.elapsed().as_millis() as u64 })
     }
 
     async fn primary_key(&self, schema: &str, table: &str) -> DResult<Vec<std::string::String>> {
@@ -753,8 +844,8 @@ impl SqlDriver for SqlServerDriver {
 
 #[cfg(test)]
 mod tests {
-    use super::encryption_for;
-    use tiberius::EncryptionLevel;
+    use super::{cell_to_string, encryption_for};
+    use tiberius::{ColumnData, EncryptionLevel};
 
     /// `sslmode` is the only TLS knob the UI exposes. The old driver hardcoded
     /// `Encrypt=false;TrustServerCertificate=true` into an ADO string, so every credential and
@@ -769,6 +860,73 @@ mod tests {
         // verify-ca / verify-full must NOT accept a self-signed certificate.
         assert_eq!(encryption_for("verify-ca"), (EncryptionLevel::Required, false));
         assert_eq!(encryption_for("verify-full"), (EncryptionLevel::Required, false));
+    }
+
+    /// Days since 0001-01-01, which is how TDS 7.3 stores a `date`.
+    fn days(y: i32, m: u32, d: u32) -> u32 {
+        use tiberius::time::chrono::NaiveDate;
+        NaiveDate::from_ymd_opt(y, m, d)
+            .unwrap()
+            .signed_duration_since(NaiveDate::from_ymd_opt(1, 1, 1).unwrap())
+            .num_days() as u32
+    }
+
+    #[test]
+    fn cell_to_string_renders_temporal_types_not_debug() {
+        use tiberius::time::{Date, DateTime2, DateTimeOffset, Time};
+        let date = Date::new(days(2026, 9, 23));
+        let time = Time::new(13 * 3600 + 45 * 60 + 7, 0); // 13:45:07, scale 0
+        let s = |cd: ColumnData<'static>| cell_to_string(&cd).unwrap();
+        assert_eq!(s(ColumnData::Date(Some(date))), "2026-09-23");
+        assert_eq!(s(ColumnData::Time(Some(time))), "13:45:07");
+        assert_eq!(s(ColumnData::DateTime2(Some(DateTime2::new(date, time)))), "2026-09-23 13:45:07");
+        // The stored datetime2 is UTC; +05:30 (330 minutes east) shifts the wall clock.
+        let dto = DateTimeOffset::new(DateTime2::new(date, time), 330);
+        assert_eq!(s(ColumnData::DateTimeOffset(Some(dto))), "2026-09-23 19:15:07 +05:30");
+    }
+
+    #[test]
+    fn cell_to_string_renders_xml_decimals_and_guids() {
+        use std::borrow::Cow;
+        use tiberius::numeric::Numeric;
+        use tiberius::xml::XmlData;
+        let s = |cd: ColumnData<'static>| cell_to_string(&cd).unwrap();
+        assert_eq!(s(ColumnData::Xml(Some(Cow::Owned(XmlData::new("<note>1</note>"))))), "<note>1</note>");
+        assert_eq!(s(ColumnData::Numeric(Some(Numeric::new_with_scale(123456, 2)))), "1234.56");
+        // tiberius' own `Display` builds this from int_part()/dec_part(), which both carry the
+        // sign, so it renders `-12.-34`.
+        assert_eq!(s(ColumnData::Numeric(Some(Numeric::new_with_scale(-1234, 2)))), "-12.34");
+        assert_eq!(s(ColumnData::Numeric(Some(Numeric::new_with_scale(5, 2)))), "0.05");
+        assert_eq!(s(ColumnData::Numeric(Some(Numeric::new_with_scale(42, 0)))), "42");
+        let g = tiberius::Uuid::from_u128(0x0192_3f4a_5b6c_7d8e_9f01_2345_6789_abcd);
+        assert_eq!(s(ColumnData::Guid(Some(g))), "01923f4a-5b6c-7d8e-9f01-23456789abcd");
+    }
+
+    /// A NULL of any variant must stay a NULL, never the string "None".
+    #[test]
+    fn cell_to_string_keeps_every_null_variant_null() {
+        for null in [
+            ColumnData::U8(None),
+            ColumnData::I16(None),
+            ColumnData::I32(None),
+            ColumnData::I64(None),
+            ColumnData::F32(None),
+            ColumnData::F64(None),
+            ColumnData::Bit(None),
+            ColumnData::String(None),
+            ColumnData::Guid(None),
+            ColumnData::Binary(None),
+            ColumnData::Numeric(None),
+            ColumnData::Xml(None),
+            ColumnData::DateTime(None),
+            ColumnData::SmallDateTime(None),
+            ColumnData::Time(None),
+            ColumnData::Date(None),
+            ColumnData::DateTime2(None),
+            ColumnData::DateTimeOffset(None),
+        ] {
+            assert!(cell_to_string(&null).is_none(), "NULL must stay NULL: {null:?}");
+        }
     }
 
     /// Smoke-test that the FK query uses the documented sys.* tables and joins through
