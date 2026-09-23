@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { errorLine, errorText, logError } from "./report";
 
 afterEach(() => vi.restoreAllMocks());
@@ -50,9 +50,51 @@ describe("logError", () => {
     logError("inspector: foreign keys", e);
     expect(spy).toHaveBeenCalledWith("inspector: foreign keys:", e);
   });
+});
 
-  it("never throws, whatever it is handed", () => {
+// Plain vitest has no Tauri and no bridge, so `logClientError` returns before invoking and
+// the backend half of logError is never reached. Stub VITE_IPC_BRIDGE (read at module load,
+// hence the re-import) to exercise it for real — same shape as commands.bridge.test.ts.
+describe("logError with a backend to talk to", () => {
+  let report: typeof import("./report");
+  const fetchMock = vi.fn();
+
+  beforeEach(async () => {
+    vi.stubEnv("VITE_IPC_BRIDGE", "1");
+    vi.stubGlobal("fetch", fetchMock);
     vi.spyOn(console, "error").mockImplementation(() => {});
-    expect(() => logError("ctx", undefined)).not.toThrow();
+    fetchMock.mockReset();
+    vi.resetModules();
+    report = await import("./report");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it("posts the shaped line to log_client_error", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response("null", { status: 200, headers: { "content-type": "application/json" } }),
+    );
+    report.logError("plugins: list", "boom");
+    await flush();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/__ipc/log_client_error");
+    expect(JSON.parse(init.body)).toEqual({ message: "plugins: list: boom" });
+  });
+
+  it("never throws or rejects when the log write itself fails", async () => {
+    fetchMock.mockRejectedValueOnce(new Error("bridge is down"));
+    expect(() => report.logError("ctx", undefined)).not.toThrow();
+    // The swallowed rejection must settle without surfacing as an unhandled rejection.
+    await flush();
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 });
+
+/** Let the fire-and-forget invoke settle. */
+function flush() {
+  return new Promise((r) => setTimeout(r, 0));
+}

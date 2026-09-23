@@ -156,6 +156,10 @@ export function MainShell() {
   // Sidebar-foot "+" → new-object menu (TablePlus parity, Slice 31).
   const [sidebarMenu, setSidebarMenu] = useState<{ x: number; y: number } | null>(null);
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; tab: Tab } | null>(null);
+  // A failed export from the object context menu has nowhere else to land: the menu is gone
+  // by the time the write fails, and the Table/Query status bars belong to a tab body that
+  // may not even be open. One message, one strip — not a toast system.
+  const [exportMsg, setExportMsg] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState<string | null>(null);
 
   // Keep the sidebar schema selection valid across connection/database switches.
@@ -646,6 +650,20 @@ export function MainShell() {
         </button>
       )}
 
+      {exportMsg && (
+        <div className="flex h-7 shrink-0 items-center gap-2 border-b border-danger/30 bg-danger/10 px-3 text-[11px] text-danger">
+          <span className="min-w-0 flex-1 truncate" title={exportMsg}>
+            {exportMsg}
+          </span>
+          <button
+            onClick={() => setExportMsg(null)}
+            className="shrink-0 underline underline-offset-2 hover:opacity-80"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {/* ── BODY ─────────────────────────────────────────────────────────── */}
       <div className="flex min-h-0 flex-1">
         {showSidebar && (
@@ -958,6 +976,7 @@ export function MainShell() {
               );
             } catch (e) {
               logError(`export ${obj.name} as ${fmt}`, e);
+              setExportMsg(`Could not export ${obj.name} as ${fmt.toUpperCase()}: ${e}`);
             }
           };
           const items: (ContextMenuItem | "separator")[] = [

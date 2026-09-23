@@ -1155,7 +1155,13 @@ export function logClientError(message: string): void {
 export async function downloadText(filename: string, text: string, mime = "text/plain") {
   if (inTauri() && !BRIDGE) {
     const { save } = await import("@tauri-apps/plugin-dialog");
-    const path = await save({ defaultPath: filename });
+    // `defaultPath` only seeds the filename; the type dropdown comes from `filters`, which
+    // is also what makes the OS re-append the extension the Rust side insists on.
+    const ext = filename.split(".").pop() ?? "";
+    const path = await save({
+      defaultPath: filename,
+      filters: ext && ext !== filename ? [{ name: ext.toUpperCase(), extensions: [ext] }] : [],
+    });
     if (path === null) return; // cancelled
     await invoke("write_text_file", { path, contents: text });
     return;

@@ -1385,15 +1385,38 @@ pub fn write_onboarding_state<R: tauri::Runtime>(
     crate::appdir::write_atomic(&path, text.as_bytes()).map_err(|e| e.to_string())
 }
 
+/// File types this app actually exports (`downloadText` call sites in `src/`).
+const EXPORT_EXTS: [&str; 4] = ["csv", "json", "sql", "txt"];
+
+/// Refuse a destination the app would never legitimately produce. The path comes from the
+/// native Save dialog, but nothing server-side can *prove* that, so this is the bound: an
+/// absolute path ending in an extension we export. It will not stop a determined attacker
+/// who is happy to overwrite `~/notes.txt`, but it does keep a compromised webview away from
+/// dotfiles, shell profiles, authorized_keys and binaries — for four lines and no redesign.
+fn check_export_path(path: &str) -> Result<(), String> {
+    if path.is_empty() {
+        return Err("no destination path".into());
+    }
+    let p = std::path::Path::new(path);
+    if !p.is_absolute() {
+        return Err(format!("{path}: an export must be written to an absolute path"));
+    }
+    match p.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase) {
+        Some(ext) if EXPORT_EXTS.contains(&ext.as_str()) => Ok(()),
+        _ => Err(format!("{path}: an export must end in {}", EXPORT_EXTS.join(", "))),
+    }
+}
+
 /// Write an export to a path the user just picked in the native Save dialog. A webview
 /// cannot write a file, and the `<a download>` blob trick does nothing in WKWebView — so
 /// every CSV/JSON export in the packaged app ends here. Atomic, so a failed write never
 /// replaces an existing file with a truncated one.
 ///
-/// The path is arbitrary by design: it comes from the OS file dialog, which is the user's
-/// own choice and the only thing that authorises the write. Nothing else may call this.
+/// Only the frontend's export buttons may call this; `check_export_path` is the cheap
+/// defence in depth for when that stops being true.
 #[tauri::command(async)]
 pub fn write_text_file(path: String, contents: String) -> Result<(), String> {
+    check_export_path(&path)?;
     crate::appdir::write_atomic(std::path::Path::new(&path), contents.as_bytes())
         .map_err(|e| e.to_string())
 }
@@ -1449,5 +1472,43 @@ mod tests {
         assert!(s.get("a").is_none());
         assert!(s.get("b").is_some());
         assert_eq!(s.bytes, s.entries.iter().map(|(_, _, b)| b.get_array_memory_size()).sum::<usize>());
+    }
+
+    // `write_text_file` writes wherever it is told, so the guard is the only thing standing
+    // between a compromised webview and any file the user can write.
+    #[test]
+    fn export_path_accepts_what_the_app_actually_exports() {
+        for p in [
+            "/Users/x/Documents/result.csv",
+            "/Users/x/Documents/orders.json",
+            "/tmp/schema.sql",
+            "/tmp/plugin-output.txt",
+            "/tmp/RESULT.CSV",           // the user may type any case
+            "/tmp/my report.final.json", // dots and spaces in the stem are fine
+        ] {
+            assert_eq!(check_export_path(p), Ok(()), "{p} should be allowed");
+        }
+    }
+
+    #[test]
+    fn export_path_rejects_an_empty_or_relative_destination() {
+        assert!(check_export_path("").is_err(), "empty path");
+        assert!(check_export_path("result.csv").is_err(), "bare filename");
+        assert!(check_export_path("../../result.csv").is_err(), "relative traversal");
+        assert!(check_export_path("~/result.csv").is_err(), "unexpanded tilde is not absolute");
+    }
+
+    #[test]
+    fn export_path_rejects_a_file_type_the_app_never_exports() {
+        for p in [
+            "/Users/x/.zshrc",
+            "/Users/x/.ssh/authorized_keys",
+            "/usr/local/bin/tool.sh",
+            "/Users/x/Documents/notes",      // no extension at all
+            "/Users/x/Documents/",           // a directory
+            "/Users/x/Documents/thing.csv.sh",
+        ] {
+            assert!(check_export_path(p).is_err(), "{p} must be refused");
+        }
     }
 }
