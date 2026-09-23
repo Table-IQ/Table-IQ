@@ -1,6 +1,9 @@
+import { splitStatements, statementAt } from "./sqlSplit";
+
 /**
- * Extract the SQL to run for ⇧⌘↵: (a) explicit selection range, (b) statement
- * under the cursor split by `;`, (c) empty when the doc is blank.
+ * Extract the SQL to run: (a) explicit selection range, (b) statement under
+ * the cursor (per `sqlSplit`'s dialect-aware splitter), (c) empty when the
+ * doc is blank.
  *
  * Pure — no CodeMirror imports — so it tests cleanly in Vitest.
  */
@@ -20,26 +23,13 @@ export function extractRunTarget(
     const sql = doc.slice(selFrom, selTo);
     return { sql: sql.trim(), range: [selFrom, selTo] };
   }
-  // Cursor mode: find the statement bracketed by `;` boundaries around `selFrom`.
-  let start = 0;
-  let i = 0;
-  // Last `;` strictly before the cursor.
-  for (i = selFrom - 1; i >= 0; i--) {
-    if (doc[i] === ";") {
-      start = i + 1;
-      break;
-    }
-  }
-  // First `;` at or after the cursor.
-  let end = doc.length;
-  for (i = selFrom; i < doc.length; i++) {
-    if (doc[i] === ";") {
-      end = i + 1; // include the trailing `;`
-      break;
-    }
-  }
-  // Trim leading whitespace from the span to keep range honest.
-  while (start < end && /\s/.test(doc[start])) start++;
-  while (end > start && /\s/.test(doc[end - 1])) end--;
-  return { sql: doc.slice(start, end), range: [start, end] };
+  // Cursor mode: the statement under the cursor, per `statementAt` — this also
+  // fixes the old bug where a cursor right after the final `;` found nothing.
+  // ponytail: hardcoded to the postgres dialect — this function's signature has no
+  // dialect param (kept stable for existing callers per the Task 5 brief). MySQL
+  // backtick identifiers and sqlserver `[...]`/`GO` rules aren't honored here.
+  // Upgrade path: thread the connection's SqlDialect through when a caller needs it.
+  const stmt = statementAt(splitStatements(doc, "postgres"), selFrom);
+  if (!stmt) return { sql: "", range: [selFrom, selFrom] };
+  return { sql: stmt.text, range: [stmt.from, stmt.to] };
 }

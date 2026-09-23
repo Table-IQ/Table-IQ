@@ -9,11 +9,11 @@ describe("extractRunTarget", () => {
     expect(r.range).toEqual([0, 9]);
   });
 
-  it("finds the statement under the cursor when no selection", () => {
+  it("finds the statement under the cursor when no selection (no trailing ;)", () => {
     const doc = "SELECT 1;\nSELECT 2;\nSELECT 3;";
-    // Cursor on second statement
+    // Cursor on second statement.
     const r = extractRunTarget(doc, 12, 12);
-    expect(r.sql).toBe("SELECT 2;");
+    expect(r.sql).toBe("SELECT 2");
   });
 
   it("handles cursor at end of last statement (no trailing ;)", () => {
@@ -31,6 +31,20 @@ describe("extractRunTarget", () => {
   it("cursor in leading whitespace finds the next statement", () => {
     const doc = "   SELECT 1;";
     const r = extractRunTarget(doc, 1, 1);
-    expect(r.sql).toBe("SELECT 1;");
+    expect(r.sql).toBe("SELECT 1");
+  });
+
+  it("handles the cursor right after the final ; (the bug being fixed)", () => {
+    const doc = "SELECT 1; SELECT 2;";
+    const r = extractRunTarget(doc, doc.length, doc.length);
+    expect(r.sql).toBe("SELECT 2");
+  });
+
+  it("ignores a ; inside a string when finding the statement under the cursor", () => {
+    const doc = "SELECT ';' AS x; SELECT 2;";
+    // Cursor inside the string literal, before the embedded `;`.
+    const pos = doc.indexOf("';'") + 1;
+    const r = extractRunTarget(doc, pos, pos);
+    expect(r.sql).toBe("SELECT ';' AS x");
   });
 });
