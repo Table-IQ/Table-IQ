@@ -39,11 +39,26 @@ pub fn quarantine(path: &Path) -> std::io::Result<PathBuf> {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(format!(".corrupt-{ts}"));
-    let dest = path.with_file_name(name);
-    std::fs::rename(path, &dest)?;
-    Ok(dest)
+    let base = path.file_name().unwrap_or_default().to_os_string();
+    // The stamp only has second granularity, so two quarantines can land on the same name.
+    // Renaming over the first would destroy exactly what this function exists to keep.
+    for n in 0..1000 {
+        let mut name = base.clone();
+        name.push(if n == 0 {
+            format!(".corrupt-{ts}")
+        } else {
+            format!(".corrupt-{ts}-{n}")
+        });
+        let dest = path.with_file_name(name);
+        if !dest.exists() {
+            std::fs::rename(path, &dest)?;
+            return Ok(dest);
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        format!("{} already has 1000 quarantined copies this second", path.display()),
+    ))
 }
 
 /// Quarantine a config file that failed to parse and log both facts. The caller carries on
@@ -84,6 +99,22 @@ mod tests {
         let p = dir.path().join("nested").join("ai.json");
         write_atomic(&p, b"{}").unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "{}");
+    }
+
+    /// The stamp has second granularity, so two quarantines in the same second collide. An
+    /// unconditional rename would destroy the first copy — the very thing quarantine exists
+    /// to prevent.
+    #[test]
+    fn quarantine_never_overwrites_an_earlier_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("connections.json");
+        std::fs::write(&p, b"first").unwrap();
+        let first = quarantine(&p).unwrap();
+        std::fs::write(&p, b"second").unwrap();
+        let second = quarantine(&p).unwrap();
+        assert_ne!(first, second, "the second quarantine reused the first name");
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "first");
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), "second");
     }
 
     #[test]

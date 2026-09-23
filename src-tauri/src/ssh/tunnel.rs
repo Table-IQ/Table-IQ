@@ -65,17 +65,34 @@ enum Verdict {
 /// so the user's `~/.ssh/known_hosts` can never be overridden by TableIQ's own store.
 fn verdict(host: &str, port: u16, key: &key::PublicKey, files: &[PathBuf]) -> Verdict {
     for file in files {
+        // russh cannot tell "no such file" from "cannot open it": both end up as an empty
+        // list of recorded keys, i.e. `Ok(false)`. Falling through on the second would TOFU
+        // a key even though this file may pin the host, so open it ourselves first and only
+        // skip a genuinely absent one.
+        match std::fs::File::open(file) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                return Verdict::Changed(format!(
+                    "Refusing to connect: {} exists but cannot be read ({e}). It may record \
+                     the host key for {host}:{port} — fix its permissions, or remove it if \
+                     you no longer want it consulted.",
+                    file.display()
+                ))
+            }
+        }
         match russh::keys::check_known_hosts_path(host, port, key, file) {
             Ok(true) => return Verdict::Known,
             Ok(false) => continue, // not recorded in this file — ask the next one
             Err(russh::keys::Error::KeyChanged { line }) => {
                 return Verdict::Changed(changed_message(host, port, key, file, line))
             }
-            // The host IS recorded here but we cannot read the entry (unsupported key type,
-            // unreadable file). Learning past it would silently bypass the user's pinning.
+            // The host IS recorded here but we cannot read the entry (an unsupported key
+            // type). Learning past it would silently bypass the user's own pinning.
             Err(e) => {
                 return Verdict::Changed(format!(
-                    "Refusing to connect: TableIQ cannot read the recorded SSH host key for                      {host}:{port} in {}: {e}",
+                    "Refusing to connect: TableIQ cannot read the recorded SSH host key for \
+                     {host}:{port} in {}: {e}",
                     file.display()
                 ))
             }
@@ -97,7 +114,9 @@ fn changed_message(
         .and_then(|keys| keys.into_iter().find(|(l, _)| *l == line).map(|(_, k)| k.fingerprint()))
         .unwrap_or_else(|| "unavailable".to_string());
     format!(
-        "SSH host key for {host}:{port} has CHANGED — refusing to connect. Someone may be          intercepting this connection.\n  expected SHA256:{recorded}\n  received SHA256:{}\n         If this change is expected, remove line {line} for {host} from {} and reconnect.",
+        "SSH host key for {host}:{port} has CHANGED — refusing to connect. Someone may be \
+         intercepting this connection.\n  expected SHA256:{recorded}\n  received SHA256:{}\n\
+         If this change is expected, remove line {line} for {host} from {} and reconnect.",
         offered.fingerprint(),
         file.display()
     )
@@ -353,6 +372,53 @@ mod tests {
             .expect("generate ed25519")
             .clone_public_key()
             .expect("public half")
+    }
+
+    /// `known_host_keys_path` answers `Ok(vec![])` when it cannot open the file, which is
+    /// indistinguishable from "no entry for this host" — so an unreadable `~/.ssh/known_hosts`
+    /// fell through and TOFU'd whatever key was offered, even though that file may pin this
+    /// very bastion. It must refuse instead.
+    #[test]
+    fn unreadable_known_hosts_is_refused_not_learned() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path().join("user_known_hosts");
+        let app = dir.path().join("known_hosts");
+        let recorded = pubkey();
+        russh::keys::learn_known_hosts_path("bastion", 22, &recorded, &user).unwrap();
+        std::fs::set_permissions(&user, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let impostor = pubkey();
+        match verdict("bastion", 22, &impostor, &[user.clone(), app]) {
+            Verdict::Changed(msg) => {
+                assert!(msg.contains(&user.display().to_string()), "no file named in: {msg}")
+            }
+            v => panic!("an unreadable known_hosts must never fall through to TOFU, got {v:?}"),
+        }
+    }
+
+    /// A *missing* file is not an unreadable one: it just means "ask the next file".
+    #[test]
+    fn a_missing_known_hosts_file_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = [dir.path().join("nope"), dir.path().join("known_hosts")];
+        assert_eq!(verdict("h", 22, &pubkey(), &files), Verdict::Learn);
+    }
+
+    /// This is what a user reads while an interception may be under way; it must not be
+    /// littered with stray runs of spaces from a wrapped format string.
+    #[test]
+    fn refusal_messages_are_cleanly_spaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("known_hosts");
+        let recorded = pubkey();
+        russh::keys::learn_known_hosts_path("bastion", 22, &recorded, &app).unwrap();
+        let Verdict::Changed(msg) = verdict("bastion", 22, &pubkey(), &[app]) else {
+            panic!("expected Changed");
+        };
+        for l in msg.lines() {
+            assert!(!l.trim_start().contains("  "), "stray run of spaces in: {l:?}");
+        }
     }
 
     /// An unrecorded host is trusted on first use and recorded in TableIQ's own store;

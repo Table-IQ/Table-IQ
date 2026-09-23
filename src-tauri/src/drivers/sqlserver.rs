@@ -412,16 +412,14 @@ impl SqlDriver for SqlServerDriver {
                 .unwrap()
                 .as_nanos()
         );
-        self.cursors
-            .lock()
-            .unwrap()
+        crate::lk(&self.cursors)
             .insert(id.clone(), CursorState { sql: sql.to_string(), offset: 0 });
         Ok(CursorId(id))
     }
 
     async fn fetch_next(&self, cursor: &CursorId, n: usize) -> DResult<RecordBatch> {
         let (sql, offset) = {
-            let map = self.cursors.lock().unwrap();
+            let map = crate::lk(&self.cursors);
             let s = map.get(&cursor.0).ok_or_else(|| DriverError::Db("unknown cursor".into()))?;
             (s.sql.clone(), s.offset)
         };
@@ -432,7 +430,7 @@ impl SqlDriver for SqlServerDriver {
         let (cols, d) = self.query_text(&q).await?;
         let got = d.first().map(|c| c.len()).unwrap_or(0);
         if got > 0 {
-            if let Some(s) = self.cursors.lock().unwrap().get_mut(&cursor.0) {
+            if let Some(s) = crate::lk(&self.cursors).get_mut(&cursor.0) {
                 s.offset += got;
             }
         }
@@ -440,7 +438,7 @@ impl SqlDriver for SqlServerDriver {
     }
 
     async fn close_cursor(&self, cursor: &CursorId) -> DResult<()> {
-        self.cursors.lock().unwrap().remove(&cursor.0);
+        crate::lk(&self.cursors).remove(&cursor.0);
         Ok(())
     }
 
