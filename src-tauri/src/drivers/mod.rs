@@ -152,6 +152,52 @@ pub struct ForeignKey {
     pub to_column: String,
 }
 
+/// One column as the Structure tab shows it — everything [`ColumnInfo`] carries plus the
+/// two facts only a per-table lookup can afford: the decompiled default and the comment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ColumnDetail {
+    pub name: String,
+    /// Full engine type text (`numeric(12,2)`, `enum('a','b')`), not the base type.
+    pub data_type: String,
+    pub nullable: bool,
+    /// The column's DEFAULT expression, or `None` when it has none. Never `Some("")`.
+    pub default: Option<String>,
+    pub is_pk: bool,
+    /// The column's comment/description, or `None`. Engines that store `''` for "no
+    /// comment" (MySQL) normalise it to `None`.
+    pub comment: Option<String>,
+}
+
+/// One index on a table. A composite index lists its columns in key order.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndexInfo {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub unique: bool,
+    /// This index *is* the primary key (`primary` implies `unique`).
+    pub primary: bool,
+    /// Engine DDL for the index where it can be had, for the detail row.
+    pub definition: Option<String>,
+}
+
+/// One trigger on a table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TriggerInfo {
+    pub name: String,
+    /// When it fires, e.g. `BEFORE INSERT` / `AFTER INSERT OR UPDATE`.
+    pub timing_event: String,
+    /// The trigger's DDL/body where the engine exposes it.
+    pub definition: Option<String>,
+}
+
+/// One table's full structure (the Structure tab's three sub-tabs).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TableStructure {
+    pub columns: Vec<ColumnDetail>,
+    pub indexes: Vec<IndexInfo>,
+    pub triggers: Vec<TriggerInfo>,
+}
+
 /// One statement's outcome in a multi-statement run (Task 3). Statements that return no
 /// result set (DML/DDL) leave `columns` empty and `batch` `None`.
 #[derive(Debug, Default)]
@@ -470,6 +516,12 @@ pub trait SqlDriver: Send + Sync {
     /// Foreign-key edges for the ERD. Default: none.
     async fn foreign_keys(&self) -> DResult<Vec<ForeignKey>> {
         Ok(Vec::new())
+    }
+
+    /// One table's columns + indexes + triggers (the Structure tab). Default: unsupported —
+    /// the UI shows a note for the engines that don't answer.
+    async fn describe_table(&self, _schema: &str, _table: &str) -> DResult<TableStructure> {
+        Err(DriverError::NotImplemented)
     }
 
     /// Server-side enumeration of databases this connection can reach. Used by

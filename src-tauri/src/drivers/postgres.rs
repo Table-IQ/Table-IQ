@@ -15,9 +15,10 @@ use sqlx::postgres::{PgDatabaseError, PgErrorPosition, PgPoolOptions, PgQueryRes
 use sqlx::{Executor, Pool, Postgres, Row};
 
 use super::{
-    build_insert_sql, build_order_by, build_where_clause, exec, CancelToken, ColumnFilter,
-    ColumnInfo, CursorId, DResult, DriverError, EditSpec, ObjectInfo, ObjectKind, QueryError,
-    RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver, StmtOutput,
+    build_insert_sql, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
+    ColumnFilter, ColumnInfo, CursorId, DResult, DriverError, EditSpec, IndexInfo, ObjectInfo,
+    ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver, StmtOutput,
+    TableStructure, TriggerInfo,
 };
 
 /// Postgres reports "canceling statement due to user request" as SQLSTATE 57014; that is a
@@ -661,6 +662,114 @@ impl SqlDriver for PgDriver {
                 to_column: r.try_get("to_column").unwrap_or_default(),
             })
             .collect())
+    }
+
+    /// Structure tab. The relation is identified by one `$1::regclass` bind of its quoted,
+    /// qualified name — so the lookup is schema-scoped without any identifier reaching the
+    /// SQL text. `pg_get_expr`/`pg_get_indexdef`/`pg_get_triggerdef` decompile the catalog
+    /// exactly the way `psql \d` does.
+    async fn describe_table(&self, schema: &str, table: &str) -> DResult<TableStructure> {
+        let qualified = format!("{}.{}", quote_ident(schema), quote_ident(table));
+
+        let cols = sqlx::query(
+            "SELECT a.attname AS name, \
+                    format_type(a.atttypid, a.atttypmod) AS data_type, \
+                    NOT a.attnotnull AS nullable, \
+                    pg_get_expr(d.adbin, d.adrelid) AS default_expr, \
+                    COALESCE(i.indisprimary, false) AS is_pk, \
+                    col_description(a.attrelid, a.attnum) AS comment \
+             FROM pg_attribute a \
+             LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
+             LEFT JOIN pg_index i \
+               ON i.indrelid = a.attrelid AND i.indisprimary AND a.attnum = ANY(i.indkey) \
+             WHERE a.attrelid = $1::regclass AND a.attnum > 0 AND NOT a.attisdropped \
+             ORDER BY a.attnum",
+        )
+        .bind(&qualified)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+
+        // `indnkeyatts` excludes INCLUDE columns; pg_get_indexdef(oid, n, true) renders the
+        // n-th key — a column name, or the expression for an expression index.
+        let idx = sqlx::query(
+            "SELECT ci.relname AS name, ix.indisunique AS is_unique, ix.indisprimary AS is_primary, \
+                    pg_get_indexdef(ix.indexrelid) AS definition, \
+                    (SELECT array_agg(pg_get_indexdef(ix.indexrelid, k.ord::int, true) ORDER BY k.ord) \
+                       FROM generate_series(1, ix.indnkeyatts) AS k(ord)) AS columns \
+             FROM pg_index ix \
+             JOIN pg_class ci ON ci.oid = ix.indexrelid \
+             WHERE ix.indrelid = $1::regclass \
+             ORDER BY ix.indisprimary DESC, ci.relname",
+        )
+        .bind(&qualified)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+
+        // `tgtype` is a bitmask: 2 = BEFORE, 64 = INSTEAD OF, 4/8/16/32 = INSERT/DELETE/
+        // UPDATE/TRUNCATE. `NOT tgisinternal` drops the triggers Postgres creates to enforce
+        // foreign keys — the user never wrote those.
+        let trg = sqlx::query(
+            "SELECT t.tgname AS name, \
+                    CASE WHEN (t.tgtype::int & 64) <> 0 THEN 'INSTEAD OF' \
+                         WHEN (t.tgtype::int & 2) <> 0 THEN 'BEFORE' ELSE 'AFTER' END \
+                      || ' ' || array_to_string(ARRAY[ \
+                           CASE WHEN (t.tgtype::int & 4) <> 0 THEN 'INSERT' END, \
+                           CASE WHEN (t.tgtype::int & 8) <> 0 THEN 'DELETE' END, \
+                           CASE WHEN (t.tgtype::int & 16) <> 0 THEN 'UPDATE' END, \
+                           CASE WHEN (t.tgtype::int & 32) <> 0 THEN 'TRUNCATE' END], ' OR ') \
+                      AS timing_event, \
+                    pg_get_triggerdef(t.oid) AS definition \
+             FROM pg_trigger t \
+             WHERE t.tgrelid = $1::regclass AND NOT t.tgisinternal \
+             ORDER BY t.tgname",
+        )
+        .bind(&qualified)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+
+        Ok(TableStructure {
+            columns: cols
+                .iter()
+                .map(|r| {
+                    Ok(ColumnDetail {
+                        name: r.try_get("name").map_err(db)?,
+                        data_type: r.try_get("data_type").map_err(db)?,
+                        nullable: r.try_get("nullable").map_err(db)?,
+                        default: r.try_get("default_expr").map_err(db)?,
+                        is_pk: r.try_get("is_pk").map_err(db)?,
+                        comment: r.try_get("comment").map_err(db)?,
+                    })
+                })
+                .collect::<DResult<Vec<_>>>()?,
+            indexes: idx
+                .iter()
+                .map(|r| {
+                    Ok(IndexInfo {
+                        name: r.try_get("name").map_err(db)?,
+                        columns: r
+                            .try_get::<Option<Vec<String>>, _>("columns")
+                            .map_err(db)?
+                            .unwrap_or_default(),
+                        unique: r.try_get("is_unique").map_err(db)?,
+                        primary: r.try_get("is_primary").map_err(db)?,
+                        definition: r.try_get("definition").map_err(db)?,
+                    })
+                })
+                .collect::<DResult<Vec<_>>>()?,
+            triggers: trg
+                .iter()
+                .map(|r| {
+                    Ok(TriggerInfo {
+                        name: r.try_get("name").map_err(db)?,
+                        timing_event: r.try_get("timing_event").map_err(db)?,
+                        definition: r.try_get("definition").map_err(db)?,
+                    })
+                })
+                .collect::<DResult<Vec<_>>>()?,
+        })
     }
 
     async fn explain_json(&self, sql: &str) -> DResult<String> {
