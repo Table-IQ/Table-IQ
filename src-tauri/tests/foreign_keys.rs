@@ -164,6 +164,20 @@ async fn sqlite_implicit_reference_resolves_to_the_parent_pk() {
         .execute(&pool)
         .await
         .unwrap();
+    // The two paths crossed: a COMPOSITE key whose target list is also implicit.
+    // Each column has to resolve to the PK column at its own position, not to the
+    // first one twice.
+    sqlx::query("CREATE TABLE c3 (x INTEGER, y INTEGER, FOREIGN KEY (x, y) REFERENCES p2)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    // A parent with no primary key at all: there is nothing to resolve to, and the
+    // ERD must still come back rather than panic.
+    sqlx::query("CREATE TABLE nopk (v TEXT)").execute(&pool).await.unwrap();
+    sqlx::query("CREATE TABLE c4 (id INTEGER PRIMARY KEY, z INTEGER REFERENCES nopk)")
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let drv =
         tableiq_lib::drivers::sqlite::SqliteDriver::connect(path.to_str().unwrap()).await.unwrap();
@@ -183,6 +197,27 @@ async fn sqlite_implicit_reference_resolves_to_the_parent_pk() {
     let pairs: Vec<(&str, &str)> =
         comp.iter().map(|r| (r.from_column.as_str(), r.to_column.as_str())).collect();
     assert_eq!(pairs, vec![("x", "a"), ("y", "b")]);
+
+    // Composite AND implicit: `seq + 1` has to index into the parent's PK, so the
+    // second column resolves to `b`, not to `a` again.
+    let comp_implicit: Vec<_> = fks.iter().filter(|f| f.from_table == "c3").collect();
+    assert_eq!(comp_implicit.len(), 2, "{comp_implicit:#?}");
+    assert_eq!(
+        comp_implicit[0].constraint, comp_implicit[1].constraint,
+        "one constraint, two pairs"
+    );
+    let implicit_pairs: Vec<(&str, &str)> =
+        comp_implicit.iter().map(|r| (r.from_column.as_str(), r.to_column.as_str())).collect();
+    assert_eq!(implicit_pairs, vec![("x", "a"), ("y", "b")], "in key order");
+
+    // A PK-less parent leaves the target unresolvable. The edge is still reported,
+    // with an empty target column — reaching this line at all is the no-panic assertion.
+    let orphan = fks
+        .iter()
+        .find(|f| f.from_table == "c4")
+        .expect("an unresolvable target must not drop the edge");
+    assert_eq!(orphan.to_table, "nopk");
+    assert_eq!(orphan.to_column, "", "nothing to resolve to, so no target column");
 
     drop(pool);
     let _ = std::fs::remove_file(&path);
