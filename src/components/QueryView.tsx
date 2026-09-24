@@ -182,9 +182,13 @@ export function QueryView({
       setCancelling(false);
       setError(null);
       setPlan(null);
-      const queryId = crypto.randomUUID();
-      runningQueryId.current = queryId;
       try {
+        // Inside the try on purpose: `crypto.randomUUID` is undefined outside a secure
+        // context, and throwing here after `runningRef.current = true` skipped the finally
+        // below — wedging Run as permanently disabled for the rest of the session. Now it
+        // surfaces as a normal query error and the button comes back.
+        const queryId = crypto.randomUUID();
+        runningQueryId.current = queryId;
         const metas = await runQuery(
           connId,
           items.map((i) => i.text),
