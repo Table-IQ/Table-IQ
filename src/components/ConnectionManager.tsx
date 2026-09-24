@@ -22,6 +22,7 @@ import {
 import { defaultSshConfig, type SshConfig } from "../lib/ssh";
 import { useConnections } from "../state/connectionStore";
 import { getLastConnected, markConnected } from "../lib/lastConnected";
+import { version as APP_VERSION } from "../../package.json";
 
 /** Default connection color (light-mode `--primary`). Connections still on this
  *  value are treated as "no custom tag" — so the row dot is suppressed. */
@@ -283,7 +284,7 @@ export function ConnectionManager() {
           <h1 className="mt-2 text-[36px] font-semibold leading-none tracking-tight text-text">
             Table<span className="text-primary">IQ</span>
           </h1>
-          <div className="text-[12px] text-muted">Version 0.1.0</div>
+          <div className="text-[12px] text-muted">Version {APP_VERSION}</div>
           <div className="mt-1 text-[11px] leading-relaxed text-muted-2">
             Local-first · zero telemetry
             <br />
