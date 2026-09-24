@@ -122,12 +122,32 @@ fn mysql_text_expr(col: &str) -> String {
     format!("CAST({} AS CHAR)", quote_ident(col))
 }
 
+/// PK types a keyset cursor can seek on. The cursor is the grid's text, compared back
+/// against the column, so the type must read that text back exactly: a binary string renders
+/// as `0x…` hex (or bytes the charset mangles) and FLOAT/DOUBLE as a rounded decimal, so a
+/// seek there repeats or skips rows. Anything else pages by OFFSET.
+fn seekable(data_type: &str) -> bool {
+    matches!(
+        data_type,
+        "tinyint" | "smallint" | "mediumint" | "int" | "bigint" | "decimal" | "char" | "varchar"
+            | "tinytext" | "text" | "mediumtext" | "longtext" | "date" | "datetime" | "timestamp"
+    )
+}
+
+/// What every page of a table needs from the catalog, cached per table (see
+/// [`super::MetaCache`]).
+struct MyMeta {
+    cols: Vec<String>,
+    pk: Vec<String>,
+    /// Every PK column is [`seekable`].
+    seek_ok: bool,
+}
+
 pub struct MySqlDriver {
     pool: Pool<MySql>,
     /// [`super::WINDOW_TIMEOUT_MS`]; only tests shorten it.
     window_timeout_ms: u64,
-    /// `(columns, pk)` per table for the browse path (see [`super::MetaCache`]).
-    meta: super::MetaCache<super::ColsPk>,
+    meta: super::MetaCache<Arc<MyMeta>>,
 }
 
 impl MySqlDriver {
@@ -163,17 +183,20 @@ impl MySqlDriver {
         self
     }
 
-    /// Cached `(columns, pk)` for the browse path. A missing relation is an error and is
-    /// not cached.
-    async fn browse_meta(&self, schema: &str, table: &str) -> DResult<super::ColsPk> {
+    /// Cached [`MyMeta`] for the browse path. A missing relation is an error and is not
+    /// cached.
+    async fn browse_meta(&self, schema: &str, table: &str) -> DResult<Arc<MyMeta>> {
         if let Some(m) = self.meta.get(schema, table) {
             return Ok(m);
         }
-        let cols = self.columns_of(schema, table).await?;
-        if cols.is_empty() {
+        let typed = self.columns_of(schema, table).await?;
+        if typed.is_empty() {
             return Err(DriverError::Db(format!("no such table {schema}.{table}")));
         }
-        let m = Arc::new((cols, self.primary_key(schema, table).await?));
+        let pk = self.primary_key(schema, table).await?;
+        let seek_ok = pk.iter().all(|p| typed.iter().any(|(c, t)| c == p && seekable(t)));
+        let cols = typed.into_iter().map(|(c, _)| c).collect();
+        let m = Arc::new(MyMeta { cols, pk, seek_ok });
         self.meta.put(schema, table, m.clone());
         Ok(m)
     }
@@ -192,7 +215,7 @@ impl MySqlDriver {
         token: Option<&CancelToken>,
     ) -> DResult<RecordBatch> {
         let meta = self.browse_meta(schema, table).await?;
-        let (cols, pk) = (&meta.0, &meta.1);
+        let (cols, pk) = (&meta.cols, &meta.pk);
         let order_sql = build_order_by(order, pk, cols, &quote_ident)?;
         let select_list = cols
             .iter()
@@ -217,9 +240,9 @@ impl MySqlDriver {
             1,
         );
         let mut offset = offset;
-        if let Some((k, kb)) =
-            after.and_then(|a| build_keyset(order, pk, a, &quote_ident, &mysql_placeholder, binds.len() + 1, true))
-        {
+        if let Some((k, kb)) = after.filter(|_| meta.seek_ok).and_then(|a| {
+            build_keyset(order, pk, a, &quote_ident, &mysql_placeholder, binds.len() + 1, true)
+        }) {
             where_sql = if where_sql.is_empty() { k } else { format!("{where_sql} AND {k}") };
             binds.extend(kb);
             offset = 0;
@@ -270,11 +293,10 @@ impl MySqlDriver {
         text_rows_to_batch(cols, &rows)
     }
 
-    /// Ordered column names for one relation (empty ⇒ no such relation). One catalog
-    /// lookup per window/export call.
-    async fn columns_of(&self, schema: &str, table: &str) -> DResult<Vec<String>> {
-        sqlx::query_scalar(
-            "SELECT CAST(COLUMN_NAME AS CHAR) AS column_name FROM information_schema.columns \
+    /// Ordered `(column, DATA_TYPE)` for one relation (empty ⇒ no such relation).
+    async fn columns_of(&self, schema: &str, table: &str) -> DResult<Vec<(String, String)>> {
+        sqlx::query_as(
+            "SELECT CAST(COLUMN_NAME AS CHAR), CAST(DATA_TYPE AS CHAR) FROM information_schema.columns \
              WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
         )
         .bind(schema)
@@ -421,7 +443,7 @@ impl SqlDriver for MySqlDriver {
         let meta = self.browse_meta(schema, table).await?;
         let (where_sql, binds) = build_where_clause(
             filters,
-            &meta.0,
+            &meta.cols,
             &quote_ident,
             &mysql_placeholder,
             &mysql_text_expr,

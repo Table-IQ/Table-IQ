@@ -397,6 +397,49 @@ async fn mysql_keyset_pages_equal_offset_pages() {
     keyset_equals_offset(&drv, oi, &["order_id", "line_no"], &desc, &ge("line_no", "2"), 51, 50).await;
 }
 
+/// The cursor is the grid's text, compared back against the column. A binary PK renders
+/// as hex (or bytes the charset mangles) and a FLOAT as a rounded decimal, so neither can
+/// seek: walking pages the way the grid does (OFFSET *and* the last key) must still return
+/// every row once, and a seek with offset 0 must not apply.
+#[tokio::test]
+async fn mysql_keyset_falls_back_to_offset_for_inexact_pk_types() {
+    let Some(url) = mysql() else {
+        return;
+    };
+    let a = sqlx::mysql::MySqlPoolOptions::new().connect(&url).await.unwrap();
+    let drv = MySqlDriver::connect(&url).await.unwrap();
+    for (t, ty, vals) in [
+        ("tiq_ks_bin", "binary(16)", "UNHEX(MD5(n))"),
+        ("tiq_ks_float", "float", "n / 10"),
+        ("tiq_ks_dbl", "double", "n / 3"),
+    ] {
+        for sql in [
+            format!("DROP TABLE IF EXISTS {t}"),
+            format!("CREATE TABLE {t} (k {ty} NOT NULL PRIMARY KEY, n int)"),
+            format!(
+                "INSERT INTO {t} WITH RECURSIVE s(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s \
+                 WHERE n < 30) SELECT {vals}, n FROM s"
+            ),
+        ] {
+            sqlx::raw_sql(&sql).execute(&a).await.unwrap();
+        }
+        let all = rows(&drv.open_window("tableiq", t, 0, 100).await.unwrap());
+        assert_eq!(all.len(), 30);
+        let mut walked = Vec::new();
+        let mut after: Option<Vec<Option<String>>> = None;
+        for page in 0..3 {
+            let b = drv
+                .open_window_filtered("tableiq", t, page * 10, 10, &[], &[], after.as_deref())
+                .await
+                .unwrap_or_else(|e| panic!("{ty}: {e}"));
+            after = Some(key_of(&b, b.num_rows() - 1, &["k"]));
+            walked.extend(rows(&b));
+        }
+        assert_eq!(walked, all, "{ty}: every row once, in order");
+        sqlx::raw_sql(&format!("DROP TABLE {t}")).execute(&a).await.unwrap();
+    }
+}
+
 #[tokio::test]
 async fn sqlite_keyset_pages_equal_offset_pages() {
     let dir = tempfile::tempdir().unwrap();
