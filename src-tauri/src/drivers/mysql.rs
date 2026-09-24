@@ -254,8 +254,9 @@ impl MySqlDriver {
             Some(_) if !filters.is_empty() => format!("/*+ MAX_EXECUTION_TIME({ms}) */ "),
             _ => String::new(),
         };
+        let tag = token.map(CancelToken::tag).unwrap_or_default();
         let q = format!(
-            "SELECT {hint}{select_list} FROM (SELECT * FROM {}.{} AS _t{}{order_sql} LIMIT ? OFFSET ?) AS _w",
+            "{tag}SELECT {hint}{select_list} FROM (SELECT * FROM {}.{} AS _t{}{order_sql} LIMIT ? OFFSET ?) AS _w",
             quote_ident(schema),
             quote_ident(table),
             if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },
@@ -450,7 +451,8 @@ impl SqlDriver for MySqlDriver {
             1,
         );
         let q = format!(
-            "SELECT {}COUNT(*) FROM {}.{}{}",
+            "{}SELECT {}COUNT(*) FROM {}.{}{}",
+            force_exact.map(CancelToken::tag).unwrap_or_default(),
             if force_exact.is_some() { "" } else { "/*+ MAX_EXECUTION_TIME(2000) */ " },
             quote_ident(schema),
             quote_ident(table),
@@ -533,6 +535,21 @@ impl SqlDriver for MySqlDriver {
         let Some(cid) = token.backend_id() else {
             return Ok(());
         };
+        // A tagged statement must still be what the connection runs: once it ends, the
+        // pooled connection serves other queries, and KILL QUERY would stop those.
+        if let Some(pat) = token.tag_pattern() {
+            let running: Option<u64> = sqlx::query_scalar(
+                "SELECT ID FROM information_schema.processlist WHERE ID = ? AND INFO LIKE ?",
+            )
+            .bind(cid as u64)
+            .bind(pat)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db)?;
+            if running.is_none() {
+                return Ok(());
+            }
+        }
         sqlx::raw_sql(&kill_query_sql(cid as u64))
             .execute(&self.pool)
             .await

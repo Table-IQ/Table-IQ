@@ -83,14 +83,19 @@ async fn pg_window_cancel_during_and_before_the_fetch() {
 
 /// `tiq_win_slow`: 1000 rows whose `name` sleeps 20ms each time it is read (20s in all).
 async fn mysql_slow(url: &str) -> MySqlDriver {
+    mysql_slow_named(url, "tiq_win").await
+}
+
+/// `<p>_slow` over `<p>_base`, as [`mysql_slow`] — a prefix per test, so tests can run at once.
+async fn mysql_slow_named(url: &str, p: &str) -> MySqlDriver {
     let drv = MySqlDriver::connect(url).await.unwrap();
-    drv.run_script(
-        "DROP VIEW IF EXISTS tiq_win_slow; DROP TABLE IF EXISTS tiq_win_base; \
-         CREATE TABLE tiq_win_base (id INT PRIMARY KEY); \
-         INSERT INTO tiq_win_base WITH RECURSIVE s(n) AS \
+    drv.run_script(&format!(
+        "DROP VIEW IF EXISTS {p}_slow; DROP TABLE IF EXISTS {p}_base; \
+         CREATE TABLE {p}_base (id INT PRIMARY KEY); \
+         INSERT INTO {p}_base WITH RECURSIVE s(n) AS \
            (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 1000) SELECT n FROM s; \
-         CREATE VIEW tiq_win_slow AS SELECT id, CONCAT(id, SLEEP(0.02)) AS name FROM tiq_win_base;",
-    )
+         CREATE VIEW {p}_slow AS SELECT id, CONCAT(id, SLEEP(0.02)) AS name FROM {p}_base;"
+    ))
     .await
     .unwrap();
     drv
@@ -166,4 +171,87 @@ async fn pg_same_request_key_supersedes_the_page_in_flight() {
     .unwrap();
     assert_eq!(running, 0, "the superseded search is no longer running");
     drv.run_script("DROP SCHEMA tiq_win_supersede CASCADE").await.unwrap();
+}
+
+/// Tokens of pages that already finished, fetched at once so they open every pooled
+/// connection: whatever connection the next query takes, one of these tokens names it.
+async fn finished_pages<D: SqlDriver + 'static>(drv: &Arc<D>, schema: &str, table: &str) -> Vec<CancelToken> {
+    let pages = (0..8).map(|_| {
+        let (d, t, s, n) = (drv.clone(), CancelToken::new(), schema.to_string(), table.to_string());
+        tokio::spawn(async move {
+            d.open_window_cancellable(&s, &n, 0, 1, &[], &[], None, &t).await.unwrap();
+            t
+        })
+    });
+    let mut tokens = Vec::new();
+    for p in pages.collect::<Vec<_>>() {
+        tokens.push(p.await.unwrap());
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await; // the pool releases in the background
+    tokens
+}
+
+/// The finished page's token naming the backend `running` now runs on.
+fn stale_token_of(finished: &[CancelToken], running: &CancelToken) -> CancelToken {
+    let pid = running.backend_id().expect("the running page has a backend");
+    finished.iter().find(|t| t.backend_id() == Some(pid)).expect("a reused connection").clone()
+}
+
+/// A finished page's token still names its backend, and that pooled connection goes on to
+/// serve the next query. Cancelling the stale token must not stop that query — the cancel
+/// is scoped to the statement the token started, not to the connection.
+#[tokio::test]
+async fn pg_stale_cancel_spares_the_next_query_on_the_same_connection() {
+    let Ok(url) = std::env::var("TIQ_PG_URL") else {
+        return;
+    };
+    let drv = Arc::new(pg_slow(&url, "tiq_win_stale").await);
+    let finished = finished_pages(&drv, "tiq_win_stale", "slow").await;
+    let (d2, next) = (drv.clone(), CancelToken::new());
+    let t2 = next.clone();
+    let h = tokio::spawn(async move {
+        d2.open_window_cancellable("tiq_win_stale", "slow", 0, 10, &search("zzz"), &[], None, &t2).await
+    });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let done = stale_token_of(&finished, &next);
+    done.mark_cancelled();
+    drv.cancel(&done).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(!h.is_finished(), "the stale cancel stopped an unrelated query");
+
+    // A cancel nobody asked for (an admin's pg_cancel_backend) is not a timeout either.
+    let admin = sqlx::PgPool::connect(&url).await.unwrap();
+    sqlx::query("SELECT pg_cancel_backend($1)")
+        .bind(next.backend_id().unwrap() as i32)
+        .execute(&admin)
+        .await
+        .unwrap();
+    let res = h.await.unwrap();
+    assert!(matches!(res, Err(DriverError::Cancelled)), "got {:?}", res.err());
+    drv.run_script("DROP SCHEMA tiq_win_stale CASCADE").await.unwrap();
+}
+
+#[tokio::test]
+async fn mysql_stale_cancel_spares_the_next_query_on_the_same_connection() {
+    let Ok(url) = std::env::var("TIQ_MYSQL_URL") else {
+        return;
+    };
+    let drv = Arc::new(mysql_slow_named(&url, "tiq_stale").await.with_window_timeout_ms(60_000));
+    let finished = finished_pages(&drv, "tableiq", "tiq_stale_slow").await;
+    let (d2, next) = (drv.clone(), CancelToken::new());
+    let t2 = next.clone();
+    let h = tokio::spawn(async move {
+        d2.open_window_cancellable("tableiq", "tiq_stale_slow", 0, 10, &search("zzz"), &[], None, &t2).await
+    });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let done = stale_token_of(&finished, &next);
+    done.mark_cancelled();
+    drv.cancel(&done).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(!h.is_finished(), "the stale cancel stopped an unrelated query");
+    next.mark_cancelled();
+    drv.cancel(&next).await.unwrap();
+    let res = h.await.unwrap();
+    assert!(matches!(res, Err(DriverError::Cancelled)), "got {:?}", res.err());
+    drv.run_script("DROP VIEW tiq_stale_slow; DROP TABLE tiq_stale_base;").await.unwrap();
 }

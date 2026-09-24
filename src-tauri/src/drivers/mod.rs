@@ -28,14 +28,38 @@ pub mod sqlserver;
 /// id and *then* checks the flag cannot slip between a canceller setting the flag and *then*
 /// reading the id — one of the two always sees the other. That covers a cancel that lands
 /// before the query had an id to target.
-#[derive(Clone, Default)]
+///
+/// The id names a pooled *connection*, which goes on to serve other queries once this one
+/// ends. A statement that carries [`CancelToken::tag`] lets `cancel` stop only itself: the
+/// engine matches the tag against the connection's running statement in the same step.
+#[derive(Clone)]
 pub struct CancelToken {
-    state: Arc<Mutex<(Option<i64>, bool)>>,
+    /// (backend id, cancelled, tagged)
+    state: Arc<Mutex<(Option<i64>, bool, bool)>>,
+    nonce: u64,
+}
+
+impl Default for CancelToken {
+    fn default() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let nonce = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self { state: Arc::default(), nonce }
+    }
 }
 
 impl CancelToken {
     pub fn new() -> Self {
         Self::default()
+    }
+    /// A SQL comment unique to this token, for the statement it starts; from now on
+    /// [`CancelToken::tag_pattern`] asks `cancel` to stop only a statement carrying it.
+    pub fn tag(&self) -> String {
+        crate::lk(&self.state).2 = true;
+        format!("/*tiq:{}*/ ", self.nonce)
+    }
+    /// A LIKE pattern matching the statement text of [`CancelToken::tag`], once tagged.
+    pub fn tag_pattern(&self) -> Option<String> {
+        crate::lk(&self.state).2.then(|| format!("%/*tiq:{}*/%", self.nonce))
     }
     /// Record the server-side id (PG backend PID / MySQL connection id) for this query.
     pub fn set_backend_id(&self, id: i64) {
@@ -989,6 +1013,18 @@ mod tests {
         clone.mark_cancelled();
         assert!(t.is_cancelled() && !other.is_cancelled());
         assert!(t.same(&clone) && !t.same(&other));
+    }
+
+    /// Each token's tag is its own, and `cancel` only scopes to it once a statement carries it.
+    #[test]
+    fn cancel_token_tag_is_unique_and_scopes_only_once_used() {
+        let (a, b) = (CancelToken::new(), CancelToken::new());
+        assert_eq!(a.tag_pattern(), None, "untagged: cancel targets the backend as before");
+        let (ta, tb) = (a.tag(), b.tag());
+        assert_ne!(ta, tb);
+        let pat = a.tag_pattern().unwrap();
+        assert!(pat.starts_with('%') && pat.ends_with('%') && pat.contains(ta.trim()));
+        assert_eq!(a.clone().tag_pattern(), Some(pat), "clones share it");
     }
 
     #[test]

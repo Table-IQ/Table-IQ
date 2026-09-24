@@ -175,12 +175,15 @@ pub struct PgDriver {
     window_timeout_ms: u64,
 }
 
-/// A failed cancellable page: 57014 is our own cancel when the token says so, and otherwise
-/// the statement timeout.
+/// A failed cancellable page: 57014 is a cancel when the token says so or the server says
+/// "due to user request" (someone else's `pg_cancel_backend`), and otherwise the statement
+/// timeout.
 fn window_err(e: sqlx::Error, token: &CancelToken, timeout_ms: u64) -> DriverError {
     if !is_cancel(&e) {
         db(e)
-    } else if token.is_cancelled() {
+    } else if token.is_cancelled()
+        || e.as_database_error().is_some_and(|d| d.message().contains("user request"))
+    {
         DriverError::Cancelled
     } else {
         DriverError::Db(format!("query timed out after {timeout_ms} ms"))
@@ -375,10 +378,11 @@ impl PgDriver {
         };
         let off_ph = format!("${}", binds.len() + 1);
         let lim_ph = format!("${}", binds.len() + 2);
+        let tag = token.map(CancelToken::tag).unwrap_or_default();
         // Order (and filter) on the REAL columns inside the subquery, THEN cast to text —
         // ordering by the text cast would sort numbers lexicographically.
         let q = format!(
-            "SELECT {select_list} FROM \
+            "{tag}SELECT {select_list} FROM \
              (SELECT {inner} FROM {}.{} AS _t{}{order_sql} OFFSET {off_ph} LIMIT {lim_ph}) AS _w",
             quote_ident(schema),
             quote_ident(table),
@@ -595,7 +599,8 @@ impl SqlDriver for PgDriver {
             1,
         );
         let q = format!(
-            "SELECT COUNT(*)::bigint FROM {}.{}{}",
+            "{}SELECT COUNT(*)::bigint FROM {}.{}{}",
+            force_exact.map(CancelToken::tag).unwrap_or_default(),
             quote_ident(schema),
             quote_ident(table),
             if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },
@@ -701,12 +706,18 @@ impl SqlDriver for PgDriver {
         let Some(pid) = token.backend_id() else {
             return Ok(());
         };
-        // The cancel request must come from a *second* connection (plan spec #6).
-        sqlx::query("SELECT pg_cancel_backend($1)")
-            .bind(pid as i32)
-            .execute(&self.pool)
-            .await
-            .map_err(db)?;
+        // The cancel request must come from a *second* connection (plan spec #6). A tagged
+        // statement is matched in the same step, so a connection that has since moved on
+        // to another query is left alone.
+        sqlx::query(
+            "SELECT pg_cancel_backend(pid) FROM pg_stat_activity \
+             WHERE pid = $1 AND ($2::text IS NULL OR (state = 'active' AND query LIKE $2))",
+        )
+        .bind(pid as i32)
+        .bind(token.tag_pattern())
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
         Ok(())
     }
 
