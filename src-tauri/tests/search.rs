@@ -137,6 +137,34 @@ async fn mysql_search() {
 }
 
 /// `Server=tcp:<host>,<port>;User Id=<u>;Password=<p>;Database=<d>;…` → a driver.
+/// LIKE/ILIKE on a text column compare the column itself — its own collation, and an index
+/// range scan for a prefix pattern — not its CAST to the connection's case-insensitive one.
+/// A non-text column still matches through the CAST, and Search stays case-insensitive.
+#[tokio::test]
+async fn mysql_like_keeps_the_text_column_collation() {
+    let Ok(url) = std::env::var("TIQ_MYSQL_URL") else {
+        return;
+    };
+    let drv = MySqlDriver::connect(&url).await.unwrap();
+    drv.run_script(
+        "DROP TABLE IF EXISTS tiq_like_bin; \
+         CREATE TABLE tiq_like_bin (id int PRIMARY KEY, code varchar(10) COLLATE utf8mb4_bin, KEY (code)); \
+         INSERT INTO tiq_like_bin VALUES (1, 'abc'), (12, 'ABC'), (3, 'xyz');",
+    )
+    .await
+    .unwrap();
+    let f = |column: &str, op: FilterOp, v: &str| vec![ColumnFilter { column: column.into(), op, value: Some(v.into()) }];
+    let got = |f: Vec<ColumnFilter>| {
+        let drv = &drv;
+        async move { ids(&drv.open_window_filtered("tableiq", "tiq_like_bin", 0, 10, &f, &[], None).await.unwrap()) }
+    };
+    assert_eq!(got(f("code", FilterOp::Like, "abc%")).await, ["1"], "utf8mb4_bin is case-sensitive");
+    assert_eq!(got(f("id", FilterOp::Like, "1%")).await, ["1", "12"], "an int column LIKEs its text");
+    assert_eq!(got(f("code", FilterOp::ILike, "ABC")).await, ["1", "12"]);
+    assert_eq!(got(search("abc")).await, ["1", "12"], "search is case-insensitive");
+    drv.run_script("DROP TABLE tiq_like_bin").await.unwrap();
+}
+
 async fn mssql() -> Option<SqlServerDriver> {
     let ado = std::env::var("TIQ_MSSQL_URL").ok()?;
     let (mut host, mut port, mut db, mut user, mut pass) =

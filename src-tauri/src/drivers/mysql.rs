@@ -11,7 +11,7 @@ use sqlx::{MySql, Pool, Row};
 
 use super::{
     build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
-    ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec, ForeignKey, IndexInfo,
+    ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec, FilterOp, ForeignKey, IndexInfo,
     ObjectInfo, ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver,
     StmtOutput, TableStructure, TriggerInfo, EXACT_COUNT_MAX,
 };
@@ -122,6 +122,23 @@ fn mysql_text_expr(col: &str) -> String {
     format!("CAST({} AS CHAR)", quote_ident(col))
 }
 
+/// The WHERE for `filters`. Search CASTs every column ([`mysql_text_expr`]); LIKE/ILIKE
+/// CAST only a non-text column, and compare a text column bare — under its own collation,
+/// with an index range scan for a prefix pattern.
+fn mysql_where(filters: &[ColumnFilter], meta: &MyMeta) -> (String, Vec<Option<String>>) {
+    let (search, rest): (Vec<ColumnFilter>, Vec<ColumnFilter>) =
+        filters.iter().cloned().partition(|f| f.op == FilterOp::Search);
+    let like_expr =
+        |c: &str| if meta.text.iter().any(|t| t == c) { quote_ident(c) } else { mysql_text_expr(c) };
+    let (a, mut binds) =
+        build_where_clause(&rest, &meta.cols, &quote_ident, &mysql_placeholder, &like_expr, 1);
+    let (b, more) =
+        build_where_clause(&search, &meta.cols, &quote_ident, &mysql_placeholder, &mysql_text_expr, 1);
+    binds.extend(more);
+    let sql = [a, b].into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join(" AND ");
+    (sql, binds)
+}
+
 /// PK types a keyset cursor can seek on. The cursor is the grid's text, compared back
 /// against the column, so the type must read that text back exactly: a binary string renders
 /// as `0x…` hex (or bytes the charset mangles) and FLOAT/DOUBLE as a rounded decimal, so a
@@ -138,6 +155,8 @@ fn seekable(data_type: &str) -> bool {
 /// [`super::MetaCache`]).
 struct MyMeta {
     cols: Vec<String>,
+    /// The char/varchar/text columns — the ones LIKE can compare bare.
+    text: Vec<String>,
     pk: Vec<String>,
     /// Every PK column is [`seekable`].
     seek_ok: bool,
@@ -219,8 +238,15 @@ impl MySqlDriver {
         }
         let pk = self.primary_key(schema, table).await?;
         let seek_ok = pk.iter().all(|p| typed.iter().any(|(c, t)| c == p && seekable(t)));
+        let text = typed
+            .iter()
+            .filter(|(_, t)| {
+                matches!(t.as_str(), "char" | "varchar" | "tinytext" | "text" | "mediumtext" | "longtext")
+            })
+            .map(|(c, _)| c.clone())
+            .collect();
         let cols = typed.into_iter().map(|(c, _)| c).collect();
-        let m = Arc::new(MyMeta { cols, pk, seek_ok });
+        let m = Arc::new(MyMeta { cols, text, pk, seek_ok });
         self.meta.put(schema, table, m.clone());
         Ok(m)
     }
@@ -255,14 +281,7 @@ impl MySqlDriver {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        let (mut where_sql, mut binds) = build_where_clause(
-            filters,
-            cols,
-            &quote_ident,
-            &mysql_placeholder,
-            &mysql_text_expr,
-            1,
-        );
+        let (mut where_sql, mut binds) = mysql_where(filters, &meta);
         let mut offset = offset;
         if let Some((k, kb)) = after.filter(|_| meta.seek_ok).and_then(|a| {
             build_keyset(order, pk, a, &quote_ident, &mysql_placeholder, binds.len() + 1, true)
@@ -459,14 +478,7 @@ impl SqlDriver for MySqlDriver {
             }
         }
         let meta = self.browse_meta(schema, table).await?;
-        let (where_sql, binds) = build_where_clause(
-            filters,
-            &meta.cols,
-            &quote_ident,
-            &mysql_placeholder,
-            &mysql_text_expr,
-            1,
-        );
+        let (where_sql, binds) = mysql_where(filters, &meta);
         let q = format!(
             "{}SELECT {}COUNT(*) FROM {}.{}{}",
             force_exact.map(CancelToken::tag).unwrap_or_default(),
