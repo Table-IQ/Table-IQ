@@ -11,7 +11,7 @@ use sqlx::postgres::{PgDatabaseError, PgErrorPosition, PgPoolOptions, PgQueryRes
 use sqlx::{Executor, Pool, Postgres, Row};
 
 use super::{
-    build_insert_sql, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
+    build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
     ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec, IndexInfo, ObjectInfo,
     ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver, StmtOutput,
     TableStructure, TriggerInfo, EXACT_COUNT_MAX,
@@ -154,11 +154,17 @@ fn pg_text_expr(col: &str) -> String {
     format!("{}::text", quote_ident(col))
 }
 
+/// The last page column of a PK-less table: each row's `ctid`, the keyset cursor there.
+pub const CTID_COL: &str = "__tiq_ctid";
+
 /// What every page of a table needs from the catalog, cached per table (see
 /// [`super::MetaCache`]).
 struct PgMeta {
     udts: Vec<(String, String)>,
     pk: Vec<String>,
+    /// `ctid` identifies a row of this relation: a plain table or matview with no
+    /// inheritance children (a parent's scan spans relations whose ctids collide).
+    ctid_ok: bool,
 }
 
 pub struct PgDriver {
@@ -228,7 +234,17 @@ impl PgDriver {
             return Err(DriverError::Db(format!("no such table {schema}.{table}")));
         }
         let pk = self.primary_key(schema, table).await?;
-        let m = std::sync::Arc::new(PgMeta { udts, pk });
+        let ctid_ok: bool = sqlx::query_scalar(
+            "SELECT c.relkind IN ('r', 'm') AND NOT c.relhassubclass FROM pg_class c \
+             JOIN pg_namespace n ON n.oid = c.relnamespace \
+             WHERE n.nspname = $1 AND c.relname = $2",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db)?;
+        let m = std::sync::Arc::new(PgMeta { udts, pk, ctid_ok });
         self.meta.put(schema, table, m.clone());
         Ok(m)
     }
@@ -483,9 +499,10 @@ impl SqlDriver for PgDriver {
         len: usize,
         filters: &[ColumnFilter],
         order: &[SortKey],
+        after: Option<&[Option<String>]>,
     ) -> DResult<RecordBatch> {
         let meta = self.browse_meta(schema, table).await?;
-        let cols: Vec<String> = meta.udts.iter().map(|(c, _)| c.clone()).collect();
+        let mut cols: Vec<String> = meta.udts.iter().map(|(c, _)| c.clone()).collect();
         let udts: HashMap<String, String> = meta.udts.iter().cloned().collect();
         let pk = &meta.pk;
         let order_sql = build_order_by(order, pk, &cols, &quote_ident)?;
@@ -497,21 +514,46 @@ impl SqlDriver for PgDriver {
             .map(|c| format!("{0}::text AS {0}", quote_ident(c)))
             .collect::<Vec<_>>()
             .join(", ");
-        // Filter binds come first ($1..), then the offset/limit.
-        let (where_sql, binds) = build_where_clause(
+        // Filter binds come first ($1..), then the keyset's, then the offset/limit.
+        let (mut where_sql, mut binds) = build_where_clause(
             filters,
             &quote_ident,
             &pg_placeholder(&udts),
             &pg_text_expr,
             1,
         );
+        // No PK, sort or filter: key on `ctid`. There is deliberately no ORDER BY ctid —
+        // Postgres can't produce that order from an index, so it would sort the whole
+        // table per page. `ctid > $n` runs as a TID Range Scan, which walks the heap in
+        // ctid order from the cursor on; an unordered first page is the same heap order.
+        let by_ctid = meta.ctid_ok && pk.is_empty() && order.is_empty() && filters.is_empty();
+        let seek = match after {
+            Some([Some(tid)]) if by_ctid => {
+                Some((format!("_t.ctid > ${}::tid", binds.len() + 1), vec![Some(tid.clone())]))
+            }
+            Some(a) => build_keyset(order, pk, a, &quote_ident, &pg_placeholder(&udts), binds.len() + 1, false),
+            None => None,
+        };
+        let mut offset = offset;
+        if let Some((k, kb)) = seek {
+            where_sql = if where_sql.is_empty() { k } else { format!("{where_sql} AND {k}") };
+            binds.extend(kb);
+            offset = 0;
+        }
+        let (inner, select_list) = if by_ctid {
+            cols.push(CTID_COL.into());
+            let c = quote_ident(CTID_COL);
+            (format!("_t.*, _t.ctid AS {c}"), format!("{select_list}, {c}::text AS {c}"))
+        } else {
+            ("*".to_string(), select_list)
+        };
         let off_ph = format!("${}", binds.len() + 1);
         let lim_ph = format!("${}", binds.len() + 2);
         // Order (and filter) on the REAL columns inside the subquery, THEN cast to text —
         // ordering by the text cast would sort numbers lexicographically.
         let q = format!(
             "SELECT {select_list} FROM \
-             (SELECT * FROM {}.{} AS _t{}{order_sql} OFFSET {off_ph} LIMIT {lim_ph}) AS _w",
+             (SELECT {inner} FROM {}.{} AS _t{}{order_sql} OFFSET {off_ph} LIMIT {lim_ph}) AS _w",
             quote_ident(schema),
             quote_ident(table),
             if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },

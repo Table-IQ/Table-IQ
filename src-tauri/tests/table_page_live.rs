@@ -41,7 +41,7 @@ async fn pg_json_first_column_table_opens() {
     };
     let drv = PgDriver::connect(&url).await.unwrap();
     let b = drv
-        .open_window_filtered("public", "json_first", 0, 20, &[], &[])
+        .open_window_filtered("public", "json_first", 0, 20, &[], &[], None)
         .await
         .expect("json_first must open");
     assert_eq!(b.num_rows(), 20);
@@ -55,14 +55,14 @@ async fn pg_pages_are_ordered_by_the_primary_key() {
         return;
     };
     let drv = PgDriver::connect(&url).await.unwrap();
-    let p0 = drv.open_window_filtered("public", "wide", 0, 5, &[], &[]).await.unwrap();
+    let p0 = drv.open_window_filtered("public", "wide", 0, 5, &[], &[], None).await.unwrap();
     assert_eq!(col_text(&p0, "id", 0), "1");
     assert_eq!(col_text(&p0, "id", 4), "5");
-    let p1 = drv.open_window_filtered("public", "wide", 5, 5, &[], &[]).await.unwrap();
+    let p1 = drv.open_window_filtered("public", "wide", 5, 5, &[], &[], None).await.unwrap();
     assert_eq!(col_text(&p1, "id", 0), "6");
 
     let desc = drv
-        .open_window_filtered("public", "fresh", 0, 3, &[], &[sort("id", true)])
+        .open_window_filtered("public", "fresh", 0, 3, &[], &[sort("id", true)], None)
         .await
         .expect("descending sort on a real column");
     assert_eq!(col_text(&desc, "id", 0), "500");
@@ -77,7 +77,7 @@ async fn pg_unknown_sort_column_is_refused() {
     };
     let drv = PgDriver::connect(&url).await.unwrap();
     let err = drv
-        .open_window_filtered("public", "fresh", 0, 3, &[], &[sort("id\" FROM fresh --", false)])
+        .open_window_filtered("public", "fresh", 0, 3, &[], &[sort("id\" FROM fresh --", false)], None)
         .await
         .expect_err("an unknown sort column must be refused");
     assert!(err.to_string().contains("unknown sort column"), "got {err}");
@@ -96,7 +96,7 @@ async fn pg_filter_on_a_bigint_column_works() {
         op: FilterOp::Ge,
         value: Some("100".into()),
     }];
-    let b = drv.open_window_filtered("public", "orders", 0, 5, &f, &[]).await.expect("bigint filter");
+    let b = drv.open_window_filtered("public", "orders", 0, 5, &f, &[], None).await.expect("bigint filter");
     assert_eq!(col_text(&b, "id", 0), "100");
     let c = drv.count_rows("public", "orders", &f, None).await.expect("filtered count");
     assert_eq!(c.count, Some(201), "orders 100..300 inclusive");
@@ -146,7 +146,7 @@ async fn pg_insert_row_binds_typed_values() {
         op: FilterOp::Eq,
         value: Some("-900001".into()),
     }];
-    let b = drv.open_window_filtered("public", "orders", 0, 1, &f, &[]).await.unwrap();
+    let b = drv.open_window_filtered("public", "orders", 0, 1, &f, &[], None).await.unwrap();
     assert_eq!(col_text(&b, "total", 0), "12.34");
     drv.run_script("DELETE FROM public.orders WHERE id = -900001").await.ok();
 }
@@ -162,7 +162,7 @@ async fn pg_counts_a_never_analyzed_table_exactly() {
     let c = drv.count_rows("public", "fresh", &[], None).await.expect("count fresh");
     assert_eq!(c.count, Some(500));
     assert!(c.exact);
-    let b = drv.open_window_filtered("public", "fresh", 0, 10, &[], &[]).await.unwrap();
+    let b = drv.open_window_filtered("public", "fresh", 0, 10, &[], &[], None).await.unwrap();
     assert_eq!(b.num_rows(), 10);
 }
 
@@ -179,7 +179,7 @@ async fn pg_counts_a_view() {
     let n = c.count.expect("a view must report a count, not null");
     assert!(n >= 300, "one row per order, got {n}");
     assert!(c.exact);
-    let b = drv.open_window_filtered("public", "customer_orders", 0, 5, &[], &[]).await.unwrap();
+    let b = drv.open_window_filtered("public", "customer_orders", 0, 5, &[], &[], None).await.unwrap();
     assert_eq!(b.num_rows(), 5);
 }
 
@@ -263,15 +263,15 @@ async fn mysql_introspect_and_count() {
     assert!(c.exact);
 
     // json_first has a JSON first column and no PK — it must open, ordered or not.
-    let b = drv.open_window_filtered("tableiq", "json_first", 0, 20, &[], &[]).await.expect("json_first");
+    let b = drv.open_window_filtered("tableiq", "json_first", 0, 20, &[], &[], None).await.expect("json_first");
     assert_eq!(b.num_rows(), 20);
 
     // PK ordering + a bigint filter.
     let f = vec![ColumnFilter { column: "id".into(), op: FilterOp::Ge, value: Some("100".into()) }];
-    let w = drv.open_window_filtered("tableiq", "orders", 0, 3, &f, &[]).await.expect("filtered page");
+    let w = drv.open_window_filtered("tableiq", "orders", 0, 3, &f, &[], None).await.expect("filtered page");
     assert_eq!(col_text(&w, "id", 0), "100");
     let d = drv
-        .open_window_filtered("tableiq", "orders", 0, 1, &[], &[sort("id", true)])
+        .open_window_filtered("tableiq", "orders", 0, 1, &[], &[sort("id", true)], None)
         .await
         .expect("descending sort");
     assert_eq!(col_text(&d, "id", 0), "300");
@@ -309,12 +309,12 @@ async fn sqlite_awkward_path_opens_and_introspects() {
     assert!(c.exact);
 
     let d = drv
-        .open_window_filtered("main", "items", 0, 3, &[], &[sort("name", true)])
+        .open_window_filtered("main", "items", 0, 3, &[], &[sort("name", true)], None)
         .await
         .expect("descending sort");
     assert_eq!(col_text(&d, "name", 0), "plum");
 
     // A view has no PK, so its page carries no ORDER BY — it still has to open.
-    let v = drv.open_window_filtered("main", "cheap", 0, 10, &[], &[]).await.expect("view page");
+    let v = drv.open_window_filtered("main", "cheap", 0, 10, &[], &[], None).await.expect("view page");
     assert_eq!(v.num_rows(), 1);
 }

@@ -11,7 +11,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteQueryResult, S
 use sqlx::{Pool, Row, Sqlite};
 
 use super::{
-    build_insert_sql, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
+    build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
     ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec, ForeignKey, IndexInfo,
     ObjectInfo, ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver,
     StmtOutput, TableStructure, TriggerInfo,
@@ -259,26 +259,35 @@ impl SqlDriver for SqliteDriver {
         len: usize,
         filters: &[ColumnFilter],
         order: &[SortKey],
+        after: Option<&[Option<String>]>,
     ) -> DResult<RecordBatch> {
         let cols: Vec<String> =
             self.columns_of(table).await?.into_iter().map(|c| c.name).collect();
         if cols.is_empty() {
             return Err(DriverError::Db(format!("no such table {table}")));
         }
-        let pk = self.primary_key(_schema, table).await?;
-        let order_sql = build_order_by(order, &pk, &cols, &quote_ident)?;
+        let pk = &self.primary_key(_schema, table).await?;
+        let order_sql = build_order_by(order, pk, &cols, &quote_ident)?;
         let select_list = cols
             .iter()
             .map(|c| format!("CAST({0} AS TEXT) AS {0}", quote_ident(c)))
             .collect::<Vec<_>>()
             .join(", ");
-        let (where_sql, binds) = build_where_clause(
+        let (mut where_sql, mut binds) = build_where_clause(
             filters,
             &quote_ident,
             &sqlite_placeholder,
             &quote_ident,
             1,
         );
+        let mut offset = offset;
+        if let Some((k, kb)) =
+            after.and_then(|a| build_keyset(order, pk, a, &quote_ident, &sqlite_placeholder, binds.len() + 1, false))
+        {
+            where_sql = if where_sql.is_empty() { k } else { format!("{where_sql} AND {k}") };
+            binds.extend(kb);
+            offset = 0;
+        }
         let off_ph = format!("?{}", binds.len() + 1);
         let lim_ph = format!("?{}", binds.len() + 2);
         let q = format!(

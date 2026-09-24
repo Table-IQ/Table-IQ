@@ -17,7 +17,7 @@ use tokio::sync::Mutex;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
 use super::{
-    build_insert_sql, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
+    build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
     ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec, ForeignKey, IndexInfo,
     ObjectInfo, ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver,
     StmtOutput, TableStructure, TriggerInfo,
@@ -728,6 +728,7 @@ impl SqlDriver for SqlServerDriver {
         len: usize,
         filters: &[ColumnFilter],
         order: &[SortKey],
+        after: Option<&[Option<String>]>,
     ) -> DResult<RecordBatch> {
         let meta = self.browse_meta(schema, table).await?;
         let (cols, pk) = (&meta.0, &meta.1);
@@ -738,8 +739,16 @@ impl SqlDriver for SqlServerDriver {
             s => s.to_string(),
         };
         // Tiberius uses @P1, @P2, … in declared order; we bind text values.
-        let (where_sql, binds) =
+        let (mut where_sql, mut binds) =
             build_where_clause(filters, &quote_ident, &mssql_placeholder, &quote_ident, 1);
+        let mut offset = offset;
+        if let Some((k, kb)) =
+            after.and_then(|a| build_keyset(order, pk, a, &quote_ident, &mssql_placeholder, binds.len() + 1, true))
+        {
+            where_sql = if where_sql.is_empty() { k } else { format!("{where_sql} AND {k}") };
+            binds.extend(kb);
+            offset = 0;
+        }
         let q = format!(
             "SELECT * FROM {}.{} AS _t{}{order_sql} OFFSET {offset} ROWS FETCH NEXT {len} ROWS ONLY",
             quote_ident(schema),

@@ -532,12 +532,14 @@ pub async fn get_table_window(
     len: usize,
     filters: Option<Vec<ColumnFilter>>,
     order: Option<Vec<SortKey>>,
+    after: Option<Vec<Option<String>>>,
 ) -> Result<Response, String> {
     let drv = state.session(&id)?;
     let f = filters.unwrap_or_default();
     let o = order.unwrap_or_default();
+    // `after` (the previous page's last-row key) lets the driver seek instead of OFFSET.
     let batch = drv
-        .open_window_filtered(&schema, &table, offset, len, &f, &o)
+        .open_window_filtered(&schema, &table, offset, len, &f, &o, after.as_deref())
         .await
         .map_err(|e| e.to_string())?;
     let bytes = crate::query::window::encode_ipc(&batch).map_err(|e| e.to_string())?;
@@ -757,10 +759,14 @@ pub async fn export_table(
     let o = order.unwrap_or_default();
     // Export up to the same cap as queries (bounded), through the same filtered+ordered
     // window the grid shows.
-    let batch = drv
-        .open_window_filtered(&schema, &table, 0, QUERY_CAP, &f, &o)
+    let mut batch = drv
+        .open_window_filtered(&schema, &table, 0, QUERY_CAP, &f, &o, None)
         .await
         .map_err(|e| e.to_string())?;
+    // The ctid cursor column is paging plumbing, not table data.
+    if let Ok(i) = batch.schema().index_of(crate::drivers::postgres::CTID_COL) {
+        batch.remove_column(i);
+    }
     Ok(encode_export(&batch, &format))
 }
 

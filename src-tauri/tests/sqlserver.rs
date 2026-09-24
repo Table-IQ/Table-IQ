@@ -448,8 +448,8 @@ async fn sqlserver_qa_seed_introspect_structure_paging_and_edit() {
 
     // ── ordering + paging ───────────────────────────────────────────────────
     let desc = [SortKey { column: "id".into(), desc: true }];
-    let page1 = drv.open_window_filtered("dbo", "orders", 0, 3, &[], &desc).await.expect("page1");
-    let page2 = drv.open_window_filtered("dbo", "orders", 3, 3, &[], &desc).await.expect("page2");
+    let page1 = drv.open_window_filtered("dbo", "orders", 0, 3, &[], &desc, None).await.expect("page1");
+    let page2 = drv.open_window_filtered("dbo", "orders", 3, 3, &[], &desc, None).await.expect("page2");
     let ids = |b: &arrow::record_batch::RecordBatch| -> Vec<String> {
         let c = b.column(b.schema().index_of("id").unwrap());
         let a = c.as_any().downcast_ref::<StringArray>().unwrap();
@@ -457,6 +457,25 @@ async fn sqlserver_qa_seed_introspect_structure_paging_and_edit() {
     };
     assert_eq!(ids(&page1), vec!["300", "299", "298"]);
     assert_eq!(ids(&page2), vec!["297", "296", "295"], "OFFSET paging is stable");
+    // Keyset: the page after id 298 (offset 0 — only a real seek lands there).
+    let after = [Some("298".to_string())];
+    let seek = drv.open_window_filtered("dbo", "orders", 0, 3, &[], &desc, Some(&after)).await.expect("seek");
+    assert_eq!(ids(&seek), ids(&page2), "keyset page == OFFSET page");
+    // Composite PK: SQL Server has no row values, so the predicate is the expanded OR form.
+    let cells = |b: &arrow::record_batch::RecordBatch, c: &str| -> Vec<String> {
+        let a = b.column(b.schema().index_of(c).unwrap());
+        let a = a.as_any().downcast_ref::<StringArray>().unwrap();
+        (0..b.num_rows()).map(|i| a.value(i).to_string()).collect()
+    };
+    let off = drv.open_window_filtered("dbo", "order_items", 100, 20, &[], &[], None).await.expect("oi");
+    let prev = drv.open_window_filtered("dbo", "order_items", 99, 1, &[], &[], None).await.expect("oi prev");
+    let after = [Some(cells(&prev, "order_id")[0].clone()), Some(cells(&prev, "line_no")[0].clone())];
+    let seek = drv.open_window_filtered("dbo", "order_items", 0, 20, &[], &[], Some(&after)).await.expect("oi seek");
+    assert_eq!(
+        (cells(&seek, "order_id"), cells(&seek, "line_no")),
+        (cells(&off, "order_id"), cells(&off, "line_no")),
+        "composite keyset page == OFFSET page"
+    );
 
     // A filter narrows the window and the NULL-safe operators work.
     let nulls = drv
@@ -467,6 +486,7 @@ async fn sqlserver_qa_seed_introspect_structure_paging_and_edit() {
             10,
             &[ColumnFilter { column: "manager_id".into(), op: FilterOp::IsNull, value: None }],
             &[],
+            None,
         )
         .await
         .expect("null filter");
@@ -474,7 +494,7 @@ async fn sqlserver_qa_seed_introspect_structure_paging_and_edit() {
 
     // ── display rendering of the seeded scalar types ────────────────────────
     let geo = drv
-        .open_window_filtered("dbo", "geo", 0, 3, &[], &[SortKey { column: "id".into(), desc: false }])
+        .open_window_filtered("dbo", "geo", 0, 3, &[], &[SortKey { column: "id".into(), desc: false }], None)
         .await
         .expect("geo");
     let text = |name: &str, row: usize| -> Option<String> {

@@ -10,7 +10,7 @@ use sqlx::mysql::{MySqlDatabaseError, MySqlPoolOptions, MySqlQueryResult, MySqlR
 use sqlx::{MySql, Pool, Row};
 
 use super::{
-    build_insert_sql, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
+    build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
     ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec, ForeignKey, IndexInfo,
     ObjectInfo, ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver,
     StmtOutput, TableStructure, TriggerInfo, EXACT_COUNT_MAX,
@@ -375,6 +375,7 @@ impl SqlDriver for MySqlDriver {
         len: usize,
         filters: &[ColumnFilter],
         order: &[SortKey],
+        after: Option<&[Option<String>]>,
     ) -> DResult<RecordBatch> {
         let meta = self.browse_meta(schema, table).await?;
         let (cols, pk) = (&meta.0, &meta.1);
@@ -393,20 +394,29 @@ impl SqlDriver for MySqlDriver {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        let (where_sql, binds) = build_where_clause(
+        let (mut where_sql, mut binds) = build_where_clause(
             filters,
             &quote_ident,
             &mysql_placeholder,
             &quote_ident,
             1,
         );
+        let mut offset = offset;
+        if let Some((k, kb)) =
+            after.and_then(|a| build_keyset(order, pk, a, &quote_ident, &mysql_placeholder, binds.len() + 1, true))
+        {
+            where_sql = if where_sql.is_empty() { k } else { format!("{where_sql} AND {k}") };
+            binds.extend(kb);
+            offset = 0;
+        }
         let q = format!(
             "SELECT {select_list} FROM (SELECT * FROM {}.{} AS _t{}{order_sql} LIMIT ? OFFSET ?) AS _w",
             quote_ident(schema),
             quote_ident(table),
             if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },
         );
-        // MySQL placeholders are positional in statement order: the filters, then LIMIT/OFFSET.
+        // MySQL placeholders are positional in statement order: the filters, the keyset,
+        // then LIMIT/OFFSET.
         let mut qy = sqlx::query(&q);
         for b in &binds {
             qy = qy.bind(b.clone());

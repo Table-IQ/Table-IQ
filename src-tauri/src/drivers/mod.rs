@@ -489,6 +489,12 @@ pub trait SqlDriver: Send + Sync {
     }
     /// Read a window of rows from a table as Arrow (read-only browse), filtered and
     /// ordered. See [`build_order_by`] for what `order` means when it is empty.
+    ///
+    /// `after` is the previous page's last-row key (PK values in PK order; Postgres'
+    /// `__tiq_ctid` for a table without one). Where [`build_keyset`] applies, the page
+    /// seeks past it and `offset` is ignored; everywhere else `after` is ignored and
+    /// `offset` answers — so a caller always passes both.
+    #[allow(clippy::too_many_arguments)]
     async fn open_window_filtered(
         &self,
         schema: &str,
@@ -497,6 +503,7 @@ pub trait SqlDriver: Send + Sync {
         len: usize,
         filters: &[ColumnFilter],
         order: &[SortKey],
+        after: Option<&[Option<String>]>,
     ) -> DResult<arrow::record_batch::RecordBatch>;
     /// Unfiltered, unsorted window read (the natural/PK order).
     async fn open_window(
@@ -506,7 +513,7 @@ pub trait SqlDriver: Send + Sync {
         offset: usize,
         len: usize,
     ) -> DResult<arrow::record_batch::RecordBatch> {
-        self.open_window_filtered(schema, table, offset, len, &[], &[]).await
+        self.open_window_filtered(schema, table, offset, len, &[], &[], None).await
     }
     /// Insert a single row built from `(column, text_value)` pairs.
     /// Default: unsupported (KV/Document drivers don't reach here).
