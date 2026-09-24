@@ -11,6 +11,7 @@ import { useResults } from "../state/resultsStore";
 import { useConnections } from "../state/connectionStore";
 import { useTabs } from "../state/tabsStore";
 import { oneLine } from "../lib/history";
+import { formatElapsed } from "../lib/motion";
 import { schemaModelToCompletionMap } from "../lib/schemaCompletion";
 import type { SqlDialect } from "../lib/sqlSplit";
 import {
@@ -61,6 +62,8 @@ const EDITOR_H_DEFAULT = 176;
 
 /** One finished run: what was sent, what came back, and the document it came from. */
 interface RunState {
+  /** Run sequence number — re-keys the results so each new run fades in. */
+  id: number;
   items: RunItem[];
   metas: StatementResultMeta[];
   doc: string;
@@ -98,6 +101,15 @@ export function QueryView({
   const runSeq = useRef(0);
   const runningQueryId = useRef<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
+  // Live elapsed time while running; shown only past --delay-busy (150ms).
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!running) return;
+    const start = performance.now();
+    setElapsed(0);
+    const id = window.setInterval(() => setElapsed(performance.now() - start), 100);
+    return () => window.clearInterval(id);
+  }, [running]);
   const [plan, setPlan] = useState<string | null>(null);
   const [editorH, setEditorH] = useState<number>(readEditorHeight);
   const [drawer, setDrawer] = useState<
@@ -195,7 +207,7 @@ export function QueryView({
           queryId,
         );
         if (seq !== runSeq.current) return; // stale completion — a newer run owns the pane
-        setRun({ items, metas, doc });
+        setRun({ id: seq, items, metas, doc });
         const next = resultTabs(metas);
         setSelectedKey(next.length ? next[0].resultId : MESSAGES_KEY);
         for (const t of next) {
@@ -348,6 +360,7 @@ export function QueryView({
       return (
         <span className="text-muted">
           {cancelling ? "Cancel requested — the server may still finish the statement…" : "Running…"}
+          {elapsed >= 150 && <span className="ml-1.5 tabular-nums">{formatElapsed(elapsed)}</span>}
         </span>
       );
     }
@@ -517,40 +530,49 @@ export function QueryView({
         onResize={(d) => setEditorH((h) => clampWidth(h + d, EDITOR_H_MIN, EDITOR_H_MAX))}
       />
 
-      {/* Results */}
-      <div className="min-h-0 flex-1">
-        {plan !== null ? (
-          <div className="flex h-full flex-col">
-            <div className="flex items-center justify-between border-b border-border px-3 py-1 text-[10px] uppercase tracking-wider text-muted">
-              <span>Query plan</span>
-              <button onClick={() => setPlan(null)} aria-label="Close plan" className="hover:text-text">
-                <IconClose size={11} />
-              </button>
+      {/* Results. While a run is in flight: a progress bar on the top edge and the
+          previous results dimmed (both only after 150ms, so fast runs don't flicker). */}
+      <div className="relative min-h-0 flex-1">
+        {running && <div className="tiq-progress absolute inset-x-0 top-0 z-10" aria-hidden />}
+        <div
+          className={`h-full transition-opacity ${
+            running && run ? "pointer-events-none opacity-60 delay-150" : ""
+          }`}
+        >
+          {plan !== null ? (
+            <div className="flex h-full flex-col">
+              <div className="flex items-center justify-between border-b border-border px-3 py-1 text-[10px] uppercase tracking-wider text-muted">
+                <span>Query plan</span>
+                <button onClick={() => setPlan(null)} aria-label="Close plan" className="hover:text-text">
+                  <IconClose size={11} />
+                </button>
+              </div>
+              <div className="min-h-0 flex-1">
+                <PlanView json={plan} />
+              </div>
             </div>
-            <div className="min-h-0 flex-1">
-              <PlanView json={plan} />
-            </div>
-          </div>
-        ) : (
-          <QueryResults
-            metas={run?.metas ?? []}
-            items={run?.items ?? []}
-            doc={run?.doc ?? ""}
-            running={running}
-            runError={error}
-            selectedKey={selectedKey}
-            onSelect={setSelectedKey}
-            onJump={(offset) => editorRef.current?.gotoOffset(offset)}
-          >
-            {drawer === "chart" && selectedMeta?.resultId ? (
-              <ChartView
-                resultId={selectedMeta.resultId}
-                columns={selectedMeta.columns.map((c) => c.name)}
-                totalRows={selectedMeta.rowCount}
-              />
-            ) : null}
-          </QueryResults>
-        )}
+          ) : (
+            <QueryResults
+              runId={run?.id ?? 0}
+              metas={run?.metas ?? []}
+              items={run?.items ?? []}
+              doc={run?.doc ?? ""}
+              running={running}
+              runError={error}
+              selectedKey={selectedKey}
+              onSelect={setSelectedKey}
+              onJump={(offset) => editorRef.current?.gotoOffset(offset)}
+            >
+              {drawer === "chart" && selectedMeta?.resultId ? (
+                <ChartView
+                  resultId={selectedMeta.resultId}
+                  columns={selectedMeta.columns.map((c) => c.name)}
+                  totalRows={selectedMeta.rowCount}
+                />
+              ) : null}
+            </QueryResults>
+          )}
+        </div>
       </div>
 
       {/* Result-set status footer */}

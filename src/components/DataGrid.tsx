@@ -19,6 +19,7 @@ import {
 import { decodeWindow, WindowCache } from "../lib/arrowWindow";
 import { originalRowGetter } from "../lib/edit";
 import { gridTheme, gridRowTints, editTints, nullCellStyle } from "../lib/theme";
+import { fadeOutAlpha, mixHex, prefersReducedMotion, pulseAlpha } from "../lib/motion";
 import { useTheme } from "../theme/ThemeProvider";
 import type { ForeignKey, SortKey } from "../lib/commands";
 import {
@@ -44,6 +45,22 @@ const MAX_PAGES = 12; // LRU bound → JS heap stays bounded regardless of total
 const AUTO_FIT_SAMPLE = 60; // rows sampled from the first page to size columns to content
 const ROW_HEIGHT = 32; // comfortable TablePlus-like rows (Slice 32 raised from 29)
 const HEADER_HEIGHT = 38; // taller column header — TablePlus's header is notably taller
+// Tint motion (DESIGN.md → Motion). The canvas can't use CSS transitions, so a
+// fade is a per-frame blend toward the row's own background.
+const SAVED_HOLD = 800; // green holds this long, then fades over TINT_FADE
+const SAVED_HOLD_REDUCED = 1100; // reduced motion: solid green, then off (no fade)
+const TINT_FADE = 300;
+const PULSE_PERIOD = 1000; // amber "saving" breath
+
+/** A tint fading out on the canvas. Keyed like `editState` (`row:col`), or
+ *  `row:*` for a whole row. `done` fires once it has fully faded. */
+interface TintFx {
+  tint: "saved" | "error";
+  start: number;
+  hold: number;
+  dur: number;
+  done?: () => void;
+}
 
 /** A windowed data source the grid pages over. `key` identity resets the cache. */
 export interface GridSource {
@@ -67,6 +84,12 @@ export interface DataGridHandle {
   commitPending: () => void;
   /** Drop all staged edits and revert the display. */
   discardPending: () => void;
+  /** Fade a red tint off `row`; resolves when it has faded (at once under
+   *  reduced motion). Used just before a deleted row is refetched away. */
+  fadeRow: (row: number) => Promise<void>;
+  /** After the next re-read, flash the row whose columns equal `match` (a
+   *  just-inserted row's PK). Does nothing if that row isn't on the page. */
+  flashRowWhere: (match: Record<string, string>) => void;
 }
 
 interface Props {
@@ -113,8 +136,9 @@ interface Props {
   /** Columns whose values are numeric — rendered right-aligned (TablePlus
    *  parity, Slice 29). */
   rightAlignColumns?: ReadonlySet<string>;
-  /** Called after a successful full commit so the parent can re-sync the page. */
-  onSave?: () => void;
+  /** Called after a successful full commit (with how many edits it wrote) so
+   *  the parent can re-sync the page. */
+  onSave?: (saved: number) => void;
   /** Fires whenever the count of staged (uncommitted) edits changes. */
   onPendingCountChange?: (count: number) => void;
   /** True while {@link DataGridHandle.commitPending} is walking its staged edits.
@@ -188,6 +212,14 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   // a newer edit on the same cell bails instead of clobbering it.
   const editSeq = useRef(new Map<string, number>());
   const inflight = useRef(new Set<number>());
+  // Fading tints + the rAF loop that repaints them (and pulses "saving" cells).
+  // The loop only runs while something is animating, never under reduced motion.
+  const fx = useRef(new Map<string, TintFx>());
+  const rafId = useRef<number | null>(null);
+  const pulseStart = useRef(0);
+  const reducedMotion = useRef(prefersReducedMotion());
+  // An inserted row to flash once the re-read lands (see `flashRowWhere`).
+  const pendingFlash = useRef<{ match: Record<string, string>; gen: number } | null>(null);
   const [columns, setColumns] = useState<GridColumn[]>([]);
   const colNames = useRef<string[]>([]);
   const [, setVersion] = useState(0);
@@ -200,6 +232,23 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   // Clicked row gets a stronger "selected" band (TablePlus parity) — the whole
   // row highlights, on top of glide's native single-cell focus ring.
   const [selRow, setSelRow] = useState<number | undefined>(undefined);
+  // Read by the stable `getCellContent`: a fading tint blends toward the row's
+  // own band (selected / hover / zebra), so it ends without a colour jump.
+  const selRowRef = useRef(selRow);
+  const hoverRowRef = useRef(hoverRow);
+  useEffect(() => {
+    selRowRef.current = selRow;
+    hoverRowRef.current = hoverRow;
+  }, [selRow, hoverRow]);
+  useEffect(() => {
+    const mq = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+    if (!mq) return;
+    const on = () => {
+      reducedMotion.current = mq.matches;
+    };
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, []);
 
   const onFetchedRef = useRef(onWindowFetched);
   useEffect(() => {
@@ -296,6 +345,10 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     editSeq.current.clear();
     editTimers.current.forEach((id) => window.clearTimeout(id));
     editTimers.current.clear();
+    // Settle anything awaiting a fade (a delete) rather than leave it hanging.
+    fx.current.forEach((f) => f.done?.());
+    fx.current.clear();
+    pendingFlash.current = null;
     autoFitRef.current = {};
     autoFitDoneRef.current = false;
     setSelRow(undefined); // stale selection must not linger across table/result switches
@@ -322,7 +375,10 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     // Server values win over anything still staged — the display would otherwise
     // show an overlay value the "unsaved changes" bar no longer tracks.
     overlay.current.clear();
-    editState.current.clear();
+    // Staged / error tints go with the staged values. A "saved" tint stays: a
+    // commit ends in exactly this re-read, and its green has to finish on the
+    // refreshed row (its clear timer still owns it).
+    for (const [k, st] of editState.current) if (st !== "saved") editState.current.delete(k);
     pending.current = new Map();
     notifyPending();
     undoStack.current = [];
@@ -336,6 +392,50 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     if (colNames.current.length === 0) return;
     applyColumns(colNames.current);
   }, [columnWidths, sort, applyColumns]);
+
+  /** One animation frame: repaint only the tinted cells, retire finished fades,
+   *  and keep going while any fade is live or any cell is still saving. */
+  const tick = useCallback(() => {
+    rafId.current = null;
+    const now = performance.now();
+    const cols = colNames.current;
+    const damage: { cell: Item }[] = [];
+    const add = (key: string) => {
+      const i = key.indexOf(":");
+      const row = Number(key.slice(0, i));
+      const name = key.slice(i + 1);
+      if (name === "*") cols.forEach((_, c) => damage.push({ cell: [c, row] }));
+      else if (cols.includes(name)) damage.push({ cell: [cols.indexOf(name), row] });
+    };
+    for (const [key, f] of fx.current) {
+      add(key);
+      if (now - f.start >= f.hold + f.dur) {
+        fx.current.delete(key); // this frame repaints it without the tint
+        f.done?.();
+      }
+    }
+    let saving = false;
+    for (const [key, st] of editState.current) {
+      if (st !== "saving") continue;
+      saving = true;
+      add(key);
+    }
+    if (damage.length > 0) gridRef.current?.updateCells(damage);
+    if (fx.current.size > 0 || saving) rafId.current = requestAnimationFrame(tick);
+  }, []);
+
+  /** Start the loop if it isn't running. A no-op under reduced motion. */
+  const animate = useCallback(() => {
+    if (rafId.current !== null || reducedMotion.current) return;
+    rafId.current = requestAnimationFrame(tick);
+  }, [tick]);
+
+  useEffect(
+    () => () => {
+      if (rafId.current !== null) cancelAnimationFrame(rafId.current);
+    },
+    [],
+  );
 
   const ensurePage = useCallback(
     (page: number) => {
@@ -366,6 +466,26 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
             applyColumns(names);
           }
           maybeAutoFit();
+          // A just-inserted row: once the re-read after the insert lands, find it
+          // by PK and flash it. One try only — if it sorted onto another page, skip.
+          const pf = pendingFlash.current;
+          if (pf && gen > pf.gen) {
+            pendingFlash.current = null;
+            const keys = Object.keys(pf.match);
+            const end = Math.min(source.totalRows, (page + 1) * size);
+            for (let r = page * size; r < end; r++) {
+              if (keys.every((c) => cacheRef.current.getCell(r, c) === pf.match[c])) {
+                fx.current.set(`${r}:*`, {
+                  tint: "saved",
+                  start: performance.now(),
+                  hold: SAVED_HOLD,
+                  dur: TINT_FADE,
+                });
+                animate();
+                break;
+              }
+            }
+          }
           onFetchedRef.current?.(ms);
           setVersion((v) => v + 1);
         })
@@ -383,12 +503,23 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
           if (gen === generation.current) inflight.current.delete(page);
         });
     },
-    [source, maybeAutoFit, applyColumns],
+    [source, maybeAutoFit, applyColumns, animate],
   );
 
   useEffect(() => {
     ensurePage(0);
   }, [source.totalRows, ensurePage]);
+
+  /** The background `getRowThemeOverride` gives `row` — what a fade ends on. */
+  const rowBg = useCallback(
+    (row: number) => {
+      const t = gridRowTints(resolved);
+      if (row === selRowRef.current) return t.selected;
+      if (row === hoverRowRef.current) return t.hover;
+      return row % 2 === 1 ? t.zebra : gridTheme(resolved).bgCell;
+    },
+    [resolved],
+  );
 
   const getCellContent = useCallback(
     ([col, row]: Item): GridCell => {
@@ -407,9 +538,23 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
       // Numeric columns right-align (TablePlus parity) — but never an FK cell,
       // whose `→ value` affordance reads left-to-right.
       const numeric = !fk && name ? rightAlignColumns?.has(name) : false;
-      // Save-state tint: amber while writing, green on save, red on error.
+      // Save-state tint: amber while writing (breathing, unless reduced motion),
+      // green on save, red on error. A fading tint (saved cell, deleted or
+      // inserted row) blends toward the row's own background.
       const save = name ? editState.current.get(`${row}:${name}`) : undefined;
-      const saveBg = save ? editTints(resolved)[save] : undefined;
+      const fade = save ? undefined : (fx.current.get(`${row}:${name}`) ?? fx.current.get(`${row}:*`));
+      let saveBg: string | undefined;
+      if (save || fade) {
+        const tints = editTints(resolved);
+        const now = performance.now();
+        if (save === "saving" && !reducedMotion.current) {
+          saveBg = mixHex(rowBg(row), tints.saving, pulseAlpha(now - pulseStart.current, PULSE_PERIOD));
+        } else if (save) {
+          saveBg = tints[save];
+        } else if (fade) {
+          saveBg = mixHex(rowBg(row), tints[fade.tint], fadeOutAlpha(now - fade.start, fade.dur, fade.hold));
+        }
+      }
       // A SQL NULL prints a dimmed italic `NULL`; an empty string stays blank.
       const themeOverride =
         saveBg !== undefined
@@ -430,7 +575,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
         themeOverride,
       };
     },
-    [ensurePage, editable, fkByColumn, rightAlignColumns, resolved],
+    [ensurePage, editable, fkByColumn, rightAlignColumns, resolved, rowBg],
   );
 
   /** Build the full {col → value} map for `row` by walking columns through the
@@ -474,20 +619,31 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     [fkByColumn, onFkClick, onRowSelected, readRow],
   );
 
-  // Schedule a save-state tint clear, tracking the timer so a source switch /
-  // unmount can cancel it.
-  const clearTintLater = useCallback((key: string, delay: number) => {
-    const prev = editTimers.current.get(key);
-    if (prev !== undefined) window.clearTimeout(prev);
-    const id = window.setTimeout(() => {
-      editTimers.current.delete(key);
-      if (editState.current.get(key) === "saved") {
-        editState.current.delete(key);
-        setVersion((v) => v + 1);
-      }
-    }, delay);
-    editTimers.current.set(key, id);
-  }, []);
+  // Schedule a saved-tint clear, tracking the timer so a source switch / unmount
+  // can cancel it. With motion on, the green then fades out on the canvas
+  // instead of snapping off.
+  const clearTintLater = useCallback(
+    (key: string) => {
+      const prev = editTimers.current.get(key);
+      if (prev !== undefined) window.clearTimeout(prev);
+      const id = window.setTimeout(
+        () => {
+          editTimers.current.delete(key);
+          if (editState.current.get(key) === "saved") {
+            editState.current.delete(key);
+            if (!reducedMotion.current) {
+              fx.current.set(key, { tint: "saved", start: performance.now(), hold: 0, dur: TINT_FADE });
+              animate();
+            }
+            setVersion((v) => v + 1);
+          }
+        },
+        reducedMotion.current ? SAVED_HOLD_REDUCED : SAVED_HOLD,
+      );
+      editTimers.current.set(key, id);
+    },
+    [animate],
+  );
 
   /** Stage one cell edit (TablePlus batch model): mirror the new value into the
    *  overlay for display, record it in `pending`, and tint it blue. The DB write
@@ -540,11 +696,13 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     // generation and stop the moment it moves, exactly as `ensurePage` already does.
     const gen = generation.current;
     onCommittingChange?.(true);
+    pulseStart.current = performance.now();
     try {
       for (const e of edits) {
         if (gen !== generation.current) break; // source changed mid-commit
         const key = pendingKey(e.row, e.col);
         editState.current.set(key, "saving");
+        animate(); // pulses while any cell is saving; stops by itself after
         setVersion((v) => v + 1);
         // Row identity (the PK in the WHERE clause) comes from the loaded page —
         // the staged overlay must never reach it, or an edit to a PK column would
@@ -559,7 +717,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
           editState.current.set(key, "saved");
           pending.current = removePending(pending.current, e.row, e.col);
           notifyPending();
-          clearTintLater(key, 1100);
+          clearTintLater(key);
           setVersion((v) => v + 1);
         } else {
           editState.current.set(key, "error");
@@ -572,9 +730,9 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     }
     if (gen === generation.current && pending.current.size === 0) {
       undoStack.current = [];
-      onSave?.();
+      onSave?.(edits.length);
     }
-  }, [onEdit, notifyPending, clearTintLater, onSave, onCommittingChange]);
+  }, [onEdit, notifyPending, clearTintLater, onSave, onCommittingChange, animate]);
 
   /** Drop every staged edit and revert the display to each cell's saved value. */
   const discardPending = useCallback(() => {
@@ -641,6 +799,22 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     scrollToRow: (row: number) => gridRef.current?.scrollTo(0, row, "vertical"),
     commitPending: () => void commitPending(),
     discardPending,
+    fadeRow: (row: number) =>
+      new Promise<void>((resolve) => {
+        if (reducedMotion.current) return resolve();
+        fx.current.get(`${row}:*`)?.done?.();
+        fx.current.set(`${row}:*`, {
+          tint: "error",
+          start: performance.now(),
+          hold: 0,
+          dur: TINT_FADE,
+          done: resolve,
+        });
+        animate();
+      }),
+    flashRowWhere: (match: Record<string, string>) => {
+      pendingFlash.current = { match, gen: generation.current };
+    },
   }));
 
   // Update only the dragged column's width in local state so the resize feels

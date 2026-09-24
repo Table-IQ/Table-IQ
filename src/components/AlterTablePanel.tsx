@@ -10,6 +10,7 @@ import {
 import { blankColumn } from "../lib/ddl";
 import { useConnections } from "../state/connectionStore";
 import { Panel } from "./ui/Panel";
+import { IconRefresh } from "./ui/Icon";
 
 const field =
   "rounded-md border border-border bg-bg px-2 py-1 text-xs text-text focus:border-primary focus:outline-none";
@@ -42,6 +43,8 @@ export function AlterTablePanel({
     kind: "idle",
     msg: "",
   });
+  // Apply shows its own pending state (spinner, disabled) while the DDL runs.
+  const applying = status.kind === "busy" && status.msg === "Applying…";
 
   const addValid = !!add && !!add.name.trim() && !!add.data_type.trim();
   const edited = (c: ColumnInfo) => {
@@ -142,11 +145,12 @@ export function AlterTablePanel({
           <button
             onClick={apply}
             disabled={!sql || status.kind === "busy"}
-            className="rounded-md bg-primary px-3 py-1 text-xs font-medium text-white hover:bg-primary-hover disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1 text-xs font-medium text-white hover:bg-primary-hover disabled:opacity-50"
           >
-            Apply
+            {applying && <IconRefresh size={11} className="animate-spin" />}
+            {applying ? "Applying…" : "Apply"}
           </button>
-          {status.kind !== "idle" && (
+          {status.kind !== "idle" && !applying && (
             <span
               className={`text-xs ${
                 status.kind === "ok"

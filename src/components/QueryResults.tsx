@@ -16,6 +16,8 @@ import { oneLine } from "../lib/history";
 export const MESSAGES_KEY = "__messages__";
 
 interface Props {
+  /** Identifies the run; a new value fades the results body in. */
+  runId: number;
   /** One meta per statement the backend actually executed. */
   metas: StatementResultMeta[];
   /** The statements sent, aligned with `meta.index` (BEGIN/COMMIT carry no `stmt`). */
@@ -40,6 +42,7 @@ interface Props {
  * failing statement's error inline with a clickable `Line N`.
  */
 export function QueryResults({
+  runId,
   metas,
   items,
   doc,
@@ -95,7 +98,7 @@ export function QueryResults({
     if (children) return children;
     if (runError) {
       return (
-        <div className="h-full overflow-auto p-4 font-mono text-[11.5px] text-danger">
+        <div className="tiq-slide-in h-full overflow-auto p-4 font-mono text-[11.5px] text-danger">
           {runError}
         </div>
       );
@@ -104,7 +107,7 @@ export function QueryResults({
       return (
         <div className="flex h-full items-center justify-center text-xs text-muted">
           {running ? (
-            <span className="inline-flex items-center gap-2">
+            <span className="tiq-delayed inline-flex items-center gap-2">
               <IconRefresh size={12} className="animate-spin" /> Running…
             </span>
           ) : (
@@ -152,7 +155,7 @@ export function QueryResults({
         <button
           onClick={() => jumpTo(failed.index)}
           title="Jump to the error in the editor"
-          className="flex shrink-0 items-start gap-2 border-b border-danger/30 bg-danger/10 px-3 py-1.5 text-left text-[11.5px] text-danger transition-colors hover:bg-danger/15"
+          className="tiq-slide-in flex shrink-0 items-start gap-2 border-b border-danger/30 bg-danger/10 px-3 py-1.5 text-left text-[11.5px] text-danger transition-colors hover:bg-danger/15"
         >
           <span className="shrink-0 font-mono text-[10px] uppercase tracking-wide opacity-80">
             Error
@@ -167,12 +170,15 @@ export function QueryResults({
       )}
 
       {fetchError && (
-        <div className="shrink-0 border-b border-danger/30 bg-danger/10 px-3 py-1.5 font-mono text-[11.5px] text-danger">
+        <div className="tiq-slide-in shrink-0 border-b border-danger/30 bg-danger/10 px-3 py-1.5 font-mono text-[11.5px] text-danger">
           Could not load rows: {fetchError}
         </div>
       )}
 
-      <div className="min-h-0 flex-1">{body()}</div>
+      {/* Re-keyed per run so fresh results fade in; switching result tabs stays instant. */}
+      <div key={runId} className="tiq-fade-in min-h-0 flex-1">
+        {body()}
+      </div>
     </div>
   );
 }

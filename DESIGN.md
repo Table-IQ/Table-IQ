@@ -182,10 +182,33 @@ Two tiers only:
 
 ## Motion
 
-- Hover transitions: 120ms ease-out
-- Modal open/close: 160ms cubic-bezier(0.2, 0.8, 0.2, 1)
-- Tab switch: instant — feels snappier
-- Filter / Insert row appearance: 180ms slide-down
+Motion answers an action: it shows what opened, what is working, what changed.
+State is never carried by motion alone; a tint, label or text always remains.
+
+**Tokens** (`src/index.css`): `--dur-fast: 120ms`, `--dur: 180ms`,
+`--delay-busy: 150ms`, `--ease-out` (enter), `--ease-in` (exit).
+
+**Rules**
+- Animate only `opacity` and `transform`. The one exception: rails may animate `max-height`.
+- Enter eases out; exit eases in and runs faster (`--dur-fast`).
+- Busy indicators wait `--delay-busy` so a fast operation never flashes one.
+- `prefers-reduced-motion: reduce` turns all of it off (one media query in
+  `index.css`; the canvas grid checks `matchMedia` and skips its rAF loop).
+- Tab switch: instant. Hover: 120ms colour transition.
+
+**Where it is used**
+| Moment | Treatment |
+|---|---|
+| Rails (filters, new row, unsaved changes) | `.tiq-rail`: slide down + fade, `--dur` |
+| Busy (query run, page load) | `.tiq-progress`: 2px indeterminate bar in `--primary`, appears after 150ms |
+| Query results arrive | `.tiq-fade-in`, `--dur-fast`; stale results dim while running |
+| Inline error / notice | `.tiq-slide-in`: 4px drop + fade, `--dur` |
+| Panels (Alter, New table, …) | `.tiq-pop-in` scale .98→1 + fade; `.tiq-pop-out` on close |
+| Cell saving | amber tint breathes (1s period) while any cell is writing |
+| Cell saved | green holds 800ms, then fades out over 300ms (canvas rAF) |
+| Row deleted | red tint fades over 300ms, then the page refetches |
+| Row inserted | the new row flashes green if its PK was typed |
+| Saved n changes | status-bar text, `.tiq-flash`: fade in, hold, fade out over 2s |
 
 ## Connection manager (welcome) — TablePlus parity
 
