@@ -60,7 +60,7 @@ impl ConnConfig {
                     format!(":{}@", urlencode(password))
                 };
                 let dbn = if self.database.is_empty() { "0" } else { &self.database };
-                format!("redis://{auth}{}:{}/{}", self.host, self.port, dbn)
+                format!("redis://{auth}{}:{}/{}", urlencode_host(&self.host), self.port, dbn)
             }
             "mongodb" => {
                 let auth = if self.username.is_empty() {
@@ -68,13 +68,13 @@ impl ConnConfig {
                 } else {
                     format!("{}:{}@", urlencode(&self.username), urlencode(password))
                 };
-                format!("mongodb://{auth}{}:{}", self.host, self.port)
+                format!("mongodb://{auth}{}:{}", urlencode_host(&self.host), self.port)
             }
             "mysql" => format!(
                 "mysql://{}:{}@{}:{}/{}",
                 urlencode(&self.username),
                 urlencode(password),
-                self.host,
+                urlencode_host(&self.host),
                 self.port,
                 urlencode(&self.database),
             ),
@@ -92,14 +92,28 @@ impl ConnConfig {
                     "postgres://{}:{}@{}:{}/{}?sslmode={}",
                     urlencode(&self.username),
                     urlencode(password),
-                    self.host,
+                    urlencode_host(&self.host),
                     self.port,
                     urlencode(dbn),
-                    self.sslmode
+                    urlencode(&self.sslmode)
                 )
             }
         }
     }
+}
+
+/// Percent-encode a host for the URL authority. Everything `urlencode` keeps, plus `:` `[` `]`
+/// so an IPv6 literal (`[::1]`) — which is already URL-legal — survives intact. What matters
+/// is that `@`, `/`, `?`, `#` and `&` do *not*: a stored host of `h@evil.example.com` used to
+/// push the real host into the userinfo and hand the password to whatever followed the `@`.
+fn urlencode_host(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b':' | b'['
+            | b']' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 fn urlencode(s: &str) -> String {
@@ -164,12 +178,22 @@ impl ConnStore {
         serde_json::to_string_pretty(&self.connections).map_err(|e| e.to_string())
     }
 
-    /// Merge a bundle into the store (upsert by id). Returns how many were imported.
+    /// Merge a bundle into the store. Returns how many were imported.
+    ///
+    /// An imported connection **never** takes over an existing id. Bundles are meant to be
+    /// shared (that is the whole point of their being secret-free), while the keychain keys
+    /// the password to the connection id — so an upsert-by-id let a bundle carrying the
+    /// victim's own `"id"` silently retarget their saved "Prod DB" at another host, and the
+    /// next connect handed the real production password over in cleartext. A colliding id
+    /// gets a fresh one and lands as its own visible, password-less entry instead.
     pub fn import_bundle(&mut self, json: &str) -> Result<usize, String> {
         let incoming: Vec<ConnConfig> = serde_json::from_str(json).map_err(|e| e.to_string())?;
         let n = incoming.len();
-        for c in incoming {
-            self.upsert(c);
+        for mut c in incoming {
+            if c.id.is_empty() || self.connections.iter().any(|e| e.id == c.id) {
+                c.id = uuid::Uuid::new_v4().to_string();
+            }
+            self.connections.push(c);
         }
         Ok(n)
     }
@@ -416,6 +440,90 @@ mod tests {
         let p = dir.path().join("connections.json");
         assert!(ConnStore::load_at(&p).connections.is_empty());
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    /// A bundle is the feature's secret-free selling point, so people share them. Upserting
+    /// **by id** meant a bundle carrying `{"id":"<victim's Prod DB id>","host":"evil…"}`
+    /// silently retargeted the victim's existing entry — while the keychain password stayed
+    /// keyed to that same id, so the next connect sent the real production password, in
+    /// cleartext (`sslmode: disable`), to the attacker's host.
+    #[test]
+    fn import_never_takes_over_an_existing_connection() {
+        let mut store = ConnStore::default();
+        store.upsert(ConnConfig {
+            id: "prod-1".into(),
+            name: "Prod DB".into(),
+            color: None,
+            engine: "postgres".into(),
+            host: "db.internal".into(),
+            port: 5432,
+            database: "app".into(),
+            username: "svc".into(),
+            sslmode: "verify-full".into(),
+            ssh: None,
+        });
+        let hostile = r#"[{"id":"prod-1","name":"Prod DB","engine":"postgres",
+            "host":"evil.example.com","port":5432,"database":"app","username":"svc",
+            "sslmode":"disable"}]"#;
+        assert_eq!(store.import_bundle(hostile).unwrap(), 1);
+
+        let victim = store.connections.iter().find(|c| c.id == "prod-1").expect("victim kept");
+        assert_eq!(victim.host, "db.internal", "the saved connection was retargeted");
+        assert_eq!(victim.sslmode, "verify-full", "TLS was downgraded on the saved connection");
+        assert_eq!(store.connections.len(), 2, "the import must land as its own entry");
+        let imported = store.connections.iter().find(|c| c.host == "evil.example.com").unwrap();
+        assert_ne!(imported.id, "prod-1", "the import reused the victim's keychain id");
+    }
+
+    /// A non-colliding id is kept, so re-importing your own bundle onto a fresh machine
+    /// still round-trips one entry rather than duplicating it.
+    #[test]
+    fn import_keeps_ids_that_do_not_collide() {
+        let mut store = ConnStore::default();
+        let bundle = r#"[{"id":"fresh","name":"PG","engine":"postgres","host":"h","port":5432,
+            "database":"d","username":"u","sslmode":"prefer"}]"#;
+        store.import_bundle(bundle).unwrap();
+        assert_eq!(store.connections[0].id, "fresh");
+    }
+
+    /// `host` and `sslmode` were the only fields interpolated into the URL unencoded, so a
+    /// stored `sslmode` of `disable&host=attacker` appended extra sqlx connect options and a
+    /// `host` containing `@` moved the real host into the userinfo — taking the password with it.
+    #[test]
+    fn url_encodes_host_and_sslmode() {
+        let cfg = ConnConfig {
+            id: "x".into(),
+            name: "x".into(),
+            color: None,
+            engine: "postgres".into(),
+            host: "h@evil.example.com".into(),
+            port: 5432,
+            database: "d".into(),
+            username: "u".into(),
+            sslmode: "disable&host=attacker".into(),
+            ssh: None,
+        };
+        let url = cfg.url_with_password("pw");
+        assert!(url.contains("@h%40evil.example.com:5432/"), "host not encoded: {url}");
+        assert!(url.ends_with("sslmode=disable%26host%3Dattacker"), "sslmode not encoded: {url}");
+    }
+
+    /// Encoding the host must not break an IPv6 literal, which is already URL-legal.
+    #[test]
+    fn url_keeps_an_ipv6_literal_host_intact() {
+        let cfg = ConnConfig {
+            id: "x".into(),
+            name: "x".into(),
+            color: None,
+            engine: "mysql".into(),
+            host: "[::1]".into(),
+            port: 3306,
+            database: "d".into(),
+            username: "u".into(),
+            sslmode: "prefer".into(),
+            ssh: None,
+        };
+        assert!(cfg.url_with_password("pw").contains("@[::1]:3306/"), "IPv6 host was mangled");
     }
 
     #[test]
