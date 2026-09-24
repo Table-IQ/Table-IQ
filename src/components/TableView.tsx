@@ -43,7 +43,7 @@ import { Chip } from "./ui/Chip";
 import { ContextMenu, type ContextMenuItem } from "./ui/ContextMenu";
 import { buildRowAs } from "../lib/rowFormat";
 import { buildDeleteStatement, quoteIdent } from "../lib/tableScript";
-import { buildInsertValues, isDraftDirty } from "../lib/insertRow";
+import { buildInsertValues, insertedPkMatch, isDraftDirty } from "../lib/insertRow";
 import { chipLabel, removeFilter, upsertFilter, FILTER_OP_LABEL, isNullOp } from "../lib/filterBuilder";
 import {
   IconChevronLeft,
@@ -123,6 +123,11 @@ export function TableView({ connId, schema, object, view }: Props) {
   // paging mid-commit would change what the remaining edits' row indices mean, so both
   // are locked for the duration (the grid also stops itself — see its generation guard).
   const [committing, setCommitting] = useState(false);
+  // "Saved n changes" in the status bar for 2s after a commit. `id` re-keys the
+  // element so a second save inside the window restarts its fade.
+  const [saved, setSaved] = useState<{ n: number; id: number } | null>(null);
+  const savedTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(savedTimer.current), []);
   const gridRef = useRef<DataGridHandle>(null);
   const openTab = useTabs((s) => s.openTable);
   const engine = useConnections((s) => s.active?.engine ?? "postgres") as Engine;
@@ -338,11 +343,14 @@ export function TableView({ connId, schema, object, view }: Props) {
     try {
       await insertRow(connId, schema, object.name, values);
       setDraft(null);
+      // Flash the new row once the refetch lands — only if the user typed its PK.
+      const match = insertedPkMatch(pk ?? [], values);
+      if (match) gridRef.current?.flashRowWhere(match);
       refresh();
     } catch (e) {
       setNotice(`Insert failed: ${e}`);
     }
-  }, [connId, schema, object, draft, refresh]);
+  }, [connId, schema, object, draft, pk, refresh]);
 
   const cancelDraft = useCallback(() => {
     setDraft(null);
@@ -354,7 +362,7 @@ export function TableView({ connId, schema, object, view }: Props) {
    *  stay visible and removable, or the tab is stuck. */
   const filterRail =
     filterDraft || filters.length > 0 ? (
-        <div className="flex flex-wrap items-center gap-1.5 border-b border-border bg-bg px-3 py-1.5">
+        <div className="tiq-rail flex flex-wrap items-center gap-1.5 border-b border-border bg-bg px-3 py-1.5">
           <IconFilter size={11} className="text-primary" />
           <span className="text-[10px] uppercase tracking-wider text-muted">filters</span>
           {filters.map((f) => (
@@ -554,7 +562,7 @@ export function TableView({ connId, schema, object, view }: Props) {
 
       {/* Draft-row rail (Slice 21 #2). Editable inputs for each column; Enter commits. */}
       {draft !== null && editable && (
-        <div className="flex items-center gap-2 border-b border-border bg-bg px-3 py-1.5">
+        <div className="tiq-rail flex items-center gap-2 border-b border-border bg-bg px-3 py-1.5">
           <span className="text-[10px] uppercase tracking-wider text-primary">new row</span>
           <div className="flex flex-wrap gap-1.5">
             {object.columns.map((c) => (
@@ -615,22 +623,30 @@ export function TableView({ connId, schema, object, view }: Props) {
           there are uncommitted cell edits; Commit (⌘S) writes them all, Discard
           reverts the display. */}
       {pendingCount > 0 && (
-        <div className="flex items-center gap-2 border-b border-l-2 border-l-primary border-border bg-primary-soft px-3 py-1.5">
+        <div className="tiq-rail flex items-center gap-2 border-b border-l-2 border-l-primary border-border bg-primary-soft px-3 py-1.5">
           <span className="text-[11px] font-medium text-primary">
             {pendingCount} unsaved {pendingCount === 1 ? "change" : "changes"}
           </span>
           <ToolbarSpacer />
           <button
             onClick={() => gridRef.current?.discardPending()}
-            className="rounded-md border border-border px-2 py-0.5 text-[11px] text-muted hover:text-text"
+            disabled={committing}
+            className="rounded-md border border-border px-2 py-0.5 text-[11px] text-muted hover:text-text disabled:opacity-40"
           >
             Discard
           </button>
           <button
             onClick={() => gridRef.current?.commitPending()}
-            className="rounded-md bg-primary px-2.5 py-0.5 text-[11px] font-medium text-white hover:opacity-90"
+            disabled={committing}
+            className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-0.5 text-[11px] font-medium text-white hover:opacity-90 disabled:opacity-70"
           >
-            Commit ⌘S
+            {committing ? (
+              <>
+                <IconRefresh size={10} className="animate-spin" /> Saving…
+              </>
+            ) : (
+              "Commit ⌘S"
+            )}
           </button>
         </div>
       )}
@@ -672,7 +688,12 @@ export function TableView({ connId, schema, object, view }: Props) {
               setColumnWidths(next);
             }}
             rightAlignColumns={rightAlignColumns}
-            onSave={refresh}
+            onSave={(n) => {
+              window.clearTimeout(savedTimer.current);
+              setSaved((s) => ({ n, id: (s?.id ?? 0) + 1 }));
+              savedTimer.current = window.setTimeout(() => setSaved(null), 2000);
+              refresh();
+            }}
             onPendingCountChange={setPendingCount}
             onCommittingChange={setCommitting}
             onFetchError={setError}
@@ -739,10 +760,17 @@ export function TableView({ connId, schema, object, view }: Props) {
         }
         right={
           <>
-            {dirty > 0 && (
+            {dirty > 0 ? (
               <span className="text-warn">
                 {dirty} saving…
               </span>
+            ) : (
+              saved && (
+                <span key={saved.id} className="tiq-flash inline-flex items-center gap-1 text-ok" role="status">
+                  <StatusDot tone="ok" />
+                  Saved {saved.n} {saved.n === 1 ? "change" : "changes"}
+                </span>
+              )
             )}
             <StatusBarButton
               onClick={() =>
@@ -868,6 +896,8 @@ export function TableView({ connId, schema, object, view }: Props) {
               // The confirm said "this row" — say so plainly when it was not one row.
               const problem = writeOutcomeMessage("delete", rowsAffected);
               if (problem) setNotice(`Delete row: ${problem}`);
+              // The row's tint fades out first, so the refetch doesn't just yank it.
+              else await gridRef.current?.fadeRow(cellMenu.row);
               refresh();
             } catch (e) {
               setNotice(`Delete failed: ${e}`);
