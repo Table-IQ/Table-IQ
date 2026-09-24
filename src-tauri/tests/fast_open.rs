@@ -124,6 +124,23 @@ async fn pg_estimate_sums_partitions_and_count_skips_the_scan() {
     run(&a, "DROP SCHEMA tiq_est CASCADE").await;
 }
 
+/// A filtered count that outlives its 2s bound has no estimate to fall back on: the
+/// catalog's is the whole table's, not the filter's.
+#[tokio::test]
+async fn pg_filtered_count_that_times_out_is_unknown() {
+    let Some(url) = pg() else {
+        return;
+    };
+    let drv = PgDriver::connect(&url).await.unwrap();
+    if drv.estimate_rows("big", "events").await.unwrap().is_none() {
+        eprintln!("skip: load docker/postgres/big.sql");
+        return;
+    }
+    let search = [ColumnFilter { column: "*".into(), op: FilterOp::Search, value: Some("zzz".into()) }];
+    let c = drv.count_rows("big", "events", &search, None).await.unwrap();
+    assert_eq!((c.count, c.exact), (None, false), "not the ~1T whole-table estimate");
+}
+
 /// Never ANALYZEd (`reltuples = -1`): the estimate comes from the relation's size and its
 /// column widths, never from a scan. 20k rows of two ints is ~88 pages of ~226 tuples.
 #[tokio::test]

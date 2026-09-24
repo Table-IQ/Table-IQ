@@ -637,9 +637,11 @@ impl SqlDriver for PgDriver {
         match res {
             Ok(n) => Ok(RowCount { count: Some(n), exact: true }),
             // 57014 here is the statement_timeout firing — this query carries no cancel token.
-            Err(e) if is_cancel(&e) => {
-                Ok(RowCount { count: self.estimate_rows(schema, table).await?, exact: false })
-            }
+            // The catalog estimate is the whole table's, so a filtered count has none.
+            Err(e) if is_cancel(&e) => Ok(RowCount {
+                count: if filters.is_empty() { self.estimate_rows(schema, table).await? } else { None },
+                exact: false,
+            }),
             Err(e) => Err(db(e)),
         }
     }

@@ -491,9 +491,11 @@ impl SqlDriver for MySqlDriver {
         }
         match qy.fetch_one(&self.pool).await {
             Ok(n) => Ok(RowCount { count: Some(n), exact: true }),
-            Err(e) if is_exec_timeout(&e) => {
-                Ok(RowCount { count: self.estimate_rows(schema, table).await?, exact: false })
-            }
+            // The catalog estimate is the whole table's, so a filtered count has none.
+            Err(e) if is_exec_timeout(&e) => Ok(RowCount {
+                count: if filters.is_empty() { self.estimate_rows(schema, table).await? } else { None },
+                exact: false,
+            }),
             Err(e) => Err(db(e)),
         }
     }
