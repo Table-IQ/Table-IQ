@@ -1280,6 +1280,7 @@ function StructureView({
   /** Why there is nothing to show: the engine can't answer, or the call failed. */
   const [note, setNote] = useState<string | null>(null);
 
+  const columnsKey = object.columns.map((c) => `${c.name}:${c.data_type}:${c.nullable}`).join("|");
   useEffect(() => {
     let live = true;
     setStructure(null);
@@ -1299,7 +1300,8 @@ function StructureView({
     return () => {
       live = false;
     };
-  }, [connId, schema, object.name]);
+    // Re-read when the column list changes (an Alter applied from this tab).
+  }, [connId, schema, object.name, columnsKey]);
 
   const subTabs: { id: typeof tab; label: string; count?: number }[] = [
     { id: "columns", label: "Columns", count: object.columns.length },
