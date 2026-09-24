@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — 2026-09-24
 
 Production-readiness pass: the Query tab, table browsing, Structure, and the ERD now do
 what they look like they do; SQL Server introspection and execution are real; several
