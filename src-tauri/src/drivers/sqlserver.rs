@@ -40,6 +40,19 @@ fn mssql_placeholder(i: usize, _col: &str) -> String {
     format!("@P{i}")
 }
 
+/// PK types a keyset cursor can seek on. The cursor is the grid's text, bound back as
+/// NVARCHAR, so the type must parse that text back exactly and compare it the way the column
+/// sorts: `varchar` compares as NVARCHAR (SQL_ collations sort the two differently),
+/// `datetime` rejects the 9 fractional digits its 1/300 s renders with, and binary types
+/// render as hex that doesn't convert back. Anything else pages by OFFSET.
+fn seekable(data_type: &str) -> bool {
+    matches!(
+        data_type,
+        "int" | "bigint" | "smallint" | "tinyint" | "uniqueidentifier" | "nvarchar" | "nchar"
+            | "date" | "datetime2"
+    )
+}
+
 /// `(columns, pk, column → DATA_TYPE)` for one table.
 type Meta = std::sync::Arc<(Vec<String>, Vec<String>, HashMap<String, String>)>;
 
@@ -770,9 +783,10 @@ impl SqlDriver for SqlServerDriver {
         let (mut where_sql, mut binds) =
             build_where_clause(filters, cols, &quote_ident, &mssql_placeholder, &text_expr, 1);
         let mut offset = offset;
-        if let Some((k, kb)) =
-            after.and_then(|a| build_keyset(order, pk, a, &quote_ident, &mssql_placeholder, binds.len() + 1, true))
-        {
+        let seek_ok = pk.iter().all(|c| meta.2.get(c).is_some_and(|t| seekable(t)));
+        if let Some((k, kb)) = after.filter(|_| seek_ok).and_then(|a| {
+            build_keyset(order, pk, a, &quote_ident, &mssql_placeholder, binds.len() + 1, true)
+        }) {
             where_sql = if where_sql.is_empty() { k } else { format!("{where_sql} AND {k}") };
             binds.extend(kb);
             offset = 0;

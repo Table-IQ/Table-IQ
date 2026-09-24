@@ -756,3 +756,82 @@ async fn a_use_in_a_query_tab_does_not_retarget_the_rest_of_the_session() {
 
     drv.run_script("DROP TABLE dbo.tiq_use_guard").await.ok();
 }
+
+/// Every row of `b`, as text.
+fn text_rows(b: &arrow::record_batch::RecordBatch) -> Vec<Vec<Option<String>>> {
+    (0..b.num_rows())
+        .map(|r| {
+            b.columns()
+                .iter()
+                .map(|c| {
+                    let a = c.as_any().downcast_ref::<StringArray>().unwrap();
+                    (!a.is_null(r)).then(|| a.value(r).to_string())
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// Keyset paging is only as good as the PK's text round trip: the cursor is the grid's
+/// rendering, bound back as NVARCHAR. Per PK type, walking the table the way the grid does
+/// (OFFSET *and* the previous page's last key) must return exactly the OFFSET pages — a
+/// type that can't seek exactly must fall back to OFFSET, not skip rows or fail.
+#[tokio::test]
+async fn sqlserver_keyset_only_seeks_on_exact_pk_types() {
+    let _serialised = serialised().await;
+    let Some(drv) = connect().await else { return };
+    let strings = "(N'a-c'),(N'ab'),(N'a''b'),(N'b-a'),(N'ba'),(N'c'),(N'co-op'),(N'coop'),(N'cop'),(N'x'),(N'y-'),(N'z')";
+    // (type, 12 PK values, seeks?)
+    let cases: [(&str, String, bool); 12] = [
+        ("int", "(1),(2),(3),(4),(5),(6),(7),(8),(9),(10),(11),(12)".into(), true),
+        ("bigint", "(-9000000000),(-2),(-1),(0),(1),(2),(3),(4),(5),(6),(9000000000),(9000000001)".into(), true),
+        ("smallint", "(-300),(-2),(-1),(0),(1),(2),(3),(4),(5),(6),(300),(301)".into(), true),
+        ("tinyint", "(0),(1),(2),(3),(4),(5),(6),(7),(8),(9),(254),(255)".into(), true),
+        ("uniqueidentifier", (0..12).map(|_| "(NEWID())").collect::<Vec<_>>().join(","), true),
+        ("nvarchar(20)", strings.into(), true),
+        ("nchar(6)", strings.into(), true),
+        ("date", (1..=12).map(|d| format!("('2026-01-{d:02}')")).collect::<Vec<_>>().join(","), true),
+        (
+            "datetime2",
+            (0..12).map(|s| format!("('2026-01-01 00:00:{s:02}.1234567')")).collect::<Vec<_>>().join(","),
+            true,
+        ),
+        // SQL_Latin1 sorts varchar by string rules and its NVARCHAR cursor by word rules.
+        ("varchar(20)", strings.into(), false),
+        // 1/300 s: renders with 9 fractional digits, which DATETIME will not parse back.
+        (
+            "datetime",
+            (0..12).map(|s| format!("('2026-01-01 00:00:{s:02}.003')")).collect::<Vec<_>>().join(","),
+            false,
+        ),
+        ("varbinary(8)", (1..=12).map(|i| format!("(0x{i:04x}ff)")).collect::<Vec<_>>().join(","), false),
+    ];
+    for (i, (ty, values, seeks)) in cases.iter().enumerate() {
+        let t = format!("tiq_ks_{i}");
+        drv.run_script(&format!(
+            "IF OBJECT_ID('dbo.{t}','U') IS NOT NULL DROP TABLE dbo.{t}; \
+             CREATE TABLE dbo.{t} (k {ty} NOT NULL PRIMARY KEY); INSERT INTO dbo.{t} (k) VALUES {values};"
+        ))
+        .await
+        .unwrap_or_else(|e| panic!("{ty}: {e}"));
+        let all = text_rows(&drv.open_window("dbo", &t, 0, 100).await.unwrap());
+        assert_eq!(all.len(), 12, "{ty}");
+        let mut walked = Vec::new();
+        let mut after: Option<Vec<Option<String>>> = None;
+        for page in 0..4 {
+            let b = drv
+                .open_window_filtered("dbo", &t, page * 3, 3, &[], &[], after.as_deref())
+                .await
+                .unwrap_or_else(|e| panic!("{ty} page {page}: {e}"));
+            let r = text_rows(&b);
+            after = r.last().map(|row| vec![row[0].clone()]);
+            walked.extend(r);
+        }
+        assert_eq!(walked, all, "{ty}: the walk must return every row once, in order");
+        // With offset 0, only a seek can land on the second page.
+        let cursor = [all[2][0].clone()];
+        let got = text_rows(&drv.open_window_filtered("dbo", &t, 0, 3, &[], &[], Some(&cursor)).await.unwrap());
+        assert_eq!(got == all[3..6], *seeks, "{ty}: seeks = {seeks}");
+        drv.run_script(&format!("DROP TABLE dbo.{t}")).await.unwrap();
+    }
+}
