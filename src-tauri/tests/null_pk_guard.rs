@@ -132,3 +132,117 @@ async fn mysql_apply_edit_refuses_an_empty_primary_key() {
 
 // SQL Server's guard is exercised in `tests/sqlserver.rs`, which already owns the ADO
 // connection-string parser the driver's part-wise `connect` needs.
+
+// ---------------------------------------------------------------------------------------
+// Collation-exact row identity (MySQL).
+//
+// A `VARCHAR PRIMARY KEY COLLATE utf8mb4_bin` legally holds BOTH 'abc' and 'ABC' — the
+// engine treats them as two distinct keys. `delete_row` matched them with
+// `CAST(col AS CHAR) <=> ?`, and `CAST(… AS CHAR)` takes `collation_connection`, which sqlx
+// hard-codes to utf8mb4_unicode_ci (case-insensitive, PAD SPACE). One "Delete row" click
+// therefore deleted both rows. The same shape guarded `apply_edit`'s optimistic
+// concurrency check, so a concurrent case-only change was never detected.
+
+/// Each test gets its own table: cargo runs them in parallel against one live database.
+async fn mysql_case_fixture(pool: &sqlx::Pool<sqlx::MySql>, table: &str) {
+    sqlx::raw_sql(&format!("DROP TABLE IF EXISTS {table}")).execute(pool).await.unwrap();
+    // utf8mb4_bin is case-sensitive, so both keys coexist under the PRIMARY KEY index.
+    sqlx::raw_sql(&format!(
+        "CREATE TABLE {table} (k VARCHAR(32) COLLATE utf8mb4_bin PRIMARY KEY, note VARCHAR(32))"
+    ))
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::raw_sql(&format!("INSERT INTO {table} VALUES ('abc','one'),('ABC','two')"))
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+async fn mysql_pool_and_driver(
+) -> Option<(sqlx::Pool<sqlx::MySql>, tableiq_lib::drivers::mysql::MySqlDriver)> {
+    let Ok(url) = std::env::var("TIQ_MYSQL_URL") else {
+        eprintln!("skip: no TIQ_MYSQL_URL");
+        return None;
+    };
+    let pool = sqlx::mysql::MySqlPoolOptions::new().connect(&url).await.unwrap();
+    let drv = tableiq_lib::drivers::mysql::MySqlDriver::connect(&url).await.expect("connect");
+    Some((pool, drv))
+}
+
+#[tokio::test]
+async fn mysql_delete_row_leaves_a_case_differing_sibling_alone() {
+    let Some((pool, drv)) = mysql_pool_and_driver().await else { return };
+    let t = "pk_case_delete";
+    mysql_case_fixture(&pool, t).await;
+
+    let n = drv
+        .delete_row("tableiq", t, &[("k".to_string(), Some("abc".to_string()))])
+        .await
+        .expect("delete");
+    assert_eq!(n, 1, "'Delete row' removed {n} rows for one clicked row");
+
+    // `k` is utf8mb4_bin, which the server flags as binary — CAST it back to text so sqlx
+    // decodes it as a String.
+    let left: Vec<String> =
+        sqlx::query_scalar(&format!("SELECT CAST(k AS CHAR) FROM {t} ORDER BY k"))
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(left, vec!["ABC".to_string()], "the case-differing sibling must survive");
+}
+
+#[tokio::test]
+async fn mysql_apply_edit_targets_only_the_clicked_row() {
+    let Some((pool, drv)) = mysql_pool_and_driver().await else { return };
+    let t = "pk_case_edit";
+    mysql_case_fixture(&pool, t).await;
+
+    let n = drv
+        .apply_edit(
+            "tableiq",
+            t,
+            &EditSpec {
+                pk: vec![("k".to_string(), Some("abc".to_string()))],
+                column: "note".to_string(),
+                new_value: Some("edited".to_string()),
+                orig_value: Some("one".to_string()),
+            },
+        )
+        .await
+        .expect("edit");
+    assert_eq!(n, 1, "one inline edit wrote {n} rows");
+    let sibling: String =
+        sqlx::query_scalar(&format!("SELECT note FROM {t} WHERE k = BINARY 'ABC'"))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(sibling, "two", "the case-differing sibling was overwritten");
+}
+
+#[tokio::test]
+async fn mysql_apply_edit_detects_a_concurrent_case_only_change() {
+    let Some((pool, drv)) = mysql_pool_and_driver().await else { return };
+    let t = "pk_case_concurrent";
+    mysql_case_fixture(&pool, t).await;
+    // Somebody else changed 'one' to 'ONE' since the grid loaded. Our stale edit must not land.
+    sqlx::raw_sql(&format!("UPDATE {t} SET note = 'ONE' WHERE k = BINARY 'abc'"))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let n = drv
+        .apply_edit(
+            "tableiq",
+            t,
+            &EditSpec {
+                pk: vec![("k".to_string(), Some("abc".to_string()))],
+                column: "note".to_string(),
+                new_value: Some("edited".to_string()),
+                orig_value: Some("one".to_string()), // stale: differs only in case
+            },
+        )
+        .await
+        .expect("edit");
+    assert_eq!(n, 0, "a concurrent case-only change went undetected");
+}

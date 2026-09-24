@@ -11,7 +11,7 @@ use sqlx::{MySql, Pool, Row};
 
 use super::{
     build_insert_sql, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
-    ColumnFilter, ColumnInfo, CursorId, DResult, DriverError, EditSpec, ForeignKey, IndexInfo,
+    ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec, ForeignKey, IndexInfo,
     ObjectInfo, ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver,
     StmtOutput, TableStructure, TriggerInfo,
 };
@@ -82,6 +82,32 @@ fn is_exec_timeout(e: &sqlx::Error) -> bool {
 /// Backtick-quote a MySQL identifier (escape embedded backticks).
 fn quote_ident(name: &str) -> String {
     format!("`{}`", name.replace('`', "``"))
+}
+
+/// One primary-key column of a row identity, matched null-safely (`<=>`) so a NULL value
+/// round-trips.
+///
+/// The column is compared **bare**, so the comparison runs under the column's *own*
+/// collation — which is exactly the equality the PRIMARY KEY index enforces, so it can
+/// match at most the one row the user clicked, and the index stays usable.
+///
+/// It used to be `CAST(col AS CHAR) <=> ?`. `CAST(… AS CHAR)` takes `collation_connection`,
+/// and sqlx hard-codes the charset to utf8mb4 — whose default collation is
+/// `utf8mb4_unicode_ci`: case-insensitive AND PAD SPACE. A `VARCHAR PRIMARY KEY COLLATE
+/// utf8mb4_bin` holding both 'abc' and 'ABC' therefore matched BOTH on one "Delete row".
+fn pk_match(col: &str) -> String {
+    format!("{} <=> ?", quote_ident(col))
+}
+
+/// The optimistic-concurrency check: the cell still holds the text the grid displayed.
+///
+/// `CAST(… AS CHAR)` reproduces the browse path's rendering (`open_window` selects
+/// `CAST(col AS CHAR)`), and `COLLATE utf8mb4_bin` compares it byte-for-byte instead of
+/// under the connection's case-insensitive collation — otherwise a concurrent edit that
+/// only changed case was never detected and the stale write landed anyway. The CAST
+/// converts to the connection charset first, so a non-utf8mb4 column still round-trips.
+fn value_match(col: &str) -> String {
+    format!("CAST({} AS CHAR) COLLATE utf8mb4_bin <=> ?", quote_ident(col))
 }
 
 /// MySQL coerces a text bind to the column's type on its own, so every placeholder is a
@@ -186,16 +212,6 @@ impl SqlDriver for MySqlDriver {
                 Err(e)
             }
         }
-    }
-
-    async fn open_cursor(&self, _sql: &str, _page_size: usize) -> DResult<CursorId> {
-        Err(DriverError::NotImplemented)
-    }
-    async fn fetch_next(&self, _c: &CursorId, _n: usize) -> DResult<RecordBatch> {
-        Err(DriverError::NotImplemented)
-    }
-    async fn close_cursor(&self, _c: &CursorId) -> DResult<()> {
-        Ok(())
     }
 
     /// MySQL 8 echoes information_schema result columns back in UPPERCASE whatever the
@@ -371,12 +387,11 @@ impl SqlDriver for MySqlDriver {
         if edit.pk.is_empty() {
             return Err(DriverError::Db("cannot edit without a primary key".into()));
         }
-        // null-safe match (<=>) against the displayed text via CAST.
         let mut wheres = vec![];
         for (name, _) in &edit.pk {
-            wheres.push(format!("{} <=> ?", quote_ident(name)));
+            wheres.push(pk_match(name));
         }
-        wheres.push(format!("CAST({} AS CHAR) <=> ?", quote_ident(&edit.column)));
+        wheres.push(value_match(&edit.column));
         let sql = format!(
             "UPDATE {}.{} SET {} = ? WHERE {}",
             quote_ident(schema),
@@ -402,11 +417,7 @@ impl SqlDriver for MySqlDriver {
         if pk.is_empty() {
             return Err(DriverError::Db("cannot delete without a primary key".into()));
         }
-        // Null-safe match on the displayed text (CAST AS CHAR), mirroring apply_edit.
-        let wheres: Vec<String> = pk
-            .iter()
-            .map(|(name, _)| format!("CAST({} AS CHAR) <=> ?", quote_ident(name)))
-            .collect();
+        let wheres: Vec<String> = pk.iter().map(|(name, _)| pk_match(name)).collect();
         let sql = format!(
             "DELETE FROM {}.{} WHERE {}",
             quote_ident(schema),
