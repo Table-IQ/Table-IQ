@@ -820,9 +820,6 @@ impl SqlDriver for PgDriver {
         table: &str,
         values: &[(String, Option<String>)],
     ) -> DResult<u64> {
-        if values.is_empty() {
-            return Err(DriverError::Db("no columns to insert".into()));
-        }
         let udts: HashMap<String, String> =
             self.column_udts(schema, table).await?.into_iter().collect();
         let (sql, binds) =

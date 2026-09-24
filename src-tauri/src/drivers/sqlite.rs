@@ -397,9 +397,6 @@ impl SqlDriver for SqliteDriver {
         table: &str,
         values: &[(String, Option<String>)],
     ) -> DResult<u64> {
-        if values.is_empty() {
-            return Err(DriverError::Db("no columns to insert".into()));
-        }
         let (sql, binds) =
             build_insert_sql(_schema, table, values, &quote_ident, &sqlite_placeholder, false);
         let mut q = sqlx::query(&sql);

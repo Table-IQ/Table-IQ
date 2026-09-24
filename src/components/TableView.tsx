@@ -775,7 +775,8 @@ export function TableView({ connId, schema, object, view }: Props) {
                   setDraft({ ...draft, [c.name]: e.target.value === "" ? "" : e.target.value })
                 }
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") void commitDraft();
+                  // Same rule as the Commit button: an untouched draft inserts nothing.
+                  if (e.key === "Enter" && isDraftDirty(draft)) void commitDraft();
                   if (e.key === "Escape") cancelDraft();
                 }}
                 placeholder={c.name}

@@ -874,3 +874,21 @@ async fn a_select_then_update_batch_updates_every_row() {
     drv.run_script("DROP TABLE dbo.tiq_rc").await.ok();
     assert_eq!(n, "6", "the UPDATE must not be capped by the SELECT's row limit");
 }
+
+/// An all-blank "+ Row" draft sends no columns: `INSERT … DEFAULT VALUES`.
+#[tokio::test]
+async fn sqlserver_inserts_an_all_defaults_row() {
+    let _serialised = serialised().await;
+    let Some(drv) = connect().await else { return };
+    drv.run_script(
+        "IF OBJECT_ID('dbo.tiq_defaults','U') IS NOT NULL DROP TABLE dbo.tiq_defaults; \
+         CREATE TABLE dbo.tiq_defaults (id INT IDENTITY PRIMARY KEY, n INT DEFAULT 7);",
+    )
+    .await
+    .expect("seed");
+    let n = drv.insert_row("dbo", "tiq_defaults", &[]).await;
+    let rows = text_rows(&drv.open_window("dbo", "tiq_defaults", 0, 10).await.unwrap());
+    drv.run_script("DROP TABLE dbo.tiq_defaults").await.ok();
+    assert_eq!(n.expect("all-defaults insert"), 1);
+    assert_eq!(rows, vec![vec![Some("1".to_string()), Some("7".to_string())]]);
+}

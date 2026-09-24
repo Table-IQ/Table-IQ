@@ -83,6 +83,15 @@ fn is_exec_timeout(e: &sqlx::Error) -> bool {
 /// `cancel` scope that keeps a KILL QUERY off a connection that moved on to a non-page query.
 const PAGE_SCOPE: &str = "SELECT /*+ MAX_EXECUTION_TIME(%";
 
+/// [`build_insert_sql`], except that MySQL has no `DEFAULT VALUES`: an all-defaults row is
+/// `() VALUES ()`.
+fn insert_sql(schema: &str, table: &str, values: &[(String, Option<String>)]) -> (String, Vec<Option<String>>) {
+    if values.is_empty() {
+        return (format!("INSERT INTO {}.{} () VALUES ()", quote_ident(schema), quote_ident(table)), vec![]);
+    }
+    build_insert_sql(schema, table, values, &quote_ident, &mysql_placeholder, true)
+}
+
 /// Backtick-quote a MySQL identifier (escape embedded backticks).
 fn quote_ident(name: &str) -> String {
     format!("`{}`", name.replace('`', "``"))
@@ -704,11 +713,7 @@ impl SqlDriver for MySqlDriver {
         table: &str,
         values: &[(String, Option<String>)],
     ) -> DResult<u64> {
-        if values.is_empty() {
-            return Err(DriverError::Db("no columns to insert".into()));
-        }
-        let (sql, binds) =
-            build_insert_sql(schema, table, values, &quote_ident, &mysql_placeholder, true);
+        let (sql, binds) = insert_sql(schema, table, values);
         let mut q = sqlx::query(&sql);
         for b in &binds {
             q = q.bind(b.clone());
@@ -879,7 +884,17 @@ impl SqlDriver for MySqlDriver {
 
 #[cfg(test)]
 mod tests {
-    use super::kill_query_sql;
+    use super::{insert_sql, kill_query_sql};
+
+    /// MySQL has no `DEFAULT VALUES`; an all-blank draft is `() VALUES ()`.
+    #[test]
+    fn insert_sql_with_no_values_inserts_defaults() {
+        let (sql, binds) = insert_sql("db", "t", &[]);
+        assert_eq!(sql, "INSERT INTO `db`.`t` () VALUES ()");
+        assert!(binds.is_empty());
+        let (sql, _) = insert_sql("db", "t", &[("c".into(), Some("v".into()))]);
+        assert_eq!(sql, "INSERT INTO `db`.`t` (`c`) VALUES (?)");
+    }
 
     #[test]
     fn kill_query_sql_targets_connection_id() {

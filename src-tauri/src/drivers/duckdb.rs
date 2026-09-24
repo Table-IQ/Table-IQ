@@ -471,9 +471,6 @@ impl SqlDriver for DuckDriver {
     }
 
     async fn insert_row(&self, schema: &str, table: &str, values: &[(String, Option<String>)]) -> DResult<u64> {
-        if values.is_empty() {
-            return Err(DriverError::Db("no columns to insert".into()));
-        }
         let (sql, binds) = build_insert_sql(schema, table, values, &quote_ident, &placeholder, true);
         self.exec(sql, binds).await
     }

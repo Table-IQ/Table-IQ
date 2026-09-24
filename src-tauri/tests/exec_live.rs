@@ -59,6 +59,16 @@ async fn counts_before_another_statement(drv: &dyn SqlDriver, series: &str) {
     assert_eq!(cell(&outs[1], 0, 0).as_deref(), Some("1"));
 }
 
+/// An all-blank "+ Row" draft sends no columns: the row is every column's DEFAULT
+/// (`DEFAULT VALUES`, or MySQL's `() VALUES ()` — never the invalid `() VALUES ()` elsewhere).
+async fn inserts_an_all_defaults_row(drv: &dyn SqlDriver, schema: &str, t: &str) {
+    let _ = drv.run_statements(&v(&[&format!("DROP TABLE IF EXISTS {t}")]), 10, &tok()).await;
+    one(drv, &format!("CREATE TABLE {t} (n INT DEFAULT 7)")).await;
+    assert_eq!(drv.insert_row(schema, t, &[]).await.expect("all-defaults insert"), 1);
+    assert_eq!(cell(&one(drv, &format!("SELECT n FROM {t}")).await, 0, 0).as_deref(), Some("7"));
+    let _ = drv.run_statements(&v(&[&format!("DROP TABLE {t}")]), 10, &tok()).await;
+}
+
 /// The cases every engine must satisfy. `series` yields 1000 rows in column `n`;
 /// `t` is a scratch table name unique to the engine.
 async fn shared_cases(drv: &dyn SqlDriver, series: &str, t: &str) {
@@ -151,6 +161,7 @@ async fn sqlite_run_statements() {
                   SELECT n FROM s";
     shared_cases(&drv, series, "tiq_exec_sqlite").await;
     counts_before_another_statement(&drv, series).await;
+    inserts_an_all_defaults_row(&drv, "main", "tiq_defaults_sqlite").await;
 
     // SQLite is dynamically typed: INTEGER/REAL must render as numbers, not raw bytes.
     let o = one(&drv, "SELECT 42 AS i, 1.5 AS r, 'txt' AS t").await;
@@ -170,6 +181,7 @@ async fn duckdb_run_statements() {
     let path = dir.path().join("exec.duckdb");
     let drv = DuckDriver::connect(path.to_str().unwrap()).await.expect("connect duckdb");
     shared_cases(&drv, "SELECT * FROM range(1, 1001) t(n)", "tiq_exec_duck").await;
+    inserts_an_all_defaults_row(&drv, "main", "tiq_defaults_duck").await;
 
     // Typed values render as DuckDB-ish text, not debug output.
     let o = one(&drv, "SELECT 42 AS i, 1.5::DECIMAL(4,2) AS d, DATE '2024-01-02' AS dt, true AS b").await;
@@ -199,6 +211,7 @@ async fn pg_run_statements() {
     let drv = PgDriver::connect(&url).await.expect("connect pg");
     shared_cases(&drv, "SELECT * FROM generate_series(1, 1000)", "tiq_exec_pg").await;
     counts_before_another_statement(&drv, "SELECT * FROM generate_series(1, 1000)").await;
+    inserts_an_all_defaults_row(&drv, "public", "tiq_defaults_pg").await;
 
     // SHOW / EXPLAIN — neither survives the old `SELECT * FROM (…) AS _q` wrapper.
     let o = one(&drv, "SHOW server_version").await;
@@ -268,6 +281,7 @@ async fn mysql_run_statements() {
                   SELECT n FROM s";
     shared_cases(&drv, series, "tiq_exec_mysql").await;
     counts_before_another_statement(&drv, series).await;
+    inserts_an_all_defaults_row(&drv, "tableiq", "tiq_defaults_mysql").await;
 
     let o = one(&drv, "SHOW TABLES").await;
     assert!(!o.columns.is_empty(), "SHOW TABLES must name its column");

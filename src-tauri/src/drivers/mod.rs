@@ -817,6 +817,11 @@ pub fn build_insert_sql(
     } else {
         quote_ident(table)
     };
+    // Every cell left to its default. `()`/`VALUES ()` is invalid outside MySQL (which in
+    // turn lacks this form — see `mysql::insert_sql`).
+    if values.is_empty() {
+        return (format!("INSERT INTO {qualified} DEFAULT VALUES"), binds);
+    }
     let sql = format!(
         "INSERT INTO {} ({}) VALUES ({})",
         qualified,
@@ -1044,6 +1049,19 @@ mod tests {
             build_insert_sql("dbo", "tbl", &vals, &mssql_ident, &mssql_ph, true);
         assert_eq!(sql, "INSERT INTO [dbo].[tbl] ([a], [b]) VALUES (@P1, @P2)");
         assert_eq!(binds, vec![Some("1".into()), None]);
+    }
+
+    /// A draft with every cell left blank sends no columns. `INSERT INTO t () VALUES ()` is
+    /// MySQL-only syntax; the others spell an all-defaults row `DEFAULT VALUES`.
+    #[test]
+    fn insert_sql_with_no_values_inserts_defaults() {
+        let (sql, binds) = build_insert_sql("public", "users", &[], &pg_ident, &pg_ph, true);
+        assert_eq!(sql, "INSERT INTO \"public\".\"users\" DEFAULT VALUES", "postgres / duckdb");
+        assert!(binds.is_empty());
+        let (sql, _) = build_insert_sql("main", "users", &[], &pg_ident, &sqlite_ph, false);
+        assert_eq!(sql, "INSERT INTO \"users\" DEFAULT VALUES", "sqlite");
+        let (sql, _) = build_insert_sql("dbo", "tbl", &[], &mssql_ident, &mssql_ph, true);
+        assert_eq!(sql, "INSERT INTO [dbo].[tbl] DEFAULT VALUES", "sql server");
     }
 
     #[test]

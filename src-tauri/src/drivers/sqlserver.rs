@@ -924,9 +924,6 @@ impl SqlDriver for SqlServerDriver {
         table: &str,
         values: &[(String, Option<String>)],
     ) -> DResult<u64> {
-        if values.is_empty() {
-            return Err(DriverError::Db("no columns to insert".into()));
-        }
         let (sql, binds) =
             build_insert_sql(schema, table, values, &quote_ident, &mssql_placeholder, true);
         let owned: Vec<Option<std::string::String>> = binds.to_vec();
