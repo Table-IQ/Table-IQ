@@ -47,6 +47,14 @@
   --radius-sm: 3px;
   --shadow-soft: 0 1px 2px rgb(0 0 0 / 0.04), 0 1px 1px rgb(0 0 0 / 0.03);
   --shadow-pop: 0 8px 24px rgb(0 0 0 / 0.12), 0 2px 6px rgb(0 0 0 / 0.06);
+
+  /* Motion (DESIGN.md → Motion). Enter eases out, exit eases in. Busy indicators
+     wait --delay-busy so a fast operation never flashes one. */
+  --dur-fast: 120ms;
+  --dur: 180ms;
+  --delay-busy: 150ms;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
 }
 
 [data-theme="dark"] {
@@ -183,6 +191,110 @@ body {
   background: rgb(0 0 0 / 0.35);
   backdrop-filter: blur(4px);
   z-index: 60;
+}
+
+/* ── Motion (DESIGN.md → Motion) ──────────────────────────────────────────
+   Opacity + transform only; rails may also animate max-height. All of it is
+   switched off under prefers-reduced-motion (bottom of this block). */
+@keyframes tiq-fade-in {
+  from { opacity: 0; }
+}
+@keyframes tiq-slide-in {
+  from { opacity: 0; transform: translateY(-4px); }
+}
+@keyframes tiq-rail-in {
+  from { opacity: 0; max-height: 0; }
+  to { max-height: 120px; }
+}
+@keyframes tiq-pop-in {
+  from { opacity: 0; transform: scale(0.98); }
+}
+@keyframes tiq-pop-out {
+  to { opacity: 0; transform: scale(0.98); }
+}
+@keyframes tiq-fade-out {
+  to { opacity: 0; }
+}
+/* One-shot status message: fade in, hold, fade out — 2s total. */
+@keyframes tiq-flash {
+  0% { opacity: 0; }
+  6%, 88% { opacity: 1; }
+  100% { opacity: 0; }
+}
+@keyframes tiq-progress-slide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(250%); }
+}
+
+/* Content that just arrived (query results). */
+.tiq-fade-in {
+  animation: tiq-fade-in var(--dur-fast) var(--ease-out);
+}
+/* An inline message (error, notice) entering from just above its slot. */
+.tiq-slide-in {
+  animation: tiq-slide-in var(--dur) var(--ease-out);
+}
+/* A rail opening under the toolbar; the content below slides down with it. */
+.tiq-rail {
+  overflow: hidden;
+  animation: tiq-rail-in var(--dur) var(--ease-out);
+}
+/* Busy text that should only appear if the wait is noticeable. */
+.tiq-delayed {
+  animation: tiq-fade-in var(--dur-fast) var(--ease-out) var(--delay-busy) both;
+}
+.tiq-flash {
+  animation: tiq-flash 2s linear both;
+}
+/* Panel open / close. The closing class stays on until the parent unmounts. */
+.tiq-pop-in {
+  animation: tiq-fade-in var(--dur) var(--ease-out);
+}
+.tiq-pop-in > * {
+  animation: tiq-pop-in var(--dur) var(--ease-out);
+}
+.tiq-pop-out {
+  animation: tiq-fade-out var(--dur-fast) var(--ease-in) forwards;
+}
+.tiq-pop-out > * {
+  animation: tiq-pop-out var(--dur-fast) var(--ease-in) forwards;
+}
+
+/* Shared 2px indeterminate progress bar. Place it at the top edge of whatever
+   is loading; it stays invisible for --delay-busy so quick loads don't flash. */
+.tiq-progress {
+  position: relative;
+  height: 2px;
+  overflow: hidden;
+  animation: tiq-fade-in var(--dur-fast) var(--ease-out) var(--delay-busy) both;
+}
+.tiq-progress::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  background: var(--primary);
+  animation: tiq-progress-slide 1.1s var(--ease-out) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  /* Its fill would otherwise end on the invisible last frame. */
+  .tiq-flash {
+    animation: none;
+  }
+  /* A static full-width bar still says "working" without moving. */
+  .tiq-progress::before {
+    width: 100%;
+    opacity: 0.5;
+    animation: none;
+  }
 }
 
 /* Hide the native number-input spinners so Port / Bastion-port fields read as
