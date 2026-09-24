@@ -110,6 +110,21 @@ impl SqliteDriver {
     }
 }
 
+/// A row identity must pin down exactly ONE row before we write through it.
+///
+/// SQLite permits NULL in any PRIMARY KEY that is not an `INTEGER PRIMARY KEY` rowid alias,
+/// and permits many such rows. Because we match an identity null-safely (`IS`) so a genuine
+/// NULL value round-trips, a NULL PK degrades to `WHERE pk IS NULL` — which matches every
+/// one of those rows. One "Delete row" click deleted 2. Refuse instead of guessing.
+fn reject_null_pk(pk: &[(String, Option<String>)]) -> DResult<()> {
+    if let Some((name, _)) = pk.iter().find(|(_, v)| v.is_none()) {
+        return Err(DriverError::Db(format!(
+            "row has a NULL primary-key value ({name}) and cannot be identified uniquely"
+        )));
+    }
+    Ok(())
+}
+
 fn text_rows_to_batch(cols: &[String], rows: &[SqliteRow]) -> DResult<RecordBatch> {
     let mut fields = Vec::with_capacity(cols.len());
     let mut arrays: Vec<ArrayRef> = Vec::with_capacity(cols.len());
@@ -302,6 +317,10 @@ impl SqlDriver for SqliteDriver {
     }
 
     async fn apply_edit(&self, _schema: &str, table: &str, edit: &EditSpec) -> DResult<u64> {
+        if edit.pk.is_empty() {
+            return Err(DriverError::Db("cannot edit without a primary key".into()));
+        }
+        reject_null_pk(&edit.pk)?;
         // SQLite is dynamically typed; compare originals as text (matches displayed CAST).
         let mut wheres = vec![];
         let mut bind: usize = 2;
@@ -333,6 +352,7 @@ impl SqlDriver for SqliteDriver {
         if pk.is_empty() {
             return Err(DriverError::Db("cannot delete without a primary key".into()));
         }
+        reject_null_pk(pk)?;
         // SQLite is dynamically typed; match originals as text (matches displayed CAST).
         let mut bind: usize = 1;
         let wheres: Vec<String> = pk

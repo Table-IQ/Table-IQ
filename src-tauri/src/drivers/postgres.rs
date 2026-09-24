@@ -574,6 +574,9 @@ impl SqlDriver for PgDriver {
     }
 
     async fn apply_edit(&self, schema: &str, table: &str, edit: &EditSpec) -> DResult<u64> {
+        if edit.pk.is_empty() {
+            return Err(DriverError::Db("cannot edit without a primary key".into()));
+        }
         // udt_name per column (valid cast targets: int8, numeric, timestamptz, …).
         let udts: HashMap<String, String> =
             self.column_udts(schema, table).await?.into_iter().collect();

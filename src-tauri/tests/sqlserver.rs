@@ -563,3 +563,19 @@ async fn sqlserver_password_with_semicolons_connects() {
 
     admin.run_statements(&v(&["DROP LOGIN tiq_semi"]), 10, &tok).await.ok();
 }
+
+/// `apply_edit` never had the `if pk.is_empty()` guard `delete_row` has, so an edit on a
+/// table with no detected primary key built `UPDATE … WHERE (col = @P OR both NULL)` — no
+/// row identity at all — and rewrote every row that shared the old value.
+#[tokio::test]
+async fn apply_edit_refuses_an_empty_primary_key() {
+    let Some(drv) = connect().await else { return };
+    let edit = EditSpec {
+        pk: vec![],
+        column: "flag".to_string(),
+        new_value: Some("on".to_string()),
+        orig_value: Some("off".to_string()),
+    };
+    let err = drv.apply_edit("dbo", "t", &edit).await.expect_err("no identity");
+    assert!(err.to_string().contains("primary key"), "unhelpful error: {err}");
+}

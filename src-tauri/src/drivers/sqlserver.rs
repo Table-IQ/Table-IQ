@@ -582,6 +582,9 @@ impl SqlDriver for SqlServerDriver {
     }
 
     async fn apply_edit(&self, schema: &str, table: &str, edit: &EditSpec) -> DResult<u64> {
+        if edit.pk.is_empty() {
+            return Err(DriverError::Db("cannot edit without a primary key".into()));
+        }
         // Optimistic-concurrency UPDATE: SET col = @P1 WHERE pk = … AND null-safe(col, orig).
         // SQL Server has no IS NOT DISTINCT FROM, so use the (= OR both-NULL) idiom.
         let col = quote_ident(&edit.column);

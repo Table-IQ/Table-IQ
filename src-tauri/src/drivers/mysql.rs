@@ -368,6 +368,9 @@ impl SqlDriver for MySqlDriver {
     }
 
     async fn apply_edit(&self, schema: &str, table: &str, edit: &EditSpec) -> DResult<u64> {
+        if edit.pk.is_empty() {
+            return Err(DriverError::Db("cannot edit without a primary key".into()));
+        }
         // null-safe match (<=>) against the displayed text via CAST.
         let mut wheres = vec![];
         for (name, _) in &edit.pk {
