@@ -79,7 +79,14 @@ function invoke<T>(cmd: string, ...rest: unknown[]): Promise<T> {
 export type { SshConfig, SshAuth, SshAuthMode } from "./ssh";
 
 // ── shared types (mirror the Rust serde shapes) ──────────────────────────
-export type Engine = "postgres" | "mysql" | "sqlite" | "redis" | "mongodb" | "sqlserver";
+export type Engine =
+  | "postgres"
+  | "mysql"
+  | "sqlite"
+  | "duckdb"
+  | "redis"
+  | "mongodb"
+  | "sqlserver";
 export interface ConnConfig {
   id: string;
   name: string;
@@ -365,6 +372,7 @@ export async function listDatabases(id: string): Promise<string[]> {
       case "sqlserver":
         return ["master", "tableiq"];
       case "sqlite":
+      case "duckdb":
         return ["main"];
       case "redis":
         return Array.from({ length: 16 }, (_, i) => String(i));

@@ -13,6 +13,8 @@ pub enum Dialect {
     MySql,
     Sqlite,
     SqlServer,
+    /// Postgres-shaped: `"…"` quoting, schemas, `ALTER COLUMN … TYPE`.
+    DuckDb,
 }
 
 impl Dialect {
@@ -21,6 +23,7 @@ impl Dialect {
             "mysql" => Dialect::MySql,
             "sqlite" => Dialect::Sqlite,
             "sqlserver" => Dialect::SqlServer,
+            "duckdb" => Dialect::DuckDb,
             _ => Dialect::Postgres,
         }
     }
@@ -187,7 +190,7 @@ pub fn alter_column_type_sql(
 ) -> String {
     let qt = d.qualified(schema, table);
     match d {
-        Dialect::Postgres => {
+        Dialect::Postgres | Dialect::DuckDb => {
             format!("ALTER TABLE {} ALTER COLUMN {} TYPE {};", qt, d.quote(column), new_type)
         }
         Dialect::MySql => {
@@ -283,6 +286,18 @@ mod tests {
         assert!(sql.starts_with("CREATE TABLE `app`.`t` ("));
         assert!(sql.contains("`id` INT NOT NULL"));
         assert!(sql.contains("PRIMARY KEY (`id`)"));
+    }
+
+    /// DuckDB speaks Postgres' identifier quoting, schema qualification and ALTER forms.
+    #[test]
+    fn duckdb_is_postgres_shaped() {
+        let d = Dialect::from_engine("duckdb");
+        assert_eq!(d, Dialect::DuckDb);
+        assert_eq!(drop_table_sql(Some("main"), "t", d), "DROP TABLE \"main\".\"t\";");
+        assert_eq!(
+            alter_column_type_sql(Some("main"), "t", "c", "BIGINT", d),
+            "ALTER TABLE \"main\".\"t\" ALTER COLUMN \"c\" TYPE BIGINT;"
+        );
     }
 
     #[test]
@@ -390,7 +405,7 @@ mod tests {
         assert!(!sql.contains("ADD COLUMN"), "ADD COLUMN is a T-SQL syntax error: {sql}");
 
         // Every other dialect keeps the COLUMN keyword.
-        for d in [Dialect::Postgres, Dialect::MySql, Dialect::Sqlite] {
+        for d in [Dialect::Postgres, Dialect::MySql, Dialect::Sqlite, Dialect::DuckDb] {
             let sql = add_column_sql(None, "t", &col("age", "int", true, false), d);
             assert!(sql.contains("ADD COLUMN"), "{d:?} should keep ADD COLUMN: {sql}");
         }
