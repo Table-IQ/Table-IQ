@@ -251,9 +251,30 @@ impl MySqlDriver {
         Ok(m)
     }
 
-    /// One page of a table; see [`SqlDriver::open_window_cancellable`] for `token`.
+    /// One page of a table; see [`SqlDriver::open_window_cancellable`] for `token`. A page
+    /// that failed on a stale cached column list (see `window_once`) is retried once.
     #[allow(clippy::too_many_arguments)]
     async fn window(
+        &self,
+        schema: &str,
+        table: &str,
+        offset: usize,
+        len: usize,
+        filters: &[ColumnFilter],
+        order: &[SortKey],
+        after: Option<&[Option<String>]>,
+        token: Option<&CancelToken>,
+    ) -> DResult<RecordBatch> {
+        let cached = self.meta.get(schema, table).is_some();
+        let res = self.window_once(schema, table, offset, len, filters, order, after, token).await;
+        if res.is_err() && cached && self.meta.get(schema, table).is_none() {
+            return self.window_once(schema, table, offset, len, filters, order, after, token).await;
+        }
+        res
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn window_once(
         &self,
         schema: &str,
         table: &str,
@@ -311,22 +332,30 @@ impl MySqlDriver {
             qy = qy.bind(b.clone());
         }
         qy = qy.bind(len as i64).bind(offset as i64);
-        let rows = match token {
-            None => qy.fetch_all(&self.pool).await.map_err(db)?,
+        let res = match token {
+            None => qy.fetch_all(&self.pool).await,
             // Pinned, so `cancel` can KILL QUERY this connection's id.
             Some(t) => {
                 let mut conn = self.pool.acquire().await.map_err(db)?;
                 Self::pin(&mut conn, t).await?;
-                // The timeout first: MySQL words it as an "interrupted" query too.
-                super::recheck_cancel(self, t, qy.fetch_all(&mut *conn)).await.map_err(|e| match e {
-                    e if is_exec_timeout(&e) => {
-                        DriverError::Db(format!("query timed out after {ms} ms"))
-                    }
-                    e if is_cancel(&e) => DriverError::Cancelled,
-                    e => db(e),
-                })?
+                super::recheck_cancel(self, t, qy.fetch_all(&mut *conn)).await
             }
         };
+        let rows = res.map_err(|e| {
+            // Unknown column (1054) / no such table (1146): the cached list is stale.
+            let my = e.as_database_error().and_then(|d| d.try_downcast_ref::<MySqlDatabaseError>());
+            if my.is_some_and(|d| matches!(d.number(), 1054 | 1146)) {
+                self.meta.forget(schema, table);
+            }
+            match e {
+                // The timeout first: MySQL words it as an "interrupted" query too.
+                e if token.is_some() && is_exec_timeout(&e) => {
+                    DriverError::Db(format!("query timed out after {ms} ms"))
+                }
+                e if token.is_some() && is_cancel(&e) => DriverError::Cancelled,
+                e => db(e),
+            }
+        })?;
         text_rows_to_batch(cols, &rows)
     }
 

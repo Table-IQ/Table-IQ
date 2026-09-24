@@ -104,6 +104,9 @@ impl<V: Clone> MetaCache<V> {
     pub(crate) fn clear(&self) {
         crate::lk(&self.0).clear();
     }
+    pub(crate) fn forget(&self, schema: &str, table: &str) {
+        crate::lk(&self.0).remove(&(schema.to_string(), table.to_string()));
+    }
 }
 
 /// The cached browse metadata of the engines that need no per-column type: `(columns, pk)`.

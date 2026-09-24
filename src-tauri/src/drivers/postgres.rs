@@ -321,9 +321,30 @@ impl PgDriver {
         Ok(m)
     }
 
-    /// One page of a table; see [`SqlDriver::open_window_cancellable`] for `token`.
+    /// One page of a table; see [`SqlDriver::open_window_cancellable`] for `token`. A page
+    /// that failed on a stale cached column list (see `window_once`) is retried once.
     #[allow(clippy::too_many_arguments)]
     async fn window(
+        &self,
+        schema: &str,
+        table: &str,
+        offset: usize,
+        len: usize,
+        filters: &[ColumnFilter],
+        order: &[SortKey],
+        after: Option<&[Option<String>]>,
+        token: Option<&CancelToken>,
+    ) -> DResult<RecordBatch> {
+        let cached = self.meta.get(schema, table).is_some();
+        let res = self.window_once(schema, table, offset, len, filters, order, after, token).await;
+        if res.is_err() && cached && self.meta.get(schema, table).is_none() {
+            return self.window_once(schema, table, offset, len, filters, order, after, token).await;
+        }
+        res
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn window_once(
         &self,
         schema: &str,
         table: &str,
@@ -405,19 +426,19 @@ impl PgDriver {
             qy = qy.bind(b.clone());
         }
         qy = qy.bind(offset as i64).bind(len as i64);
-        let rows = match token {
+        let ms = self.window_timeout_ms * if filters.is_empty() { 2 } else { 1 };
+        let res = match token {
             None if by_ctid => {
                 let mut tx = self.pool.begin().await.map_err(db)?;
                 Self::tid_scan(&mut tx).await?;
                 let res = qy.fetch_all(&mut *tx).await;
                 let _ = tx.rollback().await;
-                res.map_err(db)?
+                res
             }
-            None => qy.fetch_all(&self.pool).await.map_err(db)?,
+            None => qy.fetch_all(&self.pool).await,
             // Pinned, so `cancel` can target the PID, and bounded. SET LOCAL needs a
             // transaction; it also reverts on its own when this one ends.
             Some(t) => {
-                let ms = self.window_timeout_ms * if filters.is_empty() { 2 } else { 1 };
                 let mut tx = self.pool.begin().await.map_err(db)?;
                 if by_ctid {
                     Self::tid_scan(&mut tx).await?;
@@ -425,9 +446,19 @@ impl PgDriver {
                 Self::pin(&mut tx, t, Some(ms)).await?;
                 let res = super::recheck_cancel(self, t, qy.fetch_all(&mut *tx)).await;
                 let _ = tx.rollback().await;
-                res.map_err(|e| window_err(e, t, ms))?
+                res
             }
         };
+        let rows = res.map_err(|e| {
+            // A column or the table itself is gone (42703 / 42P01): the cached list is stale.
+            if matches!(e.as_database_error().and_then(|d| d.code()).as_deref(), Some("42703" | "42P01")) {
+                self.meta.forget(schema, table);
+            }
+            match token {
+                Some(t) => window_err(e, t, ms),
+                None => db(e),
+            }
+        })?;
 
         text_rows_to_batch(&cols, &rows)
     }

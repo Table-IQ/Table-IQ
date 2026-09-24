@@ -62,6 +62,52 @@ async fn pg_forget_meta_sees_a_new_column() {
     run(&a, "DROP SCHEMA tiq_meta CASCADE").await;
 }
 
+/// A column dropped behind the driver's back makes the cached column list name a column
+/// that is gone. The page must re-read the catalog and succeed, not fail until a Refresh.
+#[tokio::test]
+async fn pg_stale_meta_is_reread_once() {
+    let Some(url) = pg() else {
+        return;
+    };
+    let a = admin(&url).await;
+    run(&a, "DROP SCHEMA IF EXISTS tiq_stale CASCADE; CREATE SCHEMA tiq_stale; \
+             CREATE TABLE tiq_stale.t (id int PRIMARY KEY, extra text); INSERT INTO tiq_stale.t VALUES (1, 'x');")
+        .await;
+    let drv = PgDriver::connect(&url).await.unwrap();
+    assert_eq!(col_names(&drv.open_window("tiq_stale", "t", 0, 10).await.unwrap()), ["id", "extra"]);
+    run(&a, "ALTER TABLE tiq_stale.t DROP COLUMN extra").await;
+    let page = drv
+        .open_window_cancellable("tiq_stale", "t", 0, 10, &[], &[], None, &CancelToken::new())
+        .await
+        .expect("a stale column list is re-read, not an error");
+    assert_eq!(col_names(&page), ["id"]);
+    run(&a, "DROP SCHEMA tiq_stale CASCADE").await;
+}
+
+#[tokio::test]
+async fn mysql_stale_meta_is_reread_once() {
+    let Some(url) = mysql() else {
+        return;
+    };
+    let a = sqlx::mysql::MySqlPoolOptions::new().connect(&url).await.unwrap();
+    for sql in [
+        "DROP TABLE IF EXISTS tiq_stale_t",
+        "CREATE TABLE tiq_stale_t (id int PRIMARY KEY, extra text)",
+        "INSERT INTO tiq_stale_t VALUES (1, 'x')",
+    ] {
+        sqlx::raw_sql(sql).execute(&a).await.unwrap();
+    }
+    let drv = MySqlDriver::connect(&url).await.unwrap();
+    assert_eq!(col_names(&drv.open_window("tableiq", "tiq_stale_t", 0, 10).await.unwrap()), ["id", "extra"]);
+    sqlx::raw_sql("ALTER TABLE tiq_stale_t DROP COLUMN extra").execute(&a).await.unwrap();
+    let page = drv
+        .open_window_cancellable("tableiq", "tiq_stale_t", 0, 10, &[], &[], None, &CancelToken::new())
+        .await
+        .expect("a stale column list is re-read, not an error");
+    assert_eq!(col_names(&page), ["id"]);
+    sqlx::raw_sql("DROP TABLE tiq_stale_t").execute(&a).await.unwrap();
+}
+
 #[tokio::test]
 async fn mysql_forget_meta_sees_a_new_column() {
     let Some(url) = mysql() else {
