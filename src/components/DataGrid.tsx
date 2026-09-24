@@ -31,6 +31,7 @@ import {
   pendingKey,
   removePending,
   stageEdit,
+  movedTints,
   type PendingMap,
 } from "../lib/stagedEdits";
 
@@ -159,6 +160,9 @@ interface Props {
   rowMarkerStart?: number;
   /** Search term whose matching cells get the accent tint. */
   highlight?: string;
+  /** Primary-key columns. A saved tint remembers its row by them, so a re-read
+   *  that moves another row onto that index doesn't inherit the green. */
+  pk?: string[] | null;
 }
 
 /** Row-marker column width for the widest number it will show (~8px a digit). */
@@ -192,6 +196,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     onSort,
     rowMarkerStart = 1,
     highlight = "",
+    pk,
   },
   ref,
 ) {
@@ -227,6 +232,10 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   // Pending save-state clear timers, keyed by cell — so we can cancel them on
   // unmount / source switch (else setVersion fires on an unmounted grid).
   const editTimers = useRef(new Map<string, number>());
+  // Row key (PK column → value) of each saved tint, checked when a re-read lands.
+  const savedIds = useRef(new Map<string, Record<string, string | null>>());
+  const pkRef = useRef(pk);
+  pkRef.current = pk;
   // Monotonic per-cell edit token — a resolving write that's been superseded by
   // a newer edit on the same cell bails instead of clobbering it.
   const editSeq = useRef(new Map<string, number>());
@@ -369,6 +378,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     editSeq.current.clear();
     editTimers.current.forEach((id) => window.clearTimeout(id));
     editTimers.current.clear();
+    savedIds.current.clear();
     // Settle anything awaiting a fade (a delete) rather than leave it hanging.
     fx.current.forEach((f) => f.done?.());
     fx.current.clear();
@@ -477,6 +487,11 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
           if (gen !== generation.current) return; // source changed mid-flight
           const win = decodeWindow(bytes);
           cacheRef.current.put(page, win);
+          // A saved tint whose row index now holds a different row goes.
+          for (const key of movedTints(savedIds.current, (r, c) => cacheRef.current.getCell(r, c))) {
+            savedIds.current.delete(key);
+            if (editState.current.get(key) === "saved") editState.current.delete(key);
+          }
           // The first page is the authority on the column list: the sidebar
           // schema can be stale (or absent for a view), the decoded Arrow window
           // never is. The hidden paging cursor column is never shown.
@@ -668,6 +683,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
       const id = window.setTimeout(
         () => {
           editTimers.current.delete(key);
+          savedIds.current.delete(key);
           if (editState.current.get(key) === "saved") {
             editState.current.delete(key);
             if (!reducedMotion.current) {
@@ -754,6 +770,13 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
         if (gen !== generation.current) break;
         if (keep) {
           editState.current.set(key, "saved");
+          // The row as it now is (staged values included — an edited PK column
+          // is the row's new key), so the re-read can tell if it moved.
+          const shown = readRow(e.row);
+          const keyCols = pkRef.current ?? [];
+          if (shown && keyCols.length > 0) {
+            savedIds.current.set(key, Object.fromEntries(keyCols.map((c) => [c, shown[c] ?? null])));
+          }
           pending.current = removePending(pending.current, e.row, e.col);
           notifyPending();
           clearTintLater(key);
@@ -771,7 +794,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
       undoStack.current = [];
       onSave?.(edits.length);
     }
-  }, [onEdit, notifyPending, clearTintLater, onSave, onCommittingChange, animate]);
+  }, [onEdit, notifyPending, clearTintLater, onSave, onCommittingChange, animate, readRow]);
 
   /** Drop every staged edit and revert the display to each cell's saved value. */
   const discardPending = useCallback(() => {

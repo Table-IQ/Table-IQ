@@ -65,6 +65,27 @@ export function removePending(map: PendingMap, row: number, col: string): Pendin
  * `originalBefore` is the cell's last-saved value (the staged edit's `before`
  * when it has already been re-edited), never the current staged text.
  */
+/**
+ * A saved (green) tint is keyed by row index, but a re-read can put a different
+ * row at that index (a trigger, a concurrent insert, a sort key that changed).
+ * `ids` holds each tint's row key (PK column → value) as of the save; returns
+ * the tints whose index now holds another row. A row whose page isn't loaded
+ * yet (`cell` → undefined) is left alone until it is.
+ */
+export function movedTints(
+  ids: Map<string, Record<string, string | null>>,
+  cell: (row: number, col: string) => string | null | undefined,
+): string[] {
+  const out: string[] = [];
+  for (const [key, id] of ids) {
+    const row = Number(key.slice(0, key.indexOf(":")));
+    const now = Object.keys(id).map((c) => cell(row, c));
+    if (now.some((v) => v === undefined)) continue;
+    if (Object.values(id).some((v, i) => v !== now[i])) out.push(key);
+  }
+  return out;
+}
+
 export function isNullLeftEmpty(originalBefore: string | null, newValue: string): boolean {
   return originalBefore === null && newValue === "";
 }

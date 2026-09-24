@@ -901,6 +901,7 @@ export function TableView({ connId, schema, object, view }: Props) {
             source={source}
             rowMarkerStart={firstRow + 1}
             highlight={searchTerm(pageData?.filters ?? [])}
+            pk={pk}
             // Read-only while a page is in flight: the grid stays live for
             // scrolling and copying, but an edit staged now would be wiped when
             // the new page lands.
