@@ -722,7 +722,7 @@ export function TableView({ connId, schema, object, view }: Props) {
           Alter, and export. */}
       <Toolbar>
         <ToolbarButton
-          icon={<IconRefresh size={12} />}
+          icon={<IconRefresh size={12} className={fetching ? "animate-spin" : undefined} />}
           label="Refresh"
           onClick={() => !blockedByEdits() && refresh()}
         />
