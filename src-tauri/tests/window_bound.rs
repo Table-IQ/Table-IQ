@@ -1,0 +1,129 @@
+//! Bounded, cancellable table windows (T2): a filtered page fails with "timed out" once it
+//! runs past the window timeout, and a page whose token is cancelled — before or during the
+//! fetch — returns `Cancelled`. The slow relations sleep per row, so they only finish when
+//! something stops them. Gated on TIQ_PG_URL / TIQ_MYSQL_URL; each test owns its objects.
+//!   TIQ_PG_URL=postgres://postgres:tableiq@127.0.0.1:55432/tableiq \
+//!   TIQ_MYSQL_URL=mysql://root:tableiq@127.0.0.1:53306/tableiq \
+//!     cargo test --test window_bound -- --nocapture
+
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use tableiq_lib::drivers::{
+    mysql::MySqlDriver, postgres::PgDriver, CancelToken, ColumnFilter, DriverError, FilterOp,
+    SqlDriver,
+};
+
+fn search(term: &str) -> Vec<ColumnFilter> {
+    vec![ColumnFilter { column: "*".into(), op: FilterOp::Search, value: Some(term.into()) }]
+}
+
+/// `schema.slow`: a million rows whose `name` sleeps 1ms each time it is read.
+async fn pg_slow(url: &str, schema: &str) -> PgDriver {
+    let drv = PgDriver::connect(url).await.unwrap();
+    drv.run_script(&format!(
+        "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}; \
+         CREATE VIEW {schema}.slow AS SELECT g AS id, g::text || pg_sleep(0.001)::text AS name \
+         FROM generate_series(1, 1000000) g;"
+    ))
+    .await
+    .unwrap();
+    drv
+}
+
+#[tokio::test]
+async fn pg_filtered_window_times_out() {
+    let Ok(url) = std::env::var("TIQ_PG_URL") else {
+        eprintln!("skip: no TIQ_PG_URL");
+        return;
+    };
+    let drv = pg_slow(&url, "tiq_win_timeout").await.with_window_timeout_ms(300);
+    let start = Instant::now();
+    let err = drv
+        .open_window_cancellable("tiq_win_timeout", "slow", 0, 10, &search("zzz"), &[], None, &CancelToken::new())
+        .await
+        .expect_err("a search that outlives the timeout must fail");
+    assert!(err.to_string().contains("timed out"), "got {err}");
+    assert!(start.elapsed() < Duration::from_secs(5), "took {:?}", start.elapsed());
+    // An unfiltered page is not bounded (and this one is fast: it reads 10 rows).
+    drv.open_window_cancellable("tiq_win_timeout", "slow", 0, 10, &[], &[], None, &CancelToken::new())
+        .await
+        .expect("unfiltered page");
+    drv.run_script("DROP SCHEMA tiq_win_timeout CASCADE").await.unwrap();
+}
+
+#[tokio::test]
+async fn pg_window_cancel_during_and_before_the_fetch() {
+    let Ok(url) = std::env::var("TIQ_PG_URL") else {
+        return;
+    };
+    let drv = Arc::new(pg_slow(&url, "tiq_win_cancel").await);
+    let token = CancelToken::new();
+    let (d2, t2) = (drv.clone(), token.clone());
+    let start = Instant::now();
+    let h = tokio::spawn(async move {
+        d2.open_window_cancellable("tiq_win_cancel", "slow", 0, 10, &search("zzz"), &[], None, &t2).await
+    });
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    token.mark_cancelled();
+    drv.cancel(&token).await.unwrap();
+    let res = h.await.unwrap();
+    assert!(matches!(res, Err(DriverError::Cancelled)), "got {:?}", res.err());
+    assert!(start.elapsed() < Duration::from_secs(5), "took {:?}", start.elapsed());
+
+    // Cancelled before the server ever saw it (no backend id to target yet).
+    let early = CancelToken::new();
+    early.mark_cancelled();
+    let res = drv
+        .open_window_cancellable("tiq_win_cancel", "slow", 0, 10, &search("zzz"), &[], None, &early)
+        .await;
+    assert!(matches!(res, Err(DriverError::Cancelled)), "got {:?}", res.err());
+    drv.run_script("DROP SCHEMA tiq_win_cancel CASCADE").await.unwrap();
+}
+
+/// `tiq_win_slow`: 1000 rows whose `name` sleeps 20ms each time it is read (20s in all).
+async fn mysql_slow(url: &str) -> MySqlDriver {
+    let drv = MySqlDriver::connect(url).await.unwrap();
+    drv.run_script(
+        "DROP VIEW IF EXISTS tiq_win_slow; DROP TABLE IF EXISTS tiq_win_base; \
+         CREATE TABLE tiq_win_base (id INT PRIMARY KEY); \
+         INSERT INTO tiq_win_base WITH RECURSIVE s(n) AS \
+           (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 1000) SELECT n FROM s; \
+         CREATE VIEW tiq_win_slow AS SELECT id, CONCAT(id, SLEEP(0.02)) AS name FROM tiq_win_base;",
+    )
+    .await
+    .unwrap();
+    drv
+}
+
+/// Both MySQL cases share the fixture, so they run in one test.
+#[tokio::test]
+async fn mysql_window_timeout_and_cancel() {
+    let Ok(url) = std::env::var("TIQ_MYSQL_URL") else {
+        eprintln!("skip: no TIQ_MYSQL_URL");
+        return;
+    };
+    let drv = mysql_slow(&url).await.with_window_timeout_ms(300);
+    let start = Instant::now();
+    let err = drv
+        .open_window_cancellable("tableiq", "tiq_win_slow", 0, 10, &search("zzz"), &[], None, &CancelToken::new())
+        .await
+        .expect_err("a search that outlives the timeout must fail");
+    assert!(err.to_string().contains("timed out"), "got {err}");
+    assert!(start.elapsed() < Duration::from_secs(5), "took {:?}", start.elapsed());
+
+    let drv = Arc::new(drv.with_window_timeout_ms(60_000));
+    let token = CancelToken::new();
+    let (d2, t2) = (drv.clone(), token.clone());
+    let start = Instant::now();
+    let h = tokio::spawn(async move {
+        d2.open_window_cancellable("tableiq", "tiq_win_slow", 0, 10, &search("zzz"), &[], None, &t2).await
+    });
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    token.mark_cancelled();
+    drv.cancel(&token).await.unwrap();
+    let res = h.await.unwrap();
+    assert!(matches!(res, Err(DriverError::Cancelled)), "got {:?}", res.err());
+    assert!(start.elapsed() < Duration::from_secs(5), "took {:?}", start.elapsed());
+    drv.run_script("DROP VIEW tiq_win_slow; DROP TABLE tiq_win_base;").await.unwrap();
+}
