@@ -1414,6 +1414,12 @@ const EXPORT_EXTS: [&str; 4] = ["csv", "json", "sql", "txt"];
 /// who is happy to overwrite `~/notes.txt`, but it does keep a compromised webview away from
 /// dotfiles, shell profiles, authorized_keys and binaries — for four lines and no redesign.
 fn check_export_path(path: &str) -> Result<(), String> {
+    check_export_path_in(path, &crate::appdir::app_dir())
+}
+
+/// `check_export_path` with the config directory passed in, so it is testable without
+/// mutating `TIQ_CONFIG_DIR` out from under the rest of the suite.
+fn check_export_path_in(path: &str, app_dir: &std::path::Path) -> Result<(), String> {
     if path.is_empty() {
         return Err("no destination path".into());
     }
@@ -1422,9 +1428,20 @@ fn check_export_path(path: &str) -> Result<(), String> {
         return Err(format!("{path}: an export must be written to an absolute path"));
     }
     match p.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase) {
-        Some(ext) if EXPORT_EXTS.contains(&ext.as_str()) => Ok(()),
-        _ => Err(format!("{path}: an export must end in {}", EXPORT_EXTS.join(", "))),
+        Some(ext) if EXPORT_EXTS.contains(&ext.as_str()) => {}
+        _ => return Err(format!("{path}: an export must end in {}", EXPORT_EXTS.join(", "))),
     }
+    // `json` is on the allowlist and TableIQ's own config dir is full of json, so the
+    // extension check alone left `connections.json` (→ the bundle-import path) and `ai.json`
+    // wide open to a compromised webview. Nothing the app exports ever belongs in there.
+    let real = |d: &std::path::Path| std::fs::canonicalize(d).unwrap_or_else(|_| d.to_path_buf());
+    let dir = p.parent().unwrap_or(p);
+    if dir.starts_with(app_dir) || real(dir).starts_with(real(app_dir)) {
+        return Err(format!(
+            "{path}: an export cannot be written into TableIQ's own configuration directory"
+        ));
+    }
+    Ok(())
 }
 
 /// Write an export to a path the user just picked in the native Save dialog. A webview
@@ -1530,6 +1547,30 @@ mod tests {
         assert!(check_export_path("result.csv").is_err(), "bare filename");
         assert!(check_export_path("../../result.csv").is_err(), "relative traversal");
         assert!(check_export_path("~/result.csv").is_err(), "unexpanded tilde is not absolute");
+    }
+
+    /// `json` is on the export allowlist, and TableIQ's own config dir is full of json:
+    /// `connections.json` (chaining into the bundle-import hijack) and `ai.json`. The
+    /// extension check alone kept a compromised webview away from dotfiles but not from the
+    /// app's own state — nor from any project's `package.json`, though only the former is
+    /// something this process can draw a line around.
+    #[test]
+    fn export_path_rejects_a_write_into_the_app_config_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = tmp.path().join("ai.rhobots.tableiq");
+        std::fs::create_dir_all(app.join("plugins")).unwrap();
+        for name in ["connections.json", "ai.json", "query_library.json", "onboarded.json"] {
+            let p = app.join(name);
+            assert!(
+                check_export_path_in(p.to_str().unwrap(), &app).is_err(),
+                "{name} must not be writable by an export"
+            );
+        }
+        let nested = app.join("plugins").join("evil.json");
+        assert!(check_export_path_in(nested.to_str().unwrap(), &app).is_err(), "nested");
+        // A real export destination outside the config dir still works.
+        let ok = tmp.path().join("result.csv");
+        assert_eq!(check_export_path_in(ok.to_str().unwrap(), &app), Ok(()));
     }
 
     #[test]
