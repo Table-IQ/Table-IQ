@@ -75,7 +75,8 @@ pub struct ConnState {
     results: Mutex<ResultStore>,
     /// Live SSH tunnels keyed by conn id. Dropping a `Tunnel` (on disconnect/delete) tears it down.
     tunnels: Mutex<HashMap<String, Tunnel>>,
-    /// In-flight query cancel tokens keyed by client-supplied query id (plan spec #6).
+    /// In-flight cancel tokens keyed by client-supplied query id (plan spec #6), or by a
+    /// page fetch's `request_key`.
     cancels: Mutex<HashMap<String, CancelToken>>,
     /// Saved queries + searchable run history (persisted JSON).
     library: Mutex<crate::library::QueryLibrary>,
@@ -570,17 +571,69 @@ pub async fn get_table_window(
     filters: Option<Vec<ColumnFilter>>,
     order: Option<Vec<SortKey>>,
     after: Option<Vec<Option<String>>>,
+    request_key: Option<String>,
 ) -> Result<Response, String> {
     let drv = state.session(&id)?;
     let f = filters.unwrap_or_default();
     let o = order.unwrap_or_default();
     // `after` (the previous page's last-row key) lets the driver seek instead of OFFSET.
-    let batch = drv
-        .open_window_filtered(&schema, &table, offset, len, &f, &o, after.as_deref())
-        .await
-        .map_err(|e| e.to_string())?;
+    let batch = table_window(
+        &state.cancels,
+        drv.as_ref(),
+        &schema,
+        &table,
+        offset,
+        len,
+        &f,
+        &o,
+        after.as_deref(),
+        request_key.as_deref(),
+    )
+    .await?;
     let bytes = crate::query::window::encode_ipc(&batch).map_err(|e| e.to_string())?;
     Ok(Response::new(bytes))
+}
+
+/// The body of [`get_table_window`], outside Tauri so it can be tested. The page is
+/// cancellable and, when filtered, bounded (see [`SqlDriver::open_window_cancellable`]).
+/// Under a `request_key` (the tab), a newer page cancels the one still in flight — the tab
+/// has moved on to a new search term or page — and a superseded page fails "Query cancelled".
+#[allow(clippy::too_many_arguments)]
+pub async fn table_window(
+    cancels: &Mutex<HashMap<String, CancelToken>>,
+    drv: &dyn SqlDriver,
+    schema: &str,
+    table: &str,
+    offset: usize,
+    len: usize,
+    filters: &[ColumnFilter],
+    order: &[SortKey],
+    after: Option<&[Option<String>]>,
+    request_key: Option<&str>,
+) -> Result<RecordBatch, String> {
+    let token = CancelToken::new();
+    if let Some(key) = request_key {
+        let prev = lk(cancels).insert(key.to_string(), token.clone());
+        if let Some(prev) = prev {
+            prev.mark_cancelled();
+            // Best effort: an engine without server-side cancel lets the old page finish.
+            let _ = drv.cancel(&prev).await;
+        }
+    }
+    let res = drv
+        .open_window_cancellable(schema, table, offset, len, filters, order, after, &token)
+        .await;
+    if let Some(key) = request_key {
+        let mut c = lk(cancels);
+        // Only our own entry: a newer page may already hold the key.
+        if c.get(key).is_some_and(|t| t.same(&token)) {
+            c.remove(key);
+        }
+    }
+    res.map_err(|e| match e {
+        DriverError::Cancelled => "Query cancelled".to_string(),
+        other => other.to_string(),
+    })
 }
 
 /// Insert a single row built from `(column, text_value)` pairs (Slice 21 #2).
@@ -721,6 +774,8 @@ pub async fn cancel_query(
         return Ok(()); // already completed/removed
     };
     let drv = state.session(&id)?;
+    // A page fetch tells this apart from its own statement timeout by the flag.
+    token.mark_cancelled();
     match drv.cancel(&token).await {
         Ok(()) => Ok(()),
         Err(DriverError::NotImplemented) => {

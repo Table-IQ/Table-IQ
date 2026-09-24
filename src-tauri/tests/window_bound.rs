@@ -127,3 +127,43 @@ async fn mysql_window_timeout_and_cancel() {
     assert!(start.elapsed() < Duration::from_secs(5), "took {:?}", start.elapsed());
     drv.run_script("DROP VIEW tiq_win_slow; DROP TABLE tiq_win_base;").await.unwrap();
 }
+
+/// The IPC path (`get_table_window` → `table_window`): a second page under the same request
+/// key cancels the first one still in flight, whose backend then leaves pg_stat_activity.
+#[tokio::test]
+async fn pg_same_request_key_supersedes_the_page_in_flight() {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use tableiq_lib::ipc::connect::table_window;
+    let Ok(url) = std::env::var("TIQ_PG_URL") else {
+        return;
+    };
+    let drv = Arc::new(pg_slow(&url, "tiq_win_supersede").await);
+    let cancels: Arc<Mutex<HashMap<String, CancelToken>>> = Arc::default();
+    let (d2, c2) = (drv.clone(), cancels.clone());
+    let slow = tokio::spawn(async move {
+        let f = search("zzz");
+        table_window(&c2, &*d2, "tiq_win_supersede", "slow", 0, 10, &f, &[], None, Some("tab")).await
+    });
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let pid = cancels.lock().unwrap()["tab"].backend_id().expect("the slow page has a backend");
+
+    let fast = table_window(&cancels, &*drv, "tiq_win_supersede", "slow", 0, 10, &[], &[], None, Some("tab"))
+        .await
+        .expect("the newer page");
+    assert_eq!(fast.num_rows(), 10);
+    let err = slow.await.unwrap().expect_err("the older page must be cancelled");
+    assert_eq!(err, "Query cancelled");
+    assert!(cancels.lock().unwrap().is_empty(), "both pages deregistered");
+
+    let admin = sqlx::PgPool::connect(&url).await.unwrap();
+    let running: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pg_stat_activity WHERE pid = $1 AND state = 'active'",
+    )
+    .bind(pid as i32)
+    .fetch_one(&admin)
+    .await
+    .unwrap();
+    assert_eq!(running, 0, "the superseded search is no longer running");
+    drv.run_script("DROP SCHEMA tiq_win_supersede CASCADE").await.unwrap();
+}
