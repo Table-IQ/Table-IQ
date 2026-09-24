@@ -2,7 +2,7 @@
 //! the OS keychain (never on disk). Postgres only for Slice 1.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -60,7 +60,7 @@ impl ConnConfig {
                     format!(":{}@", urlencode(password))
                 };
                 let dbn = if self.database.is_empty() { "0" } else { &self.database };
-                format!("redis://{auth}{}:{}/{}", self.host, self.port, dbn)
+                format!("redis://{auth}{}:{}/{}", urlencode_host(&self.host), self.port, dbn)
             }
             "mongodb" => {
                 let auth = if self.username.is_empty() {
@@ -68,21 +68,13 @@ impl ConnConfig {
                 } else {
                     format!("{}:{}@", urlencode(&self.username), urlencode(password))
                 };
-                format!("mongodb://{auth}{}:{}", self.host, self.port)
-            }
-            "sqlserver" => {
-                // ADO connection string for tiberius. azure-sql-edge uses a self-signed cert.
-                let dbn = if self.database.is_empty() { "master" } else { &self.database };
-                format!(
-                    "Server=tcp:{},{};User Id={};Password={};Database={};TrustServerCertificate=true;Encrypt=false",
-                    self.host, self.port, self.username, password, dbn
-                )
+                format!("mongodb://{auth}{}:{}", urlencode_host(&self.host), self.port)
             }
             "mysql" => format!(
                 "mysql://{}:{}@{}:{}/{}",
                 urlencode(&self.username),
                 urlencode(password),
-                self.host,
+                urlencode_host(&self.host),
                 self.port,
                 urlencode(&self.database),
             ),
@@ -100,14 +92,28 @@ impl ConnConfig {
                     "postgres://{}:{}@{}:{}/{}?sslmode={}",
                     urlencode(&self.username),
                     urlencode(password),
-                    self.host,
+                    urlencode_host(&self.host),
                     self.port,
                     urlencode(dbn),
-                    self.sslmode
+                    urlencode(&self.sslmode)
                 )
             }
         }
     }
+}
+
+/// Percent-encode a host for the URL authority. Everything `urlencode` keeps, plus `:` `[` `]`
+/// so an IPv6 literal (`[::1]`) — which is already URL-legal — survives intact. What matters
+/// is that `@`, `/`, `?`, `#` and `&` do *not*: a stored host of `h@evil.example.com` used to
+/// push the real host into the userinfo and hand the password to whatever followed the `@`.
+fn urlencode_host(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b':' | b'['
+            | b']' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 fn urlencode(s: &str) -> String {
@@ -125,29 +131,70 @@ fn urlencode(s: &str) -> String {
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct ConnStore {
     pub connections: Vec<ConnConfig>,
+    /// Set when the file exists but could not be read, so `save` must refuse rather than
+    /// overwrite data we never saw. Never serialized — it describes this load, not the store.
+    #[serde(skip)]
+    unreadable: bool,
 }
 
 impl ConnStore {
     fn path() -> PathBuf {
-        let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-        base.join(KEYRING_SERVICE).join("connections.json")
+        crate::appdir::app_dir().join("connections.json")
     }
 
     pub fn load() -> Self {
-        let p = Self::path();
-        match fs::read_to_string(&p) {
-            Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
-            Err(_) => Self::default(),
+        Self::load_at(&Self::path())
+    }
+
+    /// Load from an explicit path. A file that exists but does not parse is moved aside
+    /// rather than silently replaced by the next save — see `appdir::quarantine`.
+    ///
+    /// The only read failure that may yield an empty store is "there is no file yet".
+    /// Anything else (EACCES, a transient I/O fault, invalid UTF-8 — which is exactly what a
+    /// half-written file looks like) means the user's connections are still on disk and we
+    /// simply cannot see them; loading empty would let the next save atomically overwrite
+    /// the lot with `{"connections":[]}`, orphaning every keychain entry behind it. Mark the
+    /// store unreadable so `save` refuses instead.
+    fn load_at(p: &Path) -> Self {
+        let text = match fs::read_to_string(p) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Self::default(),
+            Err(e) => {
+                crate::applog::log(
+                    "error",
+                    &format!(
+                        "{} could not be read ({e}); leaving it untouched — saved connections \
+                         are unavailable until it can be read again",
+                        p.display()
+                    ),
+                );
+                return Self { connections: Vec::new(), unreadable: true };
+            }
+        };
+        match serde_json::from_str(&text) {
+            Ok(store) => store,
+            Err(e) => {
+                // Quarantined, so the path is now free and the next save is safe.
+                crate::appdir::quarantine_corrupt(p, &e.to_string());
+                Self::default()
+            }
         }
     }
 
     pub fn save(&self) -> Result<(), String> {
-        let p = Self::path();
-        if let Some(dir) = p.parent() {
-            fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        self.save_at(&Self::path())
+    }
+
+    fn save_at(&self, p: &Path) -> Result<(), String> {
+        if self.unreadable {
+            return Err(format!(
+                "{} could not be read, so it will not be overwritten. Fix its permissions or \
+                 move it aside, then restart TableIQ.",
+                p.display()
+            ));
         }
-        fs::write(&p, serde_json::to_string_pretty(self).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())
+        let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        crate::appdir::write_atomic(p, json.as_bytes()).map_err(|e| e.to_string())
     }
 
     pub fn upsert(&mut self, cfg: ConnConfig) {
@@ -168,12 +215,22 @@ impl ConnStore {
         serde_json::to_string_pretty(&self.connections).map_err(|e| e.to_string())
     }
 
-    /// Merge a bundle into the store (upsert by id). Returns how many were imported.
+    /// Merge a bundle into the store. Returns how many were imported.
+    ///
+    /// An imported connection **never** takes over an existing id. Bundles are meant to be
+    /// shared (that is the whole point of their being secret-free), while the keychain keys
+    /// the password to the connection id — so an upsert-by-id let a bundle carrying the
+    /// victim's own `"id"` silently retarget their saved "Prod DB" at another host, and the
+    /// next connect handed the real production password over in cleartext. A colliding id
+    /// gets a fresh one and lands as its own visible, password-less entry instead.
     pub fn import_bundle(&mut self, json: &str) -> Result<usize, String> {
         let incoming: Vec<ConnConfig> = serde_json::from_str(json).map_err(|e| e.to_string())?;
         let n = incoming.len();
-        for c in incoming {
-            self.upsert(c);
+        for mut c in incoming {
+            if c.id.is_empty() || self.connections.iter().any(|e| e.id == c.id) {
+                c.id = uuid::Uuid::new_v4().to_string();
+            }
+            self.connections.push(c);
         }
         Ok(n)
     }
@@ -221,6 +278,7 @@ mod tests {
         };
         let store = ConnStore {
             connections: vec![cfg.clone()],
+            ..Default::default()
         };
         let json = serde_json::to_string(&store).unwrap();
         let back: ConnStore = serde_json::from_str(&json).unwrap();
@@ -391,6 +449,158 @@ mod tests {
     #[test]
     fn ssh_secret_account_derivation() {
         assert_eq!(ssh_secret_account("conn-9"), "ssh:conn-9");
+    }
+
+    /// A `connections.json` that exists but does not parse must be moved aside, never
+    /// silently replaced by the next save — it is the user's entire set of connections.
+    #[test]
+    fn corrupt_store_is_quarantined_not_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("connections.json");
+        std::fs::write(&p, b"{ truncated").unwrap();
+
+        let store = ConnStore::load_at(&p);
+        assert!(store.connections.is_empty(), "a corrupt file loads as empty");
+        assert!(!p.exists(), "the corrupt file must be moved out of the way");
+        let aside: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.starts_with("connections.json.corrupt-"))
+            .collect();
+        assert_eq!(aside.len(), 1, "expected exactly one quarantined file, saw {aside:?}");
+        assert_eq!(std::fs::read_to_string(dir.path().join(&aside[0])).unwrap(), "{ truncated");
+    }
+
+    #[test]
+    fn missing_store_loads_empty_without_quarantining() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("connections.json");
+        assert!(ConnStore::load_at(&p).connections.is_empty());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    /// A bundle is the feature's secret-free selling point, so people share them. Upserting
+    /// **by id** meant a bundle carrying `{"id":"<victim's Prod DB id>","host":"evil…"}`
+    /// silently retargeted the victim's existing entry — while the keychain password stayed
+    /// keyed to that same id, so the next connect sent the real production password, in
+    /// cleartext (`sslmode: disable`), to the attacker's host.
+    #[test]
+    fn import_never_takes_over_an_existing_connection() {
+        let mut store = ConnStore::default();
+        store.upsert(ConnConfig {
+            id: "prod-1".into(),
+            name: "Prod DB".into(),
+            color: None,
+            engine: "postgres".into(),
+            host: "db.internal".into(),
+            port: 5432,
+            database: "app".into(),
+            username: "svc".into(),
+            sslmode: "verify-full".into(),
+            ssh: None,
+        });
+        let hostile = r#"[{"id":"prod-1","name":"Prod DB","engine":"postgres",
+            "host":"evil.example.com","port":5432,"database":"app","username":"svc",
+            "sslmode":"disable"}]"#;
+        assert_eq!(store.import_bundle(hostile).unwrap(), 1);
+
+        let victim = store.connections.iter().find(|c| c.id == "prod-1").expect("victim kept");
+        assert_eq!(victim.host, "db.internal", "the saved connection was retargeted");
+        assert_eq!(victim.sslmode, "verify-full", "TLS was downgraded on the saved connection");
+        assert_eq!(store.connections.len(), 2, "the import must land as its own entry");
+        let imported = store.connections.iter().find(|c| c.host == "evil.example.com").unwrap();
+        assert_ne!(imported.id, "prod-1", "the import reused the victim's keychain id");
+    }
+
+    /// A non-colliding id is kept, so re-importing your own bundle onto a fresh machine
+    /// still round-trips one entry rather than duplicating it.
+    #[test]
+    fn import_keeps_ids_that_do_not_collide() {
+        let mut store = ConnStore::default();
+        let bundle = r#"[{"id":"fresh","name":"PG","engine":"postgres","host":"h","port":5432,
+            "database":"d","username":"u","sslmode":"prefer"}]"#;
+        store.import_bundle(bundle).unwrap();
+        assert_eq!(store.connections[0].id, "fresh");
+    }
+
+    /// `host` and `sslmode` were the only fields interpolated into the URL unencoded, so a
+    /// stored `sslmode` of `disable&host=attacker` appended extra sqlx connect options and a
+    /// `host` containing `@` moved the real host into the userinfo — taking the password with it.
+    #[test]
+    fn url_encodes_host_and_sslmode() {
+        let cfg = ConnConfig {
+            id: "x".into(),
+            name: "x".into(),
+            color: None,
+            engine: "postgres".into(),
+            host: "h@evil.example.com".into(),
+            port: 5432,
+            database: "d".into(),
+            username: "u".into(),
+            sslmode: "disable&host=attacker".into(),
+            ssh: None,
+        };
+        let url = cfg.url_with_password("pw");
+        assert!(url.contains("@h%40evil.example.com:5432/"), "host not encoded: {url}");
+        assert!(url.ends_with("sslmode=disable%26host%3Dattacker"), "sslmode not encoded: {url}");
+    }
+
+    /// Encoding the host must not break an IPv6 literal, which is already URL-legal.
+    #[test]
+    fn url_keeps_an_ipv6_literal_host_intact() {
+        let cfg = ConnConfig {
+            id: "x".into(),
+            name: "x".into(),
+            color: None,
+            engine: "mysql".into(),
+            host: "[::1]".into(),
+            port: 3306,
+            database: "d".into(),
+            username: "u".into(),
+            sslmode: "prefer".into(),
+            ssh: None,
+        };
+        assert!(cfg.url_with_password("pw").contains("@[::1]:3306/"), "IPv6 host was mangled");
+    }
+
+    /// The *parse*-failure path quarantines carefully. The *read*-failure path did not:
+    /// EACCES, a transient I/O error, or invalid UTF-8 — exactly what a half-written file
+    /// looks like — silently yielded an empty store, and the next save atomically overwrote
+    /// the user's entire connection set with `{"connections":[]}`, orphaning every keychain
+    /// entry behind it.
+    #[test]
+    fn an_unreadable_store_refuses_to_save_over_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("connections.json");
+        // Not valid UTF-8, so `read_to_string` fails before serde_json ever sees it.
+        let bytes: &[u8] = b"{\"connections\": [\xff\xfe";
+        std::fs::write(&p, bytes).unwrap();
+
+        let store = ConnStore::load_at(&p);
+        assert!(store.connections.is_empty(), "nothing could be read");
+        let err = store.save_at(&p).expect_err("saving would have destroyed the file");
+        assert!(err.contains("could not be read"), "unhelpful error: {err}");
+        assert_eq!(std::fs::read(&p).unwrap(), bytes, "the user's file was modified");
+    }
+
+    /// The one read failure that *is* safe to treat as an empty store: there is no file yet.
+    #[test]
+    fn a_missing_store_still_saves() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("connections.json");
+        assert_eq!(ConnStore::load_at(&p).save_at(&p), Ok(()));
+        assert!(p.exists());
+    }
+
+    /// A quarantined (unparseable) file is out of the way, so saving over the now-missing
+    /// path is safe and must keep working.
+    #[test]
+    fn a_quarantined_store_still_saves() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("connections.json");
+        std::fs::write(&p, b"{ truncated").unwrap();
+        assert_eq!(ConnStore::load_at(&p).save_at(&p), Ok(()));
     }
 
     #[test]

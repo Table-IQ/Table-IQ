@@ -135,7 +135,9 @@ export function ConnectionManager() {
   const setKeyPath = (path: string) => setSsh({ auth: { mode: "keyfile", path } });
 
   useEffect(() => {
-    listConnections().then(setSaved).catch(() => {});
+    listConnections()
+      .then(setSaved)
+      .catch((e) => setStatus({ kind: "err", msg: `Could not load saved connections: ${e}` }));
   }, [setSaved]);
 
   // ⌘N opens the new-connection sheet. MainShell handles ⌘N for new query once
@@ -154,7 +156,10 @@ export function ConnectionManager() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sheetOpen]);
 
-  const refresh = () => listConnections().then(setSaved).catch(() => {});
+  const refresh = () =>
+    listConnections()
+      .then(setSaved)
+      .catch((e) => setStatus({ kind: "err", msg: `Could not load saved connections: ${e}` }));
   // Clear a green/red test result the moment the user changes anything, so the
   // feedback never goes stale against edited values.
   const clearStatus = () =>
@@ -284,13 +289,17 @@ export function ConnectionManager() {
         <div className="px-5 pb-5">
           <div className="flex flex-col gap-1.5">
             <button
-              onClick={async () =>
-                downloadText(
-                  "tableiq-connections.json",
-                  await exportConnections(),
-                  "application/json",
-                )
-              }
+              onClick={async () => {
+                try {
+                  await downloadText(
+                    "tableiq-connections.json",
+                    await exportConnections(),
+                    "application/json",
+                  );
+                } catch (e) {
+                  setStatus({ kind: "err", msg: `Export failed: ${e}` });
+                }
+              }}
               className="flex h-8 items-center gap-2 rounded-[var(--radius)] border border-border bg-bg/70 px-3 text-[12px] text-text shadow-[var(--shadow-soft)] backdrop-blur-sm transition-colors hover:bg-bg"
               title="Export connections (no passwords)"
             >

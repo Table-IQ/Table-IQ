@@ -30,8 +30,10 @@ export function ChartView({
       const labels: string[] = [];
       const values: string[] = [];
       for (let r = 0; r < w.numRows; r++) {
-        labels.push(w.getCell(r, xCol));
-        values.push(w.getCell(r, yCol));
+        // A NULL label/value isn't plottable, so it charts as empty and is
+        // dropped by buildSeries — the grid is where NULL renders as NULL.
+        labels.push(w.getCell(r, xCol) ?? "");
+        values.push(w.getCell(r, yCol) ?? "");
       }
       if (!cancelled) setPoints(buildSeries(labels, values).slice(0, MAX_BARS));
     })().catch(() => !cancelled && setPoints([]));

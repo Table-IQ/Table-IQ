@@ -1,0 +1,15 @@
+$ docker exec -i tableiq-pg psql -U postgres -d tableiq
+SELECT c.id AS customer_id, c.name, count(DISTINCT o.id) AS orders, sum(oi.qty) AS units, round(sum(oi.qty * oi.price), 2) AS revenue FROM customers c JOIN orders o ON o.customer_id = c.id JOIN order_items oi ON oi.order_id = o.id GROUP BY c.id, c.name HAVING sum(oi.qty * oi.price) > 300 ORDER BY revenue DESC, c.id LIMIT 8;
+
+ customer_id |    name     | orders | units | revenue 
+-------------+-------------+--------+-------+---------
+          11 | Customer 11 |      2 |    20 | 1384.72
+          27 | Customer 27 |      2 |    16 | 1324.64
+          59 | Customer 59 |      2 |    20 | 1302.88
+          35 | Customer 35 |      2 |    20 | 1240.20
+          71 | Customer 71 |      2 |    20 | 1228.72
+          83 | Customer 83 |      2 |    20 | 1106.08
+          23 | Customer 23 |      2 |    20 | 1087.88
+          95 | Customer 95 |      2 |    20 | 1079.12
+(8 rows)
+

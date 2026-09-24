@@ -5,6 +5,7 @@ import { ObjectTree } from "./ObjectTree";
 import { TableView } from "./TableView";
 import { QueryView } from "./QueryView";
 import { ErdView } from "./ErdView";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { StructureEditor } from "./StructureEditor";
 import { ImportDialog } from "./ImportDialog";
 import { DiffView } from "./DiffView";
@@ -15,6 +16,7 @@ import { Onboarding } from "./Onboarding";
 import { Inspector } from "./Inspector";
 import { ContextMenu, type ContextMenuItem } from "./ui/ContextMenu";
 import { ResizeHandle, clampWidth } from "./ui/ResizeHandle";
+import { logError } from "../lib/report";
 import { hydrateForConnection, persistForConnection } from "../lib/tabsPersist";
 import { ToolbarButton, Toolbar, ToolbarDivider, ToolbarSpacer } from "./ui/Toolbar";
 import { StatusBar, StatusDot } from "./ui/StatusBar";
@@ -37,7 +39,7 @@ import {
   IconSidebarRight,
   IconStructure,
 } from "./ui/Icon";
-import { useConnections } from "../state/connectionStore";
+import { clearMetaCaches, useConnections } from "../state/connectionStore";
 import { useTabs } from "../state/tabsStore";
 import type { Tab } from "../state/tabsStore";
 import {
@@ -54,8 +56,20 @@ import {
   type ExportFormat,
   type ObjectInfo,
 } from "../lib/commands";
-import { buildTableScript, quoteIdent, type ScriptColumn } from "../lib/tableScript";
+import {
+  buildTableScript,
+  quoteIdent,
+  selectStarter,
+  type ScriptColumn,
+} from "../lib/tableScript";
 import { markConnected } from "../lib/lastConnected";
+
+/** The schema a connection should open on. Every engine has a conventional
+ *  "your stuff lives here" schema; alphabetical order picks `auth` over
+ *  `public`, which is never what the user meant. */
+function defaultSchema(names: string[]): string | undefined {
+  return ["public", "dbo", "main"].find((n) => names.includes(n)) ?? names[0];
+}
 
 function findObject(
   schema: ReturnType<typeof useConnections.getState>["schema"],
@@ -70,6 +84,7 @@ export function MainShell() {
   const { active, schema, saved, setActive, setSchema, disconnected, setDisconnected } =
     useConnections();
   const [reconnecting, setReconnecting] = useState(false);
+  const [refreshingSchema, setRefreshingSchema] = useState(false);
   // A dropped session (broken pipe, server shutdown, …) raises the reconnect
   // banner. commands.ts fires this from any live-session invoke that errors.
   useEffect(() => {
@@ -129,8 +144,8 @@ export function MainShell() {
   const [pinned, setPinned] = useState<string[]>([]);
   const [erdFocus, setErdFocus] = useState<string | undefined>(undefined);
   // Active schema for the sidebar dropdown — the tree shows only this schema's
-  // objects (TablePlus parity). Defaults to the first schema; re-pins to a valid
-  // one whenever the schema model changes (connection / database switch).
+  // objects (TablePlus parity). Defaults to the engine's conventional schema;
+  // re-pins to a valid one whenever the schema model changes.
   const [activeSchema, setActiveSchema] = useState<string | undefined>(undefined);
   const [objMenu, setObjMenu] = useState<{
     x: number;
@@ -141,12 +156,19 @@ export function MainShell() {
   // Sidebar-foot "+" → new-object menu (TablePlus parity, Slice 31).
   const [sidebarMenu, setSidebarMenu] = useState<{ x: number; y: number } | null>(null);
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; tab: Tab } | null>(null);
+  // A failed export from the object context menu has nowhere else to land: the menu is gone
+  // by the time the write fails, and the Table/Query status bars belong to a tab body that
+  // may not even be open. One message, one strip — not a toast system.
+  const [exportMsg, setExportMsg] = useState<string | null>(null);
+  /** A connection switch (or an in-place reconnect) that failed. Same reasoning
+   *  as `exportMsg`: the picker is gone by the time the error lands. */
+  const [connMsg, setConnMsg] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState<string | null>(null);
 
   // Keep the sidebar schema selection valid across connection/database switches.
   useEffect(() => {
     const names = schema?.schemas.map((s) => s.name) ?? [];
-    setActiveSchema((cur) => (cur && names.includes(cur) ? cur : names[0]));
+    setActiveSchema((cur) => (cur && names.includes(cur) ? cur : defaultSchema(names)));
   }, [schema]);
 
   // Hydrate persisted tabs whenever we switch connections. Persist on every tab change
@@ -199,6 +221,10 @@ export function MainShell() {
   // Keyboard shortcuts. ⌘O is new — Open Connection picker (TablePlus parity).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // CodeMirror's own keymap (⌘D multi-cursor, ⌘[ / ⌘] indent, ⌘K) runs first
+      // and calls preventDefault when the SQL editor is focused — the workspace
+      // shortcuts must not fire on top of it.
+      if (e.defaultPrevented) return;
       const meta = e.metaKey || e.ctrlKey;
       if (meta && e.key.toLowerCase() === "k") {
         e.preventDefault();
@@ -240,7 +266,7 @@ export function MainShell() {
       }
     }
     list.push(
-      { id: "act:query", label: "New Query", hint: "⌘T", run: openQuery },
+      { id: "act:query", label: "New Query", hint: "⌘T", run: () => openQuery() },
       { id: "act:erd", label: "Open Schema Diagram (ERD)", hint: "action", run: openErd },
       { id: "act:table", label: "New Table…", hint: "action", run: () => setShowStructure(true) },
       { id: "act:import", label: "Import CSV / JSON…", hint: "action", run: () => setShowImport(true) },
@@ -269,8 +295,24 @@ export function MainShell() {
   const onDisconnect = async () => {
     await disconnect(active.id);
     reset();
+    clearMetaCaches();
     setSchema(null);
     setActive(null);
+  };
+
+  /** Re-introspect the database. The button used to hand `setSchema` the very
+   *  object it already held, so a table created from a Query tab never showed up. */
+  const onRefreshSchema = async () => {
+    if (refreshingSchema) return;
+    setRefreshingSchema(true);
+    try {
+      clearMetaCaches();
+      setSchema(await listObjects(active.id));
+    } catch (e) {
+      console.error("schema refresh failed", e);
+    } finally {
+      setRefreshingSchema(false);
+    }
   };
 
   /** Re-open the dropped session in place. Reuses connect() (rebuilds the pool)
@@ -278,13 +320,16 @@ export function MainShell() {
   const onReconnect = async () => {
     if (reconnecting) return;
     setReconnecting(true);
+    setConnMsg(null);
     try {
       const info = await connect(active.id);
       const schemaModel = await listObjects(active.id);
+      clearMetaCaches();
       setActive(info);
       setSchema(schemaModel);
     } catch (e) {
       console.error("reconnect failed", e);
+      setConnMsg(`Could not reconnect to '${active.database}': ${e}`);
     } finally {
       setReconnecting(false);
     }
@@ -293,20 +338,25 @@ export function MainShell() {
   /** Swap to a different saved connection without leaving the workspace. */
   const onSwapConnection = async (c: ConnConfig) => {
     if (c.id === active.id) return;
+    setConnMsg(null);
     try {
       // Disconnect the current session first so we don't pile up backend sessions.
       await disconnect(active.id);
       const info = await connect(c.id);
       const schemaModel = await listObjects(c.id);
       markConnected(c.id);
+      clearMetaCaches();
       reset();
       setActive(info);
       setSchema(schemaModel);
     } catch (e) {
-      // If the new connection fails, fall back to no-active so the user can recover via the picker.
+      // Dropping to `active: null` here rendered the connection list again with no
+      // hint that anything had gone wrong. Keep the workspace and say what failed:
+      // the old session was already disconnected above, so raise the reconnect
+      // banner too — tapping it re-opens the connection the user was on.
       console.error("connection swap failed", e);
-      setActive(null);
-      setSchema(null);
+      setConnMsg(`Could not switch to '${c.name}': ${e}`);
+      setDisconnected(true);
     }
   };
 
@@ -315,26 +365,126 @@ export function MainShell() {
     setPinned((p) => (p.includes(key) ? p.filter((x) => x !== key) : [...p, key]));
   };
 
-  // Open a new query tab pre-filled with `sql` (the QueryView hydrates the
-  // one-shot starter event). Shared by the table menu + the sidebar "+" menu.
-  const newQueryWith = (sql: string) => {
-    openQuery();
-    window.dispatchEvent(new CustomEvent("tiq:starter-sql", { detail: sql }));
+  const engine = active.engine as Engine;
+  const q = (name: string) => quoteIdent(name, engine);
+  /** "New …" items for a schema — used by the sidebar foot "+" and table menu.
+   *  Each template is written in the connected engine's dialect; items the engine
+   *  has no equivalent for (SQLite routines, materialized views) are left out. */
+  const newObjectItems = (s: string): ContextMenuItem[] => {
+    const items: ContextMenuItem[] = [
+      { id: "n-table", label: "New Table…", onSelect: () => setShowStructure(true) },
+      {
+        id: "n-view",
+        label: "New View…",
+        onSelect: () => openQuery(`CREATE VIEW ${q(s)}.${q("new_view")} AS\nSELECT 1;`),
+      },
+    ];
+    if (engine === "postgres") {
+      items.push(
+        {
+          id: "n-mview",
+          label: "New Materialized View…",
+          onSelect: () =>
+            openQuery(`CREATE MATERIALIZED VIEW ${q(s)}.${q("new_mview")} AS\nSELECT 1;`),
+        },
+        {
+          id: "n-fn",
+          label: "New Function…",
+          onSelect: () =>
+            openQuery(
+              `CREATE FUNCTION ${q(s)}.${q("new_fn")}()\nRETURNS void AS $$\nBEGIN\n  -- …\nEND;\n$$ LANGUAGE plpgsql;`,
+            ),
+        },
+        {
+          id: "n-proc",
+          label: "New Procedure…",
+          onSelect: () =>
+            openQuery(
+              `CREATE PROCEDURE ${q(s)}.${q("new_proc")}()\nLANGUAGE plpgsql AS $$\nBEGIN\n  -- …\nEND;\n$$;`,
+            ),
+        },
+      );
+    } else if (engine === "mysql") {
+      // Single-statement bodies: MySQL's BEGIN…END form needs a DELIMITER change,
+      // which our statement splitter (and most drivers) can't carry.
+      items.push(
+        {
+          id: "n-fn",
+          label: "New Function…",
+          onSelect: () =>
+            openQuery(`CREATE FUNCTION ${q("new_fn")}() RETURNS INT DETERMINISTIC\nRETURN 1;`),
+        },
+        {
+          id: "n-proc",
+          label: "New Procedure…",
+          onSelect: () => openQuery(`CREATE PROCEDURE ${q("new_proc")}()\nSELECT 1;`),
+        },
+      );
+    } else if (engine === "sqlserver") {
+      items.push(
+        {
+          id: "n-fn",
+          label: "New Function…",
+          onSelect: () =>
+            openQuery(
+              `CREATE FUNCTION ${q(s)}.${q("new_fn")}()\nRETURNS int\nAS\nBEGIN\n  RETURN 1\nEND`,
+            ),
+        },
+        {
+          id: "n-proc",
+          label: "New Procedure…",
+          onSelect: () =>
+            openQuery(`CREATE PROCEDURE ${q(s)}.${q("new_proc")}\nAS\nBEGIN\n  SELECT 1\nEND`),
+        },
+      );
+    }
+    if (engine !== "sqlite") {
+      items.push({
+        id: "n-schema",
+        label: engine === "mysql" ? "New Database…" : "New Schema…",
+        onSelect: () =>
+          openQuery(
+            engine === "mysql"
+              ? `CREATE DATABASE ${q("new_database")};`
+              : `CREATE SCHEMA ${q("new_schema")};`,
+          ),
+      });
+      items.push({
+        id: "n-group",
+        label: "New Group / Role…",
+        onSelect: () =>
+          openQuery(
+            engine === "mysql" ? `CREATE ROLE 'new_group';` : `CREATE ROLE ${q("new_group")};`,
+          ),
+      });
+    }
+    return items;
   };
-  /** "New …" items for a schema — used by the sidebar foot "+" and table menu. */
-  const newObjectItems = (s: string): ContextMenuItem[] => [
-    { id: "n-table", label: "New Table…", onSelect: () => setShowStructure(true) },
-    { id: "n-view", label: "New View…", onSelect: () => newQueryWith(`CREATE VIEW ${quoteIdent(s)}."new_view" AS\nSELECT 1;`) },
-    { id: "n-mview", label: "New Materialized View…", onSelect: () => newQueryWith(`CREATE MATERIALIZED VIEW ${quoteIdent(s)}."new_mview" AS\nSELECT 1;`) },
-    { id: "n-fn", label: "New Function…", onSelect: () => newQueryWith(`CREATE FUNCTION ${quoteIdent(s)}."new_fn"()\nRETURNS void AS $$\nBEGIN\n  -- …\nEND;\n$$ LANGUAGE plpgsql;`) },
-    { id: "n-proc", label: "New Procedure…", onSelect: () => newQueryWith(`CREATE PROCEDURE ${quoteIdent(s)}."new_proc"()\nLANGUAGE plpgsql AS $$\nBEGIN\n  -- …\nEND;\n$$;`) },
-    { id: "n-schema", label: "New Schema…", onSelect: () => newQueryWith(`CREATE SCHEMA "new_schema";`) },
-    { id: "n-group", label: "New Group / Role…", onSelect: () => newQueryWith(`CREATE ROLE "new_group";`) },
-  ];
 
-  const renderActive = () => {
-    if (!activeTab) {
-      return (
+  // Every query tab stays mounted and is hidden with `display:none` when inactive,
+  // so its editor text, undo history, results and scroll position survive a tab
+  // switch (TablePlus parity). Table/ERD tabs render only while active — their
+  // state is cheap to rebuild and each one holds a server-side cursor.
+  const renderActive = () => (
+    <>
+      {tabs
+        .filter((t) => t.kind === "query")
+        .map((t) => (
+          <div key={t.key} className={t.key === activeKey ? "h-full" : "hidden"}>
+            {/* One boundary per tab body: a crash in one tab must not take the
+                window with it. Keyed by tab so reopening a tab clears the panel. */}
+            <ErrorBoundary label={`query tab ${t.key}`}>
+              <QueryView
+                connId={active.id}
+                tabKey={t.key}
+                initialSql={t.sql}
+                engine={active.engine as Engine}
+                active={t.key === activeKey}
+              />
+            </ErrorBoundary>
+          </div>
+        ))}
+      {!activeTab && (
         <div className="flex h-full items-center justify-center">
           <div className="max-w-md text-center">
             <Wordmark className="mb-3 justify-center text-base" />
@@ -345,16 +495,27 @@ export function MainShell() {
             </div>
           </div>
         </div>
-      );
-    }
-    if (activeTab.kind === "query") return <QueryView connId={active.id} />;
-    if (activeTab.kind === "erd") return <ErdView connId={active.id} schema={schema} focusTable={erdFocus} />;
-    return activeObj ? (
-      <TableView connId={active.id} schema={activeTab.schema!} object={activeObj} />
-    ) : (
-      <div className="p-6 text-sm text-muted">Table not found.</div>
-    );
-  };
+      )}
+      {activeTab?.kind === "erd" && (
+        <ErrorBoundary key={activeTab.key} label={`erd tab ${activeTab.key}`}>
+          <ErdView connId={active.id} schema={schema} focusTable={erdFocus} />
+        </ErrorBoundary>
+      )}
+      {activeTab?.kind === "table" &&
+        (activeObj ? (
+          <ErrorBoundary key={activeTab.key} label={`table tab ${activeTab.key}`}>
+            <TableView
+              connId={active.id}
+              schema={activeTab.schema!}
+              object={activeObj}
+              view={activeTab.view ?? "data"}
+            />
+          </ErrorBoundary>
+        ) : (
+          <div className="p-6 text-sm text-muted">Table not found.</div>
+        ))}
+    </>
+  );
 
   // Breadcrumb: TablePlus-style monospace strip — no border / bg, just dim · separators
   // and a brighter active-table segment. Compact (h-5) so it fits the 32px titlebar.
@@ -433,11 +594,9 @@ export function MainShell() {
         {/* Right icon groups — actions in one card, the inspector toggle in its own. */}
         <IconGroup>
           <IconButton
-            icon={<IconRefresh size={16} />}
+            icon={<IconRefresh size={16} className={refreshingSchema ? "animate-spin" : undefined} />}
             label="Refresh schema"
-            onClick={() => {
-              setSchema(schema);
-            }}
+            onClick={() => void onRefreshSchema()}
           />
           <IconButton
             icon={<IconDatabase size={16} />}
@@ -498,6 +657,34 @@ export function MainShell() {
             {reconnecting ? "Reconnecting…" : "Tap to reconnect"}
           </span>
         </button>
+      )}
+
+      {connMsg && (
+        <div className="flex h-7 shrink-0 items-center gap-2 border-b border-danger/30 bg-danger/10 px-3 text-[11px] text-danger">
+          <span className="min-w-0 flex-1 truncate" title={connMsg}>
+            {connMsg}
+          </span>
+          <button
+            onClick={() => setConnMsg(null)}
+            className="shrink-0 underline underline-offset-2 hover:opacity-80"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {exportMsg && (
+        <div className="flex h-7 shrink-0 items-center gap-2 border-b border-danger/30 bg-danger/10 px-3 text-[11px] text-danger">
+          <span className="min-w-0 flex-1 truncate" title={exportMsg}>
+            {exportMsg}
+          </span>
+          <button
+            onClick={() => setExportMsg(null)}
+            className="shrink-0 underline underline-offset-2 hover:opacity-80"
+          >
+            Dismiss
+          </button>
+        </div>
       )}
 
       {/* ── BODY ─────────────────────────────────────────────────────────── */}
@@ -590,7 +777,7 @@ export function MainShell() {
         <main className="flex min-w-0 flex-1 flex-col">
           {/* Primary action toolbar */}
           <Toolbar>
-            <ToolbarButton icon={<IconPlus />} label="Query" shortcut="⌘T" onClick={openQuery} />
+            <ToolbarButton icon={<IconPlus />} label="Query" shortcut="⌘T" onClick={() => openQuery()} />
             <ToolbarButton icon={<IconErd />} label="ERD" onClick={openErd} />
             <ToolbarButton
               icon={<IconStructure />}
@@ -775,6 +962,7 @@ export function MainShell() {
               const info = await switchDatabase(active.id, db);
               const schemaModel = await listObjects(active.id);
               markConnected(active.id);
+              clearMetaCaches();
               reset();
               setActive(info);
               setSchema(schemaModel);
@@ -794,7 +982,7 @@ export function MainShell() {
           const { schema: s, obj } = objMenu;
           const key = `${s}.${obj.name}`;
           const isPinned = pinned.includes(key);
-          const qualified = `${quoteIdent(s)}.${quoteIdent(obj.name)}`;
+          const qualified = `${q(s)}.${q(obj.name)}`;
           const scriptCols: ScriptColumn[] = obj.columns.map((c) => ({
             name: c.name,
             data_type: c.data_type,
@@ -802,24 +990,24 @@ export function MainShell() {
           }));
           const copy = (str: string) => navigator.clipboard?.writeText(str);
           const exportAs = async (fmt: ExportFormat) => {
-            const text = await exportTable(active.id, s, obj.name, fmt);
-            downloadText(
-              `${obj.name}.${fmt}`,
-              text,
-              fmt === "json" ? "application/json" : "text/csv",
-            );
+            try {
+              const text = await exportTable(active.id, s, obj.name, fmt);
+              await downloadText(
+                `${obj.name}.${fmt}`,
+                text,
+                fmt === "json" ? "application/json" : "text/csv",
+              );
+            } catch (e) {
+              logError(`export ${obj.name} as ${fmt}`, e);
+              setExportMsg(`Could not export ${obj.name} as ${fmt.toUpperCase()}: ${e}`);
+            }
           };
           const items: (ContextMenuItem | "separator")[] = [
             { id: "open", label: "Open in new tab", onSelect: () => openTable(s, obj.name) },
             {
               id: "open-structure",
               label: "Open structure",
-              onSelect: () => {
-                openTable(s, obj.name);
-                window.dispatchEvent(
-                  new CustomEvent("tiq:view-structure", { detail: `${s}.${obj.name}` }),
-                );
-              },
+              onSelect: () => openTable(s, obj.name, "structure"),
             },
             {
               id: "overview",
@@ -833,7 +1021,9 @@ export function MainShell() {
               id: "show-in-diagram",
               label: "Show in diagram (ERD)",
               onSelect: () => {
-                setErdFocus(obj.name);
+                // The ERD keys its cards `schema.table`, so same-named tables in
+                // two schemas cannot be confused for one another.
+                setErdFocus(`${s}.${obj.name}`);
                 openErd();
               },
             },
@@ -850,10 +1040,10 @@ export function MainShell() {
               id: "copy-script",
               label: "Copy script as",
               children: [
-                { id: "cs-create", label: "CREATE", onSelect: () => copy(buildTableScript("create", s, obj.name, scriptCols)) },
-                { id: "cs-select", label: "SELECT", onSelect: () => copy(buildTableScript("select", s, obj.name, scriptCols)) },
-                { id: "cs-drop", label: "DROP", onSelect: () => copy(buildTableScript("drop", s, obj.name, scriptCols)) },
-                { id: "cs-truncate", label: "TRUNCATE", onSelect: () => copy(buildTableScript("truncate", s, obj.name, scriptCols)) },
+                { id: "cs-create", label: "CREATE", onSelect: () => copy(buildTableScript("create", s, obj.name, scriptCols, engine)) },
+                { id: "cs-select", label: "SELECT", onSelect: () => copy(buildTableScript("select", s, obj.name, scriptCols, engine)) },
+                { id: "cs-drop", label: "DROP", onSelect: () => copy(buildTableScript("drop", s, obj.name, scriptCols, engine)) },
+                { id: "cs-truncate", label: "TRUNCATE", onSelect: () => copy(buildTableScript("truncate", s, obj.name, scriptCols, engine)) },
               ],
             },
             {
@@ -872,25 +1062,33 @@ export function MainShell() {
             {
               id: "new-query",
               label: "New query selecting from this",
-              onSelect: () => newQueryWith(`SELECT * FROM ${qualified} LIMIT 100;`),
+              onSelect: () => openQuery(selectStarter(s, obj.name, engine)),
             },
             "separator",
             {
               id: "clone",
               label: "Clone (open as query)",
-              onSelect: () => newQueryWith(`CREATE TABLE ${quoteIdent(s)}.${quoteIdent(`${obj.name}_copy`)} (LIKE ${qualified} INCLUDING ALL);`),
+              onSelect: () =>
+                openQuery(
+                  engine === "postgres"
+                    ? `CREATE TABLE ${q(s)}.${q(`${obj.name}_copy`)} (LIKE ${qualified} INCLUDING ALL);`
+                    : engine === "sqlserver"
+                      ? // T-SQL has no CREATE TABLE … AS SELECT; SELECT … INTO is the idiom.
+                        `SELECT * INTO ${q(s)}.${q(`${obj.name}_copy`)} FROM ${qualified};`
+                      : `CREATE TABLE ${q(s)}.${q(`${obj.name}_copy`)} AS SELECT * FROM ${qualified};`,
+                ),
             },
             {
               id: "truncate",
               label: "Truncate (open as query)",
               tone: "danger",
-              onSelect: () => newQueryWith(buildTableScript("truncate", s, obj.name, scriptCols)),
+              onSelect: () => openQuery(buildTableScript("truncate", s, obj.name, scriptCols, engine)),
             },
             {
               id: "drop",
               label: "Drop (open as query)",
               tone: "danger",
-              onSelect: () => newQueryWith(buildTableScript("drop", s, obj.name, scriptCols)),
+              onSelect: () => openQuery(buildTableScript("drop", s, obj.name, scriptCols, engine)),
             },
           ];
           return (
@@ -907,7 +1105,7 @@ export function MainShell() {
         <ContextMenu
           x={sidebarMenu.x}
           y={sidebarMenu.y}
-          items={newObjectItems(schema.schemas[0]?.name ?? "public")}
+          items={newObjectItems(activeSchema ?? schema.schemas[0]?.name ?? "public")}
           onClose={() => setSidebarMenu(null)}
         />
       )}
@@ -940,7 +1138,7 @@ export function MainShell() {
                 if (tabMenu.tab.kind === "table" && tabMenu.tab.schema && tabMenu.tab.table) {
                   openTable(tabMenu.tab.schema, tabMenu.tab.table);
                 } else if (tabMenu.tab.kind === "query") {
-                  openQuery();
+                  openQuery(tabMenu.tab.sql);
                 } else if (tabMenu.tab.kind === "erd") {
                   openErd();
                 }
@@ -978,7 +1176,7 @@ function HelpMenu({ onTour, onClose }: { onTour: () => void; onClose: () => void
         <div className="text-[11px] text-muted">Walk through the workspace again</div>
       </button>
       <a
-        href="https://github.com/anthropics/claude-code/issues"
+        href="https://github.com/RudreshNarwal/Table-IQ/issues"
         target="_blank"
         rel="noreferrer"
         className="block rounded-md px-3 py-2 text-xs text-text hover:bg-surface-2"

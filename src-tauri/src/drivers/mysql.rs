@@ -6,17 +6,55 @@ use arrow::array::{ArrayRef, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
-use sqlx::mysql::{MySqlPoolOptions, MySqlRow};
-use sqlx::{Column, Executor, MySql, Pool, Row};
+use sqlx::mysql::{MySqlDatabaseError, MySqlPoolOptions, MySqlQueryResult, MySqlRow};
+use sqlx::{MySql, Pool, Row};
 
 use super::{
-    build_insert_sql, build_where_clause, CancelToken, ColumnFilter, ColumnInfo, CursorId, DResult,
-    DriverError, EditSpec, ForeignKey, ObjectInfo, ObjectKind, QueryResult, SchemaInfo, SchemaModel,
-    SqlDriver,
+    build_insert_sql, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
+    ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec, ForeignKey, IndexInfo,
+    ObjectInfo, ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver,
+    StmtOutput, TableStructure, TriggerInfo,
 };
 
+use std::collections::HashMap;
+
+/// Unwrap `sqlx::Error::Database` to the bare server message — sqlx otherwise prefixes it with
+/// "error returned from database:", which `DriverError::Db` used to prefix again.
 fn db(e: sqlx::Error) -> DriverError {
-    DriverError::Db(e.to_string())
+    match e.as_database_error() {
+        Some(dbe) => DriverError::Db(dbe.message().to_string()),
+        None => DriverError::Db(e.to_string()),
+    }
+}
+
+/// One cell of a COM_QUERY row. The text protocol hands every value over as bytes, so this is
+/// the server's own display rendering — what `CAST(col AS CHAR)` used to produce.
+fn mysql_cell(row: &MySqlRow, i: usize) -> Result<Option<String>, sqlx::Error> {
+    Ok(row
+        .try_get_unchecked::<Option<Vec<u8>>, _>(i)?
+        .map(|b| exec::cell_text(&b)))
+}
+
+/// Per-statement error detail. MySQL has no error-position field; it only sometimes embeds
+/// "at line N" in the message (e.g. syntax errors), so that is all we can report.
+fn mysql_stmt_err(e: sqlx::Error, _stmt: &str) -> Result<QueryError, DriverError> {
+    if is_cancel(&e) {
+        return Err(DriverError::Cancelled);
+    }
+    let message = e
+        .as_database_error()
+        .map_or_else(|| e.to_string(), |d| d.message().to_string());
+    Ok(QueryError { message: message.clone(), line: parse_at_line(&message), position: None })
+}
+
+/// Pull `N` out of MySQL's "… at line N" message suffix.
+fn parse_at_line(message: &str) -> Option<u32> {
+    let rest = message.rsplit_once("at line ")?.1;
+    rest.chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .ok()
 }
 
 /// `KILL QUERY <id>` issued from a second connection to stop a running statement.
@@ -25,20 +63,57 @@ fn kill_query_sql(connection_id: u64) -> String {
     format!("KILL QUERY {connection_id}")
 }
 
-/// Recognise a KILL QUERY interruption (SQLSTATE 70100 / ER_QUERY_INTERRUPTED) as a
-/// clean cancellation rather than a generic DB error.
-fn map_query_err(e: sqlx::Error) -> DriverError {
-    if let sqlx::Error::Database(ref dbe) = e {
-        if dbe.code().as_deref() == Some("70100") || dbe.message().contains("interrupted") {
-            return DriverError::Cancelled;
-        }
-    }
-    DriverError::Db(e.to_string())
+/// A KILL QUERY interruption (SQLSTATE 70100 / ER_QUERY_INTERRUPTED) is a clean cancellation,
+/// not a query error.
+fn is_cancel(e: &sqlx::Error) -> bool {
+    matches!(e, sqlx::Error::Database(dbe)
+        if dbe.code().as_deref() == Some("70100") || dbe.message().contains("interrupted"))
+}
+
+/// `MAX_EXECUTION_TIME` firing on the count query: ER_QUERY_TIMEOUT (3024). Matched on the
+/// error number, not the message, because MySQL words it as an "interrupted" query — the
+/// same wording `is_cancel` looks for.
+fn is_exec_timeout(e: &sqlx::Error) -> bool {
+    e.as_database_error()
+        .and_then(|d| d.try_downcast_ref::<MySqlDatabaseError>())
+        .is_some_and(|d| d.number() == 3024)
 }
 
 /// Backtick-quote a MySQL identifier (escape embedded backticks).
 fn quote_ident(name: &str) -> String {
     format!("`{}`", name.replace('`', "``"))
+}
+
+/// One primary-key column of a row identity, matched null-safely (`<=>`) so a NULL value
+/// round-trips.
+///
+/// The column is compared **bare**, so the comparison runs under the column's *own*
+/// collation — which is exactly the equality the PRIMARY KEY index enforces, so it can
+/// match at most the one row the user clicked, and the index stays usable.
+///
+/// It used to be `CAST(col AS CHAR) <=> ?`. `CAST(… AS CHAR)` takes `collation_connection`,
+/// and sqlx hard-codes the charset to utf8mb4 — whose default collation is
+/// `utf8mb4_unicode_ci`: case-insensitive AND PAD SPACE. A `VARCHAR PRIMARY KEY COLLATE
+/// utf8mb4_bin` holding both 'abc' and 'ABC' therefore matched BOTH on one "Delete row".
+fn pk_match(col: &str) -> String {
+    format!("{} <=> ?", quote_ident(col))
+}
+
+/// The optimistic-concurrency check: the cell still holds the text the grid displayed.
+///
+/// `CAST(… AS CHAR)` reproduces the browse path's rendering (`open_window` selects
+/// `CAST(col AS CHAR)`), and `COLLATE utf8mb4_bin` compares it byte-for-byte instead of
+/// under the connection's case-insensitive collation — otherwise a concurrent edit that
+/// only changed case was never detected and the stale write landed anyway. The CAST
+/// converts to the connection charset first, so a non-utf8mb4 column still round-trips.
+fn value_match(col: &str) -> String {
+    format!("CAST({} AS CHAR) COLLATE utf8mb4_bin <=> ?", quote_ident(col))
+}
+
+/// MySQL coerces a text bind to the column's type on its own, so every placeholder is a
+/// bare positional `?` (its index is implicit in statement order).
+fn mysql_placeholder(_i: usize, _col: &str) -> String {
+    "?".to_string()
 }
 
 pub struct MySqlDriver {
@@ -51,7 +126,15 @@ impl MySqlDriver {
         // of the pool's opaque "pool timed out" after a 30s retry (see PgDriver).
         {
             use sqlx::Connection;
-            let probe = sqlx::mysql::MySqlConnection::connect(url).await.map_err(db)?;
+            let probe = tokio::time::timeout(
+                super::CONNECT_TIMEOUT,
+                sqlx::mysql::MySqlConnection::connect(url),
+            )
+            .await
+            .map_err(|_| {
+                DriverError::Db(format!("timed out connecting to {}", super::url_host_port(url)))
+            })?
+            .map_err(db)?;
             let _ = probe.close().await;
         }
         let pool = MySqlPoolOptions::new()
@@ -62,159 +145,50 @@ impl MySqlDriver {
             .map_err(db)?;
         Ok(Self { pool })
     }
+
+    /// Ordered column names for one relation (empty ⇒ no such relation). One catalog
+    /// lookup per window/export call.
+    async fn columns_of(&self, schema: &str, table: &str) -> DResult<Vec<String>> {
+        sqlx::query_scalar(
+            "SELECT CAST(COLUMN_NAME AS CHAR) AS column_name FROM information_schema.columns \
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)
+    }
 }
 
+/// `cols` is the select list, in order, so column `i` of every row is `cols[i]`.
+/// Cells go through the same `mysql_cell` the query tab uses, so the two tabs cannot
+/// disagree about a byte. It used to be `try_get::<Option<String>>().unwrap_or_default()`,
+/// which turned a decode failure into an Arrow null the grid drew as NULL.
 fn text_rows_to_batch(cols: &[String], rows: &[MySqlRow]) -> DResult<RecordBatch> {
     let mut fields = Vec::with_capacity(cols.len());
     let mut arrays: Vec<ArrayRef> = Vec::with_capacity(cols.len());
-    for c in cols {
+    for (i, c) in cols.iter().enumerate() {
         fields.push(Field::new(c, DataType::Utf8, true));
-        let col: StringArray = rows.iter().map(|r| r.get::<Option<String>, _>(c.as_str())).collect();
-        arrays.push(Arc::new(col));
+        let mut vals: Vec<Option<String>> = Vec::with_capacity(rows.len());
+        for r in rows {
+            vals.push(mysql_cell(r, i).map_err(db)?);
+        }
+        arrays.push(Arc::new(vals.into_iter().collect::<StringArray>()));
     }
     RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays).map_err(|e| DriverError::Db(e.to_string()))
 }
 
 #[async_trait]
 impl SqlDriver for MySqlDriver {
-    async fn open_cursor(&self, _sql: &str, _page_size: usize) -> DResult<CursorId> {
-        Err(DriverError::NotImplemented)
-    }
-    async fn fetch_next(&self, _c: &CursorId, _n: usize) -> DResult<RecordBatch> {
-        Err(DriverError::NotImplemented)
-    }
-    async fn close_cursor(&self, _c: &CursorId) -> DResult<()> {
-        Ok(())
-    }
-
-    async fn introspect(&self) -> DResult<SchemaModel> {
-        let tables = sqlx::query(
-            "SELECT table_schema, table_name, table_type FROM information_schema.tables \
-             WHERE table_schema = DATABASE() ORDER BY table_name",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db)?;
-        let columns = sqlx::query(
-            "SELECT table_name, column_name, data_type, is_nullable FROM information_schema.columns \
-             WHERE table_schema = DATABASE() ORDER BY table_name, ordinal_position",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db)?;
-
-        let mut schema_name = String::from("database");
-        let mut objects: Vec<ObjectInfo> = Vec::new();
-        for r in &tables {
-            schema_name = r.get::<String, _>("table_schema");
-            let name: String = r.get("table_name");
-            let kind = if r.get::<String, _>("table_type") == "VIEW" {
-                ObjectKind::View
-            } else {
-                ObjectKind::Table
-            };
-            objects.push(ObjectInfo { name, kind, columns: vec![] });
-        }
-        for r in &columns {
-            let t: String = r.get("table_name");
-            if let Some(o) = objects.iter_mut().find(|o| o.name == t) {
-                o.columns.push(ColumnInfo {
-                    name: r.get("column_name"),
-                    data_type: r.get("data_type"),
-                    nullable: r.get::<String, _>("is_nullable") == "YES",
-                });
-            }
-        }
-        Ok(SchemaModel { schemas: vec![SchemaInfo { name: schema_name, objects }] })
-    }
-
-    async fn row_estimate(&self, schema: &str, table: &str) -> DResult<i64> {
-        let est: Option<i64> = sqlx::query_scalar(
-            "SELECT table_rows FROM information_schema.tables \
-             WHERE table_schema = ? AND table_name = ?",
-        )
-        .bind(schema)
-        .bind(table)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(db)?
-        .flatten();
-        Ok(est.unwrap_or(0).max(0))
-    }
-
-    async fn open_window(
+    async fn run_statements(
         &self,
-        schema: &str,
-        table: &str,
-        offset: usize,
-        len: usize,
-    ) -> DResult<RecordBatch> {
-        let cols: Vec<String> = sqlx::query_scalar(
-            "SELECT column_name FROM information_schema.columns \
-             WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position",
-        )
-        .bind(schema)
-        .bind(table)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db)?;
-        if cols.is_empty() {
-            return Err(DriverError::Db(format!("no such table {schema}.{table}")));
-        }
-        let select_list = cols
-            .iter()
-            .map(|c| format!("CAST({0} AS CHAR) AS {0}", quote_ident(c)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let q = format!(
-            "SELECT {select_list} FROM (SELECT * FROM {}.{} ORDER BY 1 LIMIT ? OFFSET ?) AS _w",
-            quote_ident(schema),
-            quote_ident(table)
-        );
-        let rows = sqlx::query(&q)
-            .bind(len as i64)
-            .bind(offset as i64)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(db)?;
-        text_rows_to_batch(&cols, &rows)
-    }
-
-    async fn run_query(&self, sql: &str, cap: usize) -> DResult<QueryResult> {
-        let start = std::time::Instant::now();
-        let wrapped = format!("SELECT * FROM ({sql}) AS _q");
-        let described = self.pool.describe(wrapped.as_str()).await.map_err(db)?;
-        let names: Vec<String> = described.columns().iter().map(|c| c.name().to_string()).collect();
-        if names.is_empty() {
-            return Ok(QueryResult {
-                batch: text_rows_to_batch(&[], &[])?,
-                truncated: false,
-                exec_ms: start.elapsed().as_millis() as u64,
-            });
-        }
-        let select_list = names
-            .iter()
-            .map(|c| format!("CAST({0} AS CHAR) AS {0}", quote_ident(c)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let q = format!("SELECT {select_list} FROM ({sql}) AS _q LIMIT ?");
-        let mut rows = sqlx::query(&q).bind(cap as i64 + 1).fetch_all(&self.pool).await.map_err(db)?;
-        let truncated = rows.len() > cap;
-        if truncated {
-            rows.truncate(cap);
-        }
-        let batch = text_rows_to_batch(&names, &rows)?;
-        Ok(QueryResult { batch, truncated, exec_ms: start.elapsed().as_millis() as u64 })
-    }
-
-    async fn run_query_cancellable(
-        &self,
-        sql: &str,
+        stmts: &[String],
         cap: usize,
         token: &CancelToken,
-    ) -> DResult<QueryResult> {
-        let start = std::time::Instant::now();
-        // Pin one pooled connection so KILL QUERY can target its CONNECTION_ID().
+    ) -> DResult<Vec<StmtOutput>> {
+        // Pin one pooled connection so KILL QUERY can target its CONNECTION_ID(), and so
+        // BEGIN/…/COMMIT land on the same session.
         let mut conn = self.pool.acquire().await.map_err(db)?;
         let cid: u64 = sqlx::query_scalar("SELECT CONNECTION_ID()")
             .fetch_one(&mut *conn)
@@ -222,33 +196,182 @@ impl SqlDriver for MySqlDriver {
             .map_err(db)?;
         token.set_backend_id(cid as i64);
 
-        let wrapped = format!("SELECT * FROM ({sql}) AS _q");
-        let described = (&mut *conn).describe(wrapped.as_str()).await.map_err(map_query_err)?;
-        let names: Vec<String> = described.columns().iter().map(|c| c.name().to_string()).collect();
-        if names.is_empty() {
-            return Ok(QueryResult {
-                batch: text_rows_to_batch(&[], &[])?,
-                truncated: false,
-                exec_ms: start.elapsed().as_millis() as u64,
-            });
+        let res = exec::run_sqlx::<MySql, _, _, _>(
+            &mut conn,
+            stmts,
+            cap,
+            mysql_cell,
+            MySqlQueryResult::rows_affected,
+            mysql_stmt_err,
+        )
+        .await;
+        match res {
+            // A dirty connection (an error, or BEGIN/SET/USE left behind) must not go back to
+            // the pool: closing it makes the server roll back and drop the session state.
+            Ok((outs, reset)) => {
+                if reset {
+                    conn.close_on_drop();
+                }
+                Ok(outs)
+            }
+            Err(e) => {
+                conn.close_on_drop();
+                Err(e)
+            }
         }
-        let select_list = names
+    }
+
+    /// MySQL 8 echoes information_schema result columns back in UPPERCASE whatever the
+    /// query's casing, so every column is aliased to the lowercase name we look up by —
+    /// an unaliased `r.get("table_schema")` panics with ColumnNotFound on MySQL 8. The data
+    /// dictionary also hands several of them over as VARBINARY/LONGBLOB (charset 63), which
+    /// sqlx refuses to decode as String, so they are CAST to CHAR as well.
+    async fn introspect(&self) -> DResult<SchemaModel> {
+        let tables = sqlx::query(
+            "SELECT CAST(TABLE_SCHEMA AS CHAR) AS table_schema, CAST(TABLE_NAME AS CHAR) AS table_name, \
+                    CAST(TABLE_TYPE AS CHAR) AS table_type FROM information_schema.tables \
+             WHERE TABLE_SCHEMA = DATABASE() ORDER BY TABLE_NAME",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        // COLUMN_TYPE, not DATA_TYPE: it keeps the detail the browser should show
+        // (`varchar(255)`, `decimal(12,2)`, `enum('active',…)`, `bigint unsigned`).
+        let columns = sqlx::query(
+            "SELECT CAST(TABLE_NAME AS CHAR) AS table_name, CAST(COLUMN_NAME AS CHAR) AS column_name, \
+                    CAST(COLUMN_TYPE AS CHAR) AS data_type, CAST(IS_NULLABLE AS CHAR) AS is_nullable, \
+                    CAST(COLUMN_KEY AS CHAR) AS column_key \
+             FROM information_schema.columns \
+             WHERE TABLE_SCHEMA = DATABASE() ORDER BY TABLE_NAME, ORDINAL_POSITION",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+
+        let mut schema_name = String::from("database");
+        let mut objects: Vec<ObjectInfo> = Vec::new();
+        // table name -> index into `objects`, so attaching a column is O(1).
+        let mut object_ix: HashMap<String, usize> = HashMap::new();
+        for r in &tables {
+            schema_name = r.try_get::<String, _>("table_schema").map_err(db)?;
+            let name: String = r.try_get("table_name").map_err(db)?;
+            let kind = if r.try_get::<String, _>("table_type").map_err(db)? == "VIEW" {
+                ObjectKind::View
+            } else {
+                ObjectKind::Table
+            };
+            object_ix.insert(name.clone(), objects.len());
+            objects.push(ObjectInfo { name, kind, columns: vec![] });
+        }
+        for r in &columns {
+            let t: String = r.try_get("table_name").map_err(db)?;
+            if let Some(&i) = object_ix.get(&t) {
+                objects[i].columns.push(ColumnInfo {
+                    name: r.try_get("column_name").map_err(db)?,
+                    data_type: r.try_get("data_type").map_err(db)?,
+                    nullable: r.try_get::<String, _>("is_nullable").map_err(db)? == "YES",
+                    pk: r.try_get::<String, _>("column_key").map_err(db)? == "PRI",
+                });
+            }
+        }
+        Ok(SchemaModel { schemas: vec![SchemaInfo { name: schema_name, objects }] })
+    }
+
+    /// Exact `COUNT(*)` bounded by the optimizer hint, falling back to the data
+    /// dictionary's estimate. `TABLE_ROWS` is BIGINT UNSIGNED, so it is decoded as `u64` —
+    /// decoding it as `i64` fails outright.
+    async fn count_rows(
+        &self,
+        schema: &str,
+        table: &str,
+        filters: &[ColumnFilter],
+    ) -> DResult<RowCount> {
+        let (where_sql, binds) = build_where_clause(
+            filters,
+            &quote_ident,
+            &mysql_placeholder,
+            &quote_ident,
+            1,
+        );
+        let q = format!(
+            "SELECT /*+ MAX_EXECUTION_TIME(2000) */ COUNT(*) FROM {}.{}{}",
+            quote_ident(schema),
+            quote_ident(table),
+            if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },
+        );
+        let mut qy = sqlx::query_scalar::<_, i64>(&q);
+        for b in &binds {
+            qy = qy.bind(b.clone());
+        }
+        match qy.fetch_one(&self.pool).await {
+            Ok(n) => Ok(RowCount { count: Some(n), exact: true }),
+            Err(e) if is_exec_timeout(&e) => {
+                let est: Option<u64> = sqlx::query_scalar(
+                    "SELECT TABLE_ROWS AS table_rows FROM information_schema.tables \
+                     WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
+                )
+                .bind(schema)
+                .bind(table)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(db)?
+                .flatten();
+                Ok(RowCount { count: est.map(|n| n as i64), exact: false })
+            }
+            Err(e) => Err(db(e)),
+        }
+    }
+
+    async fn open_window_filtered(
+        &self,
+        schema: &str,
+        table: &str,
+        offset: usize,
+        len: usize,
+        filters: &[ColumnFilter],
+        order: &[SortKey],
+    ) -> DResult<RecordBatch> {
+        let cols = self.columns_of(schema, table).await?;
+        if cols.is_empty() {
+            return Err(DriverError::Db(format!("no such table {schema}.{table}")));
+        }
+        let pk = self.primary_key(schema, table).await?;
+        let order_sql = build_order_by(order, &pk, &cols, &quote_ident)?;
+        let select_list = cols
             .iter()
-            .map(|c| format!("CAST({0} AS CHAR) AS {0}", quote_ident(c)))
+            // `CAST(col AS CHAR)` returns SQL **NULL** when the bytes are not valid in the
+            // connection charset (a BLOB holding arbitrary bytes), which the grid then
+            // showed as a plain NULL — indistinguishable from a real one, and a lie about
+            // what is in the table. Fall back to the same `0x…` hex the query tab renders
+            // (`exec::cell_text`). A genuine NULL still comes through as NULL: HEX(NULL) is
+            // NULL, so the CONCAT is NULL too.
+            .map(|c| {
+                let q = quote_ident(c);
+                format!("IFNULL(CAST({q} AS CHAR), CONCAT('0x', LOWER(HEX({q})))) AS {q}")
+            })
             .collect::<Vec<_>>()
             .join(", ");
-        let q = format!("SELECT {select_list} FROM ({sql}) AS _q LIMIT ?");
-        let mut rows = sqlx::query(&q)
-            .bind(cap as i64 + 1)
-            .fetch_all(&mut *conn)
-            .await
-            .map_err(map_query_err)?;
-        let truncated = rows.len() > cap;
-        if truncated {
-            rows.truncate(cap);
+        let (where_sql, binds) = build_where_clause(
+            filters,
+            &quote_ident,
+            &mysql_placeholder,
+            &quote_ident,
+            1,
+        );
+        let q = format!(
+            "SELECT {select_list} FROM (SELECT * FROM {}.{} AS _t{}{order_sql} LIMIT ? OFFSET ?) AS _w",
+            quote_ident(schema),
+            quote_ident(table),
+            if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },
+        );
+        // MySQL placeholders are positional in statement order: the filters, then LIMIT/OFFSET.
+        let mut qy = sqlx::query(&q);
+        for b in &binds {
+            qy = qy.bind(b.clone());
         }
-        let batch = text_rows_to_batch(&names, &rows)?;
-        Ok(QueryResult { batch, truncated, exec_ms: start.elapsed().as_millis() as u64 })
+        qy = qy.bind(len as i64).bind(offset as i64);
+        let rows = qy.fetch_all(&self.pool).await.map_err(db)?;
+        text_rows_to_batch(&cols, &rows)
     }
 
     async fn cancel(&self, token: &CancelToken) -> DResult<()> {
@@ -264,9 +387,9 @@ impl SqlDriver for MySqlDriver {
 
     async fn primary_key(&self, schema: &str, table: &str) -> DResult<Vec<String>> {
         let cols: Vec<String> = sqlx::query_scalar(
-            "SELECT column_name FROM information_schema.key_column_usage \
-             WHERE table_schema = ? AND table_name = ? AND constraint_name = 'PRIMARY' \
-             ORDER BY ordinal_position",
+            "SELECT COLUMN_NAME AS column_name FROM information_schema.key_column_usage \
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND CONSTRAINT_NAME = 'PRIMARY' \
+             ORDER BY ORDINAL_POSITION",
         )
         .bind(schema)
         .bind(table)
@@ -277,12 +400,14 @@ impl SqlDriver for MySqlDriver {
     }
 
     async fn apply_edit(&self, schema: &str, table: &str, edit: &EditSpec) -> DResult<u64> {
-        // null-safe match (<=>) against the displayed text via CAST.
+        if edit.pk.is_empty() {
+            return Err(DriverError::Db("cannot edit without a primary key".into()));
+        }
         let mut wheres = vec![];
         for (name, _) in &edit.pk {
-            wheres.push(format!("{} <=> ?", quote_ident(name)));
+            wheres.push(pk_match(name));
         }
-        wheres.push(format!("CAST({} AS CHAR) <=> ?", quote_ident(&edit.column)));
+        wheres.push(value_match(&edit.column));
         let sql = format!(
             "UPDATE {}.{} SET {} = ? WHERE {}",
             quote_ident(schema),
@@ -308,11 +433,7 @@ impl SqlDriver for MySqlDriver {
         if pk.is_empty() {
             return Err(DriverError::Db("cannot delete without a primary key".into()));
         }
-        // Null-safe match on the displayed text (CAST AS CHAR), mirroring apply_edit.
-        let wheres: Vec<String> = pk
-            .iter()
-            .map(|(name, _)| format!("CAST({} AS CHAR) <=> ?", quote_ident(name)))
-            .collect();
+        let wheres: Vec<String> = pk.iter().map(|(name, _)| pk_match(name)).collect();
         let sql = format!(
             "DELETE FROM {}.{} WHERE {}",
             quote_ident(schema),
@@ -330,73 +451,6 @@ impl SqlDriver for MySqlDriver {
         Ok(sqlx::raw_sql(sql).execute(&self.pool).await.map_err(db)?.rows_affected())
     }
 
-    async fn open_window_filtered(
-        &self,
-        schema: &str,
-        table: &str,
-        offset: usize,
-        len: usize,
-        filters: &[ColumnFilter],
-    ) -> DResult<RecordBatch> {
-        if filters.is_empty() {
-            return self.open_window(schema, table, offset, len).await;
-        }
-        let cols: Vec<String> = sqlx::query_scalar(
-            "SELECT column_name FROM information_schema.columns \
-             WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position",
-        )
-        .bind(schema)
-        .bind(table)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db)?;
-        if cols.is_empty() {
-            return Err(DriverError::Db(format!("no such table {schema}.{table}")));
-        }
-        let select_list = cols
-            .iter()
-            .map(|c| format!("CAST({0} AS CHAR) AS {0}", quote_ident(c)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let (where_sql, binds) = build_where_clause(filters, &quote_ident, &|_| "?".into(), 1);
-        let q = format!(
-            "SELECT {select_list} FROM (SELECT * FROM {}.{} WHERE {} ORDER BY 1 LIMIT ? OFFSET ?) AS _w",
-            quote_ident(schema),
-            quote_ident(table),
-            where_sql
-        );
-        let mut qy = sqlx::query(&q);
-        for b in &binds {
-            qy = qy.bind(b.clone());
-        }
-        qy = qy.bind(len as i64).bind(offset as i64);
-        let rows = qy.fetch_all(&self.pool).await.map_err(db)?;
-        text_rows_to_batch(&cols, &rows)
-    }
-
-    async fn row_estimate_filtered(
-        &self,
-        schema: &str,
-        table: &str,
-        filters: &[ColumnFilter],
-    ) -> DResult<i64> {
-        if filters.is_empty() {
-            return self.row_estimate(schema, table).await;
-        }
-        let (where_sql, binds) = build_where_clause(filters, &quote_ident, &|_| "?".into(), 1);
-        let q = format!(
-            "SELECT COUNT(*) FROM {}.{} WHERE {}",
-            quote_ident(schema),
-            quote_ident(table),
-            where_sql
-        );
-        let mut qy = sqlx::query_scalar::<_, i64>(&q);
-        for b in &binds {
-            qy = qy.bind(b.clone());
-        }
-        Ok(qy.fetch_one(&self.pool).await.map_err(db)?.max(0))
-    }
-
     async fn insert_row(
         &self,
         schema: &str,
@@ -407,7 +461,7 @@ impl SqlDriver for MySqlDriver {
             return Err(DriverError::Db("no columns to insert".into()));
         }
         let (sql, binds) =
-            build_insert_sql(schema, table, values, &quote_ident, &|_| "?".into(), true);
+            build_insert_sql(schema, table, values, &quote_ident, &mysql_placeholder, true);
         let mut q = sqlx::query(&sql);
         for b in &binds {
             q = q.bind(b.clone());
@@ -417,16 +471,23 @@ impl SqlDriver for MySqlDriver {
 
     /// FK edges for ERD + cell-level "go to referenced row." Filtered to the active
     /// database; non-FK constraints are excluded via the join to referential_constraints.
+    /// Ordered by constraint then ordinal position, so a composite key's column pairs
+    /// arrive in key order and the ERD can group them into one edge.
     async fn foreign_keys(&self) -> DResult<Vec<ForeignKey>> {
         let rows = sqlx::query(
-            "SELECT kcu.table_name AS from_table, kcu.column_name AS from_column, \
-                    kcu.referenced_table_name AS to_table, kcu.referenced_column_name AS to_column \
+            "SELECT CAST(kcu.CONSTRAINT_NAME AS CHAR) AS constraint_name, \
+                    CAST(kcu.TABLE_SCHEMA AS CHAR) AS from_schema, \
+                    CAST(kcu.TABLE_NAME AS CHAR) AS from_table, CAST(kcu.COLUMN_NAME AS CHAR) AS from_column, \
+                    CAST(kcu.REFERENCED_TABLE_SCHEMA AS CHAR) AS to_schema, \
+                    CAST(kcu.REFERENCED_TABLE_NAME AS CHAR) AS to_table, \
+                    CAST(kcu.REFERENCED_COLUMN_NAME AS CHAR) AS to_column \
              FROM information_schema.key_column_usage kcu \
              JOIN information_schema.referential_constraints rc \
-               ON rc.constraint_name = kcu.constraint_name \
-              AND rc.constraint_schema = kcu.table_schema \
-             WHERE kcu.table_schema = DATABASE() \
-               AND kcu.referenced_table_name IS NOT NULL",
+               ON rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME \
+              AND rc.CONSTRAINT_SCHEMA = kcu.TABLE_SCHEMA \
+             WHERE kcu.TABLE_SCHEMA = DATABASE() \
+               AND kcu.REFERENCED_TABLE_NAME IS NOT NULL \
+             ORDER BY kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.ORDINAL_POSITION",
         )
         .fetch_all(&self.pool)
         .await
@@ -434,12 +495,123 @@ impl SqlDriver for MySqlDriver {
         Ok(rows
             .iter()
             .map(|r| ForeignKey {
-                from_table: r.get("from_table"),
-                from_column: r.get("from_column"),
-                to_table: r.get("to_table"),
-                to_column: r.get("to_column"),
+                constraint: r.try_get("constraint_name").unwrap_or_default(),
+                from_schema: r.try_get("from_schema").unwrap_or_default(),
+                from_table: r.try_get("from_table").unwrap_or_default(),
+                from_column: r.try_get("from_column").unwrap_or_default(),
+                to_schema: r.try_get("to_schema").unwrap_or_default(),
+                to_table: r.try_get("to_table").unwrap_or_default(),
+                to_column: r.try_get("to_column").unwrap_or_default(),
             })
             .collect())
+    }
+
+    /// Structure tab, from `information_schema`. Schema + table are bound, never
+    /// interpolated; every catalog column is `CAST(… AS CHAR)`-aliased lowercase, as the
+    /// rest of this driver does, because the raw columns come back as binary strings.
+    async fn describe_table(&self, schema: &str, table: &str) -> DResult<TableStructure> {
+        let cols = sqlx::query(
+            "SELECT CAST(COLUMN_NAME AS CHAR) AS name, CAST(COLUMN_TYPE AS CHAR) AS data_type, \
+                    CAST(IS_NULLABLE AS CHAR) AS is_nullable, \
+                    CAST(COLUMN_DEFAULT AS CHAR) AS default_expr, \
+                    CAST(COLUMN_KEY AS CHAR) AS column_key, \
+                    CAST(COLUMN_COMMENT AS CHAR) AS comment \
+             FROM information_schema.columns \
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? \
+             ORDER BY ORDINAL_POSITION",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+
+        // One row per index *column part*, grouped below. PRIMARY sorts first so the key
+        // leads the list (Postgres orders the same way).
+        // ponytail: a functional key part has a NULL COLUMN_NAME (the expression lives in
+        // `EXPRESSION`, which MariaDB's statistics table lacks) — it is skipped rather than
+        // shown. Upgrade path: read EXPRESSION once the MySQL/MariaDB split is branched on.
+        let idx = sqlx::query(
+            "SELECT CAST(INDEX_NAME AS CHAR) AS name, CAST(COLUMN_NAME AS CHAR) AS column_name, \
+                    CAST(NON_UNIQUE AS CHAR) AS non_unique \
+             FROM information_schema.statistics \
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME IS NOT NULL \
+             ORDER BY (INDEX_NAME = 'PRIMARY') DESC, INDEX_NAME, SEQ_IN_INDEX",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+
+        let trg = sqlx::query(
+            "SELECT CAST(TRIGGER_NAME AS CHAR) AS name, \
+                    CONCAT(CAST(ACTION_TIMING AS CHAR), ' ', CAST(EVENT_MANIPULATION AS CHAR)) \
+                      AS timing_event, \
+                    CAST(ACTION_STATEMENT AS CHAR) AS definition \
+             FROM information_schema.triggers \
+             WHERE EVENT_OBJECT_SCHEMA = ? AND EVENT_OBJECT_TABLE = ? \
+             ORDER BY TRIGGER_NAME",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+
+        let mut indexes: Vec<IndexInfo> = Vec::new();
+        // index name -> position in `indexes`, so appending a key part is O(1).
+        let mut index_ix: HashMap<String, usize> = HashMap::new();
+        for r in &idx {
+            let name: String = r.try_get("name").map_err(db)?;
+            let i = match index_ix.get(&name) {
+                Some(i) => *i,
+                None => {
+                    indexes.push(IndexInfo {
+                        primary: name == "PRIMARY",
+                        unique: r.try_get::<String, _>("non_unique").map_err(db)? == "0",
+                        name: name.clone(),
+                        columns: Vec::new(),
+                        // MySQL exposes no per-index DDL (only SHOW CREATE TABLE, whole).
+                        definition: None,
+                    });
+                    index_ix.insert(name, indexes.len() - 1);
+                    indexes.len() - 1
+                }
+            };
+            indexes[i].columns.push(r.try_get("column_name").map_err(db)?);
+        }
+
+        Ok(TableStructure {
+            columns: cols
+                .iter()
+                .map(|r| {
+                    Ok(ColumnDetail {
+                        name: r.try_get("name").map_err(db)?,
+                        data_type: r.try_get("data_type").map_err(db)?,
+                        nullable: r.try_get::<String, _>("is_nullable").map_err(db)? == "YES",
+                        default: r.try_get("default_expr").map_err(db)?,
+                        is_pk: r.try_get::<String, _>("column_key").map_err(db)? == "PRI",
+                        // MySQL stores '' for "no comment"; the UI wants None.
+                        comment: r
+                            .try_get::<Option<String>, _>("comment")
+                            .map_err(db)?
+                            .filter(|c| !c.is_empty()),
+                    })
+                })
+                .collect::<DResult<Vec<_>>>()?,
+            indexes,
+            triggers: trg
+                .iter()
+                .map(|r| {
+                    Ok(TriggerInfo {
+                        name: r.try_get("name").map_err(db)?,
+                        timing_event: r.try_get("timing_event").map_err(db)?,
+                        definition: r.try_get("definition").map_err(db)?,
+                    })
+                })
+                .collect::<DResult<Vec<_>>>()?,
+        })
     }
 
     async fn list_databases(&self) -> DResult<Vec<String>> {
@@ -447,9 +619,9 @@ impl SqlDriver for MySqlDriver {
         // also gives stable ordering and excludes the internal `information_schema`
         // pseudo-schema by user request.
         let names: Vec<String> = sqlx::query_scalar(
-            "SELECT schema_name FROM information_schema.schemata \
-             WHERE schema_name NOT IN ('information_schema', 'performance_schema', 'mysql', 'sys') \
-             ORDER BY schema_name",
+            "SELECT CAST(SCHEMA_NAME AS CHAR) AS schema_name FROM information_schema.schemata \
+             WHERE SCHEMA_NAME NOT IN ('information_schema', 'performance_schema', 'mysql', 'sys') \
+             ORDER BY SCHEMA_NAME",
         )
         .fetch_all(&self.pool)
         .await

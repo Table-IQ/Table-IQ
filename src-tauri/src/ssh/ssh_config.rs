@@ -4,8 +4,6 @@
 //! and `IdentityFile`. No `Match`, no `Include`, no token expansion beyond a leading `~`.
 //! Anything unmatched falls back to the literal values the caller already had.
 
-use std::path::PathBuf;
-
 /// What a Host alias resolves to. Any field may be absent if the block didn't specify it.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct HostAlias {
@@ -74,7 +72,7 @@ fn split_kv(line: &str) -> (&str, &str) {
 pub fn expand_tilde(path: &str) -> String {
     if let Some(rest) = path.strip_prefix("~/") {
         if let Some(home) = dirs::home_dir() {
-            let mut p = PathBuf::from(home);
+            let mut p = home;
             p.push(rest);
             return p.to_string_lossy().into_owned();
         }

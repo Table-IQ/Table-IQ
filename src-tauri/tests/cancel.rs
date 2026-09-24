@@ -24,7 +24,7 @@ async fn pg_cancel_interrupts_long_query() {
     let d2 = drv.clone();
     let t2 = token.clone();
     let start = Instant::now();
-    let handle = tokio::spawn(async move { d2.run_query_cancellable("SELECT pg_sleep(30)", 100, &t2).await });
+    let handle = tokio::spawn(async move { d2.run_statements(&["SELECT pg_sleep(30)".to_string()], 100, &t2).await });
 
     // Let the query register its backend PID, then cancel from a second connection.
     tokio::time::sleep(Duration::from_millis(800)).await;
@@ -53,7 +53,12 @@ async fn mysql_cancel_interrupts_long_query() {
     let d2 = drv.clone();
     let t2 = token.clone();
     let start = Instant::now();
-    let handle = tokio::spawn(async move { d2.run_query_cancellable("SELECT SLEEP(30)", 100, &t2).await });
+    // A *bare* `SELECT SLEEP(30)` is a MySQL special case: KILL QUERY makes SLEEP() return 1
+    // and the statement completes normally, so there is no error to report. Any statement that
+    // does real work (here a derived table) is genuinely aborted with ER_QUERY_INTERRUPTED.
+    let handle = tokio::spawn(async move {
+        d2.run_statements(&["SELECT * FROM (SELECT SLEEP(30)) AS _q".to_string()], 100, &t2).await
+    });
 
     tokio::time::sleep(Duration::from_millis(800)).await;
     drv.cancel(&token).await.expect("cancel mysql");

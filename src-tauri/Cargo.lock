@@ -6803,13 +6803,14 @@ dependencies = [
 
 [[package]]
 name = "tableiq"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arrow",
  "async-trait",
  "bytes",
  "dirs 5.0.1",
  "extism",
+ "futures-util",
  "keyring",
  "mongodb",
  "parquet",
@@ -7308,6 +7309,7 @@ dependencies = [
  "asynchronous-codec",
  "byteorder",
  "bytes",
+ "chrono",
  "connection-string",
  "encoding_rs",
  "enumflags2",

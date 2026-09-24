@@ -29,5 +29,12 @@ export default defineConfig(async () => ({
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
     },
+    // Real-app QA: VITE_IPC_BRIDGE=1 routes invoke() here → the ipc_bridge binary.
+    proxy: {
+      "/__ipc": {
+        target: "http://127.0.0.1:1430",
+        rewrite: (p: string) => p.replace(/^\/__ipc/, "/invoke"),
+      },
+    },
   },
 }));

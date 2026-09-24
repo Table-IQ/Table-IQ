@@ -17,11 +17,13 @@ import {
   useState,
 } from "react";
 import { decodeWindow, WindowCache } from "../lib/arrowWindow";
-import { gridTheme, gridRowTints, editTints } from "../lib/theme";
+import { originalRowGetter } from "../lib/edit";
+import { gridTheme, gridRowTints, editTints, nullCellStyle } from "../lib/theme";
 import { useTheme } from "../theme/ThemeProvider";
-import type { ForeignKey } from "../lib/commands";
+import type { ForeignKey, SortKey } from "../lib/commands";
 import {
   discardAll,
+  isNullLeftEmpty,
   listPending,
   pendingKey,
   removePending,
@@ -32,7 +34,12 @@ import {
 import { DEFAULT_COL_WIDTH } from "../lib/colWidths";
 import { autoFitWidths } from "../lib/autoFit";
 
-const PAGE = 200; // rows per fetched window
+/** Same column list, same order? */
+function sameNames(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((n, i) => n === b[i]);
+}
+
+const PAGE = 200; // default rows per fetched window (a source may override)
 const MAX_PAGES = 12; // LRU bound → JS heap stays bounded regardless of total rows
 const AUTO_FIT_SAMPLE = 60; // rows sampled from the first page to size columns to content
 const ROW_HEIGHT = 32; // comfortable TablePlus-like rows (Slice 32 raised from 29)
@@ -43,6 +50,14 @@ export interface GridSource {
   key: string;
   totalRows: number;
   columns?: string[];
+  /** Rows per fetched window. Defaults to {@link PAGE}; a source that already
+   *  pages upstream (TableView) sets it to its own page size so one fetch
+   *  covers the whole visible window. */
+  pageSize?: number;
+  /** Bumped when the same rows must be re-read from the server (Refresh /
+   *  commit / insert / delete). Drops the cache *without* the full reset a new
+   *  `key` does, so scroll, selection and fitted widths survive. */
+  version?: number;
   fetch: (offset: number, len: number) => Promise<{ bytes: Uint8Array; ms: number }>;
 }
 
@@ -75,7 +90,11 @@ interface Props {
     col: string;
     row: number;
     value: string | null;
-    values: Record<string, string> | null;
+    values: Record<string, string | null> | null;
+    /** The same row read WITHOUT staged edits — what the database still holds.
+     *  Use this (never `values`) for anything that identifies the row: a PK in a
+     *  DELETE/UPDATE WHERE clause. Null when the page hasn't loaded. */
+    serverValues: Record<string, string | null> | null;
     x: number;
     y: number;
   }) => void;
@@ -84,7 +103,7 @@ interface Props {
   /** Fires on any cell click with the whole row's values map. Used by the
    *  Inspector's row-detail mode (Slice 27). Receives `null` when the row's
    *  page hasn't loaded yet (the caller should ignore null). */
-  onRowSelected?: (row: number, values: Record<string, string> | null) => void;
+  onRowSelected?: (row: number, values: Record<string, string | null> | null) => void;
   /** Per-column width overrides, keyed by column name. Missing entries fall
    *  back to {@link DEFAULT_COL_WIDTH}. (Slice 28 — TablePlus parity). */
   columnWidths?: Record<string, number>;
@@ -98,6 +117,17 @@ interface Props {
   onSave?: () => void;
   /** Fires whenever the count of staged (uncommitted) edits changes. */
   onPendingCountChange?: (count: number) => void;
+  /** True while {@link DataGridHandle.commitPending} is walking its staged edits.
+   *  The parent MUST use it to lock anything that would change what a row index
+   *  means (sort, paging, refresh) — see the generation guard in `commitPending`. */
+  onCommittingChange?: (busy: boolean) => void;
+  /** A page fetch failed. The page is remembered as failed and never
+   *  re-requested on repaint, so one broken window can't flood the database. */
+  onFetchError?: (msg: string) => void;
+  /** Active sort — drives the ▲/▼ glyph in the header. */
+  sort?: SortKey | null;
+  /** Header click. The parent owns the asc → desc → none cycle. */
+  onSort?: (column: string) => void;
 }
 
 /**
@@ -120,13 +150,25 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     rightAlignColumns,
     onSave,
     onPendingCountChange,
+    onCommittingChange,
+    onFetchError,
+    sort,
+    onSort,
   },
   ref,
 ) {
   const { resolved } = useTheme();
   const editable = !!onEdit;
   const gridRef = useRef<DataEditorRef>(null);
-  const cacheRef = useRef(new WindowCache(PAGE, MAX_PAGES));
+  const cacheRef = useRef(new WindowCache(source.pageSize ?? PAGE, MAX_PAGES));
+  // Pages whose fetch failed. They are NOT retried on repaint — glide re-asks for
+  // every visible cell on each paint (a mouse move is enough), so without this a
+  // failing page hammers the database until the user navigates away.
+  const failed = useRef(new Set<number>());
+  // Bumped on every source/version change. A fetch that resolves against an older
+  // generation is dropped, so the previous table's rows can never land in this
+  // table's cache.
+  const generation = useRef(0);
   const overlay = useRef(new Map<string, string>()); // optimistic edits: `${row}:${col}` → value
   // Staged (uncommitted) edits in the TablePlus batch model — committed/discarded
   // as a set. `overlay` mirrors their values for display; `pending` drives the bar.
@@ -163,6 +205,16 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   useEffect(() => {
     onFetchedRef.current = onWindowFetched;
   }, [onWindowFetched]);
+  const onFetchErrorRef = useRef(onFetchError);
+  useEffect(() => {
+    onFetchErrorRef.current = onFetchError;
+  }, [onFetchError]);
+  // Read by the stable `applyColumns` so a sort change re-labels the header
+  // without re-creating `ensurePage`.
+  const sortRef = useRef(sort);
+  useEffect(() => {
+    sortRef.current = sort;
+  }, [sort]);
 
   // Mirror columnWidths into a ref so the stable `maybeAutoFit` callback can read
   // the latest persisted widths without re-creating (and churning `ensurePage`).
@@ -174,7 +226,24 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   // A user's persisted drag wins; otherwise use the content-fitted width; only
   // then fall back to the legacy fixed default.
   const widthFor = (name: string) =>
-    columnWidths?.[name] ?? autoFitRef.current[name] ?? DEFAULT_COL_WIDTH;
+    columnWidthsRef.current?.[name] ?? autoFitRef.current[name] ?? DEFAULT_COL_WIDTH;
+
+  /** Rebuild the glide columns from `names`. The sort glyph lives in the *title*
+   *  only — `id` stays the bare column name, so width persistence and the resize
+   *  handler are unaffected by it. */
+  const applyColumns = useCallback((names: string[]) => {
+    const s = sortRef.current;
+    setColumns(
+      names.map((c) => ({
+        id: c,
+        title: s?.column === c ? `${c} ${s.desc ? "▼" : "▲"}` : c,
+        width: widthFor(c),
+      })),
+    );
+    // widthFor reads refs only; re-creating this callback would churn every
+    // effect that rebuilds the header.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Size each not-yet-resized column to its content using a sample of the first
   // loaded page. Runs once per source (guarded by `autoFitDoneRef`); retries on
@@ -194,7 +263,10 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
           complete = false;
           break;
         }
-        row[c] = v;
+        // Width-fitting only cares about rendered width; the `NULL` placeholder
+        // is narrower than the default column width, so measuring it as empty is
+        // close enough and keeps autoFit's Record<string, string> shape.
+        row[c] = v ?? "";
       }
       if (!complete) break;
       rows.push(row);
@@ -202,16 +274,13 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     if (rows.length === 0) return; // first page not decoded yet — retry next fetch
     autoFitRef.current = autoFitWidths(cols, rows, persisted);
     autoFitDoneRef.current = true;
-    setColumns(
-      cols.map((c) => ({
-        title: c,
-        width: persisted[c] ?? autoFitRef.current[c] ?? DEFAULT_COL_WIDTH,
-      })),
-    );
-  }, []);
+    applyColumns(cols);
+  }, [applyColumns]);
   // Reset cache + columns whenever the source changes.
   useEffect(() => {
-    cacheRef.current = new WindowCache(PAGE, MAX_PAGES);
+    cacheRef.current = new WindowCache(source.pageSize ?? PAGE, MAX_PAGES);
+    generation.current += 1;
+    failed.current.clear();
     overlay.current.clear();
     inflight.current.clear();
     // Bare `row:col` edit keys carry no source identity, so they MUST be wiped
@@ -232,49 +301,93 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     setSelRow(undefined); // stale selection must not linger across table/result switches
     if (source.columns && source.columns.length > 0) {
       colNames.current = source.columns;
-      setColumns(source.columns.map((c) => ({ title: c, width: widthFor(c) })));
+      applyColumns(source.columns);
     } else {
       colNames.current = [];
       setColumns([]);
     }
     setVersion((v) => v + 1);
-    // widthFor reads from columnWidths; intentionally not in deps — we re-render
-    // through the separate effect below when columnWidths changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source.key, source.columns]);
+  }, [source.key, source.columns, source.pageSize, applyColumns]);
 
-  // Apply width updates from the parent (e.g. after persistence rehydrates).
+  // Same rows, re-read from the server (Refresh / commit / insert / delete):
+  // drop the cached pages and let the repaint re-fetch. Deliberately does NOT
+  // touch selection, scroll or fitted widths — that is the whole point.
+  useEffect(() => {
+    if (source.version === undefined) return;
+    cacheRef.current = new WindowCache(source.pageSize ?? PAGE, MAX_PAGES);
+    generation.current += 1;
+    failed.current.clear();
+    inflight.current.clear();
+    // Server values win over anything still staged — the display would otherwise
+    // show an overlay value the "unsaved changes" bar no longer tracks.
+    overlay.current.clear();
+    editState.current.clear();
+    pending.current = new Map();
+    notifyPending();
+    undoStack.current = [];
+    setVersion((v) => v + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source.version]);
+
+  // Apply width updates from the parent (e.g. after persistence rehydrates) and
+  // re-label the header when the sort changes.
   useEffect(() => {
     if (colNames.current.length === 0) return;
-    setColumns(colNames.current.map((c) => ({ title: c, width: widthFor(c) })));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [columnWidths]);
+    applyColumns(colNames.current);
+  }, [columnWidths, sort, applyColumns]);
 
   const ensurePage = useCallback(
     (page: number) => {
-      if (page < 0 || cacheRef.current.has(page) || inflight.current.has(page)) return;
+      const size = cacheRef.current.pageSize;
+      // Never ask for a page that starts at or past the last row — a wrong total
+      // used to send the grid fetching windows the table doesn't have.
+      if (page < 0 || page * size >= source.totalRows) return;
+      if (cacheRef.current.has(page) || inflight.current.has(page)) return;
+      if (failed.current.has(page)) return;
+      const gen = generation.current;
       inflight.current.add(page);
       source
-        .fetch(page * PAGE, PAGE)
+        .fetch(page * size, size)
         .then(({ bytes, ms }) => {
+          if (gen !== generation.current) return; // source changed mid-flight
           const win = decodeWindow(bytes);
           cacheRef.current.put(page, win);
-          if (colNames.current.length === 0 && win.columns.length > 0) {
-            colNames.current = win.columns;
-            setColumns(win.columns.map((c) => ({ title: c, width: widthFor(c) })));
+          // The first page is the authority on the column list: the sidebar
+          // schema can be stale (or absent for a view), the decoded Arrow window
+          // never is.
+          const names = win.columns;
+          if (
+            names.length > 0 &&
+            (page === 0 || colNames.current.length === 0) &&
+            !sameNames(colNames.current, names)
+          ) {
+            colNames.current = names;
+            applyColumns(names);
           }
           maybeAutoFit();
           onFetchedRef.current?.(ms);
           setVersion((v) => v + 1);
         })
-        .catch(() => {})
-        .finally(() => inflight.current.delete(page));
+        .catch((e) => {
+          if (gen !== generation.current) return;
+          failed.current.add(page);
+          onFetchErrorRef.current?.(String(e));
+          setVersion((v) => v + 1);
+        })
+        .finally(() => {
+          // Generation-scoped like the handlers above: a stale fetch must not
+          // delete the in-flight marker the NEW source just put down for the same
+          // page, which would let a duplicate concurrent fetch through. The reset
+          // that bumped the generation already cleared the set.
+          if (gen === generation.current) inflight.current.delete(page);
+        });
     },
-    [source, maybeAutoFit],
+    [source, maybeAutoFit, applyColumns],
   );
 
   useEffect(() => {
-    if (source.totalRows > 0) ensurePage(0);
+    ensurePage(0);
   }, [source.totalRows, ensurePage]);
 
   const getCellContent = useCallback(
@@ -283,29 +396,34 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
       const ov = name ? overlay.current.get(`${row}:${name}`) : undefined;
       const value = ov ?? (name ? cacheRef.current.getCell(row, name) : undefined);
       if (value === undefined) {
-        const page = Math.floor(row / PAGE);
+        const page = cacheRef.current.pageOf(row);
         ensurePage(page);
         ensurePage(page + 1);
         return { kind: GridCellKind.Loading, allowOverlay: false };
       }
+      const isNull = value === null;
       const fk = name ? fkByColumn?.get(name) : undefined;
-      const display = fk && value !== null && value !== "" ? `→ ${value}` : value;
+      const display = fk && !isNull && value !== "" ? `→ ${value}` : value;
       // Numeric columns right-align (TablePlus parity) — but never an FK cell,
       // whose `→ value` affordance reads left-to-right.
       const numeric = !fk && name ? rightAlignColumns?.has(name) : false;
       // Save-state tint: amber while writing, green on save, red on error.
       const save = name ? editState.current.get(`${row}:${name}`) : undefined;
       const saveBg = save ? editTints(resolved)[save] : undefined;
+      // A SQL NULL prints a dimmed italic `NULL`; an empty string stays blank.
       const themeOverride =
         saveBg !== undefined
-          ? { bgCell: saveBg }
-          : fk
-            ? { textDark: "var(--primary)", textLight: "var(--primary)" }
-            : undefined;
+          ? { bgCell: saveBg, ...(isNull ? nullCellStyle(resolved) : {}) }
+          : isNull
+            ? nullCellStyle(resolved)
+            : fk
+              ? { textDark: "var(--primary)", textLight: "var(--primary)" }
+              : undefined;
       return {
         kind: GridCellKind.Text,
-        data: value,
-        displayData: display,
+        // `data` is what the overlay editor opens with, so a NULL edits from empty.
+        data: value ?? "",
+        displayData: isNull ? "NULL" : (display ?? ""),
         allowOverlay: editable,
         readonly: !editable,
         contentAlign: numeric ? "right" : undefined,
@@ -316,19 +434,28 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   );
 
   /** Build the full {col → value} map for `row` by walking columns through the
-   *  cache + overlay. Returns null if the row's page hasn't loaded yet. */
-  const readRow = useCallback((row: number): Record<string, string> | null => {
-    const cols = colNames.current;
-    if (cols.length === 0) return null;
-    const out: Record<string, string> = {};
-    for (const name of cols) {
-      const ov = overlay.current.get(`${row}:${name}`);
-      const v = ov ?? cacheRef.current.getCell(row, name);
-      if (v === undefined) return null; // page miss — caller should retry later
-      out[name] = v;
-    }
-    return out;
-  }, []);
+   *  cache + overlay. A SQL NULL stays `null` (never ""), so the Inspector and
+   *  the copy/INSERT helpers can tell it apart from an empty string. Returns
+   *  null if the row's page hasn't loaded yet.
+   *
+   *  `fromServer` skips the staged overlay: anything that identifies the row to
+   *  the database (a PK in a WHERE clause) must use last-known-server values, or
+   *  an uncommitted edit to a PK column would aim the write at another row. */
+  const readRow = useCallback(
+    (row: number, fromServer = false): Record<string, string | null> | null => {
+      const cols = colNames.current;
+      if (cols.length === 0) return null;
+      const out: Record<string, string | null> = {};
+      for (const name of cols) {
+        const ov = fromServer ? undefined : overlay.current.get(`${row}:${name}`);
+        const v = ov ?? cacheRef.current.getCell(row, name);
+        if (v === undefined) return null; // page miss — caller should retry later
+        out[name] = v;
+      }
+      return out;
+    },
+    [],
+  );
 
   // Cell click: lift the row to the Inspector and (if applicable) fire FK navigation.
   const onCellClicked = useCallback(
@@ -371,8 +498,22 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     (row: number, name: string, newValue: string, pushUndo: boolean) => {
       if (!onEdit) return;
       const key = pendingKey(row, name);
+      const existing = pending.current.get(key);
       const priorOverlay = overlay.current.get(key);
       const before = priorOverlay ?? cacheRef.current.getCell(row, name) ?? null;
+      // A NULL cell's editor opens empty, so leaving it empty means "no change" —
+      // not "write ''". If the cell was already staged from NULL, clearing it back
+      // to empty un-stages that edit instead of queueing a '' write.
+      if (isNullLeftEmpty(existing ? existing.before : before, newValue)) {
+        if (existing) {
+          overlay.current.delete(key);
+          editState.current.delete(key);
+          pending.current = removePending(pending.current, row, name);
+          notifyPending();
+          setVersion((v) => v + 1);
+        }
+        return;
+      }
       if (before === newValue && !pending.current.has(key)) return; // no-op
       overlay.current.set(key, newValue);
       pending.current = stageEdit(pending.current, row, name, newValue, before);
@@ -391,32 +532,49 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     if (!onEdit) return;
     const edits = listPending(pending.current);
     if (edits.length === 0) return;
-    for (const e of edits) {
-      const key = pendingKey(e.row, e.col);
-      editState.current.set(key, "saving");
-      setVersion((v) => v + 1);
-      const getOriginal = (c: string) =>
-        c === e.col
-          ? e.before
-          : (overlay.current.get(`${e.row}:${c}`) ?? cacheRef.current.getCell(e.row, c) ?? null);
-      const keep = await onEdit(e.row, e.col, e.newValue, getOriginal);
-      if (keep) {
-        editState.current.set(key, "saved");
-        pending.current = removePending(pending.current, e.row, e.col);
-        notifyPending();
-        clearTintLater(key, 1100);
+    // Each edit costs a round trip, and `e.row` is an index into the CURRENT window —
+    // so a sort, page or refresh landing mid-loop would silently re-point the remaining
+    // edits at different rows. The reset effects swap `cacheRef.current` and clear
+    // `pending`/`overlay` under us; an UPDATE whose row happens to share the original
+    // value (enums, flags, booleans, NULL) then succeeds against the WRONG row. Pin the
+    // generation and stop the moment it moves, exactly as `ensurePage` already does.
+    const gen = generation.current;
+    onCommittingChange?.(true);
+    try {
+      for (const e of edits) {
+        if (gen !== generation.current) break; // source changed mid-commit
+        const key = pendingKey(e.row, e.col);
+        editState.current.set(key, "saving");
         setVersion((v) => v + 1);
-      } else {
-        editState.current.set(key, "error");
-        setVersion((v) => v + 1);
-        break; // partial-failure: stop, keep remaining staged
+        // Row identity (the PK in the WHERE clause) comes from the loaded page —
+        // the staged overlay must never reach it, or an edit to a PK column would
+        // re-point the remaining edits at whichever row already holds the new key.
+        const getOriginal = originalRowGetter(e, (c) => cacheRef.current.getCell(e.row, c));
+        const keep = await onEdit(e.row, e.col, e.newValue, getOriginal);
+        // The await above is the window: re-check before writing anything down, so a
+        // reset that landed while the round trip was in flight cannot have its freshly
+        // cleared `pending` repopulated or an unrelated cell tinted.
+        if (gen !== generation.current) break;
+        if (keep) {
+          editState.current.set(key, "saved");
+          pending.current = removePending(pending.current, e.row, e.col);
+          notifyPending();
+          clearTintLater(key, 1100);
+          setVersion((v) => v + 1);
+        } else {
+          editState.current.set(key, "error");
+          setVersion((v) => v + 1);
+          break; // partial-failure: stop, keep remaining staged
+        }
       }
+    } finally {
+      onCommittingChange?.(false);
     }
-    if (pending.current.size === 0) {
+    if (gen === generation.current && pending.current.size === 0) {
       undoStack.current = [];
       onSave?.();
     }
-  }, [onEdit, notifyPending, clearTintLater, onSave]);
+  }, [onEdit, notifyPending, clearTintLater, onSave, onCommittingChange]);
 
   /** Drop every staged edit and revert the display to each cell's saved value. */
   const discardPending = useCallback(() => {
@@ -489,11 +647,11 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   // instant; the parent's persistence handler picks up the final value via
   // `onColumnResize`.
   const onLocalColumnResize = useCallback(
-    (col: GridColumn, newWidth: number) => {
-      setColumns((cs) => cs.map((c) => (c.title === col.title ? { ...c, width: newWidth } : c)));
-      if (onColumnResize && typeof col.title === "string") {
-        onColumnResize(col.title, newWidth);
-      }
+    (_col: GridColumn, newWidth: number, colIndex: number) => {
+      // Key on the column *name*, not the title — the title carries the sort glyph.
+      const name = colNames.current[colIndex];
+      setColumns((cs) => cs.map((c, i) => (i === colIndex ? { ...c, width: newWidth } : c)));
+      if (onColumnResize && name) onColumnResize(name, newWidth);
     },
     [onColumnResize],
   );
@@ -551,6 +709,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
                 row,
                 value,
                 values: readRow(row),
+                serverValues: readRow(row, true),
                 x: event.bounds.x + event.localEventX,
                 y: event.bounds.y + event.localEventY,
               });
@@ -558,6 +717,14 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
           : undefined
       }
       onColumnResize={onLocalColumnResize}
+      onHeaderClicked={
+        onSort
+          ? (colIndex) => {
+              const name = colNames.current[colIndex];
+              if (name) onSort(name);
+            }
+          : undefined
+      }
       rowMarkers="number"
       smoothScrollX
       smoothScrollY

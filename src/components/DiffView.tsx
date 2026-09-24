@@ -35,7 +35,7 @@ export function DiffView({
           ),
         ),
       )
-      .catch(() => {});
+      .catch((e) => setStatus({ kind: "err", msg: `Could not list connections: ${e}` }));
   }, [connId]);
 
   const run = async () => {

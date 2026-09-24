@@ -38,11 +38,35 @@ export function setConnectionLostHandler(fn: (() => void) | null): void {
   connectionLostHandler = fn;
 }
 
+// Real-app QA: `VITE_IPC_BRIDGE=1 pnpm dev` sends every command over HTTP to the
+// `ipc_bridge` binary (the real Rust handlers), proxied by vite at /__ipc.
+// DEV-gated like the mock backend below: `import.meta.env` is baked in at BUILD
+// time, so without this guard a release built in a shell that happens to export
+// VITE_IPC_BRIDGE=1 would ship a UI that routes every command — every edit and
+// delete — at http://localhost/__ipc/ instead of the app's own backend.
+const BRIDGE = import.meta.env.DEV && import.meta.env.VITE_IPC_BRIDGE === "1";
+
+async function bridgeInvoke<T>(cmd: string, args?: unknown): Promise<T> {
+  const res = await fetch("/__ipc/" + cmd, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(args ?? {}),
+  });
+  // Raw (binary) responses resolve to an ArrayBuffer, exactly like Tauri's invoke.
+  const octet = res.headers.get("content-type")?.includes("application/octet-stream");
+  const body = octet ? await res.arrayBuffer() : await res.json();
+  if (!res.ok) throw body; // Rust `Err(String)` arrives as a plain string, same as Tauri.
+  return body as T;
+}
+
 // ponytail: thin wrapper around Tauri's invoke so every existing call site gets
 // connection-loss detection for free. Upgrade path: a dedicated backend health
 // event if false positives appear.
 function invoke<T>(cmd: string, ...rest: unknown[]): Promise<T> {
-  return (tauriInvoke as (c: string, ...a: unknown[]) => Promise<T>)(cmd, ...rest).catch(
+  const call = BRIDGE
+    ? bridgeInvoke<T>(cmd, rest[0])
+    : (tauriInvoke as (c: string, ...a: unknown[]) => Promise<T>)(cmd, ...rest);
+  return call.catch(
     (e: unknown) => {
       if (!LIFECYCLE_CMDS.has(cmd) && isConnectionLostError(String((e as { message?: string })?.message ?? e))) {
         connectionLostHandler?.();
@@ -73,6 +97,8 @@ export interface ColumnInfo {
   name: string;
   data_type: string;
   nullable: boolean;
+  /** Part of the primary key. Optional: older payloads omit it (Rust `#[serde(default)]`). */
+  pk?: boolean;
 }
 export type ObjectKind = "Table" | "View";
 export interface ObjectInfo {
@@ -106,7 +132,15 @@ export interface KvValue {
 }
 
 function inTauri(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  // The mock backend further down is a DEV-ONLY convenience so /browse can exercise the
+  // full UI without a database. It must never be reachable from a packaged build: this was
+  // a pure runtime check, so if `__TAURI_INTERNALS__` were ever absent there — a webview
+  // quirk, a preload failure — every command would quietly return fabricated data, and
+  // `applyEdit`/`insertRow` would report writes that never happened. `import.meta.env.DEV`
+  // is statically replaced at build time, so a release build always takes the real
+  // `invoke()` path and fails loudly instead of lying.
+  if (!import.meta.env.DEV) return true;
+  return BRIDGE || (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window);
 }
 
 /**
@@ -116,7 +150,7 @@ function inTauri(): boolean {
  * imports the dialog plugin so the browser-mock build never pulls it in.
  */
 export async function pickKeyFile(): Promise<string | null> {
-  if (!inTauri()) return null;
+  if (BRIDGE || !inTauri()) return null; // bridge: no native dialog in a plain browser
   const { open } = await import("@tauri-apps/plugin-dialog");
   const picked = await open({
     multiple: false,
@@ -387,20 +421,30 @@ export interface ColumnFilter {
   value: string | null;
 }
 
+/** One ORDER BY term for a table window. Matches the Rust `SortKey` serde shape. */
+export interface SortKey {
+  column: string;
+  desc: boolean;
+}
+
+/**
+ * Row count for a table under `filters`. `count` is null when the engine could neither
+ * count in time nor offer an estimate; `exact` is false when it came from the stats
+ * catalog rather than a COUNT(*).
+ */
 export async function openTable(
   id: string,
   schema: string,
   table: string,
   filters?: ColumnFilter[],
-): Promise<{ rowEstimate: number }> {
-  if (!inTauri()) return { rowEstimate: MOCK_TOTAL_ROWS };
-  const info = await invoke<{ row_estimate: number }>("open_table", {
+): Promise<{ count: number | null; exact: boolean }> {
+  if (!inTauri()) return { count: MOCK_TOTAL_ROWS, exact: true };
+  return invoke<{ count: number | null; exact: boolean }>("open_table", {
     id,
     schema,
     table,
     filters: filters && filters.length ? filters : null,
   });
-  return { rowEstimate: info.row_estimate };
 }
 
 export async function fetchTableWindow(
@@ -410,6 +454,7 @@ export async function fetchTableWindow(
   offset: number,
   len: number,
   filters?: ColumnFilter[],
+  order?: SortKey[],
 ): Promise<{ bytes: Uint8Array; ms: number }> {
   const t0 = performance.now();
   if (!inTauri()) {
@@ -422,6 +467,7 @@ export async function fetchTableWindow(
     offset,
     len,
     filters: filters && filters.length ? filters : null,
+    order: order && order.length ? order : null,
   });
   return { bytes: new Uint8Array(ab), ms: performance.now() - t0 };
 }
@@ -459,6 +505,21 @@ export interface QueryResultMeta {
   execMs: number;
 }
 
+/** One statement's outcome in a multi-statement run (mirrors Rust StatementResultMeta). */
+export interface StatementResultMeta {
+  index: number;
+  /** Present only when the statement returned a result set. */
+  resultId: string | null;
+  columns: { name: string; typeName: string }[];
+  rowCount: number;
+  totalRows: number;
+  truncated: boolean;
+  rowsAffected: number | null;
+  execMs: number;
+  error: { message: string; line: number | null; position: number | null } | null;
+  notice: string | null;
+}
+
 /** RowKey round-trip payload (mirrors Rust EditSpec). */
 export interface EditSpec {
   pk: [string, string | null][];
@@ -467,34 +528,62 @@ export interface EditSpec {
   orig_value: string | null;
 }
 
+/**
+ * Run `statements` as written, one at a time. Returns one meta per statement **executed** —
+ * the run stops at the first failing statement, so the array can be shorter than `statements`
+ * and the failure is carried in the last entry's `error`.
+ */
 export async function runQuery(
   id: string,
-  sql: string,
-  queryId: string,
-): Promise<QueryResultMeta> {
+  statements: string[],
+  queryId?: string,
+): Promise<StatementResultMeta[]> {
   if (!inTauri()) {
-    return {
-      resultId: "mock-q",
-      columns: ["id", "amount_numeric", "blob_text"],
-      rowCount: 50,
-      truncated: false,
-      execMs: 3,
-    };
+    return [
+      {
+        index: 0,
+        resultId: "mock-q",
+        columns: [
+          { name: "id", typeName: "int8" },
+          { name: "amount_numeric", typeName: "numeric" },
+          { name: "blob_text", typeName: "text" },
+        ],
+        rowCount: 50,
+        totalRows: 50,
+        truncated: false,
+        rowsAffected: null,
+        execMs: 3,
+        error: null,
+        notice: null,
+      },
+    ];
   }
-  const m = await invoke<{
-    result_id: string;
-    columns: string[];
-    row_count: number;
-    truncated: boolean;
-    exec_ms: number;
-  }>("run_query", { id, sql, queryId });
-  return {
+  const out = await invoke<
+    {
+      index: number;
+      result_id: string | null;
+      columns: { name: string; type_name: string }[];
+      row_count: number;
+      total_rows: number;
+      truncated: boolean;
+      rows_affected: number | null;
+      exec_ms: number;
+      error: { message: string; line: number | null; position: number | null } | null;
+      notice: string | null;
+    }[]
+  >("run_query", { id, statements, queryId });
+  return out.map((m) => ({
+    index: m.index,
     resultId: m.result_id,
-    columns: m.columns,
+    columns: m.columns.map((c) => ({ name: c.name, typeName: c.type_name })),
     rowCount: m.row_count,
+    totalRows: m.total_rows,
     truncated: m.truncated,
+    rowsAffected: m.rows_affected,
     execMs: m.exec_ms,
-  };
+    error: m.error,
+    notice: m.notice,
+  }));
 }
 
 /** Cancel an in-flight query (server-side) by the same `queryId` passed to runQuery. */
@@ -546,6 +635,7 @@ export async function exportTable(
   table: string,
   format: ExportFormat,
   filters?: ColumnFilter[],
+  order?: SortKey[],
 ): Promise<string> {
   if (!inTauri()) return format === "json" ? '[{"id":"1"}]' : "id\n1\n";
   return invoke<string>("export_table", {
@@ -554,6 +644,7 @@ export async function exportTable(
     table,
     format,
     filters: filters && filters.length ? filters : null,
+    order: order && order.length ? order : null,
   });
 }
 
@@ -871,16 +962,93 @@ export async function generateDdl(engine: Engine, req: DdlRequest): Promise<stri
 }
 
 export interface ForeignKey {
+  /** Constraint name. A composite key arrives as one row per column pair, all sharing
+   *  it — the ERD groups on it to draw one edge. Optional (Rust `#[serde(default)]`). */
+  constraint?: string;
+  /** Owning schema. Optional: older payloads / the browser mock omit it (Rust `#[serde(default)]`). */
+  from_schema?: string;
   from_table: string;
   from_column: string;
+  to_schema?: string;
   to_table: string;
   to_column: string;
 }
 
 export async function foreignKeys(id: string): Promise<ForeignKey[]> {
   if (!inTauri())
-    return [{ from_table: "wide", from_column: "nullable_int", to_table: "users", to_column: "id" }];
+    return [
+      {
+        constraint: "wide_nullable_int_fkey",
+        from_schema: "public",
+        from_table: "wide",
+        from_column: "nullable_int",
+        to_schema: "public",
+        to_table: "users",
+        to_column: "id",
+      },
+    ];
   return invoke<ForeignKey[]>("foreign_keys", { id });
+}
+
+// ── Structure tab (columns / indexes / triggers) ──────────────────────────
+/** One column as the Structure tab shows it. Mirrors the Rust `ColumnDetail`. */
+export interface ColumnDetail {
+  name: string;
+  data_type: string;
+  nullable: boolean;
+  /** The DEFAULT expression, or null when the column has none. */
+  default: string | null;
+  is_pk: boolean;
+  comment: string | null;
+}
+export interface IndexInfo {
+  name: string;
+  columns: string[];
+  unique: boolean;
+  /** This index *is* the primary key. */
+  primary: boolean;
+  definition: string | null;
+}
+export interface TriggerInfo {
+  name: string;
+  /** When it fires, e.g. `BEFORE INSERT`. */
+  timing_event: string;
+  definition: string | null;
+}
+export interface TableStructure {
+  columns: ColumnDetail[];
+  indexes: IndexInfo[];
+  triggers: TriggerInfo[];
+}
+
+/** A driver that can't answer `describe_table` rejects with Rust's `NotImplemented`
+ *  message. The Structure tab shows a note for it rather than an error. */
+export function isNotImplementedError(e: unknown): boolean {
+  return String((e as { message?: string })?.message ?? e).toLowerCase().includes("not implemented");
+}
+
+export async function describeTable(
+  id: string,
+  schema: string,
+  table: string,
+): Promise<TableStructure> {
+  if (!inTauri())
+    return {
+      columns: [
+        { name: "id", data_type: "bigint", nullable: false, default: "nextval('wide_id_seq')", is_pk: true, comment: null },
+        { name: "amount_numeric", data_type: "numeric(12,2)", nullable: false, default: "0", is_pk: false, comment: "Running total." },
+        { name: "created_at", data_type: "timestamptz", nullable: false, default: "now()", is_pk: false, comment: null },
+        { name: "nullable_int", data_type: "integer", nullable: true, default: null, is_pk: false, comment: null },
+      ],
+      indexes: [
+        { name: "wide_pkey", columns: ["id"], unique: true, primary: true, definition: "CREATE UNIQUE INDEX wide_pkey ON public.wide USING btree (id)" },
+        { name: "wide_created_at_idx", columns: ["created_at"], unique: false, primary: false, definition: "CREATE INDEX wide_created_at_idx ON public.wide USING btree (created_at)" },
+      ],
+      triggers: [
+        { name: "trg_wide_touch", timing_event: "BEFORE UPDATE", definition: "CREATE TRIGGER trg_wide_touch BEFORE UPDATE ON public.wide FOR EACH ROW EXECUTE FUNCTION touch()" },
+      ],
+    };
+  return invoke<TableStructure>("describe_table", { id, schema, table });
 }
 
 export async function explainQuery(id: string, sql: string): Promise<string> {
@@ -956,13 +1124,6 @@ export async function aiFixSql(id: string, sql: string, error: string): Promise<
   return invoke<string>("ai_fix_sql", { id, sql, error });
 }
 
-/** Cheap row-estimate for the inspector / status bar (engine native). */
-export async function rowEstimate(id: string, schema: string, table: string): Promise<number> {
-  if (!inTauri()) return MOCK_TOTAL_ROWS;
-  const info = await invoke<{ row_estimate: number }>("open_table", { id, schema, table });
-  return info.row_estimate;
-}
-
 // ── Onboarding state (first-launch marker) ─────────────────────────────────
 export interface OnboardingState {
   onboarded: boolean;
@@ -984,8 +1145,39 @@ export async function writeOnboardingState(state: OnboardingState): Promise<void
   await invoke("write_onboarding_state", { state });
 }
 
-/** Save text to a file (Blob download — works in the WebView and the browser). */
-export function downloadText(filename: string, text: string, mime = "text/plain") {
+/**
+ * Record a front-end error in the app log (`app_dir()/logs/tableiq.log`). Fire-and-forget:
+ * a logging failure must never mask the error being logged, and outside Tauri there is no
+ * backend to write to.
+ */
+export function logClientError(message: string): void {
+  if (!inTauri()) return;
+  // The only swallowed rejection left in src/: this *is* the reporting path, so there is
+  // nowhere left to report to — and throwing here would mask the error being logged.
+  void invoke("log_client_error", { message }).catch(() => {});
+}
+
+/**
+ * Save text to a file. In the packaged app: the native Save dialog, then an atomic write
+ * from Rust — WKWebView ignores an `<a download>` blob link, so the old path silently did
+ * nothing on macOS. In the browser and the QA bridge (a real browser, no Tauri APIs) the
+ * blob download is still the only thing available. Resolves once the file is written, or
+ * immediately if the user cancels the dialog.
+ */
+export async function downloadText(filename: string, text: string, mime = "text/plain") {
+  if (inTauri() && !BRIDGE) {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    // `defaultPath` only seeds the filename; the type dropdown comes from `filters`, which
+    // is also what makes the OS re-append the extension the Rust side insists on.
+    const ext = filename.split(".").pop() ?? "";
+    const path = await save({
+      defaultPath: filename,
+      filters: ext && ext !== filename ? [{ name: ext.toUpperCase(), extensions: [ext] }] : [],
+    });
+    if (path === null) return; // cancelled
+    await invoke("write_text_file", { path, contents: text });
+    return;
+  }
   const blob = new Blob([text], { type: mime });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);

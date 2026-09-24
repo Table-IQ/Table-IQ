@@ -14,13 +14,16 @@ pub mod tunnel;
 pub use tunnel::Tunnel;
 
 /// How we authenticate to the SSH bastion.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum SshAuth {
     /// Password auth; the password is read from the keychain (`ssh:<conn_id>`), never stored here.
     Password,
-    /// Private-key auth. `path` is the key file on disk; `passphrase` (if any) comes from the
-    /// keychain at connect time and is never serialized to disk / the bundle.
+    /// Private-key auth. `path` is the key file on disk; `passphrase` (if any) arrives over
+    /// IPC from the connection form and is never serialized to disk / the bundle — it is
+    /// persisted only in the OS keychain under `ssh:<conn_id>`, and `maybe_open_tunnel`
+    /// reads it back from there. Inbound-only by design, so `skip_serializing` (not
+    /// `skip_serializing_if`, which would still have written a populated one).
     ///
     /// Tag is `"keyfile"` (not snake_case `key_file`) to match the TS client
     /// (`src/lib/ssh.ts`) — otherwise key-auth SSH configs fail to deserialize at
@@ -28,17 +31,12 @@ pub enum SshAuth {
     #[serde(rename = "keyfile")]
     KeyFile {
         path: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing)]
         passphrase: Option<String>,
     },
     /// Delegate to the running ssh-agent (no stored secret).
+    #[default]
     Agent,
-}
-
-impl Default for SshAuth {
-    fn default() -> Self {
-        SshAuth::Agent
-    }
 }
 
 /// SSH bastion config embedded (optionally) on a `ConnConfig`.
@@ -97,8 +95,8 @@ mod tests {
             username: "ec2-user".into(),
             auth: SshAuth::KeyFile {
                 path: "~/.ssh/id_ed25519".into(),
-                // A populated passphrase is never persisted from the stored config, but it must
-                // still round-trip when present transiently.
+                // Never serialized (see the field's docs), so only `None` round-trips —
+                // which is all the stored config ever holds.
                 passphrase: None,
             },
         };
@@ -148,6 +146,27 @@ mod tests {
         };
         let json = serde_json::to_string(&cfg).unwrap();
         assert!(!json.contains("passphrase"), "json was: {json}");
+    }
+
+    /// The "secret-free on disk" invariant, enforced against a POPULATED passphrase.
+    /// `skip_serializing_if = "Option::is_none"` only ever omitted the field when it was
+    /// already empty — a passphrase that arrived over IPC would have been written straight
+    /// into connections.json and the export bundle.
+    #[test]
+    fn a_populated_keyfile_passphrase_is_never_serialized() {
+        let cfg = SshConfig {
+            enabled: true,
+            host: "h".into(),
+            port: 22,
+            username: "u".into(),
+            auth: SshAuth::KeyFile {
+                path: "/k".into(),
+                passphrase: Some("hunter2-the-real-secret".into()),
+            },
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(!json.contains("passphrase"), "json leaked the field: {json}");
+        assert!(!json.contains("hunter2"), "json leaked the secret: {json}");
     }
 
     #[test]

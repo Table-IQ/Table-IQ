@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getAiConfig, localLlmAvailable, saveAiConfig } from "../lib/commands";
+import { logError } from "../lib/report";
 import { Panel } from "./ui/Panel";
 import { StatusDot } from "./ui/StatusBar";
 
@@ -26,7 +27,9 @@ export function AiSettings({ onClose }: { onClose: () => void }) {
         setProvider(c.provider);
         setModel(c.model);
       })
-      .catch(() => {});
+      // ponytail: the panel's status slot is a green "Saved" indicator only, so a load
+      // failure goes to the log and the form shows defaults. Upgrade: make status tri-state.
+      .catch((e) => logError("ai settings: load config", e));
     localLlmAvailable().then(setOllamaUp).catch(() => setOllamaUp(false));
   }, []);
 

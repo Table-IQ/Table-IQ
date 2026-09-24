@@ -1,5 +1,13 @@
 -- Phase 0 cursor-path dataset: a wide table matching the spec's tricky-type shape.
 -- 1,000,000 rows × 100+ columns, including NUMERIC(38,10), large TEXT, NULL-heavy, timestamptz.
+--
+-- The row count is a psql variable so CI can seed a cheap table instead of waiting on a
+-- million inserts: `psql -v rows=2000 -f seed.sql`. Only tests/cursor_bounded_ram.rs needs
+-- the full million, and it gates itself on TIQ_PG_FULL_SEED.
+\if :{?rows}
+\else
+\set rows 1000000
+\endif
 
 CREATE TABLE wide (
   id             bigint PRIMARY KEY,
@@ -24,6 +32,6 @@ SELECT
   timestamptz '2020-09-13 12:26:40+00' + (g || ' minutes')::interval,
   g || '-' || repeat('x', 1024),
   CASE WHEN g % 3 = 0 THEN NULL ELSE g END
-FROM generate_series(1, 1000000) AS g;
+FROM generate_series(1, :rows) AS g;
 
 ANALYZE wide;

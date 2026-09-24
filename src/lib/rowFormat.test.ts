@@ -46,4 +46,27 @@ describe("buildRowAs", () => {
       `INSERT INTO public.t ("id", "name", "note") VALUES ('1', 'O''Brien', NULL);`,
     );
   });
+
+  it("INSERT identifiers are engine-aware (MySQL uses backticks, not \"…\" which MySQL reads as a string)", () => {
+    expect(buildRowAs("insert", ["1"], ["id"], { table: "`t`", engine: "mysql" })).toBe(
+      "INSERT INTO `t` (`id`) VALUES ('1');",
+    );
+  });
+
+  it("INSERT literal escapes a MySQL backslash so a stored value can't rewrite the statement", () => {
+    // Doubling `'` alone is not enough on MySQL: it also reads `\` as an escape,
+    // so a stored `a\' , 1); DROP TABLE t; -- ` would close the literal early and
+    // append arbitrary SQL to the pasted statement.
+    const value = String.raw`a\' , 1); DROP TABLE t; -- `;
+    const stmt = buildRowAs("insert", [value], ["note"], { table: "`t`", engine: "mysql" });
+    expect(stmt).toBe(
+      "INSERT INTO `t` (`note`) VALUES (" + String.raw`'a\\'' , 1); DROP TABLE t; -- ');`,
+    );
+  });
+
+  it("defaults to double-quoted identifiers and quote-only escaping when the engine is unknown", () => {
+    expect(buildRowAs("insert", ["O'Brien"], ["name"], { table: "t" })).toBe(
+      `INSERT INTO t ("name") VALUES ('O''Brien');`,
+    );
+  });
 });

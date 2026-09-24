@@ -1,17 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  applyEdit,
-  foreignKeys,
-  primaryKey,
-  rowEstimate,
-  type ForeignKey,
-  type ObjectInfo,
-} from "../lib/commands";
-import { buildEdit } from "../lib/edit";
+import { applyEdit, type ForeignKey, type ObjectInfo } from "../lib/commands";
+import { buildEdit, writeOutcomeMessage } from "../lib/edit";
+import { incomingForeignKeys, outgoingForeignKeys } from "../lib/fk";
+import { logError } from "../lib/report";
 import { Tabs } from "./ui/Panel";
 import { Chip } from "./ui/Chip";
 import { IconClose, IconKey, IconLink, IconSearch } from "./ui/Icon";
 import { useSelectedRow } from "../state/selectedRowStore";
+import { loadForeignKeys, loadTableMeta } from "../state/connectionStore";
 
 /**
  * Right-side metadata inspector. Two modes:
@@ -40,9 +36,12 @@ export function Inspector({
 }) {
   const [tab, setTab] = useState("details");
   const [fks, setFks] = useState<ForeignKey[]>([]);
-  const [rows, setRows] = useState<number | null>(null);
+  const [rows, setRows] = useState<{ count: number | null; exact: boolean } | null>(null);
   const [fieldFilter, setFieldFilter] = useState("");
   const [pk, setPk] = useState<string[]>([]);
+  // Transient write-outcome notice (constraint violation, 0-row miss, >1-row
+  // write) — same class of message as TableView's status-bar notice.
+  const [notice, setNotice] = useState<string | null>(null);
   const selectedRow = useSelectedRow((s) => s.row);
   const setSelectedRow = useSelectedRow((s) => s.setRow);
   // Only show the row-detail mode when the selection matches the active object —
@@ -57,14 +56,20 @@ export function Inspector({
     setFks([]);
     setRows(null);
     setPk([]);
+    setNotice(null);
     if (!object || !schema) return;
-    foreignKeys(connId).then((all) => !cancelled && setFks(all)).catch(() => {});
-    rowEstimate(connId, schema, object.name).then((n) => !cancelled && setRows(n)).catch(() => {});
-    if (object.kind === "Table") {
-      primaryKey(connId, schema, object.name)
-        .then((cols) => !cancelled && setPk(cols))
-        .catch(() => !cancelled && setPk([]));
-    }
+    // Both reads come from the connection-store caches, so opening a table costs
+    // one round trip between this panel and the TableView, not two each.
+    loadForeignKeys(connId)
+      .then((all) => !cancelled && setFks(all))
+      .catch((e) => logError("inspector: foreign keys", e));
+    loadTableMeta(connId, schema, object.name)
+      .then((m) => {
+        if (cancelled) return;
+        setRows({ count: m.count, exact: m.exact });
+        setPk(m.pk);
+      })
+      .catch((e) => logError("inspector: table meta", e));
     return () => {
       cancelled = true;
     };
@@ -80,21 +85,29 @@ export function Inspector({
     const orig = rowDetail.values[col] ?? "";
     if (orig === newValue) return true;
     const edit = buildEdit(pk, (c) => rowDetail.values[c] ?? null, col, newValue);
+    setNotice(null);
     try {
       const { rowsAffected } = await applyEdit(connId, schema, object.name, edit);
-      if (rowsAffected !== 1) return false;
+      // 0 rows (identity moved/gone) and >1 rows (identity wasn't unique) are both
+      // the user's business, not a silent failure — same rule TableView applies.
+      const problem = writeOutcomeMessage("update", rowsAffected);
+      if (problem) {
+        setNotice(`Set "${col}": ${problem}`);
+        return false;
+      }
       setSelectedRow({ ...rowDetail, values: { ...rowDetail.values, [col]: newValue } });
       window.dispatchEvent(
         new CustomEvent("tiq:row-edited", { detail: `${schema}.${object.name}` }),
       );
       return true;
-    } catch {
+    } catch (e) {
+      setNotice(`Update failed: ${e}`);
       return false;
     }
   };
 
-  const outgoing = object ? fks.filter((f) => f.from_table === object.name) : [];
-  const incoming = object ? fks.filter((f) => f.to_table === object.name) : [];
+  const outgoing = object && schema ? outgoingForeignKeys(fks, schema, object.name) : [];
+  const incoming = object && schema ? incomingForeignKeys(fks, schema, object.name) : [];
 
   // Field-card filter for row-detail mode — narrows by column-name substring,
   // case-insensitive. Memoised so typing doesn't re-walk the column list on every
@@ -108,6 +121,7 @@ export function Inspector({
 
   useEffect(() => {
     setFieldFilter("");
+    setNotice(null);
   }, [rowDetail?.row, rowDetail?.schema, rowDetail?.table]);
 
   return (
@@ -144,6 +158,7 @@ export function Inspector({
             editable={editable}
             pkCols={pk}
             onCommit={commitField}
+            notice={notice}
           />
         ) : (
           <div className="min-h-0 flex-1 overflow-auto p-3 text-[11px]">
@@ -192,8 +207,9 @@ function RowDetailView({
   editable,
   pkCols,
   onCommit,
+  notice,
 }: {
-  row: { schema: string; table: string; row: number; values: Record<string, string> };
+  row: { schema: string; table: string; row: number; values: Record<string, string | null> };
   columns: { name: string; data_type: string; nullable: boolean }[];
   totalCols: number;
   filter: string;
@@ -201,6 +217,9 @@ function RowDetailView({
   editable: boolean;
   pkCols: string[];
   onCommit: (col: string, newValue: string) => Promise<boolean>;
+  /** Write-outcome message (constraint violation, 0-row miss, >1-row write) —
+   *  replaces the row/field counts until the next edit attempt. */
+  notice: string | null;
 }) {
   const pkSet = useMemo(() => new Set(pkCols), [pkCols]);
   return (
@@ -250,12 +269,22 @@ function RowDetailView({
         className="flex shrink-0 items-center justify-between border-t border-border bg-surface px-3 text-[10px] text-muted-2"
         style={{ height: "var(--statusbar-h)" }}
       >
-        <span>
-          Row <span className="font-mono text-muted">{row.row + 1}</span>
-        </span>
-        <span>
-          {columns.length} of {totalCols} fields
-        </span>
+        {notice ? (
+          // The bar truncates; keep the whole message reachable on hover, same as
+          // TableView's status-bar notice.
+          <span className="truncate text-warn" title={notice}>
+            {notice}
+          </span>
+        ) : (
+          <>
+            <span>
+              Row <span className="font-mono text-muted">{row.row + 1}</span>
+            </span>
+            <span>
+              {columns.length} of {totalCols} fields
+            </span>
+          </>
+        )}
       </div>
     </div>
   );
@@ -273,12 +302,14 @@ function FieldCard({
 }: {
   name: string;
   type: string;
-  value: string | undefined;
+  /** `null` is a SQL NULL, `undefined` means the column isn't in the row map. */
+  value: string | null | undefined;
   editable: boolean;
   onCommit: (newValue: string) => Promise<boolean>;
 }) {
   const original = value ?? "";
-  const isNull = value === undefined || value === "";
+  // NULL reads as absent; an empty string renders as an (empty) value box.
+  const isNull = value == null;
   const [draft, setDraft] = useState(original);
   const [editing, setEditing] = useState(false);
   const [flash, setFlash] = useState<"ok" | "err" | null>(null);
@@ -324,7 +355,15 @@ function FieldCard({
           : "border-border hover:border-border-strong";
 
   return (
-    <li data-testid="inspector-field" data-field={name} className="flex flex-col gap-1">
+    <li
+      data-testid="inspector-field"
+      data-field={name}
+      className="flex flex-col gap-1"
+      // A 873-column row renders 873 of these. `content-visibility: auto` lets the
+      // browser skip layout/paint for the ones scrolled out of view; the size hint
+      // keeps the scrollbar honest.
+      style={{ contentVisibility: "auto", containIntrinsicSize: "auto 52px" }}
+    >
       <div className="flex items-baseline gap-2 px-0.5">
         <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-muted">{name}</span>
         <span className="shrink-0 font-mono text-[9.5px] uppercase tracking-wide text-muted-2">
@@ -336,6 +375,7 @@ function FieldCard({
           rows={1}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
+          placeholder={isNull ? "NULL" : undefined}
           onFocus={() => setEditing(true)}
           onBlur={commit}
           onKeyDown={(e) => {
@@ -349,7 +389,7 @@ function FieldCard({
             }
           }}
           spellCheck={false}
-          className={`max-h-40 w-full resize-y rounded-[var(--radius-sm)] border bg-bg px-2 py-1.5 font-mono text-[11.5px] leading-relaxed text-text transition-colors focus:outline-none ${border}`}
+          className={`max-h-40 w-full resize-y rounded-[var(--radius-sm)] border bg-bg px-2 py-1.5 font-mono text-[11.5px] leading-relaxed text-text transition-colors placeholder:italic placeholder:text-muted-2 focus:outline-none ${border}`}
         />
       ) : (
         <button
@@ -382,7 +422,7 @@ function ObjectMetadataView({
 }: {
   object: ObjectInfo;
   schema?: string;
-  rows: number | null;
+  rows: { count: number | null; exact: boolean } | null;
   outgoing: ForeignKey[];
   incoming: ForeignKey[];
 }) {
@@ -392,12 +432,19 @@ function ObjectMetadataView({
       <Field label="Kind" value={<Chip tone={object.kind === "Table" ? "primary" : "muted"}>{object.kind}</Chip>} />
       <Field label="Columns" value={<span className="text-text">{object.columns.length}</span>} />
       <Field
-        label="Row estimate"
+        label="Rows"
         value={
           rows === null ? (
             <span className="text-muted">…</span>
+          ) : rows.count === null ? (
+            <span className="text-muted" title="This engine could not count the rows in time">
+              unknown
+            </span>
           ) : (
-            <span className="text-text">{rows.toLocaleString()}</span>
+            <span className="text-text" title={rows.exact ? undefined : "Estimated from the statistics catalog"}>
+              {rows.exact ? "" : "~"}
+              {rows.count.toLocaleString()}
+            </span>
           )
         }
       />
@@ -409,7 +456,7 @@ function ObjectMetadataView({
           {object.columns.map((c) => (
             <div key={c.name} className="flex items-center gap-2 px-2 py-1">
               <span className="min-w-0 flex-1 truncate font-mono text-text">{c.name}</span>
-              <span className="text-[11px] text-muted">{c.data_type}</span>
+              <span className="max-w-[55%] shrink-0 truncate text-[11px] text-muted">{c.data_type}</span>
               {!c.nullable && (
                 <span className="text-[10px] uppercase text-muted">not null</span>
               )}

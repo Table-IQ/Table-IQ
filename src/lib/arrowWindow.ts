@@ -4,20 +4,22 @@ import { tableFromIPC, Table } from "apache-arrow";
 export interface DecodedWindow {
   numRows: number;
   columns: string[];
-  /** Stringified cell value for display; null → "". */
-  getCell(row: number, col: string): string;
+  /** Stringified cell value for display; a SQL NULL stays `null` (never ""). */
+  getCell(row: number, col: string): string | null;
 }
 
 /** Decode an Arrow IPC *stream* buffer (schema + one batch) into a window view. */
 export function decodeWindow(buf: Uint8Array): DecodedWindow {
   const table: Table = tableFromIPC(buf);
   const columns = table.schema.fields.map((f) => f.name);
+  // Build the name→child-vector lookup once per window instead of per cell.
+  const children = new Map(columns.map((name) => [name, table.getChild(name)]));
   return {
     numRows: table.numRows,
     columns,
     getCell(row, col) {
-      const v = table.getChild(col)?.get(row);
-      return v == null ? "" : String(v);
+      const v = children.get(col)?.get(row);
+      return v == null ? null : String(v);
     },
   };
 }
@@ -55,8 +57,9 @@ export class WindowCache {
     }
   }
 
-  /** Cell for a global row, or undefined if its page isn't loaded. Touch = mark recent. */
-  getCell(globalRow: number, col: string): string | undefined {
+  /** Cell for a global row, or undefined if its page isn't loaded (a SQL NULL
+   *  value is `null`, distinct from "not loaded yet"). Touch = mark recent. */
+  getCell(globalRow: number, col: string): string | null | undefined {
     const page = this.pageOf(globalRow);
     const w = this.pages.get(page);
     if (!w) return undefined;

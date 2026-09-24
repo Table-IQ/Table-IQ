@@ -1,25 +1,36 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { DataGrid, type DataGridHandle, type GridSource } from "./DataGrid";
 import {
   applyEdit,
   deleteRow,
+  describeTable,
   downloadText,
   exportTable,
   fetchTableWindow,
-  foreignKeys,
   insertRow,
+  isNotImplementedError,
   openTable,
-  primaryKey,
+  type ColumnDetail,
   type ColumnFilter,
   type ExportFormat,
   type FilterOp,
   type ForeignKey,
   type ObjectInfo,
+  type SortKey,
+  type TableStructure,
 } from "../lib/commands";
-import { buildEdit } from "../lib/edit";
+import { buildEdit, writeOutcomeMessage } from "../lib/edit";
 import { outgoingForeignKeys } from "../lib/fk";
+import { decodeWindow } from "../lib/arrowWindow";
+import { pagerLabel } from "../lib/pager";
+import { cycleSort } from "../lib/tableSort";
 import { useTabs } from "../state/tabsStore";
-import { useConnections } from "../state/connectionStore";
+import {
+  invalidateTableMeta,
+  loadForeignKeys,
+  loadTableMeta,
+  useConnections,
+} from "../state/connectionStore";
 import { useSelectedRow } from "../state/selectedRowStore";
 import * as colWidths from "../lib/colWidths";
 import { isNumericType } from "../lib/autoFit";
@@ -31,7 +42,7 @@ import { SegmentedToggle, StatusBar, StatusBarButton, StatusDot } from "./ui/Sta
 import { Chip } from "./ui/Chip";
 import { ContextMenu, type ContextMenuItem } from "./ui/ContextMenu";
 import { buildRowAs } from "../lib/rowFormat";
-import { quoteIdent } from "../lib/tableScript";
+import { buildDeleteStatement, quoteIdent } from "../lib/tableScript";
 import { buildInsertValues, isDraftDirty } from "../lib/insertRow";
 import { chipLabel, removeFilter, upsertFilter, FILTER_OP_LABEL, isNullOp } from "../lib/filterBuilder";
 import {
@@ -44,10 +55,16 @@ import {
   IconRefresh,
 } from "./ui/Icon";
 
+/** Rows per page — TablePlus's table pager. One more than this is fetched: the
+ *  extra row is how we know a next page exists without a second query. */
+const PAGE_SIZE = 300;
+
 interface Props {
   connId: string;
   schema: string;
   object: ObjectInfo;
+  /** Which sub-view the tab is on. Owned by the tab so it survives tab switches. */
+  view: "data" | "structure";
 }
 
 /** Native confirm via the Tauri dialog plugin (desktop), falling back to the
@@ -61,15 +78,30 @@ async function confirmDestructive(message: string): Promise<boolean> {
   }
 }
 
-export function TableView({ connId, schema, object }: Props) {
-  const [rowEstimate, setRowEstimate] = useState<number | null>(null);
+export function TableView({ connId, schema, object, view }: Props) {
+  /** Unfiltered/filtered row total. `count: null` means "the engine could not
+   *  count it" — which must never be rendered as 0 rows. */
+  const [total, setTotal] = useState<{ count: number | null; exact: boolean } | null>(null);
   const [pk, setPk] = useState<string[] | null>(null);
+  /** Why the primary key is unknown: the `primary_key` call itself failed. A
+   *  failure must never read as "this table has no primary key" — that tells the
+   *  user their rows can never be edited, which may be false. */
+  const [pkError, setPkError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [fks, setFks] = useState<ForeignKey[]>([]);
   const [showProfile, setShowProfile] = useState(false);
   const [showAlter, setShowAlter] = useState(false);
-  const [view, setView] = useState<"data" | "structure">("data");
+  const [page, setPage] = useState(0);
+  const [sort, setSort] = useState<SortKey | null>(null);
+  /** The fetched window for the current page. `rows` is what the server returned
+   *  (up to PAGE_SIZE + 1); `version` bumps on every re-read so the grid can drop
+   *  its cache without the full reset a new source key does. */
+  const [pageData, setPageData] = useState<{
+    bytes: Uint8Array;
+    rows: number;
+    version: number;
+  } | null>(null);
   const [dirty, setDirty] = useState(0);
   const [refreshKey, setRefreshKey] = useState(0);
   const [filters, setFilters] = useState<ColumnFilter[]>([]);
@@ -81,10 +113,16 @@ export function TableView({ connId, schema, object }: Props) {
     col: string;
     row: number;
     value: string | null;
-    values: Record<string, string> | null;
+    /** Row as displayed — includes staged, uncommitted edits. Copy/display only. */
+    values: Record<string, string | null> | null;
+    /** Row as the database still has it. The ONLY source for a WHERE clause. */
+    serverValues: Record<string, string | null> | null;
   } | null>(null);
-  const [gridWindowStart, setGridWindowStart] = useState(0);
   const [pendingCount, setPendingCount] = useState(0);
+  // True while the grid is walking its staged edits, one round trip each. Sorting or
+  // paging mid-commit would change what the remaining edits' row indices mean, so both
+  // are locked for the duration (the grid also stops itself — see its generation guard).
+  const [committing, setCommitting] = useState(false);
   const gridRef = useRef<DataGridHandle>(null);
   const openTab = useTabs((s) => s.openTable);
   const engine = useConnections((s) => s.active?.engine ?? "postgres") as Engine;
@@ -109,48 +147,113 @@ export function TableView({ connId, schema, object }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [schema, object.name]);
 
+  /** Re-read this table: its cached count is stale after any write, and the
+   *  visible page has to come back from the server. Deliberately leaves
+   *  `pageData` in place so the grid keeps painting (and keeps its scroll and
+   *  selection) while the new window is in flight. */
+  const refresh = useCallback(() => {
+    invalidateTableMeta(connId, schema, object.name);
+    setRefreshKey((k) => k + 1);
+  }, [connId, schema, object.name]);
+
+  /** Changing the filter set always returns to the first page. */
+  const applyFilters = useCallback((next: ColumnFilter[]) => {
+    setFilters(next);
+    setPage(0);
+  }, []);
+
+  // Primary key + FK edges. Both come from the connection-store caches, shared
+  // with the Inspector.
   useEffect(() => {
     let cancelled = false;
-    setRowEstimate(null);
-    setPk(null);
-    setError(null);
     setNotice(null);
     setDirty(0);
-    openTable(connId, schema, object.name, filters)
-      .then((info) => !cancelled && setRowEstimate(info.rowEstimate))
-      .catch((e) => !cancelled && setError(String(e)));
-    primaryKey(connId, schema, object.name)
-      .then((cols) => !cancelled && setPk(cols))
-      .catch(() => !cancelled && setPk([]));
-    foreignKeys(connId)
-      .then((all) => !cancelled && setFks(outgoingForeignKeys(all, object.name)))
+    setPkError(null);
+    loadTableMeta(connId, schema, object.name)
+      .then((m) => {
+        if (cancelled) return;
+        setPk(m.pk);
+        setPkError(null);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        // Leave `pk` unknown (null) rather than claiming an empty key.
+        setPk(null);
+        setPkError(String(e));
+        setNotice(`Couldn't read this table's primary key, so editing is off: ${e}`);
+      });
+    loadForeignKeys(connId)
+      .then((all) => !cancelled && setFks(outgoingForeignKeys(all, schema, object.name)))
       .catch(() => !cancelled && setFks([]));
     return () => {
       cancelled = true;
     };
-  }, [connId, schema, object.name, refreshKey, filters]);
+  }, [connId, schema, object.name, refreshKey]);
 
-  // "Open structure" from the sidebar context menu switches this view to the
-  // Structure tab when it targets the active table (Slice 31).
+  // Row total for the pager. A count that fails or comes back null is NOT fatal —
+  // the page itself is the authority on what to render, so the label just drops
+  // the "of …" half.
   useEffect(() => {
-    const onStructure = (e: Event) => {
-      const target = (e as CustomEvent<string>).detail;
-      if (target === `${schema}.${object.name}`) setView("structure");
+    let cancelled = false;
+    const counted =
+      filters.length === 0
+        ? loadTableMeta(connId, schema, object.name).then((m) => ({
+            count: m.count,
+            exact: m.exact,
+          }))
+        : openTable(connId, schema, object.name, filters);
+    counted
+      .then((t) => !cancelled && setTotal(t))
+      .catch(() => !cancelled && setTotal({ count: null, exact: false }));
+    return () => {
+      cancelled = true;
     };
-    window.addEventListener("tiq:view-structure", onStructure);
-    return () => window.removeEventListener("tiq:view-structure", onStructure);
-  }, [schema, object.name]);
+  }, [connId, schema, object.name, filters, refreshKey]);
+
+  const order = useMemo(() => (sort ? [sort] : undefined), [sort]);
+  const orderKey = sort ? `${sort.column}:${sort.desc}` : "";
+
+  // The visible page. PAGE_SIZE + 1 rows are asked for: the extra row is how we
+  // know a next page exists without counting.
+  useEffect(() => {
+    let cancelled = false;
+    fetchTableWindow(
+      connId,
+      schema,
+      object.name,
+      page * PAGE_SIZE,
+      PAGE_SIZE + 1,
+      filters,
+      order,
+    )
+      .then(({ bytes }) => {
+        if (cancelled) return;
+        setError(null);
+        // ponytail: the window is decoded here for its row count and again in the
+        // grid for its cells. Two decodes of one 301-row batch is cheaper than a
+        // second round trip; upgrade path is to lift the decode into this view.
+        setPageData((prev) => ({
+          bytes,
+          rows: decodeWindow(bytes).numRows,
+          version: (prev?.version ?? 0) + 1,
+        }));
+      })
+      .catch((e) => !cancelled && setError(String(e)));
+    return () => {
+      cancelled = true;
+    };
+  }, [connId, schema, object.name, page, filters, order, refreshKey]);
 
   // Re-sync the grid when a cell is edited from the Inspector panel (Slice 33),
   // so the data grid reflects the committed value.
   useEffect(() => {
     const onEdited = (e: Event) => {
       const target = (e as CustomEvent<string>).detail;
-      if (target === `${schema}.${object.name}`) setRefreshKey((k) => k + 1);
+      if (target === `${schema}.${object.name}`) refresh();
     };
     window.addEventListener("tiq:row-edited", onEdited);
     return () => window.removeEventListener("tiq:row-edited", onEdited);
-  }, [schema, object.name]);
+  }, [schema, object.name, refresh]);
 
   const editable = object.kind === "Table" && !!pk && pk.length > 0;
 
@@ -167,12 +270,13 @@ export function TableView({ connId, schema, object }: Props) {
       const edit = buildEdit(pk, getOriginal, col, newValue);
       try {
         const { rowsAffected } = await applyEdit(connId, schema, object.name, edit);
-        if (rowsAffected === 1) {
-          setDirty((d) => Math.max(0, d - 1));
-          return true;
-        }
-        setNotice("Edit conflict: the row changed underneath you. Reverted.");
         setDirty((d) => Math.max(0, d - 1));
+        // Only rows_affected === 1 is a clean write. 0 and >1 are both the user's
+        // business and are reported verbatim — nothing is rolled back (the backend
+        // UPDATE is a single non-transactional statement), so we never claim it was.
+        const problem = writeOutcomeMessage("update", rowsAffected);
+        if (!problem) return true;
+        setNotice(`Update "${col}": ${problem}`);
         return false;
       } catch (e) {
         setNotice(`Update failed: ${e}`);
@@ -198,18 +302,31 @@ export function TableView({ connId, schema, object }: Props) {
     return s;
   }, [object.columns]);
 
+  // Stable identity so a re-read (which rebuilds `source`) doesn't look like a
+  // different column set to the grid, which would cost scroll + selection.
+  const columnNames = useMemo(() => object.columns.map((c) => c.name), [object.columns]);
+  const filterKey = filters.map((f) => `${f.column}${f.op}${f.value ?? ""}`).join("|");
+
+  /** Rows on the visible page — at most PAGE_SIZE, whatever the 301st row says. */
+  const rowsOnPage = pageData ? Math.min(PAGE_SIZE, pageData.rows) : 0;
+  const hasNext = (pageData?.rows ?? 0) > PAGE_SIZE;
+
   const source = useMemo<GridSource | null>(() => {
-    if (rowEstimate === null) return null;
-    // filters are part of the cache key so any change reloads the window.
-    const filterKey = filters.map((f) => `${f.column}${f.op}${f.value ?? ""}`).join("|");
+    if (!pageData) return null;
     return {
-      key: `${connId}.${schema}.${object.name}.${refreshKey}.${filterKey}`,
-      totalRows: rowEstimate,
-      columns: object.columns.map((c) => c.name),
-      fetch: (offset, len) =>
-        fetchTableWindow(connId, schema, object.name, offset, len, filters),
+      // Filters, sort and page identify the rows; a re-read of the same rows
+      // moves `version` instead, which keeps scroll and selection.
+      key: `${connId}.${schema}.${object.name}.${page}.${filterKey}.${orderKey}`,
+      totalRows: Math.min(PAGE_SIZE, pageData.rows),
+      // One cache page holds the whole fetched window, so the grid never pages.
+      pageSize: PAGE_SIZE + 1,
+      version: pageData.version,
+      columns: columnNames,
+      // This view already fetched the window (it needs the 301st row), so the
+      // grid reads the bytes we hold rather than asking again.
+      fetch: () => Promise.resolve({ bytes: pageData.bytes, ms: 0 }),
     };
-  }, [connId, schema, object, rowEstimate, refreshKey, filters]);
+  }, [connId, schema, object.name, page, filterKey, orderKey, columnNames, pageData]);
 
   const commitDraft = useCallback(async () => {
     if (!draft) return;
@@ -221,84 +338,22 @@ export function TableView({ connId, schema, object }: Props) {
     try {
       await insertRow(connId, schema, object.name, values);
       setDraft(null);
-      setRefreshKey((k) => k + 1);
+      refresh();
     } catch (e) {
       setNotice(`Insert failed: ${e}`);
     }
-  }, [connId, schema, object, draft]);
+  }, [connId, schema, object, draft, refresh]);
 
   const cancelDraft = useCallback(() => {
     setDraft(null);
     setNotice(null);
   }, []);
 
-  // Loading / error states still render the table chrome's bottom bar so the
-  // window never flashes a bar-less state (MainShell suppresses its fallback bar
-  // for table tabs, trusting this view to always own one — TablePlus parity).
-  const statusObjectInfo = (
-    <span className="font-mono text-text">
-      <span className="text-muted">{schema}.</span>
-      <span className="font-medium">{object.name}</span>
-    </span>
-  );
-  if (error)
-    return (
-      <div className="flex h-full flex-col">
-        <div className="flex-1 p-6 text-sm text-danger">Failed to open table: {error}</div>
-        <StatusBar
-          left={statusObjectInfo}
-          right={
-            <span className="inline-flex items-center gap-1 text-danger">
-              <StatusDot tone="danger" />
-              <span>error</span>
-            </span>
-          }
-        />
-      </div>
-    );
-  if (!source)
-    return (
-      <div className="flex h-full flex-col">
-        <div className="flex-1 p-6 text-sm text-muted">Opening {object.name}…</div>
-        <StatusBar left={statusObjectInfo} right={<span className="text-muted">opening…</span>} />
-      </div>
-    );
-
-  return (
-    <div className="flex h-full flex-col">
-      {/* Compact action toolbar — Filter/Insert/Structure now live in the status bar
-          (TablePlus parity). This row keeps the secondary actions: Refresh, Profile,
-          Alter, and export. */}
-      <Toolbar>
-        <ToolbarButton
-          icon={<IconRefresh size={12} />}
-          label="Refresh"
-          onClick={() => setRefreshKey((k) => k + 1)}
-        />
-        <ToolbarButton label="Profile" onClick={() => setShowProfile(true)} />
-        {object.kind === "Table" && (
-          <ToolbarButton label="Alter" onClick={() => setShowAlter(true)} />
-        )}
-        <ToolbarSpacer />
-        {(["csv", "json"] as ExportFormat[]).map((fmt) => (
-          <ToolbarButton
-            key={fmt}
-            icon={<IconExport size={12} />}
-            label={fmt.toUpperCase()}
-            onClick={async () => {
-              const text = await exportTable(connId, schema, object.name, fmt);
-              downloadText(
-                `${object.name}.${fmt}`,
-                text,
-                fmt === "json" ? "application/json" : "text/csv",
-              );
-            }}
-          />
-        ))}
-      </Toolbar>
-
-      {/* Filter builder + chip rail (Slice 21 #1). Stacked above the FK rail. */}
-      {(filterDraft || filters.length > 0) && (
+  /** Filter builder + chip rail (Slice 21 #1). Declared before the early returns
+   *  so the error view can show it too — a filter that the engine rejects has to
+   *  stay visible and removable, or the tab is stuck. */
+  const filterRail =
+    filterDraft || filters.length > 0 ? (
         <div className="flex flex-wrap items-center gap-1.5 border-b border-border bg-bg px-3 py-1.5">
           <IconFilter size={11} className="text-primary" />
           <span className="text-[10px] uppercase tracking-wider text-muted">filters</span>
@@ -306,7 +361,7 @@ export function TableView({ connId, schema, object }: Props) {
             <Chip
               key={`${f.column}-${f.op}`}
               tone="primary"
-              onClick={() => setFilters(removeFilter(filters, f.column, f.op))}
+              onClick={() => applyFilters(removeFilter(filters, f.column, f.op))}
               title="Click to remove"
             >
               {chipLabel(f)} ×
@@ -345,7 +400,7 @@ export function TableView({ connId, schema, object }: Props) {
                   onChange={(e) => setFilterDraft({ ...filterDraft, value: e.target.value })}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") {
-                      setFilters(
+                      applyFilters(
                         upsertFilter(filters, {
                           column: filterDraft.column,
                           op: filterDraft.op,
@@ -363,7 +418,7 @@ export function TableView({ connId, schema, object }: Props) {
               )}
               <button
                 onClick={() => {
-                  setFilters(
+                  applyFilters(
                     upsertFilter(filters, {
                       column: filterDraft.column,
                       op: filterDraft.op,
@@ -390,15 +445,112 @@ export function TableView({ connId, schema, object }: Props) {
           )}
           {filters.length > 0 && (
             <button
-              onClick={() => setFilters([])}
+              onClick={() => applyFilters([])}
               className="ml-auto text-[10px] text-muted hover:text-text"
               title="Clear all filters"
             >
               clear all
             </button>
           )}
+      </div>
+    ) : null;
+
+  // Loading / error states still render the table chrome's bottom bar so the
+  // window never flashes a bar-less state (MainShell suppresses its fallback bar
+  // for table tabs, trusting this view to always own one — TablePlus parity).
+  const statusObjectInfo = (
+    <span className="font-mono text-text">
+      <span className="text-muted">{schema}.</span>
+      <span className="font-medium">{object.name}</span>
+    </span>
+  );
+  if (error)
+    return (
+      <div className="flex h-full flex-col">
+        {filterRail}
+        <div className="flex-1 space-y-3 p-6">
+          <div className="font-mono text-sm text-danger">
+            Failed to open {object.name}: {error}
+          </div>
+          {filters.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-[11.5px] text-muted">
+                {filters.length === 1 ? "A filter is" : "Filters are"} applied. If the engine
+                rejected {filters.length === 1 ? "it" : "them"}, clear{" "}
+                {filters.length === 1 ? "it" : "them"} to get back to the table.
+              </p>
+              <button
+                onClick={() => applyFilters([])}
+                className="rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-white hover:opacity-90"
+              >
+                Clear filters
+              </button>
+            </div>
+          )}
+          <button
+            onClick={refresh}
+            className="rounded-md border border-border px-2.5 py-1 text-[11px] text-muted hover:text-text"
+          >
+            Try again
+          </button>
         </div>
-      )}
+        <StatusBar
+          left={statusObjectInfo}
+          right={
+            <span className="inline-flex items-center gap-1 text-danger">
+              <StatusDot tone="danger" />
+              <span>error</span>
+            </span>
+          }
+        />
+      </div>
+    );
+  if (!source)
+    return (
+      <div className="flex h-full flex-col">
+        <div className="flex-1 p-6 text-sm text-muted">Opening {object.name}…</div>
+        <StatusBar left={statusObjectInfo} right={<span className="text-muted">opening…</span>} />
+      </div>
+    );
+
+  return (
+    <div className="flex h-full flex-col">
+      {/* Compact action toolbar — Filter/Insert/Structure now live in the status bar
+          (TablePlus parity). This row keeps the secondary actions: Refresh, Profile,
+          Alter, and export. */}
+      <Toolbar>
+        <ToolbarButton
+          icon={<IconRefresh size={12} />}
+          label="Refresh"
+          onClick={refresh}
+        />
+        <ToolbarButton label="Profile" onClick={() => setShowProfile(true)} />
+        {object.kind === "Table" && (
+          <ToolbarButton label="Alter" onClick={() => setShowAlter(true)} />
+        )}
+        <ToolbarSpacer />
+        {(["csv", "json"] as ExportFormat[]).map((fmt) => (
+          <ToolbarButton
+            key={fmt}
+            icon={<IconExport size={12} />}
+            label={fmt.toUpperCase()}
+            onClick={async () => {
+              try {
+                const text = await exportTable(connId, schema, object.name, fmt, filters, order);
+                await downloadText(
+                  `${object.name}.${fmt}`,
+                  text,
+                  fmt === "json" ? "application/json" : "text/csv",
+                );
+              } catch (e) {
+                setNotice(`Export failed: ${e}`);
+              }
+            }}
+          />
+        ))}
+      </Toolbar>
+
+      {filterRail}
 
       {/* Draft-row rail (Slice 21 #2). Editable inputs for each column; Enter commits. */}
       {draft !== null && editable && (
@@ -448,8 +600,8 @@ export function TableView({ connId, schema, object }: Props) {
           {fks.map((fk, i) => (
             <button
               key={`${fk.from_column}->${fk.to_table}`}
-              onClick={() => openTab(schema, fk.to_table)}
-              title={`${fk.from_column} → ${fk.to_table}.${fk.to_column}`}
+              onClick={() => openTab(fk.to_schema ?? schema, fk.to_table)}
+              title={`${fk.from_column} → ${fk.to_schema ?? schema}.${fk.to_table}.${fk.to_column}`}
               className="text-text/80 transition-colors hover:text-primary"
             >
               {fk.to_table}
@@ -505,12 +657,14 @@ export function TableView({ connId, schema, object }: Props) {
             source={source}
             onEdit={editable ? onEdit : undefined}
             fkByColumn={fkByColumn}
-            onFkClick={(toTable) => openTab(schema, toTable)}
+            onFkClick={(toTable) => {
+              const fk = fks.find((f) => f.to_table === toTable);
+              openTab(fk?.to_schema ?? schema, toTable);
+            }}
             onCellContext={(c) => setCellMenu(c)}
-            onVisibleRangeChange={(start) => setGridWindowStart(start)}
             onRowSelected={(row, values) => {
               if (!values) return; // page not loaded yet — ignore the click
-              setSelectedRow({ schema, table: object.name, row, values });
+              setSelectedRow({ schema, table: object.name, row: page * PAGE_SIZE + row, values });
             }}
             columnWidths={columnWidths}
             onColumnResize={(col, w) => {
@@ -518,11 +672,19 @@ export function TableView({ connId, schema, object }: Props) {
               setColumnWidths(next);
             }}
             rightAlignColumns={rightAlignColumns}
-            onSave={() => setRefreshKey((k) => k + 1)}
+            onSave={refresh}
             onPendingCountChange={setPendingCount}
+            onCommittingChange={setCommitting}
+            onFetchError={setError}
+            sort={sort}
+            onSort={(column) => {
+              if (committing) return; // a re-sort mid-commit would re-point the staged rows
+              setSort((cur) => cycleSort(cur, column));
+              setPage(0);
+            }}
           />
         ) : (
-          <StructureView object={object} fks={fks} />
+          <StructureView connId={connId} schema={schema} object={object} fks={fks} />
         )}
       </div>
 
@@ -541,7 +703,7 @@ export function TableView({ connId, schema, object }: Props) {
                 { value: "structure", label: "Structure" },
               ]}
               value={view}
-              onChange={(v) => setView(v)}
+              onChange={(v) => openTab(schema, object.name, v)}
             />
             <StatusBarButton
               onClick={() => setDraft(draft ? null : {})}
@@ -555,15 +717,23 @@ export function TableView({ connId, schema, object }: Props) {
         }
         center={
           notice ? (
-            <span className="truncate text-warn">{notice}</span>
+            // The status bar truncates; keep the whole message reachable on hover.
+            <span className="truncate text-warn" title={notice}>
+              {notice}
+            </span>
           ) : (
             <RowPager
-              total={source.totalRows}
-              onPrev={() => gridRef.current?.scrollToRow(Math.max(0, gridWindowStart - 300))}
-              onNext={() =>
-                gridRef.current?.scrollToRow(Math.min(source.totalRows - 1, gridWindowStart + 300))
-              }
-              start={gridWindowStart}
+              label={pagerLabel(page * PAGE_SIZE, rowsOnPage, total?.count ?? null, total?.exact ?? false)}
+              hasPrev={page > 0 && !committing}
+              hasNext={hasNext && !committing}
+              onPrev={() => {
+                setPage((p) => Math.max(0, p - 1));
+                gridRef.current?.scrollToRow(0);
+              }}
+              onNext={() => {
+                setPage((p) => p + 1);
+                gridRef.current?.scrollToRow(0);
+              }}
             />
           )
         }
@@ -600,9 +770,21 @@ export function TableView({ connId, schema, object }: Props) {
                 <span>editable</span>
               </span>
             ) : (
-              <span className="inline-flex items-center gap-1 text-muted" title={pk && pk.length === 0 ? "No primary key — editing disabled" : "Read-only"}>
-                <StatusDot tone="muted" />
-                <span>read-only{pk && pk.length === 0 ? " · no PK" : ""}</span>
+              <span
+                className={`inline-flex items-center gap-1 ${pkError ? "text-warn" : "text-muted"}`}
+                title={
+                  pkError
+                    ? `Couldn't read the primary key, so editing is disabled — this table may well have one. ${pkError}`
+                    : pk && pk.length === 0
+                      ? "No primary key — editing disabled"
+                      : "Read-only"
+                }
+              >
+                <StatusDot tone={pkError ? "warn" : "muted"} />
+                <span>
+                  read-only
+                  {pkError ? " · PK unknown" : pk && pk.length === 0 ? " · no PK" : ""}
+                </span>
               </span>
             )}
           </>
@@ -628,7 +810,7 @@ export function TableView({ connId, schema, object }: Props) {
           columns={object.columns}
           onClose={() => {
             setShowAlter(false);
-            setRefreshKey((k) => k + 1);
+            refresh();
           }}
         />
       )}
@@ -638,38 +820,44 @@ export function TableView({ connId, schema, object }: Props) {
         (() => {
           const colNames = object.columns.map((c) => c.name);
           const vals = cellMenu.values;
+          // Identity (PK → WHERE) never comes from `vals`: a staged edit to a PK
+          // column would aim the statement at whichever row already holds the new key.
+          const srv = cellMenu.serverValues;
           // Full row in column order; falls back to the single clicked cell when
           // the row's page hasn't loaded yet.
           const rowValues: (string | null)[] = colNames.map((c) =>
             vals ? (vals[c] ?? null) : c === cellMenu.col ? cellMenu.value : null,
           );
-          const qualified = `${quoteIdent(schema)}.${quoteIdent(object.name)}`;
+          // Engine-quoted: `"users"` is a string literal on MySQL, not an identifier.
+          const qualified = `${quoteIdent(schema, engine)}.${quoteIdent(object.name, engine)}`;
           const copy = (s: string) => navigator.clipboard?.writeText(s);
           const copyRowAs = (fmt: Parameters<typeof buildRowAs>[0]) =>
-            copy(buildRowAs(fmt, rowValues, colNames, { table: qualified }));
+            copy(buildRowAs(fmt, rowValues, colNames, { table: qualified, engine }));
           const applyCellValue = async (newValue: string | null) => {
-            if (!pk || pk.length === 0 || !vals) return;
-            const edit = buildEdit(pk, (c) => vals[c] ?? null, cellMenu.col, newValue);
+            if (!pk || pk.length === 0 || !srv) return;
+            const edit = buildEdit(pk, (c) => srv[c] ?? null, cellMenu.col, newValue);
+            setNotice(null);
             try {
-              await applyEdit(connId, schema, object.name, edit);
-              setRefreshKey((k) => k + 1);
+              const { rowsAffected } = await applyEdit(connId, schema, object.name, edit);
+              const problem = writeOutcomeMessage("update", rowsAffected);
+              if (problem) setNotice(`Set "${cellMenu.col}": ${problem}`);
+              refresh();
             } catch (e) {
               setNotice(`Update failed: ${e}`);
             }
           };
           const deleteStmt = () => {
-            if (!pk || pk.length === 0 || !vals) return `-- no primary key on ${object.name}`;
-            const where = pk
-              .map((c) => {
-                const v = vals[c];
-                return `${quoteIdent(c)} = ${v == null ? "NULL" : `'${v.replace(/'/g, "''")}'`}`;
-              })
-              .join(" AND ");
-            return `DELETE FROM ${qualified} WHERE ${where};`;
+            if (!pk || pk.length === 0 || !srv) return `-- no primary key on ${object.name}`;
+            return buildDeleteStatement(
+              schema,
+              object.name,
+              pk.map((c) => [c, srv[c] ?? null] as [string, string | null]),
+              engine,
+            );
           };
           const deleteRowAction = async () => {
-            if (!pk || pk.length === 0 || !vals) return;
-            const pkPairs = pk.map((c) => [c, vals[c] ?? null] as [string, string | null]);
+            if (!pk || pk.length === 0 || !srv) return;
+            const pkPairs = pk.map((c) => [c, srv[c] ?? null] as [string, string | null]);
             const ok = await confirmDestructive(
               `Delete this row from ${qualified}? This cannot be undone.`,
             );
@@ -677,17 +865,17 @@ export function TableView({ connId, schema, object }: Props) {
             setNotice(null);
             try {
               const { rowsAffected } = await deleteRow(connId, schema, object.name, pkPairs);
-              if (rowsAffected === 0) {
-                setNotice("Delete matched no rows — the row may have already changed.");
-              }
-              setRefreshKey((k) => k + 1);
+              // The confirm said "this row" — say so plainly when it was not one row.
+              const problem = writeOutcomeMessage("delete", rowsAffected);
+              if (problem) setNotice(`Delete row: ${problem}`);
+              refresh();
             } catch (e) {
               setNotice(`Delete failed: ${e}`);
             }
           };
 
           const items: (ContextMenuItem | "separator")[] = [
-            { id: "refresh", label: "Refresh", onSelect: () => setRefreshKey((k) => k + 1) },
+            { id: "refresh", label: "Refresh", onSelect: refresh },
             {
               id: "add-row",
               label: "Add row",
@@ -711,7 +899,7 @@ export function TableView({ connId, schema, object }: Props) {
             {
               id: "set-value",
               label: "Set value",
-              disabled: !editable || !vals,
+              disabled: !editable || !srv,
               children: [
                 { id: "set-empty", label: "Empty ''", onSelect: () => void applyCellValue("") },
                 { id: "set-null", label: "NULL", onSelect: () => void applyCellValue(null) },
@@ -747,7 +935,7 @@ export function TableView({ connId, schema, object }: Props) {
               id: "quick-filter",
               label: `Filter "${cellMenu.col}" = ${cellMenu.value ?? "NULL"}`,
               onSelect: () =>
-                setFilters(
+                applyFilters(
                   upsertFilter(filters, { column: cellMenu.col, op: "Eq", value: cellMenu.value }),
                 ),
             },
@@ -755,14 +943,14 @@ export function TableView({ connId, schema, object }: Props) {
               id: "copy-delete",
               label: "Copy DELETE statement",
               tone: "danger",
-              disabled: !pk || pk.length === 0 || !vals,
+              disabled: !pk || pk.length === 0 || !srv,
               onSelect: () => copy(deleteStmt()),
             },
             {
               id: "delete-row",
               label: "Delete row",
               tone: "danger",
-              disabled: !editable || !vals,
+              disabled: !editable || !srv,
               onSelect: () => void deleteRowAction(),
             },
           ];
@@ -779,15 +967,63 @@ export function TableView({ connId, schema, object }: Props) {
   );
 }
 
-function StructureView({ object, fks }: { object: ObjectInfo; fks: ForeignKey[] }) {
-  // Structure sub-tabs (TablePlus parity). Columns is live; Indexes/Triggers need
-  // backend introspection (deferred — shown with a note so the tab is discoverable).
+function StructureView({
+  connId,
+  schema,
+  object,
+  fks,
+}: {
+  connId: string;
+  schema: string;
+  object: ObjectInfo;
+  fks: ForeignKey[];
+}) {
+  // Structure sub-tabs (TablePlus parity), all three served by one `describe_table`.
   const [tab, setTab] = useState<"columns" | "indexes" | "triggers">("columns");
-  const subTabs: { id: typeof tab; label: string }[] = [
-    { id: "columns", label: "Columns" },
-    { id: "indexes", label: "Indexes" },
-    { id: "triggers", label: "Triggers" },
+  const [structure, setStructure] = useState<TableStructure | null>(null);
+  /** Why there is nothing to show: the engine can't answer, or the call failed. */
+  const [note, setNote] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    setStructure(null);
+    setNote(null);
+    describeTable(connId, schema, object.name)
+      .then((s) => {
+        if (live) setStructure(s);
+      })
+      .catch((e: unknown) => {
+        if (!live) return;
+        setNote(
+          isNotImplementedError(e)
+            ? "This connection doesn't report indexes or triggers."
+            : String((e as { message?: string })?.message ?? e),
+        );
+      });
+    return () => {
+      live = false;
+    };
+  }, [connId, schema, object.name]);
+
+  const subTabs: { id: typeof tab; label: string; count?: number }[] = [
+    { id: "columns", label: "Columns", count: object.columns.length },
+    { id: "indexes", label: "Indexes", count: structure?.indexes.length },
+    { id: "triggers", label: "Triggers", count: structure?.triggers.length },
   ];
+  // The catalog list is richer (default, comment), but the browse model already has the
+  // names and types — so Columns renders at once and fills in, and still works for an
+  // engine whose `describe_table` says NotImplemented.
+  const columns: ColumnDetail[] =
+    structure?.columns ??
+    object.columns.map((c) => ({
+      name: c.name,
+      data_type: c.data_type,
+      nullable: c.nullable,
+      default: null,
+      is_pk: c.pk ?? false,
+      comment: null,
+    }));
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex shrink-0 items-center gap-1 border-b border-border px-3 py-1.5">
@@ -802,76 +1038,158 @@ function StructureView({ object, fks }: { object: ObjectInfo; fks: ForeignKey[] 
             }`}
           >
             {t.label}
+            {t.count !== undefined && (
+              <span className="ml-1 tabular-nums opacity-60">{t.count}</span>
+            )}
           </button>
         ))}
       </div>
       <div className="min-h-0 flex-1 overflow-auto p-4">
-        {tab === "columns" ? (
-          <div className="overflow-hidden rounded-md border border-border bg-bg">
-            <table className="w-full text-xs">
-              <thead className="border-b border-border bg-surface text-left text-[11px] text-muted">
-                <tr>
-                  <th className="px-3 py-1.5 font-medium">Name</th>
-                  <th className="px-3 py-1.5 font-medium">Type</th>
-                  <th className="px-3 py-1.5 font-medium">Nullable</th>
-                  <th className="px-3 py-1.5 font-medium">References</th>
+        {tab === "columns" && (
+          <StructTable head={["Name", "Type", "Nullable", "Default", "References", "Comment"]}>
+            {columns.map((c) => {
+              const fk = fks.find((f) => f.from_column === c.name);
+              return (
+                <tr key={c.name}>
+                  <td className="whitespace-nowrap px-3 py-1.5 font-mono text-text">
+                    {c.name}
+                    {c.is_pk && (
+                      <span className="ml-1.5 align-middle">
+                        <Chip tone="muted" title="Primary key">
+                          PK
+                        </Chip>
+                      </span>
+                    )}
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-1.5 text-muted">{c.data_type}</td>
+                  <td className="px-3 py-1.5 text-muted">{c.nullable ? "yes" : "no"}</td>
+                  <td className="px-3 py-1.5 font-mono text-[11px] text-muted">
+                    <Ellipsis text={c.default} />
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-1.5 font-mono text-[11px] text-primary">
+                    {fk ? `${fk.to_table}.${fk.to_column}` : ""}
+                  </td>
+                  <td className="px-3 py-1.5 text-muted">
+                    <Ellipsis text={c.comment} />
+                  </td>
                 </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {object.columns.map((c) => {
-                  const fk = fks.find((f) => f.from_column === c.name);
-                  return (
-                    <tr key={c.name}>
-                      <td className="px-3 py-1.5 font-mono text-text">{c.name}</td>
-                      <td className="px-3 py-1.5 text-muted">{c.data_type}</td>
-                      <td className="px-3 py-1.5 text-muted">{c.nullable ? "yes" : "no"}</td>
-                      <td className="px-3 py-1.5 font-mono text-[11px] text-primary">
-                        {fk ? `${fk.to_table}.${fk.to_column}` : ""}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="rounded-md border border-dashed border-border p-6 text-center text-[12px] text-muted">
-            {tab === "indexes" ? "Index" : "Trigger"} introspection is coming soon.
-          </div>
+              );
+            })}
+          </StructTable>
         )}
+
+        {tab === "indexes" &&
+          (note ? (
+            <StructNote>{note}</StructNote>
+          ) : !structure ? (
+            <StructNote>Loading…</StructNote>
+          ) : structure.indexes.length === 0 ? (
+            <StructNote>No indexes on this {object.kind.toLowerCase()}.</StructNote>
+          ) : (
+            <StructTable head={["Name", "Columns", "Type", "Definition"]}>
+              {structure.indexes.map((i) => (
+                <tr key={i.name}>
+                  <td className="whitespace-nowrap px-3 py-1.5 font-mono text-text">{i.name}</td>
+                  <td className="px-3 py-1.5 font-mono text-[11px] text-muted">
+                    {i.columns.join(", ")}
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-1.5 text-muted">
+                    {i.primary ? "PRIMARY" : i.unique ? "UNIQUE" : "INDEX"}
+                  </td>
+                  <td className="px-3 py-1.5 font-mono text-[11px] text-muted">
+                    <Ellipsis text={i.definition} />
+                  </td>
+                </tr>
+              ))}
+            </StructTable>
+          ))}
+
+        {tab === "triggers" &&
+          (note ? (
+            <StructNote>{note}</StructNote>
+          ) : !structure ? (
+            <StructNote>Loading…</StructNote>
+          ) : structure.triggers.length === 0 ? (
+            <StructNote>No triggers on this {object.kind.toLowerCase()}.</StructNote>
+          ) : (
+            <StructTable head={["Name", "When", "Definition"]}>
+              {structure.triggers.map((t) => (
+                <tr key={t.name}>
+                  <td className="whitespace-nowrap px-3 py-1.5 font-mono text-text">{t.name}</td>
+                  <td className="whitespace-nowrap px-3 py-1.5 text-muted">{t.timing_event}</td>
+                  <td className="px-3 py-1.5 font-mono text-[11px] text-muted">
+                    <Ellipsis text={t.definition} />
+                  </td>
+                </tr>
+              ))}
+            </StructTable>
+          ))}
       </div>
     </div>
   );
 }
 
-/** TablePlus-style row pager — "1-300 of 721 rows" with chevron buttons. */
+/** The Structure tab's one table chrome — dense rows, quiet header (DESIGN.md). */
+function StructTable({ head, children }: { head: string[]; children: ReactNode }) {
+  return (
+    <div className="overflow-hidden rounded-md border border-border bg-bg">
+      <table className="w-full text-xs">
+        <thead className="border-b border-border bg-surface text-left text-[11px] text-muted">
+          <tr>
+            {head.map((h) => (
+              <th key={h} className="px-3 py-1.5 font-medium">
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-border">{children}</tbody>
+      </table>
+    </div>
+  );
+}
+
+/** Loading / empty / "this engine can't answer" — never a blank panel. */
+function StructNote({ children }: { children: ReactNode }) {
+  return (
+    <div className="rounded-md border border-dashed border-border p-6 text-center text-[12px] text-muted">
+      {children}
+    </div>
+  );
+}
+
+/** A one-line cell: an em-dash for nothing, the full text on hover for something long. */
+function Ellipsis({ text }: { text: string | null }) {
+  if (!text) return <span className="text-muted-2">—</span>;
+  return (
+    <span className="block max-w-[38ch] truncate" title={text}>
+      {text}
+    </span>
+  );
+}
+
+/** TablePlus-style row pager — `‹ 1–300 of 1,234 ›`. The label is built by the
+ *  tested {@link pagerLabel}; this only draws it. */
 function RowPager({
-  total,
-  start,
+  label,
+  hasPrev,
+  hasNext,
   onPrev,
   onNext,
 }: {
-  total: number;
-  start: number;
+  label: string;
+  hasPrev: boolean;
+  hasNext: boolean;
   onPrev: () => void;
   onNext: () => void;
 }) {
-  if (total === 0) return null;
-  const PAGE = 300;
-  const from = start + 1;
-  const to = Math.min(total, start + PAGE);
   return (
     <span className="inline-flex items-center gap-1 text-[11px] text-muted">
-      <StatusBarButton onClick={onPrev} disabled={start <= 0} title="Previous page">
+      <StatusBarButton onClick={onPrev} disabled={!hasPrev} title="Previous page">
         <IconChevronLeft size={10} />
       </StatusBarButton>
-      <span className="tabular-nums">
-        <span className="text-text">
-          {from.toLocaleString()}-{to.toLocaleString()}
-        </span>{" "}
-        of {total.toLocaleString()} rows
-      </span>
-      <StatusBarButton onClick={onNext} disabled={to >= total} title="Next page">
+      <span className="tabular-nums text-text">{label}</span>
+      <StatusBarButton onClick={onNext} disabled={!hasNext} title="Next page">
         <IconChevronRight size={10} />
       </StatusBarButton>
     </span>

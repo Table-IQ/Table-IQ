@@ -16,12 +16,25 @@ describe("decodeWindow", () => {
     expect(w.getCell(2, "id")).toBe("12");
   });
 
-  it("renders null cells as empty string", () => {
-    const buf = ipcOf({ name: vectorFromArray(["a", null, "c"], new Utf8()) });
+  it("keeps null cells as null, distinct from an empty string", () => {
+    const buf = ipcOf({ name: vectorFromArray(["a", null, ""], new Utf8()) });
     const w = decodeWindow(buf);
     expect(w.getCell(0, "name")).toBe("a");
-    expect(w.getCell(1, "name")).toBe("");
-    expect(w.getCell(2, "name")).toBe("c");
+    expect(w.getCell(1, "name")).toBeNull();
+    expect(w.getCell(2, "name")).toBe("");
+  });
+
+  it("decodes multiple columns via a precomputed name→child map", () => {
+    const buf = ipcOf({
+      id: vectorFromArray([1n, 2n], new Int64()),
+      name: vectorFromArray(["a", "b"], new Utf8()),
+    });
+    const w = decodeWindow(buf);
+    expect(w.columns).toEqual(["id", "name"]);
+    expect(w.getCell(0, "id")).toBe("1");
+    expect(w.getCell(1, "name")).toBe("b");
+    // Unknown column name — no matching child.
+    expect(w.getCell(0, "nope")).toBeNull();
   });
 });
 

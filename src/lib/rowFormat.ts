@@ -1,8 +1,14 @@
+import type { Engine } from "./commands";
+import { quoteIdent, quoteLiteral } from "./tableScript";
+
 export type RowFormat = "plain" | "json" | "html" | "md" | "csv" | "csv-header" | "insert";
 
 export interface RowFormatOpts {
   /** Qualified table name for the INSERT statement (e.g. `public.users`). */
   table?: string;
+  /** Target engine for identifier/literal quoting. Unknown → the SQL-standard
+   *  `"…"` identifier form and quote-only literal escaping (current behaviour). */
+  engine?: Engine;
 }
 
 /**
@@ -45,8 +51,13 @@ export function buildRowAs(
 
     case "insert": {
       const table = opts.table ?? "table";
-      const cols = columns.map((c) => `"${c.replace(/"/g, '""')}"`).join(", ");
-      const vals = row.map((v) => (v == null ? "NULL" : `'${v.replace(/'/g, "''")}'`)).join(", ");
+      // Engine-aware quoting (mirrors buildDeleteStatement): `"…"` identifiers
+      // read as string literals on MySQL, and MySQL literals also need `\`
+      // escaped or a stored backslash-quote can close the literal early.
+      const cols = columns.map((c) => quoteIdent(c, opts.engine)).join(", ");
+      const vals = row
+        .map((v) => (v == null ? "NULL" : quoteLiteral(v, opts.engine)))
+        .join(", ");
       return `INSERT INTO ${table} (${cols}) VALUES (${vals});`;
     }
 
