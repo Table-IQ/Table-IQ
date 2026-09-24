@@ -452,8 +452,9 @@ export function TableView({ connId, schema, object, view }: Props) {
       if (!pk || pk.length === 0) return false;
       setNotice(null);
       setDirty((d) => d + 1);
-      const edit = buildEdit(pk, getOriginal, col, newValue);
       try {
+        // Inside the try: a throw here would otherwise leave "1 saving…" forever.
+        const edit = buildEdit(pk, getOriginal, col, newValue);
         const { rowsAffected } = await applyEdit(connId, schema, object.name, edit);
         setDirty((d) => Math.max(0, d - 1));
         // Only rows_affected === 1 is a clean write. 0 and >1 are both the user's

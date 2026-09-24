@@ -767,7 +767,14 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
         // the staged overlay must never reach it, or an edit to a PK column would
         // re-point the remaining edits at whichever row already holds the new key.
         const getOriginal = originalRowGetter(e, (c) => cacheRef.current.getCell(e.row, c));
-        const keep = await onEdit(e.row, e.col, e.newValue, getOriginal);
+        // A throw is a failed write: without the catch the cell would pulse
+        // "saving" forever and the rest of the batch would silently stop.
+        let keep: boolean;
+        try {
+          keep = await onEdit(e.row, e.col, e.newValue, getOriginal);
+        } catch {
+          keep = false;
+        }
         // The await above is the window: re-check before writing anything down, so a
         // reset that landed while the round trip was in flight cannot have its freshly
         // cleared `pending` repopulated or an unrelated cell tinted.
