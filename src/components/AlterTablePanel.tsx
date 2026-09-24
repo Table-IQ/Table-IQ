@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   generateDdl,
   listObjects,
@@ -45,6 +45,10 @@ export function AlterTablePanel({
   });
   // Apply shows its own pending state (spinner, disabled) while the DDL runs.
   const applying = status.kind === "busy" && status.msg === "Applying…";
+
+  // A preview answers for the drafts it was built from: any change to them, or a
+  // successful Apply, retires it so Apply can never run stale or twice.
+  useEffect(() => setSql(null), [edits, drops, add]);
 
   const addValid = !!add && !!add.name.trim() && !!add.data_type.trim();
   const edited = (c: ColumnInfo) => {
@@ -116,6 +120,7 @@ export function AlterTablePanel({
       await runScript(connId, sql);
       const refreshed = await listObjects(connId).catch(() => null);
       if (refreshed) setSchema(refreshed);
+      setSql(null);
       setStatus({ kind: "ok", msg: "Applied" });
     } catch (e) {
       setStatus({ kind: "err", msg: String(e) });
