@@ -57,6 +57,7 @@ import {
   FILTER_OP_LABEL,
   isNullOp,
   isSuperseded,
+  retrySuperseded,
   MANUAL_FILTER_OPS,
   removeFilter,
   searchTerm,
@@ -356,16 +357,20 @@ export function TableView({ connId, schema, object, view }: Props) {
     if (cursors.current.key !== pageKey) cursors.current = { key: pageKey, map: new Map() };
     const after = cursors.current.map.get(page);
     setFetching(true);
-    fetchTableWindow(
-      connId,
-      schema,
-      object.name,
-      page * pageSize,
-      pageSize + 1,
-      filters,
-      order,
-      after,
-      requestKey,
+    retrySuperseded(
+      () =>
+        fetchTableWindow(
+          connId,
+          schema,
+          object.name,
+          page * pageSize,
+          pageSize + 1,
+          filters,
+          order,
+          after,
+          requestKey,
+        ),
+      () => cancelled,
     )
       .then(({ bytes }) => {
         if (cancelled) return;
@@ -386,8 +391,9 @@ export function TableView({ connId, schema, object, view }: Props) {
         }));
       })
       .catch((e) => {
-        // A newer fetch for this tab replaced this one; that one reports.
-        if (!cancelled && !isSuperseded(String(e))) setError(String(e));
+        // A newer fetch for this tab replaced this one; that one reports. Still
+        // current here means a stale fetch kept superseding it: say so.
+        if (!cancelled) setError(String(e));
       })
       .finally(() => {
         if (!cancelled) setFetching(false);

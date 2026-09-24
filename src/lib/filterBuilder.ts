@@ -65,6 +65,23 @@ export function isSuperseded(msg: string): boolean {
   return /query cancelled/i.test(msg);
 }
 
+/** Run `fetch`; if it was superseded while the caller still wants it (`moved()` is
+ *  false), run it again. The backend supersedes a tab's fetch by arrival order, so a
+ *  stale fetch that lands after the current one cancels the current one. */
+export async function retrySuperseded<T>(
+  fetch: () => Promise<T>,
+  moved: () => boolean,
+  attempts = 3,
+): Promise<T> {
+  for (let i = 1; ; i++) {
+    try {
+      return await fetch();
+    } catch (e) {
+      if (i >= attempts || moved() || !isSuperseded(String(e))) throw e;
+    }
+  }
+}
+
 /** What to tell the user when a table page failed to load. The backend bounds
  *  filtered fetches, so a timeout means "narrow it", not "broken". */
 export function fetchErrorMessage(msg: string, filters: ColumnFilter[]): string {
