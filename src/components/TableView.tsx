@@ -112,6 +112,10 @@ export function TableView({ connId, schema, object, view }: Props) {
     values: Record<string, string | null> | null;
   } | null>(null);
   const [pendingCount, setPendingCount] = useState(0);
+  // True while the grid is walking its staged edits, one round trip each. Sorting or
+  // paging mid-commit would change what the remaining edits' row indices mean, so both
+  // are locked for the duration (the grid also stops itself — see its generation guard).
+  const [committing, setCommitting] = useState(false);
   const gridRef = useRef<DataGridHandle>(null);
   const openTab = useTabs((s) => s.openTable);
   const engine = useConnections((s) => s.active?.engine ?? "postgres") as Engine;
@@ -651,9 +655,11 @@ export function TableView({ connId, schema, object, view }: Props) {
             rightAlignColumns={rightAlignColumns}
             onSave={refresh}
             onPendingCountChange={setPendingCount}
+            onCommittingChange={setCommitting}
             onFetchError={setError}
             sort={sort}
             onSort={(column) => {
+              if (committing) return; // a re-sort mid-commit would re-point the staged rows
               setSort((cur) => cycleSort(cur, column));
               setPage(0);
             }}
@@ -696,8 +702,8 @@ export function TableView({ connId, schema, object, view }: Props) {
           ) : (
             <RowPager
               label={pagerLabel(page * PAGE_SIZE, rowsOnPage, total?.count ?? null, total?.exact ?? false)}
-              hasPrev={page > 0}
-              hasNext={hasNext}
+              hasPrev={page > 0 && !committing}
+              hasNext={hasNext && !committing}
               onPrev={() => {
                 setPage((p) => Math.max(0, p - 1));
                 gridRef.current?.scrollToRow(0);

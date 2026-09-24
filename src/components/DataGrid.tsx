@@ -111,6 +111,10 @@ interface Props {
   onSave?: () => void;
   /** Fires whenever the count of staged (uncommitted) edits changes. */
   onPendingCountChange?: (count: number) => void;
+  /** True while {@link DataGridHandle.commitPending} is walking its staged edits.
+   *  The parent MUST use it to lock anything that would change what a row index
+   *  means (sort, paging, refresh) — see the generation guard in `commitPending`. */
+  onCommittingChange?: (busy: boolean) => void;
   /** A page fetch failed. The page is remembered as failed and never
    *  re-requested on repaint, so one broken window can't flood the database. */
   onFetchError?: (msg: string) => void;
@@ -140,6 +144,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     rightAlignColumns,
     onSave,
     onPendingCountChange,
+    onCommittingChange,
     onFetchError,
     sort,
     onSort,
@@ -500,32 +505,49 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     if (!onEdit) return;
     const edits = listPending(pending.current);
     if (edits.length === 0) return;
-    for (const e of edits) {
-      const key = pendingKey(e.row, e.col);
-      editState.current.set(key, "saving");
-      setVersion((v) => v + 1);
-      const getOriginal = (c: string) =>
-        c === e.col
-          ? e.before
-          : (overlay.current.get(`${e.row}:${c}`) ?? cacheRef.current.getCell(e.row, c) ?? null);
-      const keep = await onEdit(e.row, e.col, e.newValue, getOriginal);
-      if (keep) {
-        editState.current.set(key, "saved");
-        pending.current = removePending(pending.current, e.row, e.col);
-        notifyPending();
-        clearTintLater(key, 1100);
+    // Each edit costs a round trip, and `e.row` is an index into the CURRENT window —
+    // so a sort, page or refresh landing mid-loop would silently re-point the remaining
+    // edits at different rows. The reset effects swap `cacheRef.current` and clear
+    // `pending`/`overlay` under us; an UPDATE whose row happens to share the original
+    // value (enums, flags, booleans, NULL) then succeeds against the WRONG row. Pin the
+    // generation and stop the moment it moves, exactly as `ensurePage` already does.
+    const gen = generation.current;
+    onCommittingChange?.(true);
+    try {
+      for (const e of edits) {
+        if (gen !== generation.current) break; // source changed mid-commit
+        const key = pendingKey(e.row, e.col);
+        editState.current.set(key, "saving");
         setVersion((v) => v + 1);
-      } else {
-        editState.current.set(key, "error");
-        setVersion((v) => v + 1);
-        break; // partial-failure: stop, keep remaining staged
+        const getOriginal = (c: string) =>
+          c === e.col
+            ? e.before
+            : (overlay.current.get(`${e.row}:${c}`) ?? cacheRef.current.getCell(e.row, c) ?? null);
+        const keep = await onEdit(e.row, e.col, e.newValue, getOriginal);
+        // The await above is the window: re-check before writing anything down, so a
+        // reset that landed while the round trip was in flight cannot have its freshly
+        // cleared `pending` repopulated or an unrelated cell tinted.
+        if (gen !== generation.current) break;
+        if (keep) {
+          editState.current.set(key, "saved");
+          pending.current = removePending(pending.current, e.row, e.col);
+          notifyPending();
+          clearTintLater(key, 1100);
+          setVersion((v) => v + 1);
+        } else {
+          editState.current.set(key, "error");
+          setVersion((v) => v + 1);
+          break; // partial-failure: stop, keep remaining staged
+        }
       }
+    } finally {
+      onCommittingChange?.(false);
     }
-    if (pending.current.size === 0) {
+    if (gen === generation.current && pending.current.size === 0) {
       undoStack.current = [];
       onSave?.();
     }
-  }, [onEdit, notifyPending, clearTintLater, onSave]);
+  }, [onEdit, notifyPending, clearTintLater, onSave, onCommittingChange]);
 
   /** Drop every staged edit and revert the display to each cell's saved value. */
   const discardPending = useCallback(() => {
