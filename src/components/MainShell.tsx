@@ -287,6 +287,7 @@ export function MainShell() {
   }, [schema, openTable, openQuery, openErd]);
 
   if (!active || !schema) return null;
+  const fileEngine = isFileEngine(active.engine as Engine);
 
   const activeTab = tabs.find((t) => t.key === activeKey) ?? null;
   const activeObj =
@@ -550,17 +551,24 @@ export function MainShell() {
       {sep("|")}
       <span className="uppercase tracking-wide">{active.engine}</span>
       {sep(":")}
-      <button
-        onClick={() => void openDbPicker()}
-        title="Switch database · ⌘D"
-        className="inline-flex h-[18px] items-center rounded-full px-1 text-text transition-colors hover:bg-surface-2"
-        data-testid="breadcrumb-db"
-      >
-        {active.database || "(none)"}
-        <span aria-hidden className="ml-1 text-muted-2">
-          ▾
+      {fileEngine ? (
+        // A file engine has one database — the file — so there is nothing to switch to.
+        <span className="truncate px-1 text-text" data-testid="breadcrumb-db">
+          {active.database || "(none)"}
         </span>
-      </button>
+      ) : (
+        <button
+          onClick={() => void openDbPicker()}
+          title="Switch database · ⌘D"
+          className="inline-flex h-[18px] items-center rounded-full px-1 text-text transition-colors hover:bg-surface-2"
+          data-testid="breadcrumb-db"
+        >
+          {active.database || "(none)"}
+          <span aria-hidden className="ml-1 text-muted-2">
+            ▾
+          </span>
+        </button>
+      )}
       {activeTab?.kind === "table" && activeTab.schema && activeTab.table && (
         <>
           {sep(":")}
@@ -603,12 +611,14 @@ export function MainShell() {
             label="Refresh schema"
             onClick={() => void onRefreshSchema()}
           />
-          <IconButton
-            icon={<IconDatabase size={16} />}
-            label="Switch database"
-            shortcut="⌘D"
-            onClick={() => void openDbPicker()}
-          />
+          {!fileEngine && (
+            <IconButton
+              icon={<IconDatabase size={16} />}
+              label="Switch database"
+              shortcut="⌘D"
+              onClick={() => void openDbPicker()}
+            />
+          )}
           <IconButton
             icon={<IconCommand size={16} />}
             label="Command palette"
