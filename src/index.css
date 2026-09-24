@@ -248,6 +248,15 @@ body {
   .tiq-flash {
     animation: tiq-flash 2s linear both;
   }
+  /* Content being replaced (a table page, query results in flight). `.is-busy`
+     dims it only after --delay-busy and it stays interactive; it un-dims at once. */
+  .tiq-dimmable {
+    transition: opacity var(--dur-fast) var(--ease-out);
+  }
+  .tiq-dimmable.is-busy {
+    opacity: 0.6;
+    transition-delay: var(--delay-busy);
+  }
   /* Panel open / close. The closing class stays on until the parent unmounts. */
   .tiq-pop-in {
     animation: tiq-fade-in var(--dur) var(--ease-out);
