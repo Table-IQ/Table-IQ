@@ -81,14 +81,19 @@ fn verdict(host: &str, port: u16, key: &key::PublicKey, files: &[PathBuf]) -> Ve
                 ))
             }
         }
-        match russh::keys::check_known_hosts_path(host, port, key, file) {
-            Ok(true) => return Verdict::Known,
-            Ok(false) => continue, // not recorded in this file — ask the next one
-            Err(russh::keys::Error::KeyChanged { line }) => {
-                return Verdict::Changed(changed_message(host, port, key, file, line))
-            }
-            // The host IS recorded here but we cannot read the entry (an unsupported key
-            // type). Learning past it would silently bypass the user's own pinning.
+        // Compare key MATERIAL, never the algorithm name. `check_known_hosts_path` reports
+        // `KeyChanged` only when the offered key's name matches a recorded entry's
+        // (russh-keys 0.45 `lib.rs:488`: `(false, _) => Ok(false)`), so an attacker who
+        // offered a different algorithm for a pinned host read as "not recorded here" and
+        // was trusted on first use. Reading the entries ourselves also fixes the mirror
+        // bug: a recorded RSA entry always parses back as `rsa-sha2-256`, so an RSA bastion
+        // that negotiated another hash never matched its own pin and was re-learned on
+        // every connect. `PublicKey`'s `PartialEq` compares the RSA modulus and ignores the
+        // hash tag, which is exactly the identity we want.
+        let recorded = match russh::keys::known_host_keys_path(host, port, file) {
+            Ok(entries) => entries,
+            // The host may well be recorded here but we cannot read the entry (an
+            // unsupported key type). Learning past it would silently bypass the pinning.
             Err(e) => {
                 return Verdict::Changed(format!(
                     "Refusing to connect: TableIQ cannot read the recorded SSH host key for \
@@ -96,7 +101,15 @@ fn verdict(host: &str, port: u16, key: &key::PublicKey, files: &[PathBuf]) -> Ve
                     file.display()
                 ))
             }
+        };
+        if recorded.is_empty() {
+            continue; // not recorded in this file — ask the next one
         }
+        if recorded.iter().any(|(_, known)| known == key) {
+            return Verdict::Known;
+        }
+        // The host IS pinned here and none of its keys match what was offered.
+        return Verdict::Changed(changed_message(host, port, key, file, &recorded));
     }
     Verdict::Learn
 }
@@ -107,12 +120,12 @@ fn changed_message(
     port: u16,
     offered: &key::PublicKey,
     file: &std::path::Path,
-    line: usize,
+    entries: &[(usize, key::PublicKey)],
 ) -> String {
-    let recorded = russh::keys::known_host_keys_path(host, port, file)
-        .ok()
-        .and_then(|keys| keys.into_iter().find(|(l, _)| *l == line).map(|(_, k)| k.fingerprint()))
-        .unwrap_or_else(|| "unavailable".to_string());
+    let (line, recorded) = entries
+        .first()
+        .map(|(l, k)| (*l, k.fingerprint()))
+        .unwrap_or((0, "unavailable".to_string()));
     format!(
         "SSH host key for {host}:{port} has CHANGED — refusing to connect. Someone may be \
          intercepting this connection.\n  expected SHA256:{recorded}\n  received SHA256:{}\n\
@@ -488,6 +501,59 @@ mod tests {
         russh::keys::learn_known_hosts_path("h", 22, &k, &app).unwrap();
         assert!(!user.exists(), "the user's known_hosts must not be created");
         assert!(app.exists());
+    }
+
+    /// An RSA host key, whose recorded form parses back with a DIFFERENT algorithm name
+    /// than the one the session negotiates (`ssh-rsa` vs `rsa-sha2-256`/`512`).
+    fn rsa_pubkey(hash: russh::keys::key::SignatureHash) -> key::PublicKey {
+        russh::keys::key::KeyPair::generate_rsa(2048, hash)
+            .expect("generate rsa")
+            .clone_public_key()
+            .expect("public half")
+    }
+
+    /// THE BYPASS: `check_known_hosts_path` only reports `KeyChanged` when the offered key's
+    /// ALGORITHM NAME matches a recorded entry; a different algorithm returns `Ok(false)` =
+    /// "not recorded here". A pinned host that suddenly offers an RSA key instead of its
+    /// ed25519 one therefore fell through to `Learn` and the attacker's key was trusted.
+    #[test]
+    fn a_pinned_host_offering_a_different_algorithm_is_changed_not_learned() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("known_hosts");
+        let files = vec![dir.path().join("user_known_hosts"), app.clone()];
+        let recorded = pubkey(); // ed25519, pinned
+        russh::keys::learn_known_hosts_path("bastion.example.com", 22, &recorded, &app).unwrap();
+
+        // The man in the middle offers RSA instead — a different algorithm name.
+        let impostor = rsa_pubkey(russh::keys::key::SignatureHash::SHA2_256);
+        match verdict("bastion.example.com", 22, &impostor, &files) {
+            Verdict::Changed(msg) => {
+                assert!(msg.contains("bastion.example.com"), "no host in: {msg}");
+                assert!(msg.contains(&impostor.fingerprint()), "no received fingerprint in: {msg}");
+            }
+            v => panic!("a pinned host must never be re-learned for a new algorithm, got {v:?}"),
+        }
+    }
+
+    /// The same bug's other half: an RSA bastion never matched its OWN pin, because the
+    /// recorded entry parses as one hash name while the offered key carries the negotiated
+    /// one. It was re-learned on every single connect, growing known_hosts without bound.
+    #[test]
+    fn an_rsa_host_matches_its_own_pin_on_the_second_connect() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("known_hosts");
+        let files = vec![dir.path().join("user_known_hosts"), app.clone()];
+        // A recorded entry always parses back as `rsa-sha2-256` (russh-keys `parse_public_key`
+        // hardcodes that default), so a session that negotiated `rsa-sha2-512` never matched.
+        let k = rsa_pubkey(russh::keys::key::SignatureHash::SHA2_512);
+
+        assert_eq!(verdict("rsa.example.com", 22, &k, &files), Verdict::Learn);
+        russh::keys::learn_known_hosts_path("rsa.example.com", 22, &k, &app).unwrap();
+        assert_eq!(
+            verdict("rsa.example.com", 22, &k, &files),
+            Verdict::Known,
+            "the same RSA key must be recognised, not re-learned every connect"
+        );
     }
 
     #[test]
