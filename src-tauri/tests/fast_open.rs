@@ -172,6 +172,18 @@ async fn assert_exact_count_cancels<D: SqlDriver + 'static>(drv: Arc<D>, schema:
     let res = h.await.unwrap();
     assert!(matches!(res, Err(DriverError::Cancelled)), "expected Cancelled, got {res:?}");
     assert!(start.elapsed() < Duration::from_secs(10));
+
+    // Stop pressed before the count reached the server: no backend to target yet, so the
+    // count itself must notice.
+    let early = CancelToken::new();
+    early.mark_cancelled();
+    drv.cancel(&early).await.expect("cancel with no backend yet");
+    let start = std::time::Instant::now();
+    let res = tokio::time::timeout(Duration::from_secs(5), drv.count_rows(schema, table, &[], Some(&early)))
+        .await
+        .expect("the early-cancelled count ran anyway");
+    assert!(matches!(res, Err(DriverError::Cancelled)), "expected Cancelled, got {res:?}");
+    assert!(start.elapsed() < Duration::from_secs(2));
 }
 
 #[tokio::test]

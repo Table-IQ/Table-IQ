@@ -619,12 +619,8 @@ impl SqlDriver for PgDriver {
         if let Some(token) = force_exact {
             // Unbounded, so pinned to one connection whose PID `cancel` can target.
             let mut conn = self.pool.acquire().await.map_err(db)?;
-            let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
-                .fetch_one(&mut *conn)
-                .await
-                .map_err(db)?;
-            token.set_backend_id(pid as i64);
-            return match qy.fetch_one(&mut *conn).await {
+            Self::pin(&mut conn, token, None).await?;
+            return match super::recheck_cancel(self, token, qy.fetch_one(&mut *conn)).await {
                 Ok(n) => Ok(RowCount { count: Some(n), exact: true }),
                 Err(e) if is_cancel(&e) => Err(DriverError::Cancelled),
                 Err(e) => Err(db(e)),

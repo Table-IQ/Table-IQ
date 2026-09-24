@@ -195,6 +195,18 @@ impl MySqlDriver {
         self
     }
 
+    /// Record this connection's id in `token`, so `cancel` can KILL QUERY it. A token
+    /// already cancelled stops the statement here.
+    async fn pin(conn: &mut sqlx::MySqlConnection, token: &CancelToken) -> DResult<()> {
+        let cid: u64 =
+            sqlx::query_scalar("SELECT CONNECTION_ID()").fetch_one(&mut *conn).await.map_err(db)?;
+        token.set_backend_id(cid as i64);
+        if token.is_cancelled() {
+            return Err(DriverError::Cancelled);
+        }
+        Ok(())
+    }
+
     /// Cached [`MyMeta`] for the browse path. A missing relation is an error and is not
     /// cached.
     async fn browse_meta(&self, schema: &str, table: &str) -> DResult<Arc<MyMeta>> {
@@ -285,14 +297,7 @@ impl MySqlDriver {
             // Pinned, so `cancel` can KILL QUERY this connection's id.
             Some(t) => {
                 let mut conn = self.pool.acquire().await.map_err(db)?;
-                let cid: u64 = sqlx::query_scalar("SELECT CONNECTION_ID()")
-                    .fetch_one(&mut *conn)
-                    .await
-                    .map_err(db)?;
-                t.set_backend_id(cid as i64);
-                if t.is_cancelled() {
-                    return Err(DriverError::Cancelled);
-                }
+                Self::pin(&mut conn, t).await?;
                 // The timeout first: MySQL words it as an "interrupted" query too.
                 super::recheck_cancel(self, t, qy.fetch_all(&mut *conn)).await.map_err(|e| match e {
                     e if is_exec_timeout(&e) => {
@@ -477,12 +482,8 @@ impl SqlDriver for MySqlDriver {
         if let Some(token) = force_exact {
             // Unbounded, so pinned to one connection whose id `cancel` can KILL QUERY.
             let mut conn = self.pool.acquire().await.map_err(db)?;
-            let cid: u64 = sqlx::query_scalar("SELECT CONNECTION_ID()")
-                .fetch_one(&mut *conn)
-                .await
-                .map_err(db)?;
-            token.set_backend_id(cid as i64);
-            return match qy.fetch_one(&mut *conn).await {
+            Self::pin(&mut conn, token).await?;
+            return match super::recheck_cancel(self, token, qy.fetch_one(&mut *conn)).await {
                 Ok(n) => Ok(RowCount { count: Some(n), exact: true }),
                 Err(e) if is_cancel(&e) => Err(DriverError::Cancelled),
                 Err(e) => Err(db(e)),
