@@ -1,5 +1,6 @@
 //! BYOK provider calls (Anthropic / OpenAI / Gemini) via minimal HTTP. One trait, three impls.
-//! Not unit-tested (needs a live key); the deterministic scaffolding lives in `ai/mod.rs`.
+//! The calls themselves need a live key, so only the pure bits are unit-tested here; the
+//! deterministic scaffolding lives in `ai/mod.rs`.
 
 use serde_json::json;
 
@@ -80,12 +81,13 @@ impl LlmProvider for ByokProvider {
                 Ok(v["choices"][0]["message"]["content"].as_str().unwrap_or("").to_string())
             }
             "gemini" => {
-                let url = format!(
-                    "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-                    self.model, self.api_key
-                );
                 let resp = client
-                    .post(url)
+                    .post(gemini_url(&self.model))
+                    // NOT `?key=…`: reqwest's error Display appends " for url (…)", and every
+                    // call here ends in `.map_err(|e| e.to_string())`, so one transport failure
+                    // put the API key into the string the UI renders and the frontend's global
+                    // handler writes verbatim into the app log.
+                    .header("x-goog-api-key", &self.api_key)
                     .json(&json!({
                         "systemInstruction": {"parts": [{"text": system}]},
                         "contents": [{"parts": [{"text": user}]}]
@@ -115,5 +117,28 @@ impl LlmProvider for ByokProvider {
                 Ok(v["content"][0]["text"].as_str().unwrap_or("").to_string())
             }
         }
+    }
+}
+
+/// The Gemini `generateContent` endpoint. The API key goes in the `x-goog-api-key` header,
+/// never in the URL — see the call site.
+fn gemini_url(model: &str) -> String {
+    format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `reqwest::Error`'s Display appends " for url (…)" and every provider arm ends in
+    /// `.map_err(|e| e.to_string())`, so anything in the URL reaches the UI — and the
+    /// frontend's global error handler writes that string verbatim into the app log.
+    /// A DNS blip or a dropped connection used to be enough to log the user's Gemini key.
+    #[test]
+    fn the_gemini_url_carries_no_api_key() {
+        let url = gemini_url("gemini-2.5-flash");
+        assert!(!url.contains('?'), "the endpoint takes no query string: {url}");
+        assert!(!url.contains("key"), "a credential must not be in the URL: {url}");
+        assert!(url.ends_with("/models/gemini-2.5-flash:generateContent"), "{url}");
     }
 }
