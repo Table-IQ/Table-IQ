@@ -464,12 +464,16 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     rafId.current = requestAnimationFrame(tick);
   }, [tick]);
 
-  useEffect(
-    () => () => {
+  // Unmount: stop the tint loop and every pending saved-tint timer, so neither
+  // touches a grid that is gone.
+  useEffect(() => {
+    const timers = editTimers.current;
+    return () => {
       if (rafId.current !== null) cancelAnimationFrame(rafId.current);
-    },
-    [],
-  );
+      timers.forEach((id) => window.clearTimeout(id));
+      timers.clear();
+    };
+  }, []);
 
   const ensurePage = useCallback(
     (page: number) => {
@@ -850,12 +854,6 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [editable, undoLastEdit, commitPending]);
-
-  // Cancel any pending save-state timers when the grid unmounts.
-  useEffect(() => {
-    const timers = editTimers.current;
-    return () => timers.forEach((id) => window.clearTimeout(id));
-  }, []);
 
   useImperativeHandle(ref, () => ({
     scrollToRow: (row: number) => gridRef.current?.scrollTo(0, row, "vertical"),
