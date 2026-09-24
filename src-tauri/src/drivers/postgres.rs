@@ -163,7 +163,8 @@ struct PgMeta {
     udts: Vec<(String, String)>,
     pk: Vec<String>,
     /// `ctid` identifies a row of this relation: a plain table or matview with no
-    /// inheritance children (a parent's scan spans relations whose ctids collide).
+    /// inheritance children (a parent's scan spans relations whose ctids collide), on
+    /// Postgres 14+ — before it there is no TID Range Scan, so a ctid seek scans the table.
     ctid_ok: bool,
 }
 
@@ -271,6 +272,13 @@ impl PgDriver {
         Ok(())
     }
 
+    /// Make this transaction's ctid page a TID Range Scan: it walks the heap in ctid order
+    /// from the cursor (or block 0), where a Seq Scan may start mid-table (see `window`).
+    async fn tid_scan(conn: &mut sqlx::PgConnection) -> DResult<()> {
+        sqlx::query("SET LOCAL enable_seqscan = off").execute(conn).await.map_err(db)?;
+        Ok(())
+    }
+
     /// [`PgMeta`] for one relation, from the cache after the first page. A missing
     /// relation is an error and is not cached, so creating it later just works.
     async fn browse_meta(&self, schema: &str, table: &str) -> DResult<std::sync::Arc<PgMeta>> {
@@ -283,7 +291,8 @@ impl PgDriver {
         }
         let pk = self.primary_key(schema, table).await?;
         let ctid_ok: bool = sqlx::query_scalar(
-            "SELECT c.relkind IN ('r', 'm') AND NOT c.relhassubclass FROM pg_class c \
+            "SELECT c.relkind IN ('r', 'm') AND NOT c.relhassubclass \
+               AND current_setting('server_version_num')::int >= 140000 FROM pg_class c \
              JOIN pg_namespace n ON n.oid = c.relnamespace \
              WHERE n.nspname = $1 AND c.relname = $2",
         )
@@ -349,6 +358,13 @@ impl PgDriver {
             where_sql = if where_sql.is_empty() { k } else { format!("{where_sql} AND {k}") };
             binds.extend(kb);
             offset = 0;
+        } else if by_ctid {
+            // Without it the first (or an OFFSET) page is a plain Seq Scan, which on a table
+            // past shared_buffers/4 is a synchronized one: it starts wherever another scan
+            // of the table is, and the next page's `ctid >` then skips the blocks before.
+            // Its selectivity is ~1, so the planner still prefers that Seq Scan: every ctid
+            // page runs with `enable_seqscan = off` (see `tid_scan`).
+            where_sql = "_t.ctid >= '(0,0)'::tid".into();
         }
         let (inner, select_list) = if by_ctid {
             cols.push(CTID_COL.into());
@@ -375,9 +391,16 @@ impl PgDriver {
         qy = qy.bind(offset as i64).bind(len as i64);
         let ms = self.window_timeout_ms;
         let rows = match token {
+            None if by_ctid => {
+                let mut tx = self.pool.begin().await.map_err(db)?;
+                Self::tid_scan(&mut tx).await?;
+                let res = qy.fetch_all(&mut *tx).await;
+                let _ = tx.rollback().await;
+                res.map_err(db)?
+            }
             None => qy.fetch_all(&self.pool).await.map_err(db)?,
             // Pinned, so `cancel` can target the PID.
-            Some(t) if filters.is_empty() => {
+            Some(t) if filters.is_empty() && !by_ctid => {
                 let mut conn = self.pool.acquire().await.map_err(db)?;
                 Self::pin(&mut conn, t, None).await?;
                 qy.fetch_all(&mut *conn).await.map_err(|e| window_err(e, t, ms))?
@@ -385,7 +408,10 @@ impl PgDriver {
             // SET LOCAL needs a transaction; it also reverts on its own when this one ends.
             Some(t) => {
                 let mut tx = self.pool.begin().await.map_err(db)?;
-                Self::pin(&mut tx, t, Some(ms)).await?;
+                if by_ctid {
+                    Self::tid_scan(&mut tx).await?;
+                }
+                Self::pin(&mut tx, t, (!filters.is_empty()).then_some(ms)).await?;
                 let res = qy.fetch_all(&mut *tx).await;
                 let _ = tx.rollback().await;
                 res.map_err(|e| window_err(e, t, ms))?

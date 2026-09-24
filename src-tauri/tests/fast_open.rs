@@ -328,6 +328,60 @@ async fn pg_no_pk_table_pages_by_ctid() {
     run(&a, "DROP SCHEMA tiq_ctid CASCADE").await;
 }
 
+/// A table past a quarter of shared_buffers gets synchronized seqscans: a plain Seq Scan
+/// starts wherever another scan of it left off. The first page must still start at block 0
+/// — or the ctid cursor skips every block before that start.
+#[tokio::test]
+async fn pg_ctid_pages_start_at_block_zero_after_a_partial_scan() {
+    let Some(url) = pg() else {
+        return;
+    };
+    let a = admin(&url).await;
+    run(&a, "DROP SCHEMA IF EXISTS tiq_ctid_sync CASCADE; CREATE SCHEMA tiq_ctid_sync; \
+             CREATE TABLE tiq_ctid_sync.t (n int, s text) WITH (autovacuum_enabled = off); \
+             INSERT INTO tiq_ctid_sync.t \
+               SELECT g, md5(g::text) || md5((-g)::text) FROM generate_series(1, 400000) g;")
+        .await;
+    let big: bool = sqlx::query_scalar(
+        "SELECT pg_relation_size('tiq_ctid_sync.t') > pg_size_bytes(current_setting('shared_buffers')) / 4",
+    )
+    .fetch_one(&a)
+    .await
+    .unwrap();
+    assert!(big, "the fixture must be big enough for synchronized seqscans");
+    // A scan that stops halfway leaves the next Seq Scan's start hint mid-table.
+    run(&a, "SELECT count(*) FROM (SELECT * FROM tiq_ctid_sync.t LIMIT 200000) s").await;
+    let drv = PgDriver::connect(&url).await.unwrap();
+
+    let p0 = drv.open_window("tiq_ctid_sync", "t", 0, 1).await.unwrap();
+    assert_eq!(rows(&p0)[0][2].as_deref(), Some("(0,1)"), "page 1 starts at block 0");
+    let grid = drv
+        .open_window_cancellable("tiq_ctid_sync", "t", 0, 1, &[], &[], None, &CancelToken::new())
+        .await
+        .unwrap();
+    assert_eq!(rows(&grid)[0][2].as_deref(), Some("(0,1)"), "the grid's page too");
+    let mut after: Option<Vec<Option<String>>> = None;
+    let mut seen = Vec::new();
+    loop {
+        run(&a, "SELECT count(*) FROM (SELECT * FROM tiq_ctid_sync.t LIMIT 100000) s").await;
+        let b = drv
+            .open_window_filtered("tiq_ctid_sync", "t", 0, 50_000, &[], &[], after.as_deref())
+            .await
+            .unwrap();
+        if b.num_rows() == 0 {
+            break;
+        }
+        seen.extend(rows(&b).into_iter().map(|r| r[0].clone().unwrap().parse::<i32>().unwrap()));
+        after = Some(key_of(&b, b.num_rows() - 1, &["__tiq_ctid"]));
+    }
+    assert_eq!(seen, (1..=400_000).collect::<Vec<_>>(), "every row once, in heap order");
+    // An OFFSET page (no cursor) is heap order from block 0 too.
+    let deep = drv.open_window("tiq_ctid_sync", "t", 300_000, 1).await.unwrap();
+    assert_eq!(rows(&deep)[0][0].as_deref(), Some("300001"));
+
+    run(&a, "DROP SCHEMA tiq_ctid_sync CASCADE").await;
+}
+
 #[tokio::test]
 async fn mysql_keyset_pages_equal_offset_pages() {
     let Some(url) = mysql() else {
