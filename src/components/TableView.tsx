@@ -27,6 +27,7 @@ import { outgoingForeignKeys } from "../lib/fk";
 import { decodeWindow, type DecodedWindow } from "../lib/arrowWindow";
 import { pageCursor } from "../lib/keyset";
 import { pagerLabel } from "../lib/pager";
+import { mergeTotal, staleTotal, type RowTotal } from "../lib/rowTotal";
 import { isFindShortcut, isMacPlatform } from "../lib/shortcut";
 import { cycleSort } from "../lib/tableSort";
 import { useTabs } from "../state/tabsStore";
@@ -102,7 +103,7 @@ async function confirmDestructive(message: string): Promise<boolean> {
 export function TableView({ connId, schema, object, view }: Props) {
   /** Unfiltered/filtered row total. `count: null` means "the engine could not
    *  count it" — which must never be rendered as 0 rows. */
-  const [total, setTotal] = useState<{ count: number | null; exact: boolean } | null>(null);
+  const [total, setTotal] = useState<RowTotal | null>(null);
   const [pk, setPk] = useState<string[] | null>(null);
   /** Why the primary key is unknown: the `primary_key` call itself failed. A
    *  failure must never read as "this table has no primary key" — that tells the
@@ -264,15 +265,18 @@ export function TableView({ connId, schema, object, view }: Props) {
     };
   }, [connId, schema, object.name, refreshKey, painted]);
 
+  // A different table: its total starts from nothing.
+  useEffect(() => setTotal(null), [connId, schema, object.name]);
   // Row total, step 1: the catalog estimate, instant (never a scan). Shown
-  // until the real count below lands; a filter has no estimate.
+  // until the real count below lands; a filter has no estimate. Until either
+  // lands, the previous filters' total stays up, dimmed — not a blank label.
   useEffect(() => {
     let cancelled = false;
-    setTotal(null);
+    setTotal(staleTotal);
     if (filters.length === 0) {
       estimateRows(connId, schema, object.name)
         .then((n) => {
-          if (!cancelled && n !== null) setTotal((t) => t ?? { count: n, exact: false });
+          if (!cancelled && n !== null) setTotal((t) => mergeTotal(t, { count: n, exact: false }));
         })
         .catch(() => {});
     }
@@ -296,9 +300,11 @@ export function TableView({ connId, schema, object, view }: Props) {
             exact: m.exact,
           }))
         : openTable(connId, schema, object.name, filters);
+    // mergeTotal: a refresh after an edit re-reads the estimate, which must not
+    // replace an exact count the user asked for.
     counted
-      .then((t) => !cancelled && setTotal((prev) => (t.count === null && prev ? prev : t)))
-      .catch(() => !cancelled && setTotal((prev) => prev ?? { count: null, exact: false }));
+      .then((t) => !cancelled && setTotal((prev) => mergeTotal(prev, t)))
+      .catch(() => !cancelled && setTotal((prev) => mergeTotal(prev, { count: null, exact: false })));
     return () => {
       cancelled = true;
     };
@@ -962,6 +968,7 @@ export function TableView({ connId, schema, object, view }: Props) {
                   fetch is in flight) — `hasNext` only speaks for the page shown. */}
               <RowPager
                 label={pagerLabel(firstRow, rowsOnPage, total?.count ?? null, total?.exact ?? false)}
+                stale={total?.stale}
                 hasPrev={pageData.page > 0 && !committing}
                 hasNext={hasNext && !committing}
                 onPrev={() => goToPage(Math.max(0, pageData.page - 1))}
@@ -1523,12 +1530,15 @@ function SearchBox({
  *  tested {@link pagerLabel}; this only draws it. */
 function RowPager({
   label,
+  stale,
   hasPrev,
   hasNext,
   onPrev,
   onNext,
 }: {
   label: string;
+  /** The label's total answers the previous filters — drawn dimmed. */
+  stale?: boolean;
   hasPrev: boolean;
   hasNext: boolean;
   onPrev: () => void;
@@ -1539,7 +1549,7 @@ function RowPager({
       <StatusBarButton onClick={onPrev} disabled={!hasPrev} title="Previous page">
         <IconChevronLeft size={10} />
       </StatusBarButton>
-      <span className="tabular-nums text-text">{label}</span>
+      <span className={`tabular-nums transition-colors ${stale ? "text-muted" : "text-text"}`}>{label}</span>
       <StatusBarButton onClick={onNext} disabled={!hasNext} title="Next page">
         <IconChevronRight size={10} />
       </StatusBarButton>
