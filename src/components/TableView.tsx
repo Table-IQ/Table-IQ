@@ -26,7 +26,6 @@ import { buildEdit, writeOutcomeMessage } from "../lib/edit";
 import { outgoingForeignKeys } from "../lib/fk";
 import { decodeWindow, type DecodedWindow } from "../lib/arrowWindow";
 import { pageCursor } from "../lib/keyset";
-import { formatElapsed } from "../lib/motion";
 import { pagerLabel } from "../lib/pager";
 import { cycleSort } from "../lib/tableSort";
 import { useTabs } from "../state/tabsStore";
@@ -45,6 +44,7 @@ import type { Engine } from "../lib/commands";
 import { Toolbar, ToolbarButton, ToolbarSpacer } from "./ui/Toolbar";
 import { SegmentedToggle, StatusBar, StatusBarButton, StatusDot } from "./ui/StatusBar";
 import { Chip } from "./ui/Chip";
+import { Elapsed } from "./ui/Elapsed";
 import { ContextMenu, type ContextMenuItem } from "./ui/ContextMenu";
 import { buildRowAs } from "../lib/rowFormat";
 import { buildDeleteStatement, quoteIdent } from "../lib/tableScript";
@@ -147,7 +147,6 @@ export function TableView({ connId, schema, object, view }: Props) {
   /** An exact COUNT(*) the user asked for, cancellable by `token`. */
   const [counting, setCounting] = useState<{ token: string; started: number } | null>(null);
   const countingRef = useRef<string | null>(null);
-  const [countElapsed, setCountElapsed] = useState(0);
   const [dirty, setDirty] = useState(0);
   const [refreshKey, setRefreshKey] = useState(0);
   const [filters, setFilters] = useState<ColumnFilter[]>([]);
@@ -319,7 +318,6 @@ export function TableView({ connId, schema, object, view }: Props) {
     const token = `count-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     countingRef.current = token;
     setCounting({ token, started: performance.now() });
-    setCountElapsed(0);
     countRowsExact(connId, schema, object.name, token, filters)
       .then((t) => {
         if (countingRef.current !== token) return;
@@ -337,11 +335,6 @@ export function TableView({ connId, schema, object, view }: Props) {
   // A running count answers for one table + filter set: cancel it on any change,
   // and on unmount (closing or switching the tab).
   useEffect(() => cancelCount, [cancelCount, filters, refreshKey]);
-  useEffect(() => {
-    if (!counting) return;
-    const id = window.setInterval(() => setCountElapsed(performance.now() - counting.started), 100);
-    return () => window.clearInterval(id);
-  }, [counting]);
 
   const order = useMemo(() => (sort ? [sort] : undefined), [sort]);
   const orderKey = sort ? `${sort.column}:${sort.desc}` : "";
@@ -995,7 +988,7 @@ export function TableView({ connId, schema, object, view }: Props) {
                 <span className="inline-flex items-center gap-1 text-muted" role="status">
                   Counting…
                   {/* Fixed width, so the ticking time doesn't nudge the × out from under the pointer. */}
-                  <span className="inline-block min-w-[6ch] tabular-nums">{formatElapsed(countElapsed)}</span>
+                  <Elapsed since={counting.started} className="inline-block min-w-[6ch] tabular-nums" />
                   <StatusBarButton onClick={cancelCount} title="Stop counting">
                     <IconClose size={9} />
                     <span className="sr-only">Stop counting</span>

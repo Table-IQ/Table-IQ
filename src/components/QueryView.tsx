@@ -11,7 +11,6 @@ import { useResults } from "../state/resultsStore";
 import { useConnections } from "../state/connectionStore";
 import { useTabs } from "../state/tabsStore";
 import { oneLine } from "../lib/history";
-import { formatElapsed } from "../lib/motion";
 import { schemaModelToCompletionMap } from "../lib/schemaCompletion";
 import type { SqlDialect } from "../lib/sqlSplit";
 import {
@@ -41,6 +40,7 @@ import {
 import { Toolbar, ToolbarButton, ToolbarDivider, ToolbarSpacer } from "./ui/Toolbar";
 import { StatusBar, StatusDot } from "./ui/StatusBar";
 import { Chip } from "./ui/Chip";
+import { Elapsed } from "./ui/Elapsed";
 import { ResizeHandle, clampWidth } from "./ui/ResizeHandle";
 import {
   IconAi,
@@ -101,15 +101,8 @@ export function QueryView({
   const runSeq = useRef(0);
   const runningQueryId = useRef<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
-  // Live elapsed time while running; shown only past --delay-busy (150ms).
-  const [elapsed, setElapsed] = useState(0);
-  useEffect(() => {
-    if (!running) return;
-    const start = performance.now();
-    setElapsed(0);
-    const id = window.setInterval(() => setElapsed(performance.now() - start), 100);
-    return () => window.clearInterval(id);
-  }, [running]);
+  // When the current run started — `<Elapsed>` ticks from it on its own.
+  const [runStart, setRunStart] = useState(0);
   const [plan, setPlan] = useState<string | null>(null);
   const [editorH, setEditorH] = useState<number>(readEditorHeight);
   const [drawer, setDrawer] = useState<
@@ -191,6 +184,7 @@ export function QueryView({
       const seq = ++runSeq.current;
       runningRef.current = true;
       setRunning(true);
+      setRunStart(performance.now());
       setCancelling(false);
       setError(null);
       setPlan(null);
@@ -290,6 +284,7 @@ export function QueryView({
     if (runningRef.current) return;
     runningRef.current = true;
     setRunning(true);
+    setRunStart(performance.now());
     setError(null);
     try {
       setPlan(await explainQuery(connId, item.text));
@@ -360,7 +355,8 @@ export function QueryView({
       return (
         <span className="text-muted">
           {cancelling ? "Cancel requested — the server may still finish the statement…" : "Running…"}
-          {elapsed >= 150 && <span className="ml-1.5 tabular-nums">{formatElapsed(elapsed)}</span>}
+          {/* Only past --delay-busy, so a fast run never flashes a timer. */}
+          <Elapsed since={runStart} minMs={150} className="ml-1.5 tabular-nums" />
         </span>
       );
     }
