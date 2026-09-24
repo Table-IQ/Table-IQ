@@ -57,6 +57,18 @@ describe("IPC bridge invoke", () => {
     await expect(cmds.connect("nope")).rejects.toBe("unknown connection");
   });
 
+  it("stays off in a production build, whatever the build shell exported", async () => {
+    // import.meta.env is baked in at build time: a release built in a shell with
+    // VITE_IPC_BRIDGE=1 would otherwise POST every command to /__ipc/.
+    vi.stubEnv("DEV", false);
+    vi.resetModules();
+    const prod = await import("./commands");
+    // No Tauri in this environment, so the real invoke() rejects — that is the
+    // point: it fails loudly instead of quietly talking to the bridge.
+    await prod.listConnections().catch(() => undefined);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("bypasses the browser mock (no window.__TAURI_INTERNALS__ needed)", async () => {
     reply("[]", 200, "application/json");
     await expect(cmds.listConnections()).resolves.toEqual([]); // the mock would return "Local Postgres"

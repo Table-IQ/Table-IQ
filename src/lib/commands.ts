@@ -40,7 +40,11 @@ export function setConnectionLostHandler(fn: (() => void) | null): void {
 
 // Real-app QA: `VITE_IPC_BRIDGE=1 pnpm dev` sends every command over HTTP to the
 // `ipc_bridge` binary (the real Rust handlers), proxied by vite at /__ipc.
-const BRIDGE = import.meta.env.VITE_IPC_BRIDGE === "1";
+// DEV-gated like the mock backend below: `import.meta.env` is baked in at BUILD
+// time, so without this guard a release built in a shell that happens to export
+// VITE_IPC_BRIDGE=1 would ship a UI that routes every command — every edit and
+// delete — at http://localhost/__ipc/ instead of the app's own backend.
+const BRIDGE = import.meta.env.DEV && import.meta.env.VITE_IPC_BRIDGE === "1";
 
 async function bridgeInvoke<T>(cmd: string, args?: unknown): Promise<T> {
   const res = await fetch("/__ipc/" + cmd, {
