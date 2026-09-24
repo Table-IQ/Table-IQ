@@ -18,10 +18,10 @@ use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 
 use super::{
-    build_insert_sql, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
-    ColumnFilter, ColumnInfo, ColsPk, DResult, DriverError, EditSpec, ForeignKey, IndexInfo,
-    MetaCache, ObjectInfo, ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey,
-    SqlDriver, StmtOutput, TableStructure,
+    build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken,
+    ColumnDetail, ColumnFilter, ColumnInfo, ColsPk, DResult, DriverError, EditSpec, ForeignKey,
+    IndexInfo, MetaCache, ObjectInfo, ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel,
+    SortKey, SqlDriver, StmtOutput, TableStructure,
 };
 
 fn db(e: ::duckdb::Error) -> DriverError {
@@ -42,7 +42,7 @@ fn placeholder(_i: usize, _col: &str) -> String {
     "?".into()
 }
 
-/// LIKE/ILIKE and the orig-value match compare the text DuckDB itself renders.
+/// LIKE/ILIKE and Search match the text DuckDB itself renders (what the grid shows).
 fn text_expr(col: &str) -> String {
     format!("CAST({} AS VARCHAR)", quote_ident(col))
 }
@@ -344,12 +344,38 @@ impl SqlDriver for DuckDriver {
     }
 
     /// Local and columnar: an exact `COUNT(*)` is always affordable.
-    async fn count_rows(&self, schema: &str, table: &str, filters: &[ColumnFilter]) -> DResult<RowCount> {
-        let (where_sql, binds) = build_where_clause(filters, &quote_ident, &placeholder, &text_expr, 1);
+    /// Local and columnar: an exact `COUNT(*)` is always affordable, so `force_exact` changes
+    /// nothing.
+    async fn count_rows(
+        &self,
+        schema: &str,
+        table: &str,
+        filters: &[ColumnFilter],
+        _force_exact: Option<&CancelToken>,
+    ) -> DResult<RowCount> {
+        // Only a Search filter needs the column list.
+        let cols = if filters.is_empty() { Vec::new() } else { self.browse_meta(schema, table).await?.0.clone() };
+        let (where_sql, binds) =
+            build_where_clause(filters, &cols, &quote_ident, &placeholder, &text_expr, 1);
         let q = format!("SELECT COUNT(*) FROM {}{}", qualified(schema, table), where_of(&where_sql));
         let rows = self.with(move |c| rows_of(c, &q, &binds)).await?;
         let n = rows.first().and_then(|r| r[0].as_deref()).and_then(|v| v.parse().ok());
         Ok(RowCount { count: n, exact: true })
+    }
+
+    async fn estimate_rows(&self, schema: &str, table: &str) -> DResult<Option<i64>> {
+        let binds = vec![Some(schema.to_string()), Some(table.to_string())];
+        let rows = self
+            .with(move |c| {
+                rows_of(
+                    c,
+                    "SELECT estimated_size FROM duckdb_tables() \
+                     WHERE database_name = current_database() AND schema_name = ? AND table_name = ?",
+                    &binds,
+                )
+            })
+            .await?;
+        Ok(rows.first().and_then(|r| r[0].as_deref()).and_then(|v| v.parse().ok()))
     }
 
     async fn open_window_filtered(
@@ -360,15 +386,25 @@ impl SqlDriver for DuckDriver {
         len: usize,
         filters: &[ColumnFilter],
         order: &[SortKey],
+        after: Option<&[Option<String>]>,
     ) -> DResult<RecordBatch> {
         let meta = self.browse_meta(schema, table).await?;
         let (cols, pk) = (meta.0.clone(), &meta.1);
         let order_sql = build_order_by(order, pk, &cols, &quote_ident)?;
-        // Cells are DuckDB's own VARCHAR rendering, which is also what `apply_edit`
-        // compares the original value against.
+        // Cells are DuckDB's own VARCHAR rendering.
         let select_list =
             cols.iter().map(|c| format!("{} AS {}", text_expr(c), quote_ident(c))).collect::<Vec<_>>().join(", ");
-        let (where_sql, binds) = build_where_clause(filters, &quote_ident, &placeholder, &text_expr, 1);
+        let (mut where_sql, mut binds) =
+            build_where_clause(filters, &cols, &quote_ident, &placeholder, &text_expr, 1);
+        let mut offset = offset;
+        // Expanded form: DuckDB can't compare a typed row value with untyped `?` binds.
+        if let Some((k, kb)) =
+            after.and_then(|a| build_keyset(order, pk, a, &quote_ident, &placeholder, 1, true))
+        {
+            where_sql = if where_sql.is_empty() { k } else { format!("{where_sql} AND {k}") };
+            binds.extend(kb);
+            offset = 0;
+        }
         let q = format!(
             "SELECT {select_list} FROM (SELECT * FROM {} AS _t{}{order_sql} LIMIT {len} OFFSET {offset}) AS _w",
             qualified(schema, table),
