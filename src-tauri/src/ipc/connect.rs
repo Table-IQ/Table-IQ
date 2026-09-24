@@ -14,9 +14,10 @@ use arrow::record_batch::RecordBatch;
 use crate::connections::{self, ConnConfig, ConnStore};
 use crate::lk;
 use crate::drivers::{
-    doc_mongo::MongoDriver, kv_redis::RedisDriver, mysql::MySqlDriver, postgres::PgDriver,
-    sqlite::SqliteDriver, sqlserver::SqlServerDriver, CancelToken, ColumnFilter, DocumentDriver,
-    DriverError, EditSpec, KeyInfo, KvDriver, KvValue, SchemaModel, SortKey, SqlDriver,
+    doc_mongo::MongoDriver, duckdb::DuckDriver, kv_redis::RedisDriver, mysql::MySqlDriver,
+    postgres::PgDriver, sqlite::SqliteDriver, sqlserver::SqlServerDriver, CancelToken,
+    ColumnFilter, DocumentDriver, DriverError, EditSpec, KeyInfo, KvDriver, KvValue, SchemaModel,
+    SortKey, SqlDriver,
 };
 use crate::ssh::tunnel::{RemoteTarget, Tunnel};
 use crate::ssh::SshAuth;
@@ -83,7 +84,7 @@ pub struct ConnState {
 
 /// If `cfg` has SSH enabled, open a tunnel to the bastion forwarding to the remote DB and return
 /// it alongside a `ConnConfig` whose host/port point at the local forward. Otherwise returns the
-/// config unchanged and no tunnel. sqlite (a file engine) ignores SSH.
+/// config unchanged and no tunnel. File engines (sqlite, duckdb) ignore SSH.
 ///
 /// `conn_id` is used to read the SSH secret (key passphrase / bastion password) from the keychain
 /// under `ssh:<conn_id>`.
@@ -92,7 +93,7 @@ async fn maybe_open_tunnel(
     conn_id: &str,
 ) -> Result<(ConnConfig, Option<Tunnel>), String> {
     let ssh = match &cfg.ssh {
-        Some(s) if s.enabled && cfg.engine != "sqlite" => s,
+        Some(s) if s.enabled && !cfg.is_file_engine() => s,
         _ => return Ok((cfg.clone(), None)),
     };
     // Agent auth needs no stored secret; password/keyfile read the keychain (may be empty).
@@ -126,7 +127,7 @@ async fn maybe_open_tunnel(
     Ok((rewritten, Some(tunnel)))
 }
 
-/// Build the right driver for an engine. `pw` is unused for sqlite.
+/// Build the right driver for an engine. `pw` is unused for the file engines.
 async fn open_driver(cfg: &ConnConfig, pw: &str) -> Result<Arc<dyn SqlDriver>, String> {
     // SQL Server takes the parts, not a URL: tiberius' ADO string has no escaping rule for a
     // password containing `;` or `=`, and it is where `sslmode` becomes a TDS encryption level.
@@ -140,8 +141,10 @@ async fn open_driver(cfg: &ConnConfig, pw: &str) -> Result<Arc<dyn SqlDriver>, S
     let url = cfg.url_with_password(pw);
     let drv: Arc<dyn SqlDriver> = match cfg.engine.as_str() {
         "sqlite" => Arc::new(SqliteDriver::connect(&url).await.map_err(|e| e.to_string())?),
+        "duckdb" => Arc::new(DuckDriver::connect(&url).await.map_err(|e| e.to_string())?),
         "mysql" => Arc::new(MySqlDriver::connect(&url).await.map_err(|e| e.to_string())?),
-        _ => Arc::new(PgDriver::connect(&url).await.map_err(|e| e.to_string())?),
+        "postgres" => Arc::new(PgDriver::connect(&url).await.map_err(|e| e.to_string())?),
+        other => return Err(format!("unsupported engine {other}")),
     };
     Ok(drv)
 }
@@ -293,8 +296,8 @@ pub async fn connect(state: State<'_, ConnState>, id: String) -> Result<Connecte
             .cloned()
             .ok_or_else(|| "unknown connection".to_string())?
     };
-    // sqlite needs no keychain password; others read it (redis password optional).
-    let password = if cfg.engine == "sqlite" {
+    // file engines need no keychain password; others read it (redis password optional).
+    let password = if cfg.is_file_engine() {
         String::new()
     } else {
         connections::get_password(&id).unwrap_or_default()
@@ -397,7 +400,7 @@ pub async fn switch_database(
     let mut new_cfg = cfg.clone();
     new_cfg.database = database;
 
-    let password = if new_cfg.engine == "sqlite" {
+    let password = if new_cfg.is_file_engine() {
         String::new()
     } else {
         connections::get_password(&id).unwrap_or_default()
@@ -867,7 +870,7 @@ async fn introspect_any(state: &ConnState, id: &str) -> Result<SchemaModel, Stri
     if matches!(cfg.engine.as_str(), "redis" | "mongodb") {
         return Err("schema diff supports SQL connections only".into());
     }
-    let pw = if cfg.engine == "sqlite" {
+    let pw = if cfg.is_file_engine() {
         String::new()
     } else {
         connections::get_password(id).unwrap_or_default()
@@ -1479,6 +1482,25 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    /// An engine this build doesn't know must not silently become a Postgres connection.
+    #[tokio::test]
+    async fn open_driver_refuses_an_unknown_engine() {
+        let cfg = ConnConfig {
+            id: "x".into(),
+            name: "x".into(),
+            color: None,
+            engine: "oracle".into(),
+            host: "127.0.0.1".into(),
+            port: 1,
+            database: "d".into(),
+            username: "u".into(),
+            sslmode: "prefer".into(),
+            ssh: None,
+        };
+        let err = open_driver(&cfg, "").await.err().expect("unknown engine must fail");
+        assert!(err.contains("unsupported engine oracle"), "got {err}");
     }
 
     #[test]

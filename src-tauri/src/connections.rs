@@ -18,10 +18,10 @@ pub struct ConnConfig {
     #[serde(default)]
     pub color: Option<String>,
     #[serde(default = "default_engine")]
-    pub engine: String, // "postgres" | "mysql" | "sqlite"
+    pub engine: String, // "postgres" | "mysql" | "sqlite" | "duckdb" | "sqlserver" | …
     pub host: String,
     pub port: u16,
-    pub database: String, // for sqlite: the file path
+    pub database: String, // for sqlite/duckdb: the file path (duckdb also `:memory:`)
     pub username: String,
     #[serde(default = "default_sslmode")]
     pub sslmode: String,
@@ -49,10 +49,16 @@ impl ConnConfig {
         c
     }
 
-    /// Engine-specific connection URL (no password for sqlite; password from keychain otherwise).
+    /// Engines whose `database` is a local file path: no host, no password, no SSH tunnel.
+    pub fn is_file_engine(&self) -> bool {
+        matches!(self.engine.as_str(), "sqlite" | "duckdb")
+    }
+
+    /// Engine-specific connection URL (no password for file engines; password from keychain otherwise).
     pub fn url_with_password(&self, password: &str) -> String {
         match self.engine.as_str() {
-            "sqlite" => self.database.clone(), // file path; SqliteDriver builds the sqlite:// url
+            // A file path (or DuckDB's `:memory:`); the driver opens it directly.
+            "sqlite" | "duckdb" => self.database.clone(),
             "redis" => {
                 let auth = if password.is_empty() {
                     String::new()
@@ -304,6 +310,32 @@ mod tests {
         };
         let url = cfg.url_with_password("pw");
         assert!(url.contains("@h:5432/postgres?"), "expected db=username, got {url}");
+    }
+
+    #[test]
+    fn file_engines_use_the_database_field_as_a_path() {
+        let mut cfg = ConnConfig {
+            id: "x".into(),
+            name: "x".into(),
+            color: None,
+            engine: "duckdb".into(),
+            host: "h".into(),
+            port: 0,
+            database: "/tmp/a b?.duckdb".into(),
+            username: "".into(),
+            sslmode: "prefer".into(),
+            ssh: None,
+        };
+        assert!(cfg.is_file_engine());
+        assert_eq!(cfg.url_with_password("pw"), "/tmp/a b?.duckdb");
+        cfg.database = ":memory:".into();
+        assert_eq!(cfg.url_with_password(""), ":memory:");
+        cfg.engine = "sqlite".into();
+        assert!(cfg.is_file_engine());
+        for e in ["postgres", "mysql", "sqlserver", "redis", "mongodb"] {
+            cfg.engine = e.into();
+            assert!(!cfg.is_file_engine(), "{e} is not a file engine");
+        }
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Driver layer for Table-IQ.
 //!
 //! Split by data model (plan spec #1): SQL engines (Postgres, MySQL/MariaDB, SQLite,
-//! SQL Server) stream Arrow via [`SqlDriver`], the document store (MongoDB) returns
+//! SQL Server, DuckDB) stream Arrow via [`SqlDriver`], the document store (MongoDB) returns
 //! JSON/tree via [`DocumentDriver`], and the key-value store (Redis) returns typed
 //! values via [`KvDriver`]. All six engines are real implementations.
 
@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 pub mod doc_mongo;
+pub mod duckdb;
 pub mod exec;
 pub mod kv_redis;
 pub mod mysql;

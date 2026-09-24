@@ -1,15 +1,15 @@
 //! Task 3: `run_statements` against real engines — statements run **as written**, so DML, DDL,
 //! `SHOW`, `EXPLAIN` and a bare `SELECT 1;` all work, and a script reports one output each.
 //!
-//! SQLite always runs (tempfile). Postgres and MySQL are gated:
+//! SQLite and DuckDB always run (tempfile). Postgres and MySQL are gated:
 //!   TIQ_PG_URL=postgres://postgres:tableiq@127.0.0.1:55432/tableiq \
 //!   TIQ_MYSQL_URL=mysql://root:tableiq@127.0.0.1:53306/tableiq \
 //!     cargo test --test exec_live -- --nocapture
 
 use arrow::array::{Array, StringArray};
 use tableiq_lib::drivers::{
-    mysql::MySqlDriver, postgres::PgDriver, sqlite::SqliteDriver, CancelToken, SqlDriver,
-    StmtOutput,
+    duckdb::DuckDriver, mysql::MySqlDriver, postgres::PgDriver, sqlite::SqliteDriver, CancelToken,
+    SqlDriver, StmtOutput,
 };
 
 fn tok() -> CancelToken {
@@ -142,6 +142,33 @@ async fn sqlite_run_statements() {
     // PRAGMA returns a result set.
     let o = one(&drv, "PRAGMA journal_mode").await;
     assert_eq!(o.row_count, 1);
+}
+
+/// DuckDB is in-process, so like SQLite it always runs (temp file, never a server).
+#[tokio::test]
+async fn duckdb_run_statements() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("exec.duckdb");
+    let drv = DuckDriver::connect(path.to_str().unwrap()).await.expect("connect duckdb");
+    shared_cases(&drv, "SELECT * FROM range(1, 1001) t(n)", "tiq_exec_duck").await;
+
+    // Typed values render as DuckDB-ish text, not debug output.
+    let o = one(&drv, "SELECT 42 AS i, 1.5::DECIMAL(4,2) AS d, DATE '2024-01-02' AS dt, true AS b").await;
+    assert_eq!(cell(&o, 0, 0).as_deref(), Some("42"));
+    assert_eq!(cell(&o, 0, 1).as_deref(), Some("1.50"));
+    assert_eq!(cell(&o, 0, 2).as_deref(), Some("2024-01-02"));
+    assert_eq!(cell(&o, 0, 3).as_deref(), Some("true"));
+
+    // Query-shaped statements beyond SELECT return rows; RETURNING returns rows, not a count.
+    for sql in ["SHOW TABLES", "DESCRIBE SELECT 1 AS x", "EXPLAIN SELECT 1", "PRAGMA database_list"] {
+        assert!(one(&drv, sql).await.batch.is_some(), "{sql} must return a result set");
+    }
+    one(&drv, "CREATE TABLE tiq_ret (id int)").await;
+    let o = one(&drv, "INSERT INTO tiq_ret VALUES (7) RETURNING id").await;
+    assert_eq!(cell(&o, 0, 0).as_deref(), Some("7"), "RETURNING rows must come back");
+    // `SET` / `BEGIN; COMMIT` answer DuckDB's `Success` status, which is not a grid.
+    let o = one(&drv, "SET threads = 2").await;
+    assert!(o.batch.is_none() && o.rows_affected.is_none(), "{o:?}");
 }
 
 #[tokio::test]

@@ -164,9 +164,9 @@ fn sql_literal(v: &Option<String>, d: Dialect) -> String {
     match d {
         Dialect::MySql => format!("'{}'", s.replace('\\', r"\\").replace('\'', "''")),
         Dialect::SqlServer => format!("N'{}'", s.replace('\'', "''")),
-        // Postgres (with standard_conforming_strings on, which PgDriver pins) and SQLite
-        // treat a backslash as an ordinary character.
-        Dialect::Postgres | Dialect::Sqlite => format!("'{}'", s.replace('\'', "''")),
+        // Postgres (with standard_conforming_strings on, which PgDriver pins), SQLite and
+        // DuckDB treat a backslash as an ordinary character.
+        Dialect::Postgres | Dialect::Sqlite | Dialect::DuckDb => format!("'{}'", s.replace('\'', "''")),
     }
 }
 
@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn nulls_are_unquoted_in_every_dialect() {
-        for d in [Dialect::Postgres, Dialect::MySql, Dialect::Sqlite, Dialect::SqlServer] {
+        for d in [Dialect::Postgres, Dialect::MySql, Dialect::Sqlite, Dialect::SqlServer, Dialect::DuckDb] {
             assert_eq!(sql_literal(&None, d), "NULL");
         }
     }
