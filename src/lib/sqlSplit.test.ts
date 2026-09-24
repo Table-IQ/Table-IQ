@@ -88,6 +88,69 @@ describe("splitStatements", () => {
     expect(stmts[0].text).toBe("/* outer /* inner ; */ still outer ; */\nSELECT 1");
   });
 
+  it("treats # as a line comment on MySQL (the rest of the line is not SQL)", () => {
+    // MySQL ends a `#` comment at the newline, so the `;` and the DELETE after it
+    // are COMMENT, not a second statement. Splitting here would run the DELETE.
+    const doc = "SELECT count(*) FROM users # before cleanup; DELETE FROM users WHERE 1=1;";
+    const stmts = splitStatements(doc, "mysql");
+    expect(stmts.map((s) => s.text)).toEqual([doc]);
+  });
+
+  it("keeps a MySQL statement whole when its WHERE follows a # comment", () => {
+    const doc = "UPDATE t SET a=1 # only ; for the demo\nWHERE id=5;";
+    const stmts = splitStatements(doc, "mysql");
+    expect(stmts.map((s) => s.text)).toEqual([
+      "UPDATE t SET a=1 # only ; for the demo\nWHERE id=5",
+    ]);
+  });
+
+  it("does not treat # as a comment for other dialects", () => {
+    // `#` is an operator on Postgres (and nothing special on SQLite/SQL Server).
+    const doc = "SELECT a # b; SELECT 2;";
+    expect(splitStatements(doc, "postgres").map((s) => s.text)).toEqual([
+      "SELECT a # b",
+      "SELECT 2",
+    ]);
+    expect(splitStatements(doc, "sqlite").map((s) => s.text)).toEqual([
+      "SELECT a # b",
+      "SELECT 2",
+    ]);
+  });
+
+  it("ends a MySQL block comment at the FIRST */ (MySQL does not nest)", () => {
+    const doc = "SELECT 1; /* note /* about */\nDELETE FROM audit;";
+    const stmts = splitStatements(doc, "mysql");
+    expect(stmts.map((s) => s.text)).toEqual([
+      "SELECT 1",
+      "/* note /* about */\nDELETE FROM audit",
+    ]);
+  });
+
+  it("ends a SQLite block comment at the FIRST */ (SQLite does not nest)", () => {
+    const doc = "/* a /* b */\nDROP TABLE users;";
+    const stmts = splitStatements(doc, "sqlite");
+    expect(stmts.map((s) => s.text)).toEqual(["/* a /* b */\nDROP TABLE users"]);
+  });
+
+  it("nests block comments for sqlserver (T-SQL supports nested comments)", () => {
+    // learn.microsoft.com/en-us/sql/t-sql/language-elements/slash-star-comment-transact-sql:
+    // "Transact-SQL supports nested comments."
+    const doc = "/* outer /* inner ; */ still outer ; */\nSELECT 1;";
+    const stmts = splitStatements(doc, "sqlserver");
+    expect(stmts).toHaveLength(1);
+    expect(stmts[0].text).toBe("/* outer /* inner ; */ still outer ; */\nSELECT 1");
+  });
+
+  it("does not dollar-quote on MySQL/SQLite ($ is not a quote there)", () => {
+    const doc = "SELECT a$b$c FROM t;\nDROP TABLE t;";
+    for (const d of ["mysql", "sqlite", "sqlserver"] as const) {
+      expect(splitStatements(doc, d).map((s) => s.text)).toEqual([
+        "SELECT a$b$c FROM t",
+        "DROP TABLE t",
+      ]);
+    }
+  });
+
   it("drops comment-only and empty chunks", () => {
     const doc = "SELECT 1;\n-- just a trailing comment\n";
     const stmts = splitStatements(doc, "postgres");

@@ -4,7 +4,7 @@
  * string/identifier literals, comments, and PG dollar-quoted bodies.
  *
  * Pure — no CodeMirror imports — so it tests cleanly in Vitest. Used by
- * `sqlSelection.ts` to know what "the statement under the cursor" means, and
+ * `queryResults.ts` to know what "the statement under the cursor" means, and
  * by the Query tab (Task 6) to run/step through multiple statements.
  */
 export type SqlDialect = "postgres" | "mysql" | "sqlite" | "sqlserver";
@@ -31,6 +31,16 @@ const WS = /\s/;
 export function splitStatements(doc: string, dialect: SqlDialect): SqlStatement[] {
   const n = doc.length;
   const result: SqlStatement[] = [];
+
+  // Dialect differences that decide where a statement ENDS. Getting one wrong
+  // silently merges or drops a statement, so each is per-engine, not universal:
+  //  · MySQL also treats `#` as a line comment (Postgres uses `#` as an operator).
+  //  · Only Postgres and T-SQL nest `/* /* */ */`; MySQL and SQLite close the
+  //    comment at the FIRST `*/`.
+  //  · Only Postgres has $$dollar-quoted$$ bodies; elsewhere `$` is just a char.
+  const hashComments = dialect === "mysql";
+  const nestsBlockComments = dialect === "postgres" || dialect === "sqlserver";
+  const dollarQuotes = dialect === "postgres";
 
   let state: State = "default";
   let segStart = 0;
@@ -85,6 +95,11 @@ export function splitStatements(doc: string, dialect: SqlDialect): SqlStatement[
           i += 2;
           continue;
         }
+        if (hashComments && c === "#") {
+          state = "linecomment";
+          i++;
+          continue;
+        }
         if (c === "/" && doc[i + 1] === "*") {
           state = "blockcomment";
           blockDepth = 1;
@@ -123,7 +138,7 @@ export function splitStatements(doc: string, dialect: SqlDialect): SqlStatement[
           i++;
           continue;
         }
-        if (c === "$") {
+        if (dollarQuotes && c === "$") {
           const m = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(doc.slice(i));
           if (m) {
             dollarTag = m[0];
@@ -191,7 +206,7 @@ export function splitStatements(doc: string, dialect: SqlDialect): SqlStatement[
         continue;
       }
       case "blockcomment": {
-        if (c === "/" && doc[i + 1] === "*") {
+        if (nestsBlockComments && c === "/" && doc[i + 1] === "*") {
           blockDepth++;
           i += 2;
           continue;
