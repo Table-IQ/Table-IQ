@@ -447,6 +447,41 @@ export async function openTable(
   });
 }
 
+/**
+ * The catalog's row estimate for a table (never a scan). null for a view, an unknown
+ * table, or an engine without one.
+ */
+export async function estimateRows(id: string, schema: string, table: string): Promise<number | null> {
+  if (!inTauri()) return MOCK_TOTAL_ROWS;
+  return invoke<number | null>("estimate_rows", { id, schema, table });
+}
+
+/**
+ * An exact, unbounded COUNT(*). Cancel it with `cancelQuery(id, tokenId)`; a cancelled
+ * count rejects with "Query cancelled", as a cancelled runQuery does.
+ */
+export async function countRowsExact(
+  id: string,
+  schema: string,
+  table: string,
+  tokenId: string,
+  filters?: ColumnFilter[],
+): Promise<{ count: number | null; exact: boolean }> {
+  if (!inTauri()) return { count: MOCK_TOTAL_ROWS, exact: true };
+  return invoke<{ count: number | null; exact: boolean }>("count_rows_exact", {
+    id,
+    schema,
+    table,
+    filters: filters && filters.length ? filters : null,
+    tokenId,
+  });
+}
+
+/**
+ * One page of a table. `after` is the previous page's last-row key (its PK values in PK
+ * order, or the `__tiq_ctid` cell of a Postgres table without a PK): where the backend
+ * can seek it ignores `offset`, everywhere else it ignores `after` — so pass both.
+ */
 export async function fetchTableWindow(
   id: string,
   schema: string,
@@ -455,6 +490,7 @@ export async function fetchTableWindow(
   len: number,
   filters?: ColumnFilter[],
   order?: SortKey[],
+  after?: (string | null)[],
 ): Promise<{ bytes: Uint8Array; ms: number }> {
   const t0 = performance.now();
   if (!inTauri()) {
@@ -468,6 +504,7 @@ export async function fetchTableWindow(
     len,
     filters: filters && filters.length ? filters : null,
     order: order && order.length ? order : null,
+    after: after ?? null,
   });
   return { bytes: new Uint8Array(ab), ms: performance.now() - t0 };
 }

@@ -521,6 +521,43 @@ pub async fn open_table(
     Ok(OpenTableInfo { count: c.count, exact: c.exact })
 }
 
+/// The catalog's row estimate (never a scan); `null` for a view or an engine without one.
+#[tauri::command]
+pub async fn estimate_rows(
+    state: State<'_, ConnState>,
+    id: String,
+    schema: String,
+    table: String,
+) -> Result<Option<i64>, String> {
+    let drv = state.session(&id)?;
+    drv.estimate_rows(&schema, &table).await.map_err(|e| e.to_string())
+}
+
+/// An exact, unbounded `COUNT(*)` — the "count exactly" the UI offers when `open_table`
+/// returned an estimate. Registered under `token_id` like `run_query`, so `cancel_query`
+/// stops it.
+#[tauri::command]
+pub async fn count_rows_exact(
+    state: State<'_, ConnState>,
+    id: String,
+    schema: String,
+    table: String,
+    filters: Option<Vec<ColumnFilter>>,
+    token_id: String,
+) -> Result<OpenTableInfo, String> {
+    let drv = state.session(&id)?;
+    let f = filters.unwrap_or_default();
+    let token = CancelToken::new();
+    lk(&state.cancels).insert(token_id.clone(), token.clone());
+    let res = drv.count_rows(&schema, &table, &f, Some(&token)).await;
+    lk(&state.cancels).remove(&token_id);
+    let c = res.map_err(|e| match e {
+        DriverError::Cancelled => "Query cancelled".to_string(),
+        other => other.to_string(),
+    })?;
+    Ok(OpenTableInfo { count: c.count, exact: c.exact })
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // the argument list is the IPC contract
 pub async fn get_table_window(
