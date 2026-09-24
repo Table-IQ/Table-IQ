@@ -54,3 +54,17 @@ export function removePending(map: PendingMap, row: number, col: string): Pendin
   next.delete(pendingKey(row, col));
   return next;
 }
+
+/**
+ * A SQL NULL cell opens its editor EMPTY (there is no other sensible start
+ * value), so "opened a NULL cell and left it empty" must not be staged as a
+ * write of `''` — that silently turns NULL into an empty string on commit, and
+ * the two are different values in every engine. Asking for a real `''` is what
+ * the row menu's "Set value → Empty ''" is for.
+ *
+ * `originalBefore` is the cell's last-saved value (the staged edit's `before`
+ * when it has already been re-edited), never the current staged text.
+ */
+export function isNullLeftEmpty(originalBefore: string | null, newValue: string): boolean {
+  return originalBefore === null && newValue === "";
+}

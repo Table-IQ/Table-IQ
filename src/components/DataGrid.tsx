@@ -23,6 +23,7 @@ import { useTheme } from "../theme/ThemeProvider";
 import type { ForeignKey, SortKey } from "../lib/commands";
 import {
   discardAll,
+  isNullLeftEmpty,
   listPending,
   pendingKey,
   removePending,
@@ -497,8 +498,22 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     (row: number, name: string, newValue: string, pushUndo: boolean) => {
       if (!onEdit) return;
       const key = pendingKey(row, name);
+      const existing = pending.current.get(key);
       const priorOverlay = overlay.current.get(key);
       const before = priorOverlay ?? cacheRef.current.getCell(row, name) ?? null;
+      // A NULL cell's editor opens empty, so leaving it empty means "no change" —
+      // not "write ''". If the cell was already staged from NULL, clearing it back
+      // to empty un-stages that edit instead of queueing a '' write.
+      if (isNullLeftEmpty(existing ? existing.before : before, newValue)) {
+        if (existing) {
+          overlay.current.delete(key);
+          editState.current.delete(key);
+          pending.current = removePending(pending.current, row, name);
+          notifyPending();
+          setVersion((v) => v + 1);
+        }
+        return;
+      }
       if (before === newValue && !pending.current.has(key)) return; // no-op
       overlay.current.set(key, newValue);
       pending.current = stageEdit(pending.current, row, name, newValue, before);

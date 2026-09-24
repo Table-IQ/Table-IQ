@@ -5,6 +5,7 @@ import {
   pendingKey,
   removePending,
   stageEdit,
+  isNullLeftEmpty,
   type PendingMap,
 } from "./stagedEdits";
 
@@ -46,5 +47,20 @@ describe("stagedEdits", () => {
     m = stageEdit(m, 1, "b", "2", "0");
     m = removePending(m, 0, "a");
     expect(listPending(m)).toEqual([{ row: 1, col: "b", newValue: "2", before: "0" }]);
+  });
+});
+
+describe("isNullLeftEmpty", () => {
+  it("treats an untouched-looking NULL cell as no change, not as a write of ''", () => {
+    expect(isNullLeftEmpty(null, "")).toBe(true);
+  });
+
+  it("still stages a real value typed into a NULL cell", () => {
+    expect(isNullLeftEmpty(null, "x")).toBe(false);
+  });
+
+  it("still stages clearing a non-NULL cell to '' (that one IS a change)", () => {
+    expect(isNullLeftEmpty("abc", "")).toBe(false);
+    expect(isNullLeftEmpty("", "")).toBe(false);
   });
 });
