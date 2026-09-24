@@ -42,7 +42,7 @@ import { SegmentedToggle, StatusBar, StatusBarButton, StatusDot } from "./ui/Sta
 import { Chip } from "./ui/Chip";
 import { ContextMenu, type ContextMenuItem } from "./ui/ContextMenu";
 import { buildRowAs } from "../lib/rowFormat";
-import { quoteIdent } from "../lib/tableScript";
+import { buildDeleteStatement, quoteIdent } from "../lib/tableScript";
 import { buildInsertValues, isDraftDirty } from "../lib/insertRow";
 import { chipLabel, removeFilter, upsertFilter, FILTER_OP_LABEL, isNullOp } from "../lib/filterBuilder";
 import {
@@ -801,7 +801,8 @@ export function TableView({ connId, schema, object, view }: Props) {
           const rowValues: (string | null)[] = colNames.map((c) =>
             vals ? (vals[c] ?? null) : c === cellMenu.col ? cellMenu.value : null,
           );
-          const qualified = `${quoteIdent(schema)}.${quoteIdent(object.name)}`;
+          // Engine-quoted: `"users"` is a string literal on MySQL, not an identifier.
+          const qualified = `${quoteIdent(schema, engine)}.${quoteIdent(object.name, engine)}`;
           const copy = (s: string) => navigator.clipboard?.writeText(s);
           const copyRowAs = (fmt: Parameters<typeof buildRowAs>[0]) =>
             copy(buildRowAs(fmt, rowValues, colNames, { table: qualified }));
@@ -820,13 +821,12 @@ export function TableView({ connId, schema, object, view }: Props) {
           };
           const deleteStmt = () => {
             if (!pk || pk.length === 0 || !srv) return `-- no primary key on ${object.name}`;
-            const where = pk
-              .map((c) => {
-                const v = srv[c];
-                return `${quoteIdent(c)} = ${v == null ? "NULL" : `'${v.replace(/'/g, "''")}'`}`;
-              })
-              .join(" AND ");
-            return `DELETE FROM ${qualified} WHERE ${where};`;
+            return buildDeleteStatement(
+              schema,
+              object.name,
+              pk.map((c) => [c, srv[c] ?? null] as [string, string | null]),
+              engine,
+            );
           };
           const deleteRowAction = async () => {
             if (!pk || pk.length === 0 || !srv) return;

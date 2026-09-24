@@ -25,6 +25,21 @@ export function quoteIdent(name: string, engine?: Engine): string {
   return `"${name.replace(/"/g, '""')}"`;
 }
 
+/**
+ * Quote a string as a SQL literal for `engine`. `'` is doubled everywhere; MySQL
+ * *also* honours `\` as an escape inside string literals (unless the server runs
+ * with NO_BACKSLASH_ESCAPES), so doubling the quote alone is not enough there: a
+ * stored `a\' OR 1=1 -- ` would close the literal early and rewrite the
+ * statement's meaning. Mirrors each driver's Rust literal escaping.
+ */
+export function quoteLiteral(value: string, engine?: Engine): string {
+  const escaped =
+    engine === "mysql"
+      ? value.replace(/\\/g, "\\\\").replace(/'/g, "''")
+      : value.replace(/'/g, "''");
+  return `'${escaped}'`;
+}
+
 /** Rows a generated "browse this table" query reads. */
 const STARTER_ROWS = 300;
 
@@ -59,4 +74,28 @@ export function buildTableScript(
       return `CREATE TABLE ${qualified} (\n${lines.join(",\n")}\n);`;
     }
   }
+}
+
+/**
+ * The row's `DELETE … WHERE <pk>` for the clipboard ("Copy DELETE statement").
+ * Identifiers AND literals are quoted for `engine`: with the default `"…"` form
+ * MySQL reads `WHERE "id" = '5'` as comparing the *string* 'id' to '5' — always
+ * false, so the pasted statement quietly deletes nothing. A NULL key part uses
+ * `IS NULL`, since `= NULL` never matches either.
+ */
+export function buildDeleteStatement(
+  schema: string,
+  table: string,
+  pk: [string, string | null][],
+  engine?: Engine,
+): string {
+  const qualified = `${quoteIdent(schema, engine)}.${quoteIdent(table, engine)}`;
+  const where = pk
+    .map(([c, v]) =>
+      v == null
+        ? `${quoteIdent(c, engine)} IS NULL`
+        : `${quoteIdent(c, engine)} = ${quoteLiteral(v, engine)}`,
+    )
+    .join(" AND ");
+  return `DELETE FROM ${qualified} WHERE ${where};`;
 }

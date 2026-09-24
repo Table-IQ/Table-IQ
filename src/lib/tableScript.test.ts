@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { buildTableScript, quoteIdent, selectStarter, type ScriptColumn } from "./tableScript";
+import {
+  buildDeleteStatement,
+  buildTableScript,
+  quoteIdent,
+  quoteLiteral,
+  selectStarter,
+  type ScriptColumn,
+} from "./tableScript";
 
 const cols: ScriptColumn[] = [
   { name: "id", data_type: "bigint", nullable: false },
@@ -98,6 +105,56 @@ describe("buildTableScript is engine-aware", () => {
   it("SELECT delegates to the engine-aware starter", () => {
     expect(buildTableScript("select", "dbo", "users", cols, "sqlserver")).toBe(
       "SELECT TOP 300 * FROM [dbo].[users];",
+    );
+  });
+});
+
+describe("quoteLiteral per engine", () => {
+  it("doubles the single quote", () => {
+    expect(quoteLiteral("O'Brien", "postgres")).toBe("'O''Brien'");
+    expect(quoteLiteral("O'Brien", "mysql")).toBe("'O''Brien'");
+  });
+
+  it("also escapes backslashes on MySQL, where they are escape characters", () => {
+    // A stored value like  a\' OR 1=1 --  must not be able to close the literal:
+    // pasted into "Copy DELETE statement" that would delete the whole table.
+    expect(quoteLiteral(String.raw`a\' OR 1=1 -- `, "mysql")).toBe(
+      String.raw`'a\\'' OR 1=1 -- '`,
+    );
+  });
+
+  it("leaves backslashes alone where they are not escapes", () => {
+    for (const e of ["postgres", "sqlite", "sqlserver"] as const) {
+      expect(quoteLiteral(String.raw`C:\tmp`, e)).toBe(String.raw`'C:\tmp'`);
+    }
+  });
+});
+
+describe("buildDeleteStatement", () => {
+  it("quotes identifiers for the engine (MySQL backticks, not \"…\")", () => {
+    // `WHERE "id" = '5'` on MySQL compares the string 'id' to '5' — always false.
+    expect(buildDeleteStatement("app", "users", [["id", "5"]], "mysql")).toBe(
+      "DELETE FROM `app`.`users` WHERE `id` = '5';",
+    );
+    expect(buildDeleteStatement("public", "users", [["id", "5"]], "postgres")).toBe(
+      `DELETE FROM "public"."users" WHERE "id" = '5';`,
+    );
+    expect(buildDeleteStatement("dbo", "users", [["id", "5"]], "sqlserver")).toBe(
+      "DELETE FROM [dbo].[users] WHERE [id] = '5';",
+    );
+  });
+
+  it("escapes a MySQL backslash so a stored value can't rewrite the statement", () => {
+    const stmt = buildDeleteStatement("app", "t", [["k", String.raw`a\' OR 1=1 -- `]], "mysql");
+    // MySQL reads `\\` as one backslash and `''` as one quote, so the literal only
+    // ends at the final `'` — the ` OR 1=1 -- ` tail stays data. Escaping the quote
+    // alone (`\''`) would end it early and delete the whole table.
+    expect(stmt).toBe("DELETE FROM `app`.`t` WHERE `k` = " + String.raw`'a\\'' OR 1=1 -- ';`);
+  });
+
+  it("uses IS NULL for a null key part (= NULL never matches)", () => {
+    expect(buildDeleteStatement("public", "t", [["a", null], ["b", "2"]], "postgres")).toBe(
+      `DELETE FROM "public"."t" WHERE "a" IS NULL AND "b" = '2';`,
     );
   });
 });
