@@ -392,8 +392,8 @@ export function ErdView({
                       style={{ height: ROW_H }}
                       className="flex items-center justify-between gap-2 px-3 text-[11px]"
                     >
-                      <span className="truncate font-mono text-text">{name}</span>
-                      <span className="shrink-0 truncate text-muted">{c.types.get(name)}</span>
+                      <span className="min-w-0 flex-1 truncate font-mono text-text">{name}</span>
+                      <span className="max-w-[55%] shrink-0 truncate text-muted">{c.types.get(name)}</span>
                     </div>
                   ))}
                   {hidden > 0 && (

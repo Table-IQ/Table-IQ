@@ -832,7 +832,7 @@ export function TableView({ connId, schema, object, view }: Props) {
           const qualified = `${quoteIdent(schema, engine)}.${quoteIdent(object.name, engine)}`;
           const copy = (s: string) => navigator.clipboard?.writeText(s);
           const copyRowAs = (fmt: Parameters<typeof buildRowAs>[0]) =>
-            copy(buildRowAs(fmt, rowValues, colNames, { table: qualified }));
+            copy(buildRowAs(fmt, rowValues, colNames, { table: qualified, engine }));
           const applyCellValue = async (newValue: string | null) => {
             if (!pk || pk.length === 0 || !srv) return;
             const edit = buildEdit(pk, (c) => srv[c] ?? null, cellMenu.col, newValue);

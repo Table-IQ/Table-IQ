@@ -107,3 +107,34 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+#[cfg(test)]
+mod lk_tests {
+    use super::lk;
+    use std::sync::Mutex;
+
+    #[test]
+    fn locks_normally_when_not_poisoned() {
+        let m = Mutex::new(5);
+        *lk(&m) += 1;
+        assert_eq!(*lk(&m), 6);
+    }
+
+    /// The whole point of `lk`: every session-state mutex in `ipc::connect` (sessions,
+    /// tunnels, results, …) is locked through it, so one panicking request must not poison
+    /// the lock and turn every later `.unwrap()` caller into a crash too.
+    #[test]
+    fn recovers_a_poisoned_mutex_instead_of_panicking() {
+        let m = Mutex::new(vec![1, 2, 3]);
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = m.lock().unwrap();
+            panic!("simulated panic while holding the lock");
+        }));
+        assert!(res.is_err(), "the panic must have actually happened");
+        assert!(m.is_poisoned(), "the mutex must actually be poisoned for this test to mean anything");
+
+        // A plain `.lock().unwrap()` would panic here; `lk` must not.
+        let guard = lk(&m);
+        assert_eq!(*guard, vec![1, 2, 3], "the data survives poisoning intact");
+    }
+}

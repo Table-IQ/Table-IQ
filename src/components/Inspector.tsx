@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { applyEdit, type ForeignKey, type ObjectInfo } from "../lib/commands";
-import { buildEdit } from "../lib/edit";
+import { buildEdit, writeOutcomeMessage } from "../lib/edit";
 import { incomingForeignKeys, outgoingForeignKeys } from "../lib/fk";
 import { logError } from "../lib/report";
 import { Tabs } from "./ui/Panel";
@@ -39,6 +39,9 @@ export function Inspector({
   const [rows, setRows] = useState<{ count: number | null; exact: boolean } | null>(null);
   const [fieldFilter, setFieldFilter] = useState("");
   const [pk, setPk] = useState<string[]>([]);
+  // Transient write-outcome notice (constraint violation, 0-row miss, >1-row
+  // write) — same class of message as TableView's status-bar notice.
+  const [notice, setNotice] = useState<string | null>(null);
   const selectedRow = useSelectedRow((s) => s.row);
   const setSelectedRow = useSelectedRow((s) => s.setRow);
   // Only show the row-detail mode when the selection matches the active object —
@@ -53,6 +56,7 @@ export function Inspector({
     setFks([]);
     setRows(null);
     setPk([]);
+    setNotice(null);
     if (!object || !schema) return;
     // Both reads come from the connection-store caches, so opening a table costs
     // one round trip between this panel and the TableView, not two each.
@@ -81,15 +85,23 @@ export function Inspector({
     const orig = rowDetail.values[col] ?? "";
     if (orig === newValue) return true;
     const edit = buildEdit(pk, (c) => rowDetail.values[c] ?? null, col, newValue);
+    setNotice(null);
     try {
       const { rowsAffected } = await applyEdit(connId, schema, object.name, edit);
-      if (rowsAffected !== 1) return false;
+      // 0 rows (identity moved/gone) and >1 rows (identity wasn't unique) are both
+      // the user's business, not a silent failure — same rule TableView applies.
+      const problem = writeOutcomeMessage("update", rowsAffected);
+      if (problem) {
+        setNotice(`Set "${col}": ${problem}`);
+        return false;
+      }
       setSelectedRow({ ...rowDetail, values: { ...rowDetail.values, [col]: newValue } });
       window.dispatchEvent(
         new CustomEvent("tiq:row-edited", { detail: `${schema}.${object.name}` }),
       );
       return true;
-    } catch {
+    } catch (e) {
+      setNotice(`Update failed: ${e}`);
       return false;
     }
   };
@@ -109,6 +121,7 @@ export function Inspector({
 
   useEffect(() => {
     setFieldFilter("");
+    setNotice(null);
   }, [rowDetail?.row, rowDetail?.schema, rowDetail?.table]);
 
   return (
@@ -145,6 +158,7 @@ export function Inspector({
             editable={editable}
             pkCols={pk}
             onCommit={commitField}
+            notice={notice}
           />
         ) : (
           <div className="min-h-0 flex-1 overflow-auto p-3 text-[11px]">
@@ -193,6 +207,7 @@ function RowDetailView({
   editable,
   pkCols,
   onCommit,
+  notice,
 }: {
   row: { schema: string; table: string; row: number; values: Record<string, string | null> };
   columns: { name: string; data_type: string; nullable: boolean }[];
@@ -202,6 +217,9 @@ function RowDetailView({
   editable: boolean;
   pkCols: string[];
   onCommit: (col: string, newValue: string) => Promise<boolean>;
+  /** Write-outcome message (constraint violation, 0-row miss, >1-row write) —
+   *  replaces the row/field counts until the next edit attempt. */
+  notice: string | null;
 }) {
   const pkSet = useMemo(() => new Set(pkCols), [pkCols]);
   return (
@@ -251,12 +269,22 @@ function RowDetailView({
         className="flex shrink-0 items-center justify-between border-t border-border bg-surface px-3 text-[10px] text-muted-2"
         style={{ height: "var(--statusbar-h)" }}
       >
-        <span>
-          Row <span className="font-mono text-muted">{row.row + 1}</span>
-        </span>
-        <span>
-          {columns.length} of {totalCols} fields
-        </span>
+        {notice ? (
+          // The bar truncates; keep the whole message reachable on hover, same as
+          // TableView's status-bar notice.
+          <span className="truncate text-warn" title={notice}>
+            {notice}
+          </span>
+        ) : (
+          <>
+            <span>
+              Row <span className="font-mono text-muted">{row.row + 1}</span>
+            </span>
+            <span>
+              {columns.length} of {totalCols} fields
+            </span>
+          </>
+        )}
       </div>
     </div>
   );
@@ -428,7 +456,7 @@ function ObjectMetadataView({
           {object.columns.map((c) => (
             <div key={c.name} className="flex items-center gap-2 px-2 py-1">
               <span className="min-w-0 flex-1 truncate font-mono text-text">{c.name}</span>
-              <span className="text-[11px] text-muted">{c.data_type}</span>
+              <span className="max-w-[55%] shrink-0 truncate text-[11px] text-muted">{c.data_type}</span>
               {!c.nullable && (
                 <span className="text-[10px] uppercase text-muted">not null</span>
               )}
