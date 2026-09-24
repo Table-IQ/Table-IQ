@@ -116,8 +116,16 @@ fn mysql_placeholder(_i: usize, _col: &str) -> String {
     "?".to_string()
 }
 
+/// Left side of the textual comparisons (LIKE/ILIKE/Search): the column in the connection
+/// charset, so LOWER folds a binary string too and every column compares under one collation.
+fn mysql_text_expr(col: &str) -> String {
+    format!("CAST({} AS CHAR)", quote_ident(col))
+}
+
 pub struct MySqlDriver {
     pool: Pool<MySql>,
+    /// [`super::WINDOW_TIMEOUT_MS`]; only tests shorten it.
+    window_timeout_ms: u64,
     /// `(columns, pk)` per table for the browse path (see [`super::MetaCache`]).
     meta: super::MetaCache<super::ColsPk>,
 }
@@ -145,7 +153,14 @@ impl MySqlDriver {
             .connect(url)
             .await
             .map_err(db)?;
-        Ok(Self { pool, meta: Default::default() })
+        Ok(Self { pool, meta: Default::default(), window_timeout_ms: super::WINDOW_TIMEOUT_MS })
+    }
+
+    /// Shorten the filtered-page timeout, so a test can reach it quickly.
+    #[doc(hidden)]
+    pub fn with_window_timeout_ms(mut self, ms: u64) -> Self {
+        self.window_timeout_ms = ms;
+        self
     }
 
     /// Cached `(columns, pk)` for the browse path. A missing relation is an error and is
@@ -161,6 +176,98 @@ impl MySqlDriver {
         let m = Arc::new((cols, self.primary_key(schema, table).await?));
         self.meta.put(schema, table, m.clone());
         Ok(m)
+    }
+
+    /// One page of a table; see [`SqlDriver::open_window_cancellable`] for `token`.
+    #[allow(clippy::too_many_arguments)]
+    async fn window(
+        &self,
+        schema: &str,
+        table: &str,
+        offset: usize,
+        len: usize,
+        filters: &[ColumnFilter],
+        order: &[SortKey],
+        after: Option<&[Option<String>]>,
+        token: Option<&CancelToken>,
+    ) -> DResult<RecordBatch> {
+        let meta = self.browse_meta(schema, table).await?;
+        let (cols, pk) = (&meta.0, &meta.1);
+        let order_sql = build_order_by(order, pk, cols, &quote_ident)?;
+        let select_list = cols
+            .iter()
+            // `CAST(col AS CHAR)` returns SQL **NULL** when the bytes are not valid in the
+            // connection charset (a BLOB holding arbitrary bytes), which the grid then
+            // showed as a plain NULL — indistinguishable from a real one, and a lie about
+            // what is in the table. Fall back to the same `0x…` hex the query tab renders
+            // (`exec::cell_text`). A genuine NULL still comes through as NULL: HEX(NULL) is
+            // NULL, so the CONCAT is NULL too.
+            .map(|c| {
+                let q = quote_ident(c);
+                format!("IFNULL(CAST({q} AS CHAR), CONCAT('0x', LOWER(HEX({q})))) AS {q}")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let (mut where_sql, mut binds) = build_where_clause(
+            filters,
+            cols,
+            &quote_ident,
+            &mysql_placeholder,
+            &mysql_text_expr,
+            1,
+        );
+        let mut offset = offset;
+        if let Some((k, kb)) =
+            after.and_then(|a| build_keyset(order, pk, a, &quote_ident, &mysql_placeholder, binds.len() + 1, true))
+        {
+            where_sql = if where_sql.is_empty() { k } else { format!("{where_sql} AND {k}") };
+            binds.extend(kb);
+            offset = 0;
+        }
+        // The optimizer hint bounds only the top-level SELECT, which is this one. MariaDB
+        // reads it as a comment, so there the page stays unbounded.
+        let ms = self.window_timeout_ms;
+        let hint = match token {
+            Some(_) if !filters.is_empty() => format!("/*+ MAX_EXECUTION_TIME({ms}) */ "),
+            _ => String::new(),
+        };
+        let q = format!(
+            "SELECT {hint}{select_list} FROM (SELECT * FROM {}.{} AS _t{}{order_sql} LIMIT ? OFFSET ?) AS _w",
+            quote_ident(schema),
+            quote_ident(table),
+            if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },
+        );
+        // MySQL placeholders are positional in statement order: the filters, the keyset,
+        // then LIMIT/OFFSET.
+        let mut qy = sqlx::query(&q);
+        for b in &binds {
+            qy = qy.bind(b.clone());
+        }
+        qy = qy.bind(len as i64).bind(offset as i64);
+        let rows = match token {
+            None => qy.fetch_all(&self.pool).await.map_err(db)?,
+            // Pinned, so `cancel` can KILL QUERY this connection's id.
+            Some(t) => {
+                let mut conn = self.pool.acquire().await.map_err(db)?;
+                let cid: u64 = sqlx::query_scalar("SELECT CONNECTION_ID()")
+                    .fetch_one(&mut *conn)
+                    .await
+                    .map_err(db)?;
+                t.set_backend_id(cid as i64);
+                if t.is_cancelled() {
+                    return Err(DriverError::Cancelled);
+                }
+                // The timeout first: MySQL words it as an "interrupted" query too.
+                qy.fetch_all(&mut *conn).await.map_err(|e| match e {
+                    e if is_exec_timeout(&e) => {
+                        DriverError::Db(format!("query timed out after {ms} ms"))
+                    }
+                    e if is_cancel(&e) => DriverError::Cancelled,
+                    e => db(e),
+                })?
+            }
+        };
+        text_rows_to_batch(cols, &rows)
     }
 
     /// Ordered column names for one relation (empty ⇒ no such relation). One catalog
@@ -311,11 +418,13 @@ impl SqlDriver for MySqlDriver {
                 }
             }
         }
+        let meta = self.browse_meta(schema, table).await?;
         let (where_sql, binds) = build_where_clause(
             filters,
+            &meta.0,
             &quote_ident,
             &mysql_placeholder,
-            &quote_ident,
+            &mysql_text_expr,
             1,
         );
         let q = format!(
@@ -377,53 +486,21 @@ impl SqlDriver for MySqlDriver {
         order: &[SortKey],
         after: Option<&[Option<String>]>,
     ) -> DResult<RecordBatch> {
-        let meta = self.browse_meta(schema, table).await?;
-        let (cols, pk) = (&meta.0, &meta.1);
-        let order_sql = build_order_by(order, pk, cols, &quote_ident)?;
-        let select_list = cols
-            .iter()
-            // `CAST(col AS CHAR)` returns SQL **NULL** when the bytes are not valid in the
-            // connection charset (a BLOB holding arbitrary bytes), which the grid then
-            // showed as a plain NULL — indistinguishable from a real one, and a lie about
-            // what is in the table. Fall back to the same `0x…` hex the query tab renders
-            // (`exec::cell_text`). A genuine NULL still comes through as NULL: HEX(NULL) is
-            // NULL, so the CONCAT is NULL too.
-            .map(|c| {
-                let q = quote_ident(c);
-                format!("IFNULL(CAST({q} AS CHAR), CONCAT('0x', LOWER(HEX({q})))) AS {q}")
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        let (mut where_sql, mut binds) = build_where_clause(
-            filters,
-            &quote_ident,
-            &mysql_placeholder,
-            &quote_ident,
-            1,
-        );
-        let mut offset = offset;
-        if let Some((k, kb)) =
-            after.and_then(|a| build_keyset(order, pk, a, &quote_ident, &mysql_placeholder, binds.len() + 1, true))
-        {
-            where_sql = if where_sql.is_empty() { k } else { format!("{where_sql} AND {k}") };
-            binds.extend(kb);
-            offset = 0;
-        }
-        let q = format!(
-            "SELECT {select_list} FROM (SELECT * FROM {}.{} AS _t{}{order_sql} LIMIT ? OFFSET ?) AS _w",
-            quote_ident(schema),
-            quote_ident(table),
-            if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },
-        );
-        // MySQL placeholders are positional in statement order: the filters, the keyset,
-        // then LIMIT/OFFSET.
-        let mut qy = sqlx::query(&q);
-        for b in &binds {
-            qy = qy.bind(b.clone());
-        }
-        qy = qy.bind(len as i64).bind(offset as i64);
-        let rows = qy.fetch_all(&self.pool).await.map_err(db)?;
-        text_rows_to_batch(cols, &rows)
+        self.window(schema, table, offset, len, filters, order, after, None).await
+    }
+
+    async fn open_window_cancellable(
+        &self,
+        schema: &str,
+        table: &str,
+        offset: usize,
+        len: usize,
+        filters: &[ColumnFilter],
+        order: &[SortKey],
+        after: Option<&[Option<String>]>,
+        token: &CancelToken,
+    ) -> DResult<RecordBatch> {
+        self.window(schema, table, offset, len, filters, order, after, Some(token)).await
     }
 
     fn forget_meta(&self) {

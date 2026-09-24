@@ -232,8 +232,11 @@ impl SqlDriver for SqliteDriver {
         filters: &[ColumnFilter],
         _force_exact: Option<&CancelToken>,
     ) -> DResult<RowCount> {
+        let cols: Vec<String> =
+            self.columns_of(table).await?.into_iter().map(|c| c.name).collect();
         let (where_sql, binds) = build_where_clause(
             filters,
+            &cols,
             &quote_ident,
             &sqlite_placeholder,
             &quote_ident,
@@ -275,6 +278,7 @@ impl SqlDriver for SqliteDriver {
             .join(", ");
         let (mut where_sql, mut binds) = build_where_clause(
             filters,
+            &cols,
             &quote_ident,
             &sqlite_placeholder,
             &quote_ident,

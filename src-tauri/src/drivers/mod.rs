@@ -22,9 +22,14 @@ pub mod sqlserver;
 /// (Postgres backend PID / MySQL connection id) that a *second* connection uses to cancel
 /// the in-flight query. The id is recorded by `run_statements` once the query's
 /// connection is known, then read by `cancel`.
+///
+/// It also carries a cancelled flag, under the same lock as the id: a query that records its
+/// id and *then* checks the flag cannot slip between a canceller setting the flag and *then*
+/// reading the id — one of the two always sees the other. That covers a cancel that lands
+/// before the query had an id to target.
 #[derive(Clone, Default)]
 pub struct CancelToken {
-    backend_id: Arc<Mutex<Option<i64>>>,
+    state: Arc<Mutex<(Option<i64>, bool)>>,
 }
 
 impl CancelToken {
@@ -33,11 +38,22 @@ impl CancelToken {
     }
     /// Record the server-side id (PG backend PID / MySQL connection id) for this query.
     pub fn set_backend_id(&self, id: i64) {
-        *crate::lk(&self.backend_id) = Some(id);
+        crate::lk(&self.state).0 = Some(id);
     }
     /// The recorded server-side id, or `None` if the query hasn't started yet.
     pub fn backend_id(&self) -> Option<i64> {
-        *crate::lk(&self.backend_id)
+        crate::lk(&self.state).0
+    }
+    /// Flag the query as cancelled by the user; call before [`SqlDriver::cancel`].
+    pub fn mark_cancelled(&self) {
+        crate::lk(&self.state).1 = true;
+    }
+    pub fn is_cancelled(&self) -> bool {
+        crate::lk(&self.state).1
+    }
+    /// The same token (a clone of it), not merely an equal one.
+    pub fn same(&self, other: &CancelToken) -> bool {
+        Arc::ptr_eq(&self.state, &other.state)
     }
 }
 
@@ -259,6 +275,9 @@ pub enum FilterOp {
     ILike,
     IsNull,
     IsNotNull,
+    /// All-column "contains" search: `column` is ignored (the UI sends `"*"`) and `value`
+    /// is the raw term. See [`build_where_clause`].
+    Search,
 }
 
 /// One AND-clause in a per-column filter set (Slice 21 #1).
@@ -288,6 +307,10 @@ pub struct RowCount {
 /// Above this many estimated rows, an unfiltered `count_rows` reports the catalog estimate
 /// instead of running `COUNT(*)`: past it an exact count is too slow to wait for on open.
 pub const EXACT_COUNT_MAX: i64 = 10_000_000;
+
+/// Server-side bound on a filtered [`SqlDriver::open_window_cancellable`] page. A search
+/// can't use an index, so on a big table it would otherwise scan until it finds a page.
+pub const WINDOW_TIMEOUT_MS: u64 = 15_000;
 
 /// Build the ORDER BY for one page of a table, or `""` for none. The table is aliased
 /// `_t`, so every term is qualified `_t.<quoted col>` and sorts on the real typed column
@@ -415,8 +438,14 @@ pub fn build_keyset(
 /// `ILike` translates to a cross-engine `LOWER(col) LIKE LOWER(val)` form so a non-PG
 /// engine never sees an unsupported keyword. PG keeps that translation too (correct +
 /// portable), trading a tiny perf hit for one less SQL dialect quirk.
+///
+/// `Search` expands to that same case-insensitive contains, ORed over `columns` (the
+/// searchable columns, in table order) with one bind per column — MySQL's `?` cannot be
+/// reused. The term is wrapped `%…%` with its own wildcards escaped by `!`: a backslash
+/// escape is itself an escape in a MySQL string literal, `!` means the same everywhere.
 pub fn build_where_clause(
     filters: &[ColumnFilter],
+    columns: &[String],
     quote_ident: &dyn Fn(&str) -> String,
     placeholder: &dyn Fn(usize, &str) -> String,
     text_expr: &dyn Fn(&str) -> String,
@@ -433,6 +462,20 @@ pub fn build_where_clause(
         match f.op {
             FilterOp::IsNull => parts.push(format!("{col} IS NULL")),
             FilterOp::IsNotNull => parts.push(format!("{col} IS NOT NULL")),
+            FilterOp::Search if columns.is_empty() => parts.push("1 = 0".into()),
+            FilterOp::Search => {
+                let pat = format!("%{}%", like_escape(f.value.as_deref().unwrap_or("")));
+                let ors: Vec<String> = columns
+                    .iter()
+                    .map(|c| {
+                        let ph = placeholder(idx, "");
+                        idx += 1;
+                        binds.push(Some(pat.clone()));
+                        format!("LOWER({}) LIKE LOWER({ph}) ESCAPE '!'", text_expr(c))
+                    })
+                    .collect();
+                parts.push(format!("({})", ors.join(" OR ")));
+            }
             FilterOp::Like | FilterOp::ILike => {
                 let lhs = text_expr(&f.column);
                 let ph = placeholder(idx, "");
@@ -452,7 +495,7 @@ pub fn build_where_clause(
                     FilterOp::Le => "<=",
                     FilterOp::Gt => ">",
                     FilterOp::Ge => ">=",
-                    _ => unreachable!("null/LIKE ops handled above"),
+                    _ => unreachable!("null/LIKE/search ops handled above"),
                 };
                 let ph = placeholder(idx, &f.column);
                 parts.push(format!("{col} {sym} {ph}"));
@@ -462,6 +505,19 @@ pub fn build_where_clause(
         }
     }
     (parts.join(" AND "), binds)
+}
+
+/// Escape a term's LIKE metacharacters with `!` so it matches literally: `%`, `_`, the
+/// escape itself, and `[` (a character class in SQL Server).
+fn like_escape(term: &str) -> String {
+    let mut out = String::with_capacity(term.len());
+    for ch in term.chars() {
+        if matches!(ch, '%' | '_' | '!' | '[') {
+            out.push('!');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 /// SQL engines (PG/MySQL/MariaDB/SQLite/SQL Server). Results stream as Arrow.
@@ -505,6 +561,25 @@ pub trait SqlDriver: Send + Sync {
         order: &[SortKey],
         after: Option<&[Option<String>]>,
     ) -> DResult<arrow::record_batch::RecordBatch>;
+    /// The grid's page fetch: [`SqlDriver::open_window_filtered`], recording the server-side
+    /// id in `token` so [`SqlDriver::cancel`] can stop it (failing with
+    /// [`DriverError::Cancelled`]), and — when any filter is present — bounded server-side at
+    /// [`WINDOW_TIMEOUT_MS`], failing with a message containing "timed out".
+    /// Default: neither; the engine runs the plain fetch.
+    #[allow(clippy::too_many_arguments)]
+    async fn open_window_cancellable(
+        &self,
+        schema: &str,
+        table: &str,
+        offset: usize,
+        len: usize,
+        filters: &[ColumnFilter],
+        order: &[SortKey],
+        after: Option<&[Option<String>]>,
+        _token: &CancelToken,
+    ) -> DResult<arrow::record_batch::RecordBatch> {
+        self.open_window_filtered(schema, table, offset, len, filters, order, after).await
+    }
     /// Unfiltered, unsorted window read (the natural/PK order).
     async fn open_window(
         &self,
@@ -724,7 +799,7 @@ mod tests {
 
     #[test]
     fn where_clause_empty_filters() {
-        let (sql, binds) = build_where_clause(&[], &pg_ident, &pg_ph, &pg_text, 1);
+        let (sql, binds) = build_where_clause(&[], &[], &pg_ident, &pg_ph, &pg_text, 1);
         assert_eq!(sql, "");
         assert!(binds.is_empty());
     }
@@ -736,7 +811,7 @@ mod tests {
             ColumnFilter { column: "age".into(), op: FilterOp::Ge, value: Some("18".into()) },
             ColumnFilter { column: "email".into(), op: FilterOp::IsNotNull, value: None },
         ];
-        let (sql, binds) = build_where_clause(&f, &pg_ident, &pg_ph, &pg_text, 1);
+        let (sql, binds) = build_where_clause(&f, &[], &pg_ident, &pg_ph, &pg_text, 1);
         // Each bind carries the column's own type: without `::int4` the `age` comparison
         // reaches Postgres as `bigint >= text` and raises "operator does not exist".
         assert_eq!(
@@ -752,7 +827,7 @@ mod tests {
             ColumnFilter { column: "x".into(), op: FilterOp::Lt, value: Some("5".into()) },
             ColumnFilter { column: "y".into(), op: FilterOp::Like, value: Some("%foo%".into()) },
         ];
-        let (sql, binds) = build_where_clause(&f, &mysql_ident, &mysql_ph, &mysql_ident, 1);
+        let (sql, binds) = build_where_clause(&f, &[], &mysql_ident, &mysql_ph, &mysql_ident, 1);
         assert_eq!(sql, "`x` < ? AND `y` LIKE ?");
         assert_eq!(binds, vec![Some("5".into()), Some("%foo%".into())]);
     }
@@ -763,7 +838,7 @@ mod tests {
             ColumnFilter { column: "a".into(), op: FilterOp::Ne, value: Some("1".into()) },
             ColumnFilter { column: "b".into(), op: FilterOp::IsNull, value: None },
         ];
-        let (sql, binds) = build_where_clause(&f, &pg_ident, &sqlite_ph, &pg_ident, 3);
+        let (sql, binds) = build_where_clause(&f, &[], &pg_ident, &sqlite_ph, &pg_ident, 3);
         assert_eq!(sql, "\"a\" <> ?3 AND \"b\" IS NULL");
         assert_eq!(binds, vec![Some("1".into())]);
     }
@@ -775,7 +850,7 @@ mod tests {
             op: FilterOp::Eq,
             value: Some("v".into()),
         }];
-        let (sql, _binds) = build_where_clause(&f, &mssql_ident, &mssql_ph, &mssql_ident, 1);
+        let (sql, _binds) = build_where_clause(&f, &[], &mssql_ident, &mssql_ph, &mssql_ident, 1);
         assert_eq!(sql, "[col]]name] = @P1");
     }
 
@@ -786,9 +861,80 @@ mod tests {
             op: FilterOp::ILike,
             value: Some("%Bob%".into()),
         }];
-        let (sql, binds) = build_where_clause(&f, &pg_ident, &pg_ph, &pg_text, 1);
+        let (sql, binds) = build_where_clause(&f, &[], &pg_ident, &pg_ph, &pg_text, 1);
         assert_eq!(sql, "LOWER(\"name\"::text) LIKE LOWER($1::text)");
         assert_eq!(binds, vec![Some("%Bob%".into())]);
+    }
+
+    fn search(term: &str) -> Vec<ColumnFilter> {
+        vec![ColumnFilter { column: "*".into(), op: FilterOp::Search, value: Some(term.into()) }]
+    }
+    fn cols(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Search ORs a case-insensitive contains over every column's text rendering, one bind
+    /// per column (MySQL's `?` cannot be reused), each column cast by the engine's text_expr.
+    #[test]
+    fn search_expands_to_every_column_postgres() {
+        let (sql, binds) =
+            build_where_clause(&search("Bob"), &cols(&["id", "name"]), &pg_ident, &pg_ph, &pg_text, 1);
+        assert_eq!(
+            sql,
+            "(LOWER(\"id\"::text) LIKE LOWER($1::text) ESCAPE '!' \
+             OR LOWER(\"name\"::text) LIKE LOWER($2::text) ESCAPE '!')"
+        );
+        assert_eq!(binds, vec![Some("%Bob%".into()), Some("%Bob%".into())]);
+    }
+
+    #[test]
+    fn search_mysql_casts_and_binds_per_column() {
+        let cast = |c: &str| format!("CAST({} AS CHAR)", mysql_ident(c));
+        let (sql, binds) =
+            build_where_clause(&search("x"), &cols(&["a", "b"]), &mysql_ident, &mysql_ph, &cast, 1);
+        assert_eq!(
+            sql,
+            "(LOWER(CAST(`a` AS CHAR)) LIKE LOWER(?) ESCAPE '!' \
+             OR LOWER(CAST(`b` AS CHAR)) LIKE LOWER(?) ESCAPE '!')"
+        );
+        assert_eq!(binds.len(), 2);
+    }
+
+    /// The term's own wildcards match literally: `%`, `_`, the escape char `!` and SQL
+    /// Server's `[` class opener are escaped; a backslash is an ordinary character.
+    #[test]
+    fn search_term_wildcards_are_escaped() {
+        let (_, binds) =
+            build_where_clause(&search("5%_a!b[c\\d"), &cols(&["a"]), &pg_ident, &sqlite_ph, &pg_ident, 1);
+        assert_eq!(binds, vec![Some("%5!%!_a!!b![c\\d%".into())]);
+    }
+
+    /// Search composes with the other filters and keeps the placeholder numbering going.
+    #[test]
+    fn search_and_filters_number_on() {
+        let mut f = vec![ColumnFilter { column: "a".into(), op: FilterOp::Eq, value: Some("1".into()) }];
+        f.extend(search("q"));
+        let (sql, binds) =
+            build_where_clause(&f, &cols(&["a", "b"]), &mssql_ident, &mssql_ph, &mssql_ident, 3);
+        assert_eq!(
+            sql,
+            "[a] = @P3 AND (LOWER([a]) LIKE LOWER(@P4) ESCAPE '!' OR LOWER([b]) LIKE LOWER(@P5) ESCAPE '!')"
+        );
+        assert_eq!(binds.len(), 3);
+    }
+
+    #[test]
+    fn search_with_no_searchable_column_matches_nothing() {
+        let (sql, binds) = build_where_clause(&search("q"), &[], &pg_ident, &pg_ph, &pg_text, 1);
+        assert_eq!(sql, "1 = 0");
+        assert!(binds.is_empty());
+    }
+
+    #[test]
+    fn search_filter_deserializes_from_the_frontend_contract() {
+        let f: ColumnFilter =
+            serde_json::from_str(r#"{"column":"*","op":"Search","value":"bob"}"#).unwrap();
+        assert_eq!(f.op, FilterOp::Search);
     }
 
     #[test]
@@ -832,6 +978,16 @@ mod tests {
             build_insert_sql("dbo", "tbl", &vals, &mssql_ident, &mssql_ph, true);
         assert_eq!(sql, "INSERT INTO [dbo].[tbl] ([a], [b]) VALUES (@P1, @P2)");
         assert_eq!(binds, vec![Some("1".into()), None]);
+    }
+
+    #[test]
+    fn cancel_token_flag_is_shared_by_clones_only() {
+        let t = CancelToken::new();
+        let (clone, other) = (t.clone(), CancelToken::new());
+        assert!(!t.is_cancelled());
+        clone.mark_cancelled();
+        assert!(t.is_cancelled() && !other.is_cancelled());
+        assert!(t.same(&clone) && !t.same(&other));
     }
 
     #[test]
