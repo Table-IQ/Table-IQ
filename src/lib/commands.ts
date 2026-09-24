@@ -128,6 +128,14 @@ export interface KvValue {
 }
 
 function inTauri(): boolean {
+  // The mock backend further down is a DEV-ONLY convenience so /browse can exercise the
+  // full UI without a database. It must never be reachable from a packaged build: this was
+  // a pure runtime check, so if `__TAURI_INTERNALS__` were ever absent there — a webview
+  // quirk, a preload failure — every command would quietly return fabricated data, and
+  // `applyEdit`/`insertRow` would report writes that never happened. `import.meta.env.DEV`
+  // is statically replaced at build time, so a release build always takes the real
+  // `invoke()` path and fails loudly instead of lying.
+  if (!import.meta.env.DEV) return true;
   return BRIDGE || (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window);
 }
 
