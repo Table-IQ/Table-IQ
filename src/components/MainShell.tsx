@@ -160,6 +160,9 @@ export function MainShell() {
   // by the time the write fails, and the Table/Query status bars belong to a tab body that
   // may not even be open. One message, one strip — not a toast system.
   const [exportMsg, setExportMsg] = useState<string | null>(null);
+  /** A connection switch (or an in-place reconnect) that failed. Same reasoning
+   *  as `exportMsg`: the picker is gone by the time the error lands. */
+  const [connMsg, setConnMsg] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState<string | null>(null);
 
   // Keep the sidebar schema selection valid across connection/database switches.
@@ -317,6 +320,7 @@ export function MainShell() {
   const onReconnect = async () => {
     if (reconnecting) return;
     setReconnecting(true);
+    setConnMsg(null);
     try {
       const info = await connect(active.id);
       const schemaModel = await listObjects(active.id);
@@ -325,6 +329,7 @@ export function MainShell() {
       setSchema(schemaModel);
     } catch (e) {
       console.error("reconnect failed", e);
+      setConnMsg(`Could not reconnect to '${active.database}': ${e}`);
     } finally {
       setReconnecting(false);
     }
@@ -333,6 +338,7 @@ export function MainShell() {
   /** Swap to a different saved connection without leaving the workspace. */
   const onSwapConnection = async (c: ConnConfig) => {
     if (c.id === active.id) return;
+    setConnMsg(null);
     try {
       // Disconnect the current session first so we don't pile up backend sessions.
       await disconnect(active.id);
@@ -344,10 +350,13 @@ export function MainShell() {
       setActive(info);
       setSchema(schemaModel);
     } catch (e) {
-      // If the new connection fails, fall back to no-active so the user can recover via the picker.
+      // Dropping to `active: null` here rendered the connection list again with no
+      // hint that anything had gone wrong. Keep the workspace and say what failed:
+      // the old session was already disconnected above, so raise the reconnect
+      // banner too — tapping it re-opens the connection the user was on.
       console.error("connection swap failed", e);
-      setActive(null);
-      setSchema(null);
+      setConnMsg(`Could not switch to '${c.name}': ${e}`);
+      setDisconnected(true);
     }
   };
 
@@ -648,6 +657,20 @@ export function MainShell() {
             {reconnecting ? "Reconnecting…" : "Tap to reconnect"}
           </span>
         </button>
+      )}
+
+      {connMsg && (
+        <div className="flex h-7 shrink-0 items-center gap-2 border-b border-danger/30 bg-danger/10 px-3 text-[11px] text-danger">
+          <span className="min-w-0 flex-1 truncate" title={connMsg}>
+            {connMsg}
+          </span>
+          <button
+            onClick={() => setConnMsg(null)}
+            className="shrink-0 underline underline-offset-2 hover:opacity-80"
+          >
+            Dismiss
+          </button>
+        </div>
       )}
 
       {exportMsg && (
