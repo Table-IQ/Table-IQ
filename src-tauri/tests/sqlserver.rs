@@ -892,3 +892,35 @@ async fn sqlserver_inserts_an_all_defaults_row() {
     assert_eq!(n.expect("all-defaults insert"), 1);
     assert_eq!(rows, vec![vec![Some("1".to_string()), Some("7".to_string())]]);
 }
+
+/// A column Like filter on a datetime compares the grid's ISO text (style 121), not
+/// `Sep 23 2026 1:45PM`; on a varbinary it compares the hex, which has no plain CAST.
+#[tokio::test]
+async fn sqlserver_like_filter_on_datetime_and_varbinary() {
+    let _serialised = serialised().await;
+    let Some(drv) = connect().await else { return };
+    drv.run_script(
+        "IF OBJECT_ID('dbo.tiq_like','U') IS NOT NULL DROP TABLE dbo.tiq_like; \
+         CREATE TABLE dbo.tiq_like (id INT PRIMARY KEY, d DATETIME NOT NULL, b VARBINARY(16) NULL); \
+         INSERT INTO dbo.tiq_like VALUES (1, '2026-09-23 13:45:07', 0xDEADBEEF), \
+                                         (2, '2025-01-02 00:00:00', 0x00FF);",
+    )
+    .await
+    .expect("seed");
+    let like = |column: &str, value: &str| {
+        vec![ColumnFilter { column: column.into(), op: FilterOp::Like, value: Some(value.into()) }]
+    };
+    let mut got = Vec::new();
+    for f in [like("d", "2026-09-23 13:45%"), like("b", "DEADBE%"), like("d", "Sep%")] {
+        let page = drv.open_window_filtered("dbo", "tiq_like", 0, 10, &f, &[], None).await;
+        let count = drv.count_rows("dbo", "tiq_like", &f, None).await;
+        got.push((page.map(|b| text_rows(&b).into_iter().map(|r| r[0].clone()).collect::<Vec<_>>()), count));
+    }
+    drv.run_script("DROP TABLE dbo.tiq_like").await.ok();
+    let one = Some("1".to_string());
+    assert_eq!(got[0].0.as_ref().unwrap(), &vec![one.clone()], "datetime LIKE on the ISO text");
+    assert_eq!(got[0].1.as_ref().unwrap().count, Some(1));
+    assert_eq!(got[1].0.as_ref().unwrap(), &vec![one], "varbinary LIKE on the hex");
+    assert_eq!(got[1].1.as_ref().unwrap().count, Some(1));
+    assert!(got[2].0.as_ref().unwrap().is_empty(), "not the legacy `Sep 23 2026` rendering");
+}

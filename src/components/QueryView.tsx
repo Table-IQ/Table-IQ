@@ -12,7 +12,7 @@ import { useConnections } from "../state/connectionStore";
 import { useTabs } from "../state/tabsStore";
 import { oneLine } from "../lib/history";
 import { schemaModelToCompletionMap } from "../lib/schemaCompletion";
-import type { SqlDialect } from "../lib/sqlSplit";
+import { dialectFor, type SqlDialect } from "../lib/sqlSplit";
 import {
   explainStatement,
   resultTabs,
@@ -116,10 +116,8 @@ export function QueryView({
     () => schemaModelToCompletionMap(schemaModel),
     [schemaModel],
   );
-  // sqlSplit's dialect union excludes redis/mongodb (they don't reach this tab kind
-  // today); default to postgres, matching SqlEditor's own CodeMirror-dialect fallback.
-  const sqlDialect: SqlDialect =
-    engine === "mysql" || engine === "sqlite" || engine === "sqlserver" ? engine : "postgres";
+  // Defaults to postgres, matching SqlEditor's own CodeMirror-dialect fallback.
+  const sqlDialect: SqlDialect = dialectFor(engine);
 
   useEffect(() => {
     window.localStorage.setItem(EDITOR_H_KEY, String(editorH));

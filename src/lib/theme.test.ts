@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveTheme, gridTheme, gridRowTints, editTints, nullCellStyle } from "./theme";
+import { resolveTheme, gridTheme, gridRowTints, editTints, nullCellStyle, searchHitBg } from "./theme";
 
 describe("resolveTheme", () => {
   it("returns the explicit choice for light/dark", () => {
@@ -72,5 +72,17 @@ describe("nullCellStyle", () => {
   it("uses the mode's own muted tone", () => {
     expect(nullCellStyle("light").textDark).toBe("#71717a");
     expect(nullCellStyle("dark").textDark).toBe("#71757e");
+  });
+});
+
+describe("searchHitBg", () => {
+  it("is its own colour per mode, distinct from the selected-row band", () => {
+    for (const mode of ["light", "dark"] as const) {
+      const hit = searchHitBg(mode);
+      expect(hit).toMatch(/^#[0-9a-f]{6}$/i);
+      expect(hit).not.toBe(gridTheme(mode).accentLight);
+      expect(hit).not.toBe(gridTheme(mode).bgCell);
+    }
+    expect(searchHitBg("light")).not.toBe(searchHitBg("dark"));
   });
 });

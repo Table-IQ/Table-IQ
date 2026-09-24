@@ -558,11 +558,22 @@ pub async fn count_rows_exact(
     token_id: String,
 ) -> Result<OpenTableInfo, String> {
     let drv = state.session(&id)?;
-    let f = filters.unwrap_or_default();
+    exact_count(&state.cancels, drv.as_ref(), &schema, &table, &filters.unwrap_or_default(), &token_id).await
+}
+
+/// The body of [`count_rows_exact`], outside Tauri so it can be tested.
+pub async fn exact_count(
+    cancels: &Mutex<HashMap<String, CancelToken>>,
+    drv: &dyn SqlDriver,
+    schema: &str,
+    table: &str,
+    filters: &[ColumnFilter],
+    token_id: &str,
+) -> Result<OpenTableInfo, String> {
     let token = CancelToken::new();
-    lk(&state.cancels).insert(token_id.clone(), token.clone());
-    let res = drv.count_rows(&schema, &table, &f, Some(&token)).await;
-    lk(&state.cancels).remove(&token_id);
+    lk(cancels).insert(token_id.to_string(), token.clone());
+    let res = drv.count_rows(schema, table, filters, Some(&token)).await;
+    lk(cancels).remove(token_id);
     let c = res.map_err(|e| match e {
         DriverError::Cancelled => "Query cancelled".to_string(),
         other => other.to_string(),
@@ -781,11 +792,23 @@ pub async fn cancel_query(
     id: String,
     query_id: String,
 ) -> Result<(), String> {
-    let token = lk(&state.cancels).get(&query_id).cloned();
+    if !lk(&state.cancels).contains_key(&query_id) {
+        return Ok(()); // already completed/removed
+    }
+    let drv = state.session(&id)?;
+    cancel_registered(&state.cancels, drv.as_ref(), &query_id).await
+}
+
+/// The body of [`cancel_query`], outside Tauri so it can be tested.
+pub async fn cancel_registered(
+    cancels: &Mutex<HashMap<String, CancelToken>>,
+    drv: &dyn SqlDriver,
+    query_id: &str,
+) -> Result<(), String> {
+    let token = lk(cancels).get(query_id).cloned();
     let Some(token) = token else {
         return Ok(()); // already completed/removed
     };
-    let drv = state.session(&id)?;
     // A page fetch tells this apart from its own statement timeout by the flag.
     token.mark_cancelled();
     match drv.cancel(&token).await {
@@ -859,19 +882,30 @@ pub async fn export_table(
     order: Option<Vec<SortKey>>,
 ) -> Result<String, String> {
     let drv = state.session(&id)?;
-    let f = filters.unwrap_or_default();
-    let o = order.unwrap_or_default();
+    let (f, o) = (filters.unwrap_or_default(), order.unwrap_or_default());
+    table_export(drv.as_ref(), &schema, &table, &format, &f, &o).await
+}
+
+/// The body of [`export_table`], outside Tauri so it can be tested.
+pub async fn table_export(
+    drv: &dyn SqlDriver,
+    schema: &str,
+    table: &str,
+    format: &str,
+    filters: &[ColumnFilter],
+    order: &[SortKey],
+) -> Result<String, String> {
     // Export up to the same cap as queries (bounded), through the same filtered+ordered
     // window the grid shows.
     let mut batch = drv
-        .open_window_filtered(&schema, &table, 0, QUERY_CAP, &f, &o, None)
+        .open_window_filtered(schema, table, 0, QUERY_CAP, filters, order, None)
         .await
         .map_err(|e| e.to_string())?;
     // The ctid cursor column is paging plumbing, not table data.
     if let Ok(i) = batch.schema().index_of(crate::drivers::postgres::CTID_COL) {
         batch.remove_column(i);
     }
-    Ok(encode_export(&batch, &format))
+    Ok(encode_export(&batch, format))
 }
 
 #[derive(Serialize)]

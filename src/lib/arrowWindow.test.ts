@@ -58,6 +58,19 @@ describe("WindowCache", () => {
     expect(c.getCell(25, "id")).toBeUndefined();
   });
 
+  it("windowOf returns the page holding a row without touching LRU order", () => {
+    const c = new WindowCache(10, 2);
+    const w0 = win(0);
+    c.put(0, w0);
+    c.put(1, win(10));
+    expect(c.windowOf(9)).toBe(w0);
+    expect(c.windowOf(10)?.getCell(0, "id")).toBe("10");
+    expect(c.windowOf(20)).toBeUndefined();
+    c.put(2, win(20)); // page 0 is still the LRU one despite windowOf(9)
+    expect(c.has(0)).toBe(false);
+    expect(c.has(1)).toBe(true);
+  });
+
   it("evicts the least-recently-used page beyond capacity", () => {
     const c = new WindowCache(10, 2);
     c.put(0, win(0));

@@ -558,3 +558,57 @@ async fn sqlite_keyset_pages_equal_offset_pages() {
     let desc = [sort("o", true), sort("l", true)];
     keyset_equals_offset(&drv, t, &["o", "l"], &desc, &[], 400, 100).await;
 }
+
+/// Export goes through the same window as the grid, so a no-PK Postgres table's page
+/// carries the `__tiq_ctid` cursor — paging plumbing that must not reach the file.
+#[tokio::test]
+async fn pg_export_of_a_no_pk_table_has_no_ctid_column() {
+    use tableiq_lib::ipc::connect::table_export;
+    let Some(url) = pg() else {
+        return;
+    };
+    let a = admin(&url).await;
+    run(&a, "DROP SCHEMA IF EXISTS tiq_exp CASCADE; CREATE SCHEMA tiq_exp; \
+             CREATE TABLE tiq_exp.t (n int, s text); \
+             INSERT INTO tiq_exp.t SELECT g, 'r' || g FROM generate_series(1, 3) g;")
+        .await;
+    let drv = PgDriver::connect(&url).await.unwrap();
+    for format in ["csv", "json"] {
+        let out = table_export(&drv, "tiq_exp", "t", &format, &[], &[]).await.unwrap();
+        assert!(!out.contains("__tiq_ctid") && !out.contains("(0,"), "{format}: {out}");
+        assert!(out.contains("r3"), "{format}: every row is exported: {out}");
+    }
+    run(&a, "DROP SCHEMA tiq_exp CASCADE").await;
+}
+
+/// The IPC path of "count exactly": the token is registered under the caller's id, so
+/// `cancel_query` finds and stops it, the command answers "Query cancelled", and the entry
+/// is gone afterwards.
+#[tokio::test]
+async fn pg_count_rows_exact_ipc_registers_and_cancels() {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use tableiq_lib::ipc::connect::{cancel_registered, exact_count};
+    let Some(url) = pg() else {
+        return;
+    };
+    let a = admin(&url).await;
+    run(&a, "DROP SCHEMA IF EXISTS tiq_cnt_ipc CASCADE; CREATE SCHEMA tiq_cnt_ipc; \
+             CREATE VIEW tiq_cnt_ipc.slow AS SELECT pg_sleep(30)::text AS s;")
+        .await;
+    let drv = Arc::new(PgDriver::connect(&url).await.unwrap());
+    let cancels: Arc<Mutex<HashMap<String, CancelToken>>> = Arc::default();
+    let (d2, c2) = (drv.clone(), cancels.clone());
+    let start = std::time::Instant::now();
+    let h = tokio::spawn(async move { exact_count(&c2, &*d2, "tiq_cnt_ipc", "slow", &[], "count-1").await });
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert!(cancels.lock().unwrap().contains_key("count-1"), "the count is registered");
+    cancel_registered(&cancels, &*drv, "count-1").await.expect("cancel_query");
+    let err = h.await.unwrap().err().expect("the count must be cancelled");
+    assert_eq!(err, "Query cancelled");
+    assert!(start.elapsed() < Duration::from_secs(10));
+    assert!(cancels.lock().unwrap().is_empty(), "the entry is removed");
+    // Nothing registered (already finished): cancel is a no-op.
+    cancel_registered(&cancels, &*drv, "count-1").await.expect("no-op");
+    run(&a, "DROP SCHEMA tiq_cnt_ipc CASCADE").await;
+}
