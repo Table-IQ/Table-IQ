@@ -59,6 +59,18 @@ async fn counts_before_another_statement(drv: &dyn SqlDriver, series: &str) {
     assert_eq!(cell(&outs[1], 0, 0).as_deref(), Some("1"));
 }
 
+/// A read-only-looking last statement that stops at the cap is cancelled — so if it did
+/// write (a function with side effects), that write is gone, and the output says so.
+async fn stopping_early_says_writes_were_rolled_back(drv: &dyn SqlDriver, series: &str) {
+    let o = one_capped(drv, series, 100).await;
+    assert_eq!(
+        o.notice.as_deref(),
+        Some("Stopped reading after 100 rows; the statement was cancelled, so any writes it made (e.g. via functions) were rolled back."),
+    );
+    let o = one_capped(drv, series, 1000).await;
+    assert_eq!(o.notice, None, "a statement read to the end was not cancelled");
+}
+
 /// An all-blank "+ Row" draft sends no columns: the row is every column's DEFAULT
 /// (`DEFAULT VALUES`, or MySQL's `() VALUES ()` — never the invalid `() VALUES ()` elsewhere).
 async fn inserts_an_all_defaults_row(drv: &dyn SqlDriver, schema: &str, t: &str) {
@@ -162,6 +174,7 @@ async fn sqlite_run_statements() {
     shared_cases(&drv, series, "tiq_exec_sqlite").await;
     counts_before_another_statement(&drv, series).await;
     inserts_an_all_defaults_row(&drv, "main", "tiq_defaults_sqlite").await;
+    stopping_early_says_writes_were_rolled_back(&drv, series).await;
 
     // SQLite is dynamically typed: INTEGER/REAL must render as numbers, not raw bytes.
     let o = one(&drv, "SELECT 42 AS i, 1.5 AS r, 'txt' AS t").await;
@@ -212,6 +225,7 @@ async fn pg_run_statements() {
     shared_cases(&drv, "SELECT * FROM generate_series(1, 1000)", "tiq_exec_pg").await;
     counts_before_another_statement(&drv, "SELECT * FROM generate_series(1, 1000)").await;
     inserts_an_all_defaults_row(&drv, "public", "tiq_defaults_pg").await;
+    stopping_early_says_writes_were_rolled_back(&drv, "SELECT * FROM generate_series(1, 1000)").await;
 
     // SHOW / EXPLAIN — neither survives the old `SELECT * FROM (…) AS _q` wrapper.
     let o = one(&drv, "SHOW server_version").await;
@@ -282,6 +296,7 @@ async fn mysql_run_statements() {
     shared_cases(&drv, series, "tiq_exec_mysql").await;
     counts_before_another_statement(&drv, series).await;
     inserts_an_all_defaults_row(&drv, "tableiq", "tiq_defaults_mysql").await;
+    stopping_early_says_writes_were_rolled_back(&drv, series).await;
 
     let o = one(&drv, "SHOW TABLES").await;
     assert!(!o.columns.is_empty(), "SHOW TABLES must name its column");
