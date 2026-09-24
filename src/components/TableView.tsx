@@ -678,27 +678,29 @@ export function TableView({ connId, schema, object, view }: Props) {
           <div className={`text-sm ${friendly === error ? "font-mono text-danger" : "text-warn"}`}>
             {friendly === error ? `Failed to open ${object.name}: ${error}` : friendly}
           </div>
-          {filters.length > 0 && (
-            <div className="space-y-2">
-              <p className="text-[11.5px] text-muted">
-                {filters.length === 1 ? "A filter is" : "Filters are"} applied. If the engine
-                rejected {filters.length === 1 ? "it" : "them"}, clear{" "}
-                {filters.length === 1 ? "it" : "them"} to get back to the table.
-              </p>
+          {filters.length > 0 && friendly === error && (
+            <p className="text-[11.5px] text-muted">
+              {filters.length === 1 ? "A filter is" : "Filters are"} applied. If the engine
+              rejected {filters.length === 1 ? "it" : "them"}, clear{" "}
+              {filters.length === 1 ? "it" : "them"} to get back to the table.
+            </p>
+          )}
+          <div className="flex items-center gap-2">
+            {filters.length > 0 && (
               <button
                 onClick={() => applyFilters([])}
                 className="rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-white hover:opacity-90"
               >
                 Clear filters
               </button>
-            </div>
-          )}
-          <button
-            onClick={refresh}
-            className="rounded-md border border-border px-2.5 py-1 text-[11px] text-muted hover:text-text"
-          >
-            Try again
-          </button>
+            )}
+            <button
+              onClick={refresh}
+              className="rounded-md border border-border px-2.5 py-1 text-[11px] text-muted hover:text-text"
+            >
+              Try again
+            </button>
+          </div>
         </div>
         <StatusBar
           left={statusObjectInfo}
