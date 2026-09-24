@@ -187,6 +187,79 @@ async fn rollback_orphan_tx(c: &mut Conn) {
     }
 }
 
+/// Words that make a batch more than a plain read. `SET ROWCOUNT` caps DML, procedure calls
+/// and everything else in the batch too, so any of these — outside a string, comment or
+/// quoted identifier — means "don't cap". A false alarm just means reading to the end.
+const NOT_A_PLAIN_SELECT: &[&str] = &[
+    "INTO", "UPDATE", "DELETE", "INSERT", "MERGE", "EXEC", "EXECUTE", "TRUNCATE", "DROP",
+    "ALTER", "CREATE", "SET", "DECLARE", "BEGIN", "END", "COMMIT", "ROLLBACK", "SAVE", "WAITFOR",
+    "GRANT", "REVOKE", "DENY", "USE", "IF", "WHILE", "GOTO", "RETURN", "PRINT", "RAISERROR",
+    "THROW", "BULK", "BACKUP", "RESTORE", "DBCC", "KILL", "OPEN", "FETCH", "CLOSE", "DEALLOCATE",
+    "RECONFIGURE", "CHECKPOINT", "SHUTDOWN", "WRITETEXT", "UPDATETEXT", "ENABLE", "DISABLE",
+];
+
+/// True when `stmt` is only SELECTs: it starts with SELECT and no word in
+/// [`NOT_A_PLAIN_SELECT`] appears outside `'…'`, `"…"`, `[…]`, `--` and (nested) `/* */`.
+/// An unterminated string, identifier or comment is not trusted.
+fn plain_select(stmt: &str) -> bool {
+    if exec::first_keyword(stmt) != "SELECT" {
+        return false;
+    }
+    let b = stmt.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'\'' | b'"' | b'[' => {
+                let close = if b[i] == b'[' { b']' } else { b[i] };
+                i += 1;
+                // `''`, `""` and `]]` escape the closer; scanning past both halves is the same.
+                while i < b.len() && b[i] != close {
+                    i += 1;
+                }
+                if i == b.len() {
+                    return false;
+                }
+                i += 1;
+            }
+            b'-' if b.get(i + 1) == Some(&b'-') => {
+                i = stmt[i..].find('\n').map_or(b.len(), |n| i + n);
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                let mut depth = 0;
+                loop {
+                    if i + 1 >= b.len() {
+                        return false;
+                    }
+                    if b[i] == b'/' && b[i + 1] == b'*' {
+                        depth += 1;
+                        i += 2;
+                    } else if b[i] == b'*' && b[i + 1] == b'/' {
+                        depth -= 1;
+                        i += 2;
+                        if depth == 0 {
+                            break;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            c if c.is_ascii_alphabetic() || c == b'_' || c == b'@' || c == b'#' => {
+                let start = i;
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || matches!(b[i], b'_' | b'@' | b'#' | b'$')) {
+                    i += 1;
+                }
+                let word = stmt[start..i].to_ascii_uppercase();
+                if NOT_A_PLAIN_SELECT.contains(&word.as_str()) {
+                    return false;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    true
+}
+
 /// `SET ROWCOUNT n` on the pinned session (`0` lifts it).
 async fn set_rowcount(c: &mut Conn, n: usize) {
     use futures_util::StreamExt;
@@ -428,8 +501,9 @@ impl SqlDriver for SqlServerDriver {
     ///
     /// Draining a `SELECT * FROM` a trillion-row table never ends, so a plain SELECT runs under
     /// `SET ROWCOUNT cap + 1`: the server itself stops one row past the cap, and the total is
-    /// reported unknown. Only a SELECT without INTO — T-SQL functions cannot write, so it has
-    /// nothing to lose by stopping — and the limit is lifted before anything else runs.
+    /// reported unknown. Only a batch that is nothing but SELECTs ([`plain_select`]) — T-SQL
+    /// functions cannot write, so it has nothing to lose by stopping; `SET ROWCOUNT` would also
+    /// cap an UPDATE on the next line — and the limit is lifted before anything else runs.
     async fn run_statements(
         &self,
         stmts: &[String],
@@ -449,9 +523,7 @@ impl SqlDriver for SqlServerDriver {
             let mut rows: Vec<Vec<Option<std::string::String>>> = Vec::new();
             let mut total: u64 = 0;
             let mut failed: Option<tiberius::error::Error> = None;
-            let limit = cap < i32::MAX as usize
-                && exec::first_keyword(stmt) == "SELECT"
-                && !stmt.to_uppercase().contains("INTO");
+            let limit = cap < i32::MAX as usize && plain_select(stmt);
             if limit {
                 set_rowcount(&mut c, cap + 1).await;
             }
@@ -1011,7 +1083,45 @@ impl SqlDriver for SqlServerDriver {
 
 #[cfg(test)]
 mod tests {
-    use super::{cell_to_string, encryption_for};
+    use super::{cell_to_string, encryption_for, plain_select};
+
+    /// `SET ROWCOUNT` also caps DML and procedure calls, so it may only wrap a batch that is
+    /// nothing but a SELECT. The query tab splits T-SQL on `;`/GO only, so a newline-separated
+    /// `SELECT …\nUPDATE …` arrives as ONE statement.
+    #[test]
+    fn rowcount_only_wraps_a_plain_select() {
+        for q in [
+            "SELECT * FROM t",
+            "-- c\nselect a, b FROM t WHERE x = 'UPDATE t SET y=1'",
+            "SELECT [update], [set] FROM t /* DELETE FROM t */",
+            "SELECT \"insert\" FROM t",
+            "SELECT 1\nSELECT 2",
+            "SELECT N'it''s EXEC' AS s",
+            "SELECT a FROM t /* nested /* DROP */ still comment */",
+        ] {
+            assert!(plain_select(q), "{q}");
+        }
+        for q in [
+            "SELECT * FROM t\nUPDATE t SET x = 1",
+            "SELECT * INTO t2 FROM t",
+            "select 1 delete from t",
+            "SELECT 1 EXEC sp_who",
+            "SELECT 1 execute('x')",
+            "SELECT 1\nINSERT INTO t VALUES (1)",
+            "SELECT 1 MERGE t USING s ON 1=1 WHEN MATCHED THEN DELETE;",
+            "SELECT 1 TRUNCATE TABLE t",
+            "SELECT 1 DROP TABLE t",
+            "SELECT 1 DECLARE @x int",
+            "SELECT 1 SET NOCOUNT ON",
+            "SELECT 1 WAITFOR DELAY '00:00:05'",
+            "SELECT 1 BEGIN TRAN",
+            "UPDATE t SET x = 1",
+            "WITH c AS (SELECT 1 a) SELECT * FROM c",
+            "SELECT 'unterminated",
+        ] {
+            assert!(!plain_select(q), "{q}");
+        }
+    }
     use tiberius::{ColumnData, EncryptionLevel};
 
     /// `sslmode` is the only TLS knob the UI exposes. The old driver hardcoded

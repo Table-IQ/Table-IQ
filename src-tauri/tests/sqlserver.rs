@@ -844,3 +844,33 @@ async fn sqlserver_keyset_only_seeks_on_exact_pk_types() {
         drv.run_script(&format!("DROP TABLE dbo.{t}")).await.unwrap();
     }
 }
+
+/// `SET ROWCOUNT` caps DML too. The query tab splits T-SQL on `;`/GO only, so a SELECT with
+/// an UPDATE on the next line is ONE statement — capping it silently updated only `cap + 1`
+/// rows.
+#[tokio::test]
+async fn a_select_then_update_batch_updates_every_row() {
+    let _serialised = serialised().await;
+    let Some(drv) = connect().await else { return };
+    let tok = CancelToken::new();
+    drv.run_script(
+        "IF OBJECT_ID('dbo.tiq_rc','U') IS NOT NULL DROP TABLE dbo.tiq_rc; \
+         CREATE TABLE dbo.tiq_rc (id INT PRIMARY KEY, x INT NOT NULL); \
+         INSERT INTO dbo.tiq_rc VALUES (1,0),(2,0),(3,0),(4,0),(5,0),(6,0);",
+    )
+    .await
+    .expect("seed");
+    let outs = drv
+        .run_statements(&["SELECT * FROM dbo.tiq_rc\nUPDATE dbo.tiq_rc SET x = 1".to_string()], 2, &tok)
+        .await
+        .expect("run");
+    assert!(outs[0].error.is_none(), "{:?}", outs[0].error);
+    let outs = drv
+        .run_statements(&["SELECT COUNT(*) FROM dbo.tiq_rc WHERE x = 1".to_string()], 10, &tok)
+        .await
+        .expect("count");
+    let b = outs[0].batch.as_ref().unwrap();
+    let n = b.column(0).as_any().downcast_ref::<StringArray>().unwrap().value(0).to_string();
+    drv.run_script("DROP TABLE dbo.tiq_rc").await.ok();
+    assert_eq!(n, "6", "the UPDATE must not be capped by the SELECT's row limit");
+}
