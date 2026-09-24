@@ -391,7 +391,7 @@ export function QueryView({
         )}
         <ToolbarButton label="Run all" shortcut="⇧⌘↵" onClick={runAll} disabled={running} />
         <ToolbarButton label="Run in tx" onClick={runInTx} disabled={running} />
-        {engine !== "sqlserver" && (
+        {engine !== "sqlserver" && engine !== "duckdb" && (
           <ToolbarButton label="Explain" onClick={() => void explain()} disabled={running} />
         )}
         <ToolbarDivider />

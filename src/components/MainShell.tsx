@@ -449,6 +449,9 @@ export function MainShell() {
               : `CREATE SCHEMA ${q("new_schema")};`,
           ),
       });
+    }
+    // DuckDB has schemas but no roles or users.
+    if (engine !== "sqlite" && engine !== "duckdb") {
       items.push({
         id: "n-group",
         label: "New Group / Role…",

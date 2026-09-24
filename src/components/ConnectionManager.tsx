@@ -31,6 +31,7 @@ const DEFAULT_PORT: Record<string, number> = {
   postgres: 5432,
   mysql: 3306,
   sqlite: 0,
+  duckdb: 0,
   redis: 6379,
   mongodb: 27017,
   sqlserver: 1433,
@@ -72,8 +73,14 @@ export function sortByRecency(
  * TablePlus's "host:port : database" idiom but keeps our `/` separator since
  * that's what the existing detail UI already speaks.
  */
+/** Engines whose "database" is a local file path (or DuckDB's `:memory:`): no host,
+ *  no port, no password, no SSH tunnel. Mirrors `is_file_engine` in ipc/connect.rs. */
+export function isFileEngine(engine: Engine): boolean {
+  return engine === "sqlite" || engine === "duckdb";
+}
+
 function hostLineOf(c: ConnConfig): string {
-  if (c.engine === "sqlite") return c.database || "(no file selected)";
+  if (isFileEngine(c.engine)) return c.database || "(no file selected)";
   return `${c.host}:${c.port}/${c.database || ""}`.replace(/\/$/, "");
 }
 
@@ -85,7 +92,7 @@ function hostLineOf(c: ConnConfig): string {
  * unless an SSH bastion is configured.
  */
 function envTagOf(c: ConnConfig): { label: string; tone: "ok" | "warn" | "muted" } {
-  if (c.engine === "sqlite") return { label: "(file)", tone: "muted" };
+  if (isFileEngine(c.engine)) return { label: "(file)", tone: "muted" };
   const isLoopback = c.host === "127.0.0.1" || c.host === "localhost" || c.host === "::1";
   if (c.ssh?.enabled) return { label: "(ssh)", tone: "warn" };
   if (isLoopback) return { label: "(local)", tone: "ok" };
@@ -505,6 +512,7 @@ export function ConnectionManager() {
                 <option value="mysql">MySQL / MariaDB</option>
                 <option value="sqlserver">SQL Server</option>
                 <option value="sqlite">SQLite</option>
+                <option value="duckdb">DuckDB</option>
                 <option value="redis">Redis</option>
                 <option value="mongodb">MongoDB</option>
               </select>
@@ -519,14 +527,18 @@ export function ConnectionManager() {
                   placeholder="My database"
                 />
               </label>
-              {form.engine === "sqlite" ? (
+              {isFileEngine(form.engine) ? (
                 <label className="col-span-2 text-xs text-muted">
                   Database file
                   <input
                     className={field}
                     value={form.database}
                     onChange={(e) => set("database", e.target.value)}
-                    placeholder="/path/to/database.db"
+                    placeholder={
+                      form.engine === "duckdb"
+                        ? "/path/to/file.duckdb or :memory:"
+                        : "/path/to/database.db"
+                    }
                   />
                 </label>
               ) : form.engine === "redis" ? (
@@ -640,7 +652,7 @@ export function ConnectionManager() {
               )}
             </div>
 
-            {form.engine !== "sqlite" && (
+            {!isFileEngine(form.engine) && (
               <details className="mt-4 rounded-md border border-border" open={ssh.enabled}>
                 <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-xs font-medium text-text">
                   <span>SSH Tunnel</span>
