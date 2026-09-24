@@ -109,7 +109,10 @@ export function TableView({ connId, schema, object, view }: Props) {
     col: string;
     row: number;
     value: string | null;
+    /** Row as displayed — includes staged, uncommitted edits. Copy/display only. */
     values: Record<string, string | null> | null;
+    /** Row as the database still has it. The ONLY source for a WHERE clause. */
+    serverValues: Record<string, string | null> | null;
   } | null>(null);
   const [pendingCount, setPendingCount] = useState(0);
   // True while the grid is walking its staged edits, one round trip each. Sorting or
@@ -786,6 +789,9 @@ export function TableView({ connId, schema, object, view }: Props) {
         (() => {
           const colNames = object.columns.map((c) => c.name);
           const vals = cellMenu.values;
+          // Identity (PK → WHERE) never comes from `vals`: a staged edit to a PK
+          // column would aim the statement at whichever row already holds the new key.
+          const srv = cellMenu.serverValues;
           // Full row in column order; falls back to the single clicked cell when
           // the row's page hasn't loaded yet.
           const rowValues: (string | null)[] = colNames.map((c) =>
@@ -796,8 +802,8 @@ export function TableView({ connId, schema, object, view }: Props) {
           const copyRowAs = (fmt: Parameters<typeof buildRowAs>[0]) =>
             copy(buildRowAs(fmt, rowValues, colNames, { table: qualified }));
           const applyCellValue = async (newValue: string | null) => {
-            if (!pk || pk.length === 0 || !vals) return;
-            const edit = buildEdit(pk, (c) => vals[c] ?? null, cellMenu.col, newValue);
+            if (!pk || pk.length === 0 || !srv) return;
+            const edit = buildEdit(pk, (c) => srv[c] ?? null, cellMenu.col, newValue);
             try {
               await applyEdit(connId, schema, object.name, edit);
               refresh();
@@ -806,18 +812,18 @@ export function TableView({ connId, schema, object, view }: Props) {
             }
           };
           const deleteStmt = () => {
-            if (!pk || pk.length === 0 || !vals) return `-- no primary key on ${object.name}`;
+            if (!pk || pk.length === 0 || !srv) return `-- no primary key on ${object.name}`;
             const where = pk
               .map((c) => {
-                const v = vals[c];
+                const v = srv[c];
                 return `${quoteIdent(c)} = ${v == null ? "NULL" : `'${v.replace(/'/g, "''")}'`}`;
               })
               .join(" AND ");
             return `DELETE FROM ${qualified} WHERE ${where};`;
           };
           const deleteRowAction = async () => {
-            if (!pk || pk.length === 0 || !vals) return;
-            const pkPairs = pk.map((c) => [c, vals[c] ?? null] as [string, string | null]);
+            if (!pk || pk.length === 0 || !srv) return;
+            const pkPairs = pk.map((c) => [c, srv[c] ?? null] as [string, string | null]);
             const ok = await confirmDestructive(
               `Delete this row from ${qualified}? This cannot be undone.`,
             );
@@ -859,7 +865,7 @@ export function TableView({ connId, schema, object, view }: Props) {
             {
               id: "set-value",
               label: "Set value",
-              disabled: !editable || !vals,
+              disabled: !editable || !srv,
               children: [
                 { id: "set-empty", label: "Empty ''", onSelect: () => void applyCellValue("") },
                 { id: "set-null", label: "NULL", onSelect: () => void applyCellValue(null) },
@@ -903,14 +909,14 @@ export function TableView({ connId, schema, object, view }: Props) {
               id: "copy-delete",
               label: "Copy DELETE statement",
               tone: "danger",
-              disabled: !pk || pk.length === 0 || !vals,
+              disabled: !pk || pk.length === 0 || !srv,
               onSelect: () => copy(deleteStmt()),
             },
             {
               id: "delete-row",
               label: "Delete row",
               tone: "danger",
-              disabled: !editable || !vals,
+              disabled: !editable || !srv,
               onSelect: () => void deleteRowAction(),
             },
           ];

@@ -17,6 +17,7 @@ import {
   useState,
 } from "react";
 import { decodeWindow, WindowCache } from "../lib/arrowWindow";
+import { originalRowGetter } from "../lib/edit";
 import { gridTheme, gridRowTints, editTints, nullCellStyle } from "../lib/theme";
 import { useTheme } from "../theme/ThemeProvider";
 import type { ForeignKey, SortKey } from "../lib/commands";
@@ -89,6 +90,10 @@ interface Props {
     row: number;
     value: string | null;
     values: Record<string, string | null> | null;
+    /** The same row read WITHOUT staged edits — what the database still holds.
+     *  Use this (never `values`) for anything that identifies the row: a PK in a
+     *  DELETE/UPDATE WHERE clause. Null when the page hasn't loaded. */
+    serverValues: Record<string, string | null> | null;
     x: number;
     y: number;
   }) => void;
@@ -430,19 +435,26 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   /** Build the full {col → value} map for `row` by walking columns through the
    *  cache + overlay. A SQL NULL stays `null` (never ""), so the Inspector and
    *  the copy/INSERT helpers can tell it apart from an empty string. Returns
-   *  null if the row's page hasn't loaded yet. */
-  const readRow = useCallback((row: number): Record<string, string | null> | null => {
-    const cols = colNames.current;
-    if (cols.length === 0) return null;
-    const out: Record<string, string | null> = {};
-    for (const name of cols) {
-      const ov = overlay.current.get(`${row}:${name}`);
-      const v = ov ?? cacheRef.current.getCell(row, name);
-      if (v === undefined) return null; // page miss — caller should retry later
-      out[name] = v;
-    }
-    return out;
-  }, []);
+   *  null if the row's page hasn't loaded yet.
+   *
+   *  `fromServer` skips the staged overlay: anything that identifies the row to
+   *  the database (a PK in a WHERE clause) must use last-known-server values, or
+   *  an uncommitted edit to a PK column would aim the write at another row. */
+  const readRow = useCallback(
+    (row: number, fromServer = false): Record<string, string | null> | null => {
+      const cols = colNames.current;
+      if (cols.length === 0) return null;
+      const out: Record<string, string | null> = {};
+      for (const name of cols) {
+        const ov = fromServer ? undefined : overlay.current.get(`${row}:${name}`);
+        const v = ov ?? cacheRef.current.getCell(row, name);
+        if (v === undefined) return null; // page miss — caller should retry later
+        out[name] = v;
+      }
+      return out;
+    },
+    [],
+  );
 
   // Cell click: lift the row to the Inspector and (if applicable) fire FK navigation.
   const onCellClicked = useCallback(
@@ -519,10 +531,10 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
         const key = pendingKey(e.row, e.col);
         editState.current.set(key, "saving");
         setVersion((v) => v + 1);
-        const getOriginal = (c: string) =>
-          c === e.col
-            ? e.before
-            : (overlay.current.get(`${e.row}:${c}`) ?? cacheRef.current.getCell(e.row, c) ?? null);
+        // Row identity (the PK in the WHERE clause) comes from the loaded page —
+        // the staged overlay must never reach it, or an edit to a PK column would
+        // re-point the remaining edits at whichever row already holds the new key.
+        const getOriginal = originalRowGetter(e, (c) => cacheRef.current.getCell(e.row, c));
         const keep = await onEdit(e.row, e.col, e.newValue, getOriginal);
         // The await above is the window: re-check before writing anything down, so a
         // reset that landed while the round trip was in flight cannot have its freshly
@@ -682,6 +694,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
                 row,
                 value,
                 values: readRow(row),
+                serverValues: readRow(row, true),
                 x: event.bounds.x + event.localEventX,
                 y: event.bounds.y + event.localEventY,
               });
