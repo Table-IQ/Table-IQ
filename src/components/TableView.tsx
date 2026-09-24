@@ -19,7 +19,7 @@ import {
   type SortKey,
   type TableStructure,
 } from "../lib/commands";
-import { buildEdit } from "../lib/edit";
+import { buildEdit, writeOutcomeMessage } from "../lib/edit";
 import { outgoingForeignKeys } from "../lib/fk";
 import { decodeWindow } from "../lib/arrowWindow";
 import { pagerLabel } from "../lib/pager";
@@ -255,12 +255,13 @@ export function TableView({ connId, schema, object, view }: Props) {
       const edit = buildEdit(pk, getOriginal, col, newValue);
       try {
         const { rowsAffected } = await applyEdit(connId, schema, object.name, edit);
-        if (rowsAffected === 1) {
-          setDirty((d) => Math.max(0, d - 1));
-          return true;
-        }
-        setNotice("Edit conflict: the row changed underneath you. Reverted.");
         setDirty((d) => Math.max(0, d - 1));
+        // Only rows_affected === 1 is a clean write. 0 and >1 are both the user's
+        // business and are reported verbatim — nothing is rolled back (the backend
+        // UPDATE is a single non-transactional statement), so we never claim it was.
+        const problem = writeOutcomeMessage("update", rowsAffected);
+        if (!problem) return true;
+        setNotice(`Update "${col}": ${problem}`);
         return false;
       } catch (e) {
         setNotice(`Update failed: ${e}`);
@@ -701,7 +702,10 @@ export function TableView({ connId, schema, object, view }: Props) {
         }
         center={
           notice ? (
-            <span className="truncate text-warn">{notice}</span>
+            // The status bar truncates; keep the whole message reachable on hover.
+            <span className="truncate text-warn" title={notice}>
+              {notice}
+            </span>
           ) : (
             <RowPager
               label={pagerLabel(page * PAGE_SIZE, rowsOnPage, total?.count ?? null, total?.exact ?? false)}
@@ -804,8 +808,11 @@ export function TableView({ connId, schema, object, view }: Props) {
           const applyCellValue = async (newValue: string | null) => {
             if (!pk || pk.length === 0 || !srv) return;
             const edit = buildEdit(pk, (c) => srv[c] ?? null, cellMenu.col, newValue);
+            setNotice(null);
             try {
-              await applyEdit(connId, schema, object.name, edit);
+              const { rowsAffected } = await applyEdit(connId, schema, object.name, edit);
+              const problem = writeOutcomeMessage("update", rowsAffected);
+              if (problem) setNotice(`Set "${cellMenu.col}": ${problem}`);
               refresh();
             } catch (e) {
               setNotice(`Update failed: ${e}`);
@@ -831,9 +838,9 @@ export function TableView({ connId, schema, object, view }: Props) {
             setNotice(null);
             try {
               const { rowsAffected } = await deleteRow(connId, schema, object.name, pkPairs);
-              if (rowsAffected === 0) {
-                setNotice("Delete matched no rows — the row may have already changed.");
-              }
+              // The confirm said "this row" — say so plainly when it was not one row.
+              const problem = writeOutcomeMessage("delete", rowsAffected);
+              if (problem) setNotice(`Delete row: ${problem}`);
               refresh();
             } catch (e) {
               setNotice(`Delete failed: ${e}`);

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildEdit, originalRowGetter } from "./edit";
+import { buildEdit, originalRowGetter, writeOutcomeMessage } from "./edit";
 
 describe("buildEdit", () => {
   it("builds the RowKey edit from pk + original row values", () => {
@@ -54,5 +54,28 @@ describe("originalRowGetter", () => {
   it("maps a not-yet-loaded cell (undefined) to null", () => {
     const get = originalRowGetter({ col: "name", before: null }, () => undefined);
     expect(get("id")).toBeNull();
+  });
+});
+
+describe("writeOutcomeMessage", () => {
+  it("says nothing when exactly one row was written", () => {
+    expect(writeOutcomeMessage("update", 1)).toBeNull();
+    expect(writeOutcomeMessage("delete", 1)).toBeNull();
+  });
+
+  it("reports a 0-row write as 'nothing was written', not as a revert", () => {
+    const m = writeOutcomeMessage("update", 0)!;
+    expect(m).toContain("Nothing was written");
+    expect(m.toLowerCase()).not.toContain("revert");
+    expect(writeOutcomeMessage("delete", 0)).toContain("Nothing was deleted");
+  });
+
+  it("surfaces the real count when a write hit more than one row", () => {
+    // The user asked to change/delete ONE row; the PK didn't identify one.
+    expect(writeOutcomeMessage("update", 3)).toContain("Wrote 3 rows, not 1");
+    expect(writeOutcomeMessage("update", 3)).toContain(
+      "primary key does not identify a single row",
+    );
+    expect(writeOutcomeMessage("delete", 7)).toContain("Deleted 7 rows, not 1");
   });
 });

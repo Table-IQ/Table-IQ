@@ -33,3 +33,25 @@ export function originalRowGetter(
 ): (col: string) => string | null {
   return (col) => (col === edit.col ? edit.before : (serverValue(col) ?? null));
 }
+
+/**
+ * What a write that reported `rowsAffected` means, or null when it hit exactly
+ * one row (the only clean outcome). Both other counts are the user's business:
+ * 0 means the write silently did nothing, and >1 means the PK did not identify a
+ * single row, so a "one row" edit or delete just hit several. Nothing here claims
+ * a revert — the backend statement is not transactional and is never undone.
+ */
+export function writeOutcomeMessage(
+  kind: "update" | "delete",
+  rowsAffected: number,
+): string | null {
+  if (rowsAffected === 1) return null;
+  if (rowsAffected === 0) {
+    return kind === "update"
+      ? "No row matched — it changed underneath you. Nothing was written; refresh to see the current values."
+      : "No row matched — it may already have been deleted or changed. Nothing was deleted.";
+  }
+  return kind === "update"
+    ? `Wrote ${rowsAffected} rows, not 1 — the primary key does not identify a single row, so every one of them now holds this value. Refresh and check.`
+    : `Deleted ${rowsAffected} rows, not 1 — the primary key does not identify a single row. Refresh and check.`;
+}
