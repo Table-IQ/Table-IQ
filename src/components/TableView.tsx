@@ -172,6 +172,23 @@ export function TableView({ connId, schema, object, view }: Props) {
   // "Saved n changes" in the status bar for 2s after a commit. `id` re-keys the
   // element so a second save inside the window restarts its fade.
   const [saved, setSaved] = useState<{ n: number; id: number } | null>(null);
+  // Staged edits are keyed to rows of the page on screen, so anything that swaps
+  // that page (search, filter, sort, paging, refresh) would silently drop them.
+  // Those actions are refused until the edits are committed or discarded, and the
+  // unsaved-changes bar says so. Not while the fetch errored: the grid is gone.
+  const locked = !error && (committing || pendingCount > 0);
+  const lockedRef = useRef(locked);
+  lockedRef.current = locked;
+  const [lockHint, setLockHint] = useState(false);
+  useEffect(() => {
+    if (!locked) setLockHint(false);
+  }, [locked]);
+  /** True — and shows the hint — when staged edits would be lost by this action. */
+  const blockedByEdits = useCallback(() => {
+    if (!lockedRef.current) return false;
+    setLockHint(true);
+    return true;
+  }, []);
   const savedTimer = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearTimeout(savedTimer.current), []);
   const gridRef = useRef<DataGridHandle>(null);
@@ -208,10 +225,14 @@ export function TableView({ connId, schema, object, view }: Props) {
   }, [connId, schema, object.name]);
 
   /** Changing the filter set always returns to the first page. */
-  const applyFilters = useCallback((next: ColumnFilter[]) => {
-    setFilters(next);
-    setPage(0);
-  }, []);
+  const applyFilters = useCallback(
+    (next: ColumnFilter[]) => {
+      if (blockedByEdits()) return;
+      setFilters(next);
+      setPage(0);
+    },
+    [blockedByEdits],
+  );
 
   // The first page has painted. The PK + count (`loadTableMeta`) and FKs wait
   // for it, so the page never queues behind a COUNT(*).
@@ -389,7 +410,8 @@ export function TableView({ connId, schema, object, view }: Props) {
       applyFilters(next);
     }, SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(id);
-  }, [searchText, filters, applyFilters]);
+    // `locked`: a term typed just before an edit was staged applies once it's saved.
+  }, [searchText, filters, applyFilters, locked]);
   // The search chip was removed (or "clear all"): empty the box to match.
   useEffect(() => {
     const t = searchTerm(filters);
@@ -502,6 +524,7 @@ export function TableView({ connId, schema, object, view }: Props) {
    *  of the displayed page's last row — so the backend can seek instead of
    *  skipping `offset` rows; going back reuses the cursor stored on the way. */
   const goToPage = (p: number) => {
+    if (blockedByEdits()) return;
     if (pageData && p === pageData.page + 1 && pageData.pageKey === cursors.current.key) {
       const c = pageCursor(pageData.win, pageData.size, pk);
       if (c) cursors.current.map.set(p, c);
@@ -703,7 +726,7 @@ export function TableView({ connId, schema, object, view }: Props) {
         <ToolbarButton
           icon={<IconRefresh size={12} />}
           label="Refresh"
-          onClick={refresh}
+          onClick={() => !blockedByEdits() && refresh()}
         />
         <ToolbarButton label="Profile" onClick={() => setShowProfile(true)} />
         {object.kind === "Table" && (
@@ -718,6 +741,8 @@ export function TableView({ connId, schema, object, view }: Props) {
               type="search"
               aria-label="Search all columns"
               value={searchText}
+              disabled={locked}
+              title={locked ? "Commit or discard your changes to search" : undefined}
               onChange={(e) => setSearchText(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Escape") {
@@ -821,6 +846,11 @@ export function TableView({ connId, schema, object, view }: Props) {
           <span className="text-[11px] font-medium text-primary">
             {pendingCount} unsaved {pendingCount === 1 ? "change" : "changes"}
           </span>
+          {lockHint && (
+            <span className="tiq-slide-in text-[11px] text-warn" role="status">
+              Commit or discard changes first
+            </span>
+          )}
           <ToolbarSpacer />
           <button
             onClick={() => gridRef.current?.discardPending()}
@@ -905,7 +935,8 @@ export function TableView({ connId, schema, object, view }: Props) {
             onFetchError={setError}
             sort={sort}
             onSort={(column) => {
-              if (committing) return; // a re-sort mid-commit would re-point the staged rows
+              // A re-sort would re-point the staged rows (and, mid-commit, the writes).
+              if (blockedByEdits()) return;
               setSort((cur) => cycleSort(cur, column));
               setPage(0);
             }}
@@ -931,7 +962,7 @@ export function TableView({ connId, schema, object, view }: Props) {
                 { value: "structure", label: "Structure" },
               ]}
               value={view}
-              onChange={(v) => openTab(schema, object.name, v)}
+              onChange={(v) => v !== view && !blockedByEdits() && openTab(schema, object.name, v)}
             />
             <StatusBarButton
               onClick={() => setDraft(draft ? null : {})}
@@ -987,6 +1018,7 @@ export function TableView({ connId, schema, object, view }: Props) {
                 value={pageSize}
                 disabled={committing}
                 onChange={(e) => {
+                  if (blockedByEdits()) return;
                   setPageSize(Number(e.target.value));
                   setPage(0);
                   gridRef.current?.scrollToRow(0);
@@ -1149,7 +1181,7 @@ export function TableView({ connId, schema, object, view }: Props) {
           };
 
           const items: (ContextMenuItem | "separator")[] = [
-            { id: "refresh", label: "Refresh", onSelect: refresh },
+            { id: "refresh", label: "Refresh", onSelect: () => !blockedByEdits() && refresh() },
             {
               id: "add-row",
               label: "Add row",
