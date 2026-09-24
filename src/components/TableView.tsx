@@ -962,9 +962,11 @@ export function TableView({ connId, schema, object, view }: Props) {
               />
               {counting ? (
                 <span className="inline-flex items-center gap-1 text-muted" role="status">
-                  Counting… <span className="tabular-nums">{formatElapsed(countElapsed)}</span>
+                  Counting…
+                  {/* Fixed width, so the ticking time doesn't nudge the × out from under the pointer. */}
+                  <span className="inline-block min-w-[6ch] tabular-nums">{formatElapsed(countElapsed)}</span>
                   <StatusBarButton onClick={cancelCount} title="Stop counting">
-                    <IconClose size={8} />
+                    <IconClose size={9} />
                     <span className="sr-only">Stop counting</span>
                   </StatusBarButton>
                 </span>
