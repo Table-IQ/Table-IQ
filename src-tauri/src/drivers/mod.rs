@@ -302,6 +302,73 @@ pub fn build_order_by(
     })
 }
 
+/// Keyset ("seek") predicate for the page after `after` — the previous page's last-row PK
+/// values, in `pk` order. Unlike OFFSET it costs one index seek at any depth.
+///
+/// Returns `None` (the caller keeps OFFSET) unless the effective ORDER BY that
+/// [`build_order_by`] would emit is exactly the PK in PK order with one direction, and
+/// `after` holds a non-NULL value per PK column. `expand` writes the composite case as
+/// `a > ? OR (a = ? AND b > ?)`: SQL Server has no row values, and MySQL full-scans the
+/// index for a row-value range instead of seeking. Terms are qualified `_t.`, binds start
+/// at `start_idx`.
+pub fn build_keyset(
+    order: &[SortKey],
+    pk: &[String],
+    after: &[Option<String>],
+    quote_ident: &dyn Fn(&str) -> String,
+    placeholder: &dyn Fn(usize, &str) -> String,
+    start_idx: usize,
+    expand: bool,
+) -> Option<(String, Vec<Option<String>>)> {
+    if pk.is_empty() || after.len() != pk.len() || after.iter().any(Option::is_none) {
+        return None;
+    }
+    // The effective order: the requested keys, then the PK columns not named (ASC).
+    let mut eff: Vec<(&str, bool)> = Vec::new();
+    for k in order {
+        if !eff.iter().any(|(c, _)| *c == k.column) {
+            eff.push((&k.column, k.desc));
+        }
+    }
+    for c in pk {
+        if !eff.iter().any(|(e, _)| e == c) {
+            eff.push((c, false));
+        }
+    }
+    let desc = eff[0].1;
+    if eff.len() != pk.len() || eff.iter().zip(pk).any(|((c, d), p)| c != p || *d != desc) {
+        return None;
+    }
+    let op = if desc { "<" } else { ">" };
+    let col = |c: &str| format!("_t.{}", quote_ident(c));
+    let mut idx = start_idx;
+    let mut binds = Vec::new();
+    let mut bind = |i: usize| {
+        let p = placeholder(idx, &pk[i]);
+        idx += 1;
+        binds.push(after[i].clone());
+        p
+    };
+    let sql = if pk.len() == 1 {
+        format!("{} {op} {}", col(&pk[0]), bind(0))
+    } else if expand {
+        let terms: Vec<String> = (0..pk.len())
+            .map(|i| {
+                let mut t: Vec<String> =
+                    (0..i).map(|j| format!("{} = {}", col(&pk[j]), bind(j))).collect();
+                t.push(format!("{} {op} {}", col(&pk[i]), bind(i)));
+                if i == 0 { t.remove(0) } else { format!("({})", t.join(" AND ")) }
+            })
+            .collect();
+        format!("({})", terms.join(" OR "))
+    } else {
+        let cols: Vec<String> = pk.iter().map(|c| col(c)).collect();
+        let phs: Vec<String> = (0..pk.len()).map(&mut bind).collect();
+        format!("({}) {op} ({})", cols.join(", "), phs.join(", "))
+    };
+    Some((sql, binds))
+}
+
 /// Build a parameterized WHERE fragment from a filter set. Returns `(sql, binds)` where
 /// `sql` is "" for an empty filter set, otherwise a "<col> <op> <ph> AND …" string with
 /// no leading "WHERE" (callers wrap as needed). `start_idx` is the first placeholder index
@@ -813,6 +880,104 @@ mod order_by_tests {
         assert_eq!(fk.to_schema, "");
         assert_eq!(fk.constraint, "");
         assert_eq!(fk.from_table, "orders");
+    }
+}
+
+#[cfg(test)]
+mod keyset_tests {
+    use super::*;
+
+    fn pg_ident(n: &str) -> String {
+        format!("\"{}\"", n.replace('"', "\"\""))
+    }
+    fn ph(i: usize, _c: &str) -> String {
+        format!("${i}")
+    }
+    fn key(c: &str, desc: bool) -> SortKey {
+        SortKey { column: c.into(), desc }
+    }
+    fn s(v: &[&str]) -> Vec<String> {
+        v.iter().map(|x| x.to_string()).collect()
+    }
+    fn vals(v: &[&str]) -> Vec<Option<String>> {
+        v.iter().map(|x| Some(x.to_string())).collect()
+    }
+
+    #[test]
+    fn single_column_asc() {
+        let (sql, binds) =
+            build_keyset(&[], &s(&["id"]), &vals(&["42"]), &pg_ident, &ph, 3, false).unwrap();
+        assert_eq!(sql, "_t.\"id\" > $3");
+        assert_eq!(binds, vals(&["42"]));
+    }
+
+    #[test]
+    fn single_column_desc() {
+        let (sql, _) =
+            build_keyset(&[key("id", true)], &s(&["id"]), &vals(&["42"]), &pg_ident, &ph, 1, false)
+                .unwrap();
+        assert_eq!(sql, "_t.\"id\" < $1");
+    }
+
+    #[test]
+    fn composite_row_value() {
+        let (sql, binds) =
+            build_keyset(&[], &s(&["a", "b"]), &vals(&["1", "x"]), &pg_ident, &ph, 1, false)
+                .unwrap();
+        assert_eq!(sql, "(_t.\"a\", _t.\"b\") > ($1, $2)");
+        assert_eq!(binds, vals(&["1", "x"]));
+    }
+
+    #[test]
+    fn composite_row_value_desc() {
+        let order = [key("a", true), key("b", true)];
+        let (sql, _) =
+            build_keyset(&order, &s(&["a", "b"]), &vals(&["1", "x"]), &pg_ident, &ph, 1, false)
+                .unwrap();
+        assert_eq!(sql, "(_t.\"a\", _t.\"b\") < ($1, $2)");
+    }
+
+    /// MySQL only range-scans the expanded form; SQL Server has no row values at all.
+    #[test]
+    fn composite_expanded() {
+        let (sql, binds) =
+            build_keyset(&[], &s(&["a", "b"]), &vals(&["1", "x"]), &pg_ident, &ph, 1, true)
+                .unwrap();
+        assert_eq!(sql, "(_t.\"a\" > $1 OR (_t.\"a\" = $2 AND _t.\"b\" > $3))");
+        assert_eq!(binds, vals(&["1", "1", "x"]));
+    }
+
+    #[test]
+    fn composite_expanded_desc() {
+        let order = [key("a", true), key("b", true)];
+        let (sql, _) =
+            build_keyset(&order, &s(&["a", "b"]), &vals(&["1", "x"]), &pg_ident, &ph, 1, true)
+                .unwrap();
+        assert_eq!(sql, "(_t.\"a\" < $1 OR (_t.\"a\" = $2 AND _t.\"b\" < $3))");
+    }
+
+    /// Sorting on a PK prefix still orders by exactly the PK (the rest is appended ASC).
+    #[test]
+    fn pk_prefix_sort_asc_applies() {
+        let order = [key("a", false)];
+        assert!(build_keyset(&order, &s(&["a", "b"]), &vals(&["1", "x"]), &pg_ident, &ph, 1, false)
+            .is_some());
+    }
+
+    #[test]
+    fn does_not_apply_when_the_order_is_not_the_pk() {
+        let pk = s(&["a", "b"]);
+        let after = vals(&["1", "x"]);
+        let none = |order: &[SortKey]| build_keyset(order, &pk, &after, &pg_ident, &ph, 1, false);
+        assert!(none(&[key("name", false)]).is_none(), "non-PK sort");
+        assert!(none(&[key("b", false)]).is_none(), "PK columns out of order");
+        assert!(none(&[key("a", true)]).is_none(), "mixed directions (b is appended ASC)");
+        assert!(build_keyset(&[], &[], &[], &pg_ident, &ph, 1, false).is_none(), "no PK");
+        assert!(build_keyset(&[], &pk, &vals(&["1"]), &pg_ident, &ph, 1, false).is_none(), "short cursor");
+        assert!(
+            build_keyset(&[], &pk, &[Some("1".into()), None], &pg_ident, &ph, 1, false).is_none(),
+            "NULL key value"
+        );
     }
 }
 
