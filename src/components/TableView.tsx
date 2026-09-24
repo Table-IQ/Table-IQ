@@ -2,9 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { DataGrid, type DataGridHandle, type GridSource } from "./DataGrid";
 import {
   applyEdit,
+  cancelQuery,
+  countRowsExact,
   deleteRow,
   describeTable,
   downloadText,
+  estimateRows,
   exportTable,
   fetchTableWindow,
   insertRow,
@@ -21,7 +24,9 @@ import {
 } from "../lib/commands";
 import { buildEdit, writeOutcomeMessage } from "../lib/edit";
 import { outgoingForeignKeys } from "../lib/fk";
-import { decodeWindow } from "../lib/arrowWindow";
+import { decodeWindow, type DecodedWindow } from "../lib/arrowWindow";
+import { pageCursor } from "../lib/keyset";
+import { formatElapsed } from "../lib/motion";
 import { pagerLabel } from "../lib/pager";
 import { cycleSort } from "../lib/tableSort";
 import { useTabs } from "../state/tabsStore";
@@ -44,7 +49,18 @@ import { ContextMenu, type ContextMenuItem } from "./ui/ContextMenu";
 import { buildRowAs } from "../lib/rowFormat";
 import { buildDeleteStatement, quoteIdent } from "../lib/tableScript";
 import { buildInsertValues, insertedPkMatch, isDraftDirty } from "../lib/insertRow";
-import { chipLabel, removeFilter, upsertFilter, FILTER_OP_LABEL, isNullOp } from "../lib/filterBuilder";
+import {
+  chipLabel,
+  fetchErrorMessage,
+  FILTER_OP_LABEL,
+  isNullOp,
+  isSuperseded,
+  MANUAL_FILTER_OPS,
+  removeFilter,
+  searchTerm,
+  upsertFilter,
+  withSearch,
+} from "../lib/filterBuilder";
 import {
   IconChevronLeft,
   IconChevronRight,
@@ -53,11 +69,15 @@ import {
   IconFilter,
   IconLink,
   IconRefresh,
+  IconSearch,
 } from "./ui/Icon";
 
-/** Rows per page — TablePlus's table pager. One more than this is fetched: the
- *  extra row is how we know a next page exists without a second query. */
-const PAGE_SIZE = 300;
+/** Rows-per-page choices; one more row than the page is fetched — the extra row
+ *  is how we know a next page exists without a second query. */
+const PAGE_SIZES = [100, 300, 1000, 5000] as const;
+const DEFAULT_PAGE_SIZE = 300;
+/** Typing pause before the search box re-queries. */
+const SEARCH_DEBOUNCE_MS = 300;
 
 interface Props {
   connId: string;
@@ -93,15 +113,41 @@ export function TableView({ connId, schema, object, view }: Props) {
   const [showProfile, setShowProfile] = useState(false);
   const [showAlter, setShowAlter] = useState(false);
   const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
   const [sort, setSort] = useState<SortKey | null>(null);
   /** The fetched window for the current page. `rows` is what the server returned
-   *  (up to PAGE_SIZE + 1); `version` bumps on every re-read so the grid can drop
-   *  its cache without the full reset a new source key does. */
+   *  (up to pageSize + 1); `version` bumps on every re-read so the grid can drop
+   *  its cache without the full reset a new source key does. `page`, `pageKey`
+   *  and `filters` say which request it answers — a stale window must never
+   *  seed a keyset cursor or count a filter it wasn't fetched under. */
   const [pageData, setPageData] = useState<{
     bytes: Uint8Array;
+    win: DecodedWindow;
     rows: number;
     version: number;
+    page: number;
+    size: number;
+    pageKey: string;
+    filters: ColumnFilter[];
   } | null>(null);
+  /** A page fetch is in flight — drives the progress bar and the stale-grid dim. */
+  const [fetching, setFetching] = useState(false);
+  /** Keyset cursors: `map[p]` is the key of the last row of page p−1. Only valid
+   *  for one filter + sort + page size (`key`); any change starts a new map. */
+  const cursors = useRef<{ key: string; map: Map<number, (string | null)[]> }>({
+    key: "",
+    map: new Map(),
+  });
+  /** Search box text. The applied term lives in `filters` (one Search filter);
+   *  `appliedSearch` is the last term this box pushed there, so a chip removed
+   *  elsewhere can clear the box without clobbering what the user is typing. */
+  const [searchText, setSearchText] = useState("");
+  const appliedSearch = useRef("");
+  const searchRef = useRef<HTMLInputElement>(null);
+  /** An exact COUNT(*) the user asked for, cancellable by `token`. */
+  const [counting, setCounting] = useState<{ token: string; started: number } | null>(null);
+  const countingRef = useRef<string | null>(null);
+  const [countElapsed, setCountElapsed] = useState(0);
   const [dirty, setDirty] = useState(0);
   const [refreshKey, setRefreshKey] = useState(0);
   const [filters, setFilters] = useState<ColumnFilter[]>([]);
@@ -167,9 +213,14 @@ export function TableView({ connId, schema, object, view }: Props) {
     setPage(0);
   }, []);
 
+  // The first page has painted. The PK + count (`loadTableMeta`) and FKs wait
+  // for it, so the page never queues behind a COUNT(*).
+  const painted = pageData !== null;
+
   // Primary key + FK edges. Both come from the connection-store caches, shared
   // with the Inspector.
   useEffect(() => {
+    if (!painted) return;
     let cancelled = false;
     setNotice(null);
     setDirty(0);
@@ -193,12 +244,32 @@ export function TableView({ connId, schema, object, view }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [connId, schema, object.name, refreshKey]);
+  }, [connId, schema, object.name, refreshKey, painted]);
 
-  // Row total for the pager. A count that fails or comes back null is NOT fatal —
-  // the page itself is the authority on what to render, so the label just drops
-  // the "of …" half.
+  // Row total, step 1: the catalog estimate, instant (never a scan). Shown
+  // until the real count below lands; a filter has no estimate.
   useEffect(() => {
+    let cancelled = false;
+    setTotal(null);
+    if (filters.length === 0) {
+      estimateRows(connId, schema, object.name)
+        .then((n) => {
+          if (!cancelled && n !== null) setTotal((t) => t ?? { count: n, exact: false });
+        })
+        .catch(() => {});
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [connId, schema, object.name, filters]);
+
+  // Row total, step 2, once this filter's first page has painted: `open_table`
+  // (exact, or the estimate again for a huge table — it never scans those). A
+  // count that fails is NOT fatal: the page is the authority on what to render,
+  // so the label keeps the estimate or drops the "of …" half.
+  const pageReady = pageData?.filters === filters;
+  useEffect(() => {
+    if (!pageReady) return;
     let cancelled = false;
     const counted =
       filters.length === 0
@@ -208,46 +279,137 @@ export function TableView({ connId, schema, object, view }: Props) {
           }))
         : openTable(connId, schema, object.name, filters);
     counted
-      .then((t) => !cancelled && setTotal(t))
-      .catch(() => !cancelled && setTotal({ count: null, exact: false }));
+      .then((t) => !cancelled && setTotal((prev) => (t.count === null && prev ? prev : t)))
+      .catch(() => !cancelled && setTotal((prev) => prev ?? { count: null, exact: false }));
     return () => {
       cancelled = true;
     };
-  }, [connId, schema, object.name, filters, refreshKey]);
+  }, [connId, schema, object.name, filters, refreshKey, pageReady]);
+
+  /** "Count exactly": an unbounded COUNT(*), cancellable server-side. */
+  const cancelCount = useCallback(() => {
+    const token = countingRef.current;
+    if (!token) return;
+    countingRef.current = null;
+    setCounting(null);
+    cancelQuery(connId, token).catch(() => {});
+  }, [connId]);
+  const startCount = useCallback(() => {
+    const token = `count-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    countingRef.current = token;
+    setCounting({ token, started: performance.now() });
+    setCountElapsed(0);
+    countRowsExact(connId, schema, object.name, token, filters)
+      .then((t) => {
+        if (countingRef.current !== token) return;
+        countingRef.current = null;
+        setCounting(null);
+        setTotal(t);
+      })
+      .catch((e) => {
+        if (countingRef.current !== token) return;
+        countingRef.current = null;
+        setCounting(null);
+        if (!isSuperseded(String(e))) setNotice(`Count failed: ${e}`);
+      });
+  }, [connId, schema, object.name, filters]);
+  // A running count answers for one table + filter set: cancel it on any change,
+  // and on unmount (closing or switching the tab).
+  useEffect(() => cancelCount, [cancelCount, filters, refreshKey]);
+  useEffect(() => {
+    if (!counting) return;
+    const id = window.setInterval(() => setCountElapsed(performance.now() - counting.started), 100);
+    return () => window.clearInterval(id);
+  }, [counting]);
 
   const order = useMemo(() => (sort ? [sort] : undefined), [sort]);
   const orderKey = sort ? `${sort.column}:${sort.desc}` : "";
+  const filterKey = filters.map((f) => `${f.column}${f.op}${f.value ?? ""}`).join("|");
+  /** What a keyset cursor is valid for: same filters, sort and page size. */
+  const pageKey = `${filterKey}.${orderKey}.${pageSize}`;
+  /** Same key ⇒ the backend cancels this tab's previous in-flight page fetch. */
+  const requestKey = `table:${connId}:${schema}.${object.name}`;
 
-  // The visible page. PAGE_SIZE + 1 rows are asked for: the extra row is how we
-  // know a next page exists without counting.
+  // The visible page. pageSize + 1 rows are asked for: the extra row is how we
+  // know a next page exists without counting. Deep pages seek by keyset cursor
+  // where the backend can (offset is always sent too, so it stays correct).
   useEffect(() => {
     let cancelled = false;
+    if (cursors.current.key !== pageKey) cursors.current = { key: pageKey, map: new Map() };
+    const after = cursors.current.map.get(page);
+    setFetching(true);
     fetchTableWindow(
       connId,
       schema,
       object.name,
-      page * PAGE_SIZE,
-      PAGE_SIZE + 1,
+      page * pageSize,
+      pageSize + 1,
       filters,
       order,
+      after,
+      requestKey,
     )
       .then(({ bytes }) => {
         if (cancelled) return;
         setError(null);
-        // ponytail: the window is decoded here for its row count and again in the
-        // grid for its cells. Two decodes of one 301-row batch is cheaper than a
-        // second round trip; upgrade path is to lift the decode into this view.
+        // ponytail: the window is decoded here (row count, cursor) and again in
+        // the grid for its cells. Two decodes of one page are cheaper than a
+        // second round trip; upgrade path is to hand the grid this window.
+        const win = decodeWindow(bytes);
         setPageData((prev) => ({
           bytes,
-          rows: decodeWindow(bytes).numRows,
+          win,
+          rows: win.numRows,
           version: (prev?.version ?? 0) + 1,
+          page,
+          size: pageSize,
+          pageKey,
+          filters,
         }));
       })
-      .catch((e) => !cancelled && setError(String(e)));
+      .catch((e) => {
+        // A newer fetch for this tab replaced this one; that one reports.
+        if (!cancelled && !isSuperseded(String(e))) setError(String(e));
+      })
+      .finally(() => {
+        if (!cancelled) setFetching(false);
+      });
     return () => {
       cancelled = true;
     };
-  }, [connId, schema, object.name, page, filters, order, refreshKey]);
+  }, [connId, schema, object.name, page, pageSize, pageKey, filters, order, requestKey, refreshKey]);
+
+  // Search box → one Search filter, after a typing pause. A no-op when the term
+  // is unchanged (withSearch returns the same array), so nothing refetches.
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      const next = withSearch(filters, searchText);
+      if (next === filters) return;
+      appliedSearch.current = searchTerm(next);
+      applyFilters(next);
+    }, SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(id);
+  }, [searchText, filters, applyFilters]);
+  // The search chip was removed (or "clear all"): empty the box to match.
+  useEffect(() => {
+    const t = searchTerm(filters);
+    if (t === appliedSearch.current) return;
+    appliedSearch.current = t;
+    setSearchText(t);
+  }, [filters]);
+  // ⌘F focuses the search box (only the active tab's view is mounted).
+  useEffect(() => {
+    if (view !== "data") return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        searchRef.current?.focus();
+        searchRef.current?.select();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [view]);
 
   // Re-sync the grid when a cell is edited from the Inspector panel (Slice 33),
   // so the data grid reflects the committed value.
@@ -310,28 +472,43 @@ export function TableView({ connId, schema, object, view }: Props) {
   // Stable identity so a re-read (which rebuilds `source`) doesn't look like a
   // different column set to the grid, which would cost scroll + selection.
   const columnNames = useMemo(() => object.columns.map((c) => c.name), [object.columns]);
-  const filterKey = filters.map((f) => `${f.column}${f.op}${f.value ?? ""}`).join("|");
 
-  /** Rows on the visible page — at most PAGE_SIZE, whatever the 301st row says. */
-  const rowsOnPage = pageData ? Math.min(PAGE_SIZE, pageData.rows) : 0;
-  const hasNext = (pageData?.rows ?? 0) > PAGE_SIZE;
+  // Everything the grid shows is read off `pageData` — the page on screen — not
+  // off `page`/`pageSize`, which move the moment a new fetch starts. The stale
+  // page stays put (dimmed) until the new one lands.
+  /** Rows on the visible page — at most its page size, whatever the look-ahead row says. */
+  const rowsOnPage = pageData ? Math.min(pageData.size, pageData.rows) : 0;
+  const hasNext = !!pageData && pageData.rows > pageData.size;
+  const firstRow = pageData ? pageData.page * pageData.size : 0;
 
   const source = useMemo<GridSource | null>(() => {
     if (!pageData) return null;
     return {
-      // Filters, sort and page identify the rows; a re-read of the same rows
-      // moves `version` instead, which keeps scroll and selection.
-      key: `${connId}.${schema}.${object.name}.${page}.${filterKey}.${orderKey}`,
-      totalRows: Math.min(PAGE_SIZE, pageData.rows),
+      // Filters, sort, page size and page identify the rows; a re-read of the
+      // same rows moves `version` instead, which keeps scroll and selection.
+      key: `${connId}.${schema}.${object.name}.${pageData.page}.${pageData.pageKey}`,
+      totalRows: Math.min(pageData.size, pageData.rows),
       // One cache page holds the whole fetched window, so the grid never pages.
-      pageSize: PAGE_SIZE + 1,
+      pageSize: pageData.size + 1,
       version: pageData.version,
       columns: columnNames,
-      // This view already fetched the window (it needs the 301st row), so the
-      // grid reads the bytes we hold rather than asking again.
+      // This view already fetched the window (it needs the look-ahead row), so
+      // the grid reads the bytes we hold rather than asking again.
       fetch: () => Promise.resolve({ bytes: pageData.bytes, ms: 0 }),
     };
-  }, [connId, schema, object.name, page, filterKey, orderKey, columnNames, pageData]);
+  }, [connId, schema, object.name, columnNames, pageData]);
+
+  /** Go to page `p`. Moving forward records the keyset cursor for it — the key
+   *  of the displayed page's last row — so the backend can seek instead of
+   *  skipping `offset` rows; going back reuses the cursor stored on the way. */
+  const goToPage = (p: number) => {
+    if (pageData && p === pageData.page + 1 && pageData.pageKey === cursors.current.key) {
+      const c = pageCursor(pageData.win, pageData.size, pk);
+      if (c) cursors.current.map.set(p, c);
+    }
+    setPage(p);
+    gridRef.current?.scrollToRow(0);
+  };
 
   const commitDraft = useCallback(async () => {
     if (!draft) return;
@@ -395,7 +572,7 @@ export function TableView({ connId, schema, object, view }: Props) {
                 }
                 className="rounded-md border border-border bg-surface px-1.5 py-0.5 text-[11px] text-text"
               >
-                {(Object.keys(FILTER_OP_LABEL) as FilterOp[]).map((op) => (
+                {MANUAL_FILTER_OPS.map((op) => (
                   <option key={op} value={op}>
                     {FILTER_OP_LABEL[op]}
                   </option>
@@ -472,13 +649,15 @@ export function TableView({ connId, schema, object, view }: Props) {
       <span className="font-medium">{object.name}</span>
     </span>
   );
-  if (error)
+  if (error) {
+    // A timed-out filter or search has a way forward; say that instead.
+    const friendly = fetchErrorMessage(error, filters);
     return (
       <div className="flex h-full flex-col">
         {filterRail}
         <div className="flex-1 space-y-3 p-6">
-          <div className="font-mono text-sm text-danger">
-            Failed to open {object.name}: {error}
+          <div className={`text-sm ${friendly === error ? "font-mono text-danger" : "text-warn"}`}>
+            {friendly === error ? `Failed to open ${object.name}: ${error}` : friendly}
           </div>
           {filters.length > 0 && (
             <div className="space-y-2">
@@ -513,13 +692,7 @@ export function TableView({ connId, schema, object, view }: Props) {
         />
       </div>
     );
-  if (!source)
-    return (
-      <div className="flex h-full flex-col">
-        <div className="flex-1 p-6 text-sm text-muted">Opening {object.name}…</div>
-        <StatusBar left={statusObjectInfo} right={<span className="text-muted">opening…</span>} />
-      </div>
-    );
+  }
 
   return (
     <div className="flex h-full flex-col">
@@ -537,6 +710,27 @@ export function TableView({ connId, schema, object, view }: Props) {
           <ToolbarButton label="Alter" onClick={() => setShowAlter(true)} />
         )}
         <ToolbarSpacer />
+        {view === "data" && (
+          <label className="mr-1 flex h-6 w-52 items-center gap-1.5 rounded-[var(--radius)] border border-border bg-bg px-1.5 text-muted focus-within:border-primary focus-within:text-text">
+            <IconSearch size={11} />
+            <input
+              ref={searchRef}
+              type="search"
+              aria-label="Search all columns"
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setSearchText("");
+                }
+              }}
+              placeholder="Search rows"
+              className="min-w-0 flex-1 bg-transparent text-[11px] text-text outline-none placeholder:text-muted [&::-webkit-search-cancel-button]:hidden"
+            />
+            {searchText === "" && <span className="tiq-kbd">⌘F</span>}
+          </label>
+        )}
         {(["csv", "json"] as ExportFormat[]).map((fmt) => (
           <ToolbarButton
             key={fmt}
@@ -665,12 +859,24 @@ export function TableView({ connId, schema, object, view }: Props) {
         </div>
       )}
 
-      {/* Body */}
-      <div className="min-h-0 flex-1">
-        {view === "data" ? (
+      {/* Body. While a page is in flight: a progress bar on the top edge and the
+          stale page dimmed (both only after 150ms, so fast pages don't flicker).
+          Before the first page: an empty grid shell under the same bar. */}
+      <div className="relative min-h-0 flex-1">
+        {view === "data" && fetching && (
+          <div className="tiq-progress absolute inset-x-0 top-0 z-10" role="progressbar" aria-label="Loading rows" />
+        )}
+        {view === "data" && !source ? (
+          <div className="h-[38px] border-b border-border bg-surface" aria-hidden />
+        ) : view === "data" && source ? (
+          <div
+            className={`h-full transition-opacity ${fetching ? "pointer-events-none opacity-60 delay-150" : ""}`}
+          >
           <DataGrid
             ref={gridRef}
             source={source}
+            rowMarkerStart={firstRow + 1}
+            highlight={searchTerm(pageData?.filters ?? [])}
             onEdit={editable ? onEdit : undefined}
             fkByColumn={fkByColumn}
             onFkClick={(toTable) => {
@@ -680,7 +886,7 @@ export function TableView({ connId, schema, object, view }: Props) {
             onCellContext={(c) => setCellMenu(c)}
             onRowSelected={(row, values) => {
               if (!values) return; // page not loaded yet — ignore the click
-              setSelectedRow({ schema, table: object.name, row: page * PAGE_SIZE + row, values });
+              setSelectedRow({ schema, table: object.name, row: firstRow + row, values });
             }}
             columnWidths={columnWidths}
             onColumnResize={(col, w) => {
@@ -704,6 +910,7 @@ export function TableView({ connId, schema, object, view }: Props) {
               setPage(0);
             }}
           />
+          </div>
         ) : (
           <StructureView connId={connId} schema={schema} object={object} fks={fks} />
         )}
@@ -742,20 +949,57 @@ export function TableView({ connId, schema, object, view }: Props) {
             <span className="truncate text-warn" title={notice}>
               {notice}
             </span>
+          ) : !pageData ? (
+            <span className="text-muted">Opening…</span>
           ) : (
-            <RowPager
-              label={pagerLabel(page * PAGE_SIZE, rowsOnPage, total?.count ?? null, total?.exact ?? false)}
-              hasPrev={page > 0 && !committing}
-              hasNext={hasNext && !committing}
-              onPrev={() => {
-                setPage((p) => Math.max(0, p - 1));
-                gridRef.current?.scrollToRow(0);
-              }}
-              onNext={() => {
-                setPage((p) => p + 1);
-                gridRef.current?.scrollToRow(0);
-              }}
-            />
+            <>
+              <RowPager
+                label={pagerLabel(firstRow, rowsOnPage, total?.count ?? null, total?.exact ?? false)}
+                hasPrev={page > 0 && !committing}
+                hasNext={hasNext && !committing}
+                onPrev={() => goToPage(Math.max(0, page - 1))}
+                onNext={() => goToPage(page + 1)}
+              />
+              {counting ? (
+                <span className="inline-flex items-center gap-1 text-muted" role="status">
+                  Counting…
+                  {/* Fixed width, so the ticking time doesn't nudge the × out from under the pointer. */}
+                  <span className="inline-block min-w-[6ch] tabular-nums">{formatElapsed(countElapsed)}</span>
+                  <StatusBarButton onClick={cancelCount} title="Stop counting">
+                    <IconClose size={9} />
+                    <span className="sr-only">Stop counting</span>
+                  </StatusBarButton>
+                </span>
+              ) : (
+                total &&
+                !total.exact && (
+                  <StatusBarButton
+                    onClick={startCount}
+                    title="The total is an estimate. Run an exact COUNT(*) — it can take a while on a big table."
+                  >
+                    Count exactly
+                  </StatusBarButton>
+                )
+              )}
+              <select
+                aria-label="Rows per page"
+                title="Rows per page"
+                value={pageSize}
+                disabled={committing}
+                onChange={(e) => {
+                  setPageSize(Number(e.target.value));
+                  setPage(0);
+                  gridRef.current?.scrollToRow(0);
+                }}
+                className="h-[18px] rounded-[var(--radius-sm)] border border-border bg-bg px-1 text-[11px] text-muted hover:text-text disabled:opacity-40"
+              >
+                {PAGE_SIZES.map((n) => (
+                  <option key={n} value={n}>
+                    {n.toLocaleString("en-US")} / page
+                  </option>
+                ))}
+              </select>
+            </>
           )
         }
         right={

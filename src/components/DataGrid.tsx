@@ -16,9 +16,10 @@ import {
   useRef,
   useState,
 } from "react";
-import { decodeWindow, WindowCache } from "../lib/arrowWindow";
+import { decodeWindow, searchHits, WindowCache, type DecodedWindow } from "../lib/arrowWindow";
 import { originalRowGetter } from "../lib/edit";
-import { gridTheme, gridRowTints, editTints, nullCellStyle } from "../lib/theme";
+import { visibleColumns } from "../lib/keyset";
+import { gridTheme, gridRowTints, editTints, nullCellStyle, searchHitBg } from "../lib/theme";
 import { fadeOutAlpha, mixHex, prefersReducedMotion, pulseAlpha } from "../lib/motion";
 import { useTheme } from "../theme/ThemeProvider";
 import type { ForeignKey, SortKey } from "../lib/commands";
@@ -152,6 +153,16 @@ interface Props {
   sort?: SortKey | null;
   /** Header click. The parent owns the asc → desc → none cycle. */
   onSort?: (column: string) => void;
+  /** Number shown on the first row's marker — a paged source passes offset + 1
+   *  so numbering continues across pages. Defaults to 1. */
+  rowMarkerStart?: number;
+  /** Search term whose matching cells get the accent tint. */
+  highlight?: string;
+}
+
+/** Row-marker column width for the widest number it will show (~8px a digit). */
+function markerWidth(lastNumber: number): number {
+  return Math.max(32, 8 + 8 * String(lastNumber).length);
 }
 
 /**
@@ -178,6 +189,8 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     onFetchError,
     sort,
     onSort,
+    rowMarkerStart = 1,
+    highlight = "",
   },
   ref,
 ) {
@@ -222,6 +235,11 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   const pendingFlash = useRef<{ match: Record<string, string>; gen: number } | null>(null);
   const [columns, setColumns] = useState<GridColumn[]>([]);
   const colNames = useRef<string[]>([]);
+  // Search hits per decoded page, computed once per (page, term, columns) — a
+  // re-read or new page is a new window object, so stale sets fall away.
+  const hitsRef = useRef(
+    new WeakMap<DecodedWindow, { term: string; cols: string[]; hits: Set<number> }>(),
+  );
   const [, setVersion] = useState(0);
   // Content-fitted widths computed once from the first loaded page (TablePlus
   // parity). Persisted user drags always win over these (see `widthFor`).
@@ -455,8 +473,8 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
           cacheRef.current.put(page, win);
           // The first page is the authority on the column list: the sidebar
           // schema can be stale (or absent for a view), the decoded Arrow window
-          // never is.
-          const names = win.columns;
+          // never is. The hidden paging cursor column is never shown.
+          const names = visibleColumns(win.columns);
           if (
             names.length > 0 &&
             (page === 0 || colNames.current.length === 0) &&
@@ -555,6 +573,21 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
           saveBg = mixHex(rowBg(row), tints[fade.tint], fadeOutAlpha(now - fade.start, fade.dur, fade.hold));
         }
       }
+      // A search hit gets the accent tint, looked up in the page's precomputed
+      // hit set (see `searchHits`) — O(1) per cell, whatever the cell's length.
+      if (saveBg === undefined && highlight !== "" && !isNull && ov === undefined) {
+        const win = cacheRef.current.windowOf(row);
+        if (win) {
+          const cols = colNames.current;
+          let h = hitsRef.current.get(win);
+          if (!h || h.term !== highlight || h.cols !== cols) {
+            h = { term: highlight, cols, hits: searchHits(win, cols, highlight) };
+            hitsRef.current.set(win, h);
+          }
+          const local = row - cacheRef.current.pageOf(row) * cacheRef.current.pageSize;
+          if (h.hits.has(local * cols.length + col)) saveBg = searchHitBg(resolved);
+        }
+      }
       // A SQL NULL prints a dimmed italic `NULL`; an empty string stays blank.
       const themeOverride =
         saveBg !== undefined
@@ -575,7 +608,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
         themeOverride,
       };
     },
-    [ensurePage, editable, fkByColumn, rightAlignColumns, resolved, rowBg],
+    [ensurePage, editable, fkByColumn, rightAlignColumns, resolved, rowBg, highlight],
   );
 
   /** Build the full {col → value} map for `row` by walking columns through the
@@ -900,6 +933,8 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
           : undefined
       }
       rowMarkers="number"
+      rowMarkerStartIndex={rowMarkerStart}
+      rowMarkerWidth={markerWidth(rowMarkerStart + source.totalRows - 1)}
       smoothScrollX
       smoothScrollY
       verticalBorder
