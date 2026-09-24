@@ -579,3 +579,93 @@ async fn apply_edit_refuses_an_empty_primary_key() {
     let err = drv.apply_edit("dbo", "t", &edit).await.expect_err("no identity");
     assert!(err.to_string().contains("primary key"), "unhelpful error: {err}");
 }
+
+/// `run_statements` rolled back only on the ERROR path, so a batch that opened a transaction
+/// and never committed reported plain success — while this driver's ONE shared `Client` kept
+/// the transaction (and its exclusive locks) open under the grid, introspection, edits and
+/// inserts that came next, silently enrolling them and losing the lot on disconnect.
+/// Cancellation is unsupported here, so nothing else would have cleaned it up.
+/// Postgres and MySQL already get this from `exec::run_sqlx` + `left_open`.
+#[tokio::test]
+async fn an_uncommitted_transaction_is_rolled_back_and_reported() {
+    let Some(drv) = connect().await else { return };
+    let tok = CancelToken::default();
+    drv.run_script("IF OBJECT_ID('dbo.tiq_tx_leak') IS NOT NULL DROP TABLE dbo.tiq_tx_leak")
+        .await
+        .expect("drop");
+    drv.run_script("CREATE TABLE dbo.tiq_tx_leak (id int PRIMARY KEY)").await.expect("create");
+    drv.run_script("INSERT INTO dbo.tiq_tx_leak VALUES (1),(2)").await.expect("seed");
+
+    let outs = drv
+        .run_statements(
+            &[
+                "BEGIN TRANSACTION".to_string(),
+                "DELETE FROM dbo.tiq_tx_leak".to_string(),
+            ],
+            100,
+            &tok,
+        )
+        .await
+        .expect("batch runs");
+
+    assert_eq!(
+        outs.last().and_then(|o| o.notice.clone()).as_deref(),
+        Some("Transaction was not committed and has been rolled back"),
+        "an unterminated BEGIN must be reported, not read as success"
+    );
+
+    // The shared session must be clean: nothing left holding locks.
+    let trancount = drv
+        .run_statements(&["SELECT @@TRANCOUNT".to_string()], 10, &tok)
+        .await
+        .expect("trancount");
+    let b = trancount[0].batch.as_ref().expect("a result set");
+    let n = b.column(0).as_any().downcast_ref::<StringArray>().expect("text").value(0);
+    assert_eq!(n, "0", "the transaction was left open on the shared connection");
+
+    // …and the DELETE must be gone with it.
+    let rows = drv
+        .run_statements(&["SELECT COUNT(*) FROM dbo.tiq_tx_leak".to_string()], 10, &tok)
+        .await
+        .expect("count");
+    let b = rows[0].batch.as_ref().expect("a result set");
+    let n = b.column(0).as_any().downcast_ref::<StringArray>().expect("text").value(0);
+    assert_eq!(n, "2", "the uncommitted DELETE must have been rolled back");
+
+    drv.run_script("DROP TABLE dbo.tiq_tx_leak").await.ok();
+}
+
+/// A balanced BEGIN…COMMIT is real work and must be left alone — no rollback, no notice.
+#[tokio::test]
+async fn a_committed_transaction_is_left_alone() {
+    let Some(drv) = connect().await else { return };
+    let tok = CancelToken::default();
+    drv.run_script("IF OBJECT_ID('dbo.tiq_tx_ok') IS NOT NULL DROP TABLE dbo.tiq_tx_ok")
+        .await
+        .expect("drop");
+    drv.run_script("CREATE TABLE dbo.tiq_tx_ok (id int PRIMARY KEY)").await.expect("create");
+
+    let outs = drv
+        .run_statements(
+            &[
+                "BEGIN TRANSACTION".to_string(),
+                "INSERT INTO dbo.tiq_tx_ok VALUES (1)".to_string(),
+                "COMMIT".to_string(),
+            ],
+            100,
+            &tok,
+        )
+        .await
+        .expect("batch runs");
+    assert!(outs.iter().all(|o| o.notice.is_none()), "a committed batch needs no notice");
+
+    let rows = drv
+        .run_statements(&["SELECT COUNT(*) FROM dbo.tiq_tx_ok".to_string()], 10, &tok)
+        .await
+        .expect("count");
+    let b = rows[0].batch.as_ref().expect("a result set");
+    let n = b.column(0).as_any().downcast_ref::<StringArray>().expect("text").value(0);
+    assert_eq!(n, "1", "a committed INSERT must survive");
+
+    drv.run_script("DROP TABLE dbo.tiq_tx_ok").await.ok();
+}

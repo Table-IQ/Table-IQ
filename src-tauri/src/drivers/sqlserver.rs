@@ -121,6 +121,20 @@ fn flag(r: &tiberius::Row, col: &str) -> DResult<bool> {
 
 /// `@@ROWCOUNT` for the statement just run. It is session state, so it survives into the next
 /// batch on the same (pinned) connection.
+/// Roll back a transaction a batch left open on the pinned session.
+///
+/// This driver holds ONE `Client` behind a mutex, shared by the grid, introspection, edits
+/// and inserts, and it supports no cancellation — so an uncommitted `BEGIN TRANSACTION`
+/// holds its exclusive locks over everything that follows, silently enrols those writes,
+/// and loses them all when the connection drops. `IF @@TRANCOUNT > 0` makes this a no-op
+/// after a balanced BEGIN…COMMIT, so real work is never touched.
+async fn rollback_orphan_tx(c: &mut Conn) {
+    use futures_util::StreamExt;
+    if let Ok(mut s) = c.simple_query("IF @@TRANCOUNT > 0 ROLLBACK").await {
+        while s.next().await.is_some() {}
+    }
+}
+
 async fn rowcount(c: &mut Conn) -> Option<u64> {
     let row = c.simple_query("SELECT @@ROWCOUNT").await.ok()?.into_row().await.ok()??;
     row.try_get::<i32, _>(0).ok().flatten().map(|n| n.max(0) as u64)
@@ -374,9 +388,7 @@ impl SqlDriver for SqlServerDriver {
             if let Some(e) = failed {
                 // The pinned session outlives the failed batch, so an aborted transaction would
                 // otherwise hold its locks over every statement that follows it.
-                if let Ok(mut s) = c.simple_query("IF @@TRANCOUNT > 0 ROLLBACK").await {
-                    while s.next().await.is_some() {}
-                }
+                rollback_orphan_tx(&mut c).await;
                 outs.push(StmtOutput {
                     exec_ms,
                     error: Some(stmt_error(&e)),
@@ -400,6 +412,16 @@ impl SqlDriver for SqlServerDriver {
                 error: None,
                 notice: None,
             });
+        }
+        // A batch that opened a transaction and never closed it reported plain success while
+        // the transaction stayed open on the shared connection. Postgres and MySQL get this
+        // from `exec::run_sqlx`; the pinned tiberius session needs it done here. Slice to the
+        // statements that actually ran, exactly as `run_sqlx` does.
+        if exec::left_open(&stmts[..outs.len()]) {
+            rollback_orphan_tx(&mut c).await;
+            if let Some(last) = outs.last_mut() {
+                last.notice = Some("Transaction was not committed and has been rolled back".into());
+            }
         }
         Ok(outs)
     }
@@ -654,8 +676,13 @@ impl SqlDriver for SqlServerDriver {
 
     async fn run_script(&self, sql: &str) -> DResult<u64> {
         let mut c = self.client.lock().await;
-        let res = c.execute(sql, &[]).await.map_err(db)?;
-        Ok(res.total())
+        let res = c.execute(sql, &[]).await;
+        // Same shared connection, same hazard — and a script that dies midway leaks its
+        // transaction just as a successful one does, so probe either way. There is no
+        // statement splitter here to hand `exec::left_open`, and `IF @@TRANCOUNT > 0` is
+        // one cheap round trip next to holding exclusive locks over the whole app.
+        rollback_orphan_tx(&mut c).await;
+        Ok(res.map_err(db)?.total())
     }
 
     async fn open_window_filtered(
