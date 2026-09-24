@@ -13,6 +13,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -195,6 +196,11 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   ref,
 ) {
   const { resolved } = useTheme();
+  // The canvas can't resolve CSS variables, so FK text gets the theme's hex.
+  const fkText = useMemo(() => {
+    const c = gridTheme(resolved).accentColor;
+    return { textDark: c, textLight: c };
+  }, [resolved]);
   const editable = !!onEdit;
   const gridRef = useRef<DataEditorRef>(null);
   const cacheRef = useRef(new WindowCache(source.pageSize ?? PAGE, MAX_PAGES));
@@ -595,7 +601,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
           : isNull
             ? nullCellStyle(resolved)
             : fk
-              ? { textDark: "var(--primary)", textLight: "var(--primary)" }
+              ? fkText
               : undefined;
       return {
         kind: GridCellKind.Text,
@@ -608,7 +614,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
         themeOverride,
       };
     },
-    [ensurePage, editable, fkByColumn, rightAlignColumns, resolved, rowBg, highlight],
+    [ensurePage, editable, fkByColumn, rightAlignColumns, resolved, rowBg, highlight, fkText],
   );
 
   /** Build the full {col → value} map for `row` by walking columns through the
