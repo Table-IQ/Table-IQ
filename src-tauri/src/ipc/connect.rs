@@ -376,6 +376,15 @@ pub async fn list_databases(state: State<'_, ConnState>, id: String) -> Result<V
     Err("not connected".to_string())
 }
 
+/// `cfg` pointed at `database`. A file engine's `database` is its file path, so "switching"
+/// would open — and create — an empty file named after the catalog: refused.
+fn switch_target(cfg: &ConnConfig, database: String) -> Result<ConnConfig, String> {
+    if cfg.is_file_engine() {
+        return Err("A file database has no other databases to switch to — open another file as its own connection".into());
+    }
+    Ok(ConnConfig { database, ..cfg.clone() })
+}
+
 /// Switch the active connection to a different database without persisting the
 /// change to the saved `ConnConfig`. Tears down the current session and opens a
 /// fresh one against the same server + credentials but with `database` swapped
@@ -398,8 +407,7 @@ pub async fn switch_database(
             .cloned()
             .ok_or_else(|| "unknown connection".to_string())?
     };
-    let mut new_cfg = cfg.clone();
-    new_cfg.database = database;
+    let new_cfg = switch_target(&cfg, database)?;
 
     let password = if new_cfg.is_file_engine() {
         String::new()
@@ -1696,6 +1704,30 @@ mod tests {
         // A real export destination outside the config dir still works.
         let ok = tmp.path().join("result.csv");
         assert_eq!(check_export_path_in(ok.to_str().unwrap(), &app), Ok(()));
+    }
+
+    /// A file engine's `database` is its file path: "switching" to the catalog name the
+    /// picker showed opened (and created) an empty file of that name.
+    #[test]
+    fn switching_database_is_refused_for_file_engines() {
+        let cfg = |engine: &str, database: &str| ConnConfig {
+            id: "x".into(),
+            name: "x".into(),
+            color: None,
+            engine: engine.into(),
+            host: "h".into(),
+            port: 0,
+            database: database.into(),
+            username: "".into(),
+            sslmode: "prefer".into(),
+            ssh: None,
+        };
+        for e in ["duckdb", "sqlite"] {
+            let err = switch_target(&cfg(e, "/tmp/a.db"), "main".into()).expect_err(e);
+            assert!(err.contains("file"), "{e}: {err}");
+        }
+        let pg = switch_target(&cfg("postgres", "app"), "other".into()).expect("postgres switches");
+        assert_eq!(pg.database, "other");
     }
 
     #[test]

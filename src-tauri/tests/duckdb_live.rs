@@ -254,7 +254,7 @@ async fn foreign_keys_structure_and_databases() {
     let st = drv.describe_table("sales", "lines").await.unwrap();
     assert_eq!(st.indexes.iter().find(|i| i.primary).unwrap().columns, vec!["order_id", "line_no"]);
 
-    assert_eq!(drv.list_databases().await.unwrap(), vec!["qa"]);
+    assert!(drv.list_databases().await.unwrap().is_empty(), "a file has no other databases");
 }
 
 /// The QA seed loads, twice (it is idempotent), through the driver's own script path.
@@ -299,5 +299,5 @@ async fn scripts_csv_and_memory() {
     let mem = DuckDriver::connect(":memory:").await.unwrap();
     mem.run_script("CREATE TABLE t (a INT); INSERT INTO t VALUES (1)").await.unwrap();
     assert_eq!(mem.count_rows("main", "t", &[], None).await.unwrap().count, Some(1));
-    assert_eq!(mem.list_databases().await.unwrap(), vec!["memory"]);
+    assert!(mem.list_databases().await.unwrap().is_empty());
 }

@@ -585,9 +585,9 @@ impl SqlDriver for DuckDriver {
         })
     }
 
+    /// None: the connection *is* one file, and `switch_database` refuses file engines.
     async fn list_databases(&self) -> DResult<Vec<String>> {
-        let rows = self.with(|c| rows_of(c, "SELECT name FROM pragma_database_list", &[])).await?;
-        Ok(rows.iter().map(|r| s(&r[0])).collect())
+        Ok(Vec::new())
     }
 }
 
