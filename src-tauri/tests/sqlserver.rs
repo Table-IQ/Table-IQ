@@ -180,7 +180,7 @@ async fn sqlserver_run_statements_affected_cap_errors_and_cancel() {
 
     let sel = &outs[4];
     assert_eq!(sel.row_count, 3);
-    assert_eq!(sel.total_rows, 3);
+    assert_eq!(sel.total_rows, Some(3));
     assert!(!sel.truncated);
     assert_eq!(sel.rows_affected, None, "a SELECT reports rows through row_count");
     let names: Vec<&str> = sel.columns.iter().map(|(n, _)| n.as_str()).collect();
@@ -191,14 +191,23 @@ async fn sqlserver_run_statements_affected_cap_errors_and_cancel() {
     assert_eq!(col.value(0), "Grace");
     assert!(col.is_null(2), "a SQL NULL stays an Arrow null");
 
-    // Row cap: 3 rows with cap 2 keeps 2 and counts 3.
+    // Row cap: 3 rows with cap 1 keeps 1 and stops reading — the total is unknown.
     let outs = drv
-        .run_statements(&v(&["SELECT id FROM dbo.tiq_stmts ORDER BY id"]), 2, &tok)
+        .run_statements(&v(&["SELECT id FROM dbo.tiq_stmts ORDER BY id"]), 1, &tok)
         .await
         .expect("cap");
-    assert_eq!(outs[0].row_count, 2, "only `cap` rows are materialised");
-    assert_eq!(outs[0].total_rows, 3, "the rest are still counted");
+    assert_eq!(outs[0].row_count, 1, "only `cap` rows are materialised");
+    assert_eq!(outs[0].total_rows, None, "reading stopped past the cap");
     assert!(outs[0].truncated);
+    // The row limit is not left on the session the grid shares.
+    assert_eq!(drv.open_window("dbo", "tiq_stmts", 0, 10).await.expect("browse").num_rows(), 3);
+    // ~8e9 rows: the server stops at the cap instead of streaming them all to be counted.
+    let start = std::time::Instant::now();
+    let huge = "SELECT a.object_id FROM sys.all_objects a CROSS JOIN sys.all_objects b \
+                CROSS JOIN sys.all_objects c";
+    let outs = drv.run_statements(&v(&[huge]), 50_000, &tok).await.expect("huge");
+    assert!(start.elapsed() < std::time::Duration::from_secs(3), "took {:?}", start.elapsed());
+    assert_eq!((outs[0].row_count, outs[0].total_rows, outs[0].truncated), (50_000, None, true));
 
     // Typed rendering: no debug formatting reaches the grid.
     let outs = drv

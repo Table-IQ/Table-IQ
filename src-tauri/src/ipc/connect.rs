@@ -695,7 +695,8 @@ pub struct StatementResultMeta {
     pub result_id: Option<String>,
     pub columns: Vec<ColumnMeta>,
     pub row_count: usize,
-    pub total_rows: u64,
+    /// `None`: reading stopped at the cap, so the total is unknown.
+    pub total_rows: Option<u64>,
     pub truncated: bool,
     pub rows_affected: Option<u64>,
     pub exec_ms: u64,

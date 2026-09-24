@@ -253,8 +253,9 @@ pub struct StmtOutput {
     pub batch: Option<arrow::record_batch::RecordBatch>,
     /// Rows in `batch` (≤ cap).
     pub row_count: usize,
-    /// Rows the statement actually produced, counted past the cap.
-    pub total_rows: u64,
+    /// Rows the statement produced, or `None` when reading stopped at the cap (the rest were
+    /// never read, so their number is unknown).
+    pub total_rows: Option<u64>,
     pub truncated: bool,
     pub rows_affected: Option<u64>,
     pub exec_ms: u64,

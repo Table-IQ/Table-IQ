@@ -53,6 +53,12 @@ describe("rowCountLabel", () => {
     );
   });
 
+  it("shows the cap with a plus when the total is unknown", () => {
+    expect(rowCountLabel({ rowCount: 50000, totalRows: null, truncated: true })).toBe(
+      "50,000+ rows (truncated)",
+    );
+  });
+
   it("shows a plain count otherwise", () => {
     expect(rowCountLabel({ rowCount: 3, totalRows: 3, truncated: false })).toBe("3 rows");
   });

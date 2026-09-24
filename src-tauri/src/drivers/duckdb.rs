@@ -60,11 +60,13 @@ struct TextResult {
     names: Vec<String>,
     types: Vec<String>,
     rows: Vec<Vec<Option<String>>>,
-    total: u64,
+    /// `None`: there were rows past the cap, and they were never read.
+    total: Option<u64>,
     changed: usize,
 }
 
-/// Run one statement with text binds; keep the first `cap` rows as text, count the rest.
+/// Run one statement with text binds; keep the first `cap` rows as text and stop there —
+/// each further chunk would be converted to arrow only to be counted.
 ///
 /// ponytail: duckdb 1.2.2 (the newest whose arrow resolves next to our arrow 53) only
 /// streams when handed the result schema up front, so the result is materialised in
@@ -76,14 +78,11 @@ fn run_text(conn: &Connection, sql: &str, binds: &[Option<String>], cap: usize) 
     let names: Vec<String> = schema.fields().iter().map(|f| f.name().to_string()).collect();
     let types: Vec<String> = schema.fields().iter().map(|f| f.data_type().to_string()).collect();
     let mut rows: Vec<Vec<Option<String>>> = Vec::new();
-    let mut total: u64 = 0;
+    let mut total = Some(0);
     let opts = FormatOptions::default();
     while let Some(chunk) = st.step() {
-        total += chunk.len() as u64;
         let take = cap.saturating_sub(rows.len()).min(chunk.len());
-        if take == 0 {
-            continue;
-        }
+        total = total.map(|t| t + chunk.len() as u64).filter(|_| take == chunk.len());
         let cols = chunk.columns();
         let fmts = cols
             .iter()
@@ -97,6 +96,9 @@ fn run_text(conn: &Connection, sql: &str, binds: &[Option<String>], cap: usize) 
                     .map(|(c, f)| (!c.is_null(r)).then(|| f.value(r).to_string()))
                     .collect(),
             );
+        }
+        if total.is_none() {
+            break;
         }
     }
     Ok(TextResult { names, types, rows, total, changed })
@@ -150,7 +152,7 @@ fn run_one(conn: &Connection, stmt: &str, cap: usize) -> ::duckdb::Result<StmtOu
         columns: names.into_iter().zip(r.types).collect(),
         row_count: r.rows.len(),
         total_rows: r.total,
-        truncated: r.total > r.rows.len() as u64,
+        truncated: r.total.is_none(),
         exec_ms,
         ..Default::default()
     })

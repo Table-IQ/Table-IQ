@@ -187,6 +187,14 @@ async fn rollback_orphan_tx(c: &mut Conn) {
     }
 }
 
+/// `SET ROWCOUNT n` on the pinned session (`0` lifts it).
+async fn set_rowcount(c: &mut Conn, n: usize) {
+    use futures_util::StreamExt;
+    if let Ok(mut s) = c.simple_query(format!("SET ROWCOUNT {n}")).await {
+        while s.next().await.is_some() {}
+    }
+}
+
 async fn rowcount(c: &mut Conn) -> Option<u64> {
     let row = c.simple_query("SELECT @@ROWCOUNT").await.ok()?.into_row().await.ok()??;
     row.try_get::<i32, _>(0).ok().flatten().map(|n| n.max(0) as u64)
@@ -417,6 +425,11 @@ impl SqlDriver for SqlServerDriver {
     /// One `simple_query` batch per statement, streamed: rows past `cap` are counted but never
     /// materialised. tiberius only surfaces a server error at the *end* of the response, so the
     /// stream is always drained to the end — which is also what leaves the connection clean.
+    ///
+    /// Draining a `SELECT * FROM` a trillion-row table never ends, so a plain SELECT runs under
+    /// `SET ROWCOUNT cap + 1`: the server itself stops one row past the cap, and the total is
+    /// reported unknown. Only a SELECT without INTO — T-SQL functions cannot write, so it has
+    /// nothing to lose by stopping — and the limit is lifted before anything else runs.
     async fn run_statements(
         &self,
         stmts: &[String],
@@ -436,6 +449,12 @@ impl SqlDriver for SqlServerDriver {
             let mut rows: Vec<Vec<Option<std::string::String>>> = Vec::new();
             let mut total: u64 = 0;
             let mut failed: Option<tiberius::error::Error> = None;
+            let limit = cap < i32::MAX as usize
+                && exec::first_keyword(stmt) == "SELECT"
+                && !stmt.to_uppercase().contains("INTO");
+            if limit {
+                set_rowcount(&mut c, cap + 1).await;
+            }
 
             match c.simple_query(stmt.as_str()).await {
                 // An error before any metadata is raised by `simple_query` itself.
@@ -472,6 +491,9 @@ impl SqlDriver for SqlServerDriver {
                 }
             }
             let exec_ms = start.elapsed().as_millis() as u64;
+            if limit {
+                set_rowcount(&mut c, 0).await;
+            }
             if let Some(e) = failed {
                 // The pinned session outlives the failed batch, so an aborted transaction would
                 // otherwise hold its locks over every statement that follows it.
@@ -493,7 +515,7 @@ impl SqlDriver for SqlServerDriver {
                 batch: if names.is_empty() { None } else { Some(exec::text_batch(&names, &rows)?) },
                 columns: names.into_iter().zip(types).collect(),
                 row_count: rows.len(),
-                total_rows: total,
+                total_rows: (!limit || total <= cap as u64).then_some(total),
                 truncated: total > rows.len() as u64,
                 exec_ms,
                 error: None,

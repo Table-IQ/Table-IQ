@@ -37,12 +37,17 @@ export function resultTabs(metas: StatementResultMeta[]): ResultTabInfo[] {
 
 const rows = (n: number) => `${n.toLocaleString()} row${n === 1 ? "" : "s"}`;
 
-/** `3 rows` — or `50,000 of 1,234,567 rows (truncated)` when the cap kicked in. */
-export function rowCountLabel(
-  meta: Pick<StatementResultMeta, "rowCount" | "totalRows" | "truncated">,
-): string {
+/** `3 rows` — or `50,000 of 1,234,567 rows (truncated)` when the cap kicked in, and
+ *  `50,000+ rows (truncated)` when the backend stopped reading there (`totalRows: null`). */
+export function rowCountLabel(meta: {
+  rowCount: number;
+  totalRows: number | null;
+  truncated: boolean;
+}): string {
   if (meta.truncated) {
-    return `${meta.rowCount.toLocaleString()} of ${meta.totalRows.toLocaleString()} rows (truncated)`;
+    return meta.totalRows == null
+      ? `${meta.rowCount.toLocaleString()}+ rows (truncated)`
+      : `${meta.rowCount.toLocaleString()} of ${meta.totalRows.toLocaleString()} rows (truncated)`;
   }
   return rows(meta.rowCount);
 }
