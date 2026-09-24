@@ -413,7 +413,9 @@ export type FilterOp =
   | "Like"
   | "ILike"
   | "IsNull"
-  | "IsNotNull";
+  | "IsNotNull"
+  /** All-column "contains" search; `column` is "*" and `value` is the raw term. */
+  | "Search";
 
 export interface ColumnFilter {
   column: string;
@@ -491,6 +493,8 @@ export async function fetchTableWindow(
   filters?: ColumnFilter[],
   order?: SortKey[],
   after?: (string | null)[],
+  /** Same key ⇒ the previous in-flight fetch for it is cancelled server-side (e.g. the tab id). */
+  requestKey?: string,
 ): Promise<{ bytes: Uint8Array; ms: number }> {
   const t0 = performance.now();
   if (!inTauri()) {
@@ -505,6 +509,7 @@ export async function fetchTableWindow(
     filters: filters && filters.length ? filters : null,
     order: order && order.length ? order : null,
     after: after ?? null,
+    requestKey: requestKey ?? null,
   });
   return { bytes: new Uint8Array(ab), ms: performance.now() - t0 };
 }
