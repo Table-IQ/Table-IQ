@@ -55,21 +55,19 @@ environment:
   rendering, glide-data-grid's canvas paths) because this machine has no assistive-access
   permission for the packaged app window. Should be re-checked with the dev console open
   in a real build for CSP violation reports.
-- **`cursor_bounded_ram`** (the bounded-RAM proof over the full 1,000,000-row `wide`
-  table) — passes locally but is gated out of CI (`TIQ_PG_FULL_SEED`, see `ci.yml`), so
-  it isn't part of the automated safety net; it has to be run by hand
-  (README "Tests").
 
 ### 2c. Cleanup notes from this pass
 
 - The unused windowed-cursor driver API (`open_cursor`/`fetch_next`/`close_cursor` on
   `SqlDriver`, plus the Postgres/MySQL/SQLite/SQL Server implementations hard-coded to
-  `FetchWindow::Wide`) was considered for removal. It's **not used anywhere in `src/`**
-  (no frontend caller, no IPC command wraps it), but **is used** by two live Rust
-  integration tests — `src-tauri/tests/cursor_bounded_ram.rs` (the bounded-RAM proof
-  above) and `src-tauri/tests/sqlserver.rs` — so it was left in place rather than removed
-  out from under working tests. If this is ever wired into the frontend (e.g. for a
-  true streaming table view instead of paged windows), start from those two tests.
+  `FetchWindow::Wide`) **was removed** (`782f53d`), along with the `RawCell`/`KeyBy`/
+  `RowKey`/`FetchWindow` scaffolding it depended on. It was never called from `src/` (no
+  frontend caller, no IPC command wrapped it), and the four implementations had diverged —
+  Postgres ignored its `sql` argument and queried a hardcoded seed table, while MySQL and
+  SQLite returned `NotImplemented` — a trap for whoever wired it up next. Removing it also
+  deleted `src-tauri/tests/cursor_bounded_ram.rs` (the bounded-RAM proof over the full
+  1,000,000-row `wide` table), the only test that exercised it. `src-tauri/tests/sqlserver.rs`
+  never used this API; its live tests go through the normal query path.
 - `package-lock.json` was removed. CI (`ci.yml`) and the release workflow
   (`release.yml`) both install via `pnpm/action-setup` + `pnpm install`; nothing
   referenced the npm lockfile except planning notes under `.context/plans/`.

@@ -58,10 +58,6 @@ TIQ_MSSQL_URL="Server=tcp:127.0.0.1,51433;User Id=sa;Password=TableIQ_pw1;Databa
   cargo test
 ```
 
-One test, `cursor_bounded_ram`, proves cursor paging keeps Rust memory bounded over a
-1,000,000-row table. It needs the *full* seed and an extra flag, so it's gated separately
-and skipped in CI — see "Test databases" below.
-
 CI (`.github/workflows/ci.yml`) runs `tsc`, `vitest`, `vite build`, `cargo test` (against
 live Postgres and MySQL containers), and `cargo clippy --all-targets -- -D warnings` on every
 pull request. SQL Server is deliberately left out of CI (a 1.5 GB image for a handful of
@@ -78,13 +74,14 @@ docker compose -f docker/mysql/docker-compose.yml up -d
 
 This brings up `tableiq-pg` on `55432` and `tableiq-mysql` on `53306` (credentials as in the
 `TIQ_*_URL` values above) and seeds each from `docker/postgres/{seed.sql,qa.sql}` and
-`docker/mysql/qa.sql` on first start. `seed.sql` builds the 1,000,000-row `wide` table that
-`cursor_bounded_ram` needs (its row count is a psql variable defaulting to `1000000`, so CI
-instead seeds a cheap 2,000-row `wide` by passing `-v rows=2000` by hand — see `ci.yml` —
-since only `cursor_bounded_ram` needs the full set, and it's gated on `TIQ_PG_FULL_SEED` and
-skips itself otherwise). `qa.sql` in each engine's folder (plus `docker/sqlite/qa.sql`) seeds
-the shapes the QA harness and the live tests read: a self-referencing FK, a cross-schema FK, a
-composite PK/FK, a view, a trigger, an index, and assorted NULLs.
+`docker/mysql/qa.sql` on first start. `seed.sql` builds a `wide` table (100+ columns, tricky
+types) whose row count is a psql variable defaulting to `1000000`; CI instead seeds a cheap
+2,000-row `wide` by passing `-v rows=2000` by hand — see `ci.yml` — since the live tests that
+read it (`introspect_browse`, `profile`, `explain`, `table_page_live`) only need the table and
+its first rows in id order, not the full set. `qa.sql` in each engine's folder (plus
+`docker/sqlite/qa.sql`) seeds the shapes the QA harness and the live tests read: a
+self-referencing FK, a cross-schema FK, a composite PK/FK, a view, a trigger, an index, and
+assorted NULLs.
 
 SQL Server has no compose file — `azure-sql-edge` SIGABRTs on Apple Silicon during the
 master-database upgrade, so the amd64 `mssql/server` image runs under Rosetta instead:
