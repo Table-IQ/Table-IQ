@@ -103,7 +103,23 @@ async fn maybe_open_tunnel(
         host: cfg.host.clone(),
         port: cfg.port,
     };
-    let tunnel = Tunnel::connect(ssh, &secret, target).await?;
+    // The drivers each bound their own connect at CONNECT_TIMEOUT, but the tunnel in front
+    // of them relied on russh's 3600s inactivity default — so a bastion that accepts TCP and
+    // then stalls (a wedged sshd, a silently dropping firewall) held Connect for an hour with
+    // no way back. Bound it the same way the drivers are bounded.
+    let secs = crate::drivers::CONNECT_TIMEOUT.as_secs();
+    let tunnel = tokio::time::timeout(
+        crate::drivers::CONNECT_TIMEOUT,
+        Tunnel::connect(ssh, &secret, target),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "SSH tunnel to {}:{} timed out after {secs}s — the bastion accepted the \
+             connection but never finished the handshake.",
+            ssh.host, ssh.port
+        )
+    })??;
     let local = tunnel.local_addr();
     let rewritten = cfg.with_host_port(&local.ip().to_string(), local.port());
     Ok((rewritten, Some(tunnel)))
