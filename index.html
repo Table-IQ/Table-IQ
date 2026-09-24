@@ -9,6 +9,10 @@
 
   <body>
     <div id="root"></div>
+    <!-- glide-data-grid portals every overlay cell editor into this element
+         (`document.getElementById("portal")`). Without it, editing a cell
+         silently does nothing. Must stay the last child of <body>. -->
+    <div id="portal" style="position: fixed; left: 0; top: 0; z-index: 9999"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

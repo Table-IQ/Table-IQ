@@ -56,12 +56,26 @@ async fn connect_to(db: Option<&str>) -> Option<SqlServerDriver> {
     )
 }
 
+/// Every test in this file works inside the same `master` database and several of
+/// them run DDL, which deadlocks against another test's `sys.*` catalog read under
+/// cargo's default parallelism (SQL Server error 1205, reproducible in ~1 run in 3).
+/// Serialise the whole file on one lock rather than giving each test its own
+/// database. `tokio::sync::Mutex` works across the per-test runtimes; a `std` one
+/// would be held across `.await`.
+static DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Hold the returned guard for the body of a test that touches the live server.
+async fn serialised() -> tokio::sync::MutexGuard<'static, ()> {
+    DB_LOCK.lock().await
+}
+
 async fn connect() -> Option<SqlServerDriver> {
     connect_to(None).await
 }
 
 #[tokio::test]
 async fn sqlserver_driver_browse_query_edit() {
+    let _serialised = serialised().await;
     let Some(drv) = connect().await else { return };
 
     drv.run_script(
@@ -146,6 +160,7 @@ async fn sqlserver_driver_browse_query_edit() {
 /// honestly reported as unsupported.
 #[tokio::test]
 async fn sqlserver_run_statements_affected_cap_errors_and_cancel() {
+    let _serialised = serialised().await;
     let Some(drv) = connect().await else { return };
     let tok = CancelToken::new();
     let v = |xs: &[&str]| -> Vec<String> { xs.iter().map(|s| s.to_string()).collect() };
@@ -274,6 +289,7 @@ async fn sqlserver_run_statements_affected_cap_errors_and_cancel() {
 /// garbage) and only ever the first database.
 #[tokio::test]
 async fn sqlserver_foreign_keys_and_databases_are_read_column_major() {
+    let _serialised = serialised().await;
     let Some(drv) = connect().await else { return };
     let tok = CancelToken::new();
     let v = |xs: &[&str]| -> Vec<String> { xs.iter().map(|s| s.to_string()).collect() };
@@ -345,6 +361,7 @@ async fn sqlserver_foreign_keys_and_databases_are_read_column_major() {
 /// inline edit, and the display rendering of every scalar type the seed carries.
 #[tokio::test]
 async fn sqlserver_qa_seed_introspect_structure_paging_and_edit() {
+    let _serialised = serialised().await;
     let Some(drv) = connect_to(Some("tableiq")).await else { return };
 
     // ── introspect ──────────────────────────────────────────────────────────
@@ -517,6 +534,7 @@ async fn sqlserver_qa_seed_introspect_structure_paging_and_edit() {
 /// was cleartext whatever the user picked.
 #[tokio::test]
 async fn sqlserver_sslmode_picks_the_negotiated_encryption() {
+    let _serialised = serialised().await;
     let Ok(ado) = std::env::var("TIQ_MSSQL_URL") else { return };
     let (host, port, database, user, pass) = parts(&ado);
     // `encrypt_option` on the server side is the ground truth for this session.
@@ -535,6 +553,7 @@ async fn sqlserver_sslmode_picks_the_negotiated_encryption() {
 /// old code silently connected as something else. Building the `Config` from the parts fixes it.
 #[tokio::test]
 async fn sqlserver_password_with_semicolons_connects() {
+    let _serialised = serialised().await;
     let Some(admin) = connect().await else { return };
     let tok = CancelToken::new();
     let v = |xs: &[&str]| -> Vec<String> { xs.iter().map(|s| s.to_string()).collect() };
@@ -569,6 +588,7 @@ async fn sqlserver_password_with_semicolons_connects() {
 /// row identity at all — and rewrote every row that shared the old value.
 #[tokio::test]
 async fn apply_edit_refuses_an_empty_primary_key() {
+    let _serialised = serialised().await;
     let Some(drv) = connect().await else { return };
     let edit = EditSpec {
         pk: vec![],
@@ -588,6 +608,7 @@ async fn apply_edit_refuses_an_empty_primary_key() {
 /// Postgres and MySQL already get this from `exec::run_sqlx` + `left_open`.
 #[tokio::test]
 async fn an_uncommitted_transaction_is_rolled_back_and_reported() {
+    let _serialised = serialised().await;
     let Some(drv) = connect().await else { return };
     let tok = CancelToken::default();
     drv.run_script("IF OBJECT_ID('dbo.tiq_tx_leak') IS NOT NULL DROP TABLE dbo.tiq_tx_leak")
@@ -638,6 +659,7 @@ async fn an_uncommitted_transaction_is_rolled_back_and_reported() {
 /// A balanced BEGIN…COMMIT is real work and must be left alone — no rollback, no notice.
 #[tokio::test]
 async fn a_committed_transaction_is_left_alone() {
+    let _serialised = serialised().await;
     let Some(drv) = connect().await else { return };
     let tok = CancelToken::default();
     drv.run_script("IF OBJECT_ID('dbo.tiq_tx_ok') IS NOT NULL DROP TABLE dbo.tiq_tx_ok")
