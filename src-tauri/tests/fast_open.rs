@@ -163,6 +163,32 @@ async fn pg_estimate_of_a_never_analyzed_table_uses_its_size() {
     run(&a, "DROP SCHEMA tiq_est2 CASCADE").await;
 }
 
+/// Like the planner, the estimate scales `reltuples` by how the table has grown since it was
+/// ANALYZEd (current pages / `relpages`). `reltuples = 0` with `relpages = 0` is how PG < 14
+/// marks "never analyzed", so that is sized from the relation too.
+#[tokio::test]
+async fn pg_estimate_scales_with_growth_since_analyze() {
+    let Some(url) = pg() else {
+        return;
+    };
+    let a = admin(&url).await;
+    run(&a, "DROP SCHEMA IF EXISTS tiq_est3 CASCADE; CREATE SCHEMA tiq_est3; \
+             CREATE TABLE tiq_est3.t (a int, b int) WITH (autovacuum_enabled = off); \
+             INSERT INTO tiq_est3.t SELECT g, g FROM generate_series(1, 10000) g; \
+             ANALYZE tiq_est3.t; \
+             INSERT INTO tiq_est3.t SELECT g, g FROM generate_series(1, 10000) g; \
+             CREATE TABLE tiq_est3.old (a int, b int) WITH (autovacuum_enabled = off); \
+             INSERT INTO tiq_est3.old SELECT g, g FROM generate_series(1, 20000) g; \
+             UPDATE pg_class SET reltuples = 0, relpages = 0 WHERE oid = 'tiq_est3.old'::regclass;")
+        .await;
+    let drv = PgDriver::connect(&url).await.unwrap();
+    for t in ["t", "old"] {
+        let n = drv.estimate_rows("tiq_est3", t).await.unwrap().expect("an estimate");
+        assert!((18_000..=22_000).contains(&n), "{t}: 20000 rows now, estimated {n}");
+    }
+    run(&a, "DROP SCHEMA tiq_est3 CASCADE").await;
+}
+
 /// `force_exact` drops the 2s bound, so it must be cancellable through the same token
 /// `cancel_query` uses.
 #[tokio::test]

@@ -647,9 +647,11 @@ impl SqlDriver for PgDriver {
     }
 
     /// Leaf `reltuples` summed down the `pg_inherits` tree (a partitioned parent has no
-    /// storage of its own). A never-ANALYZEd leaf (`reltuples = -1`) is estimated from its
-    /// size: pages × tuples-per-page, a tuple being its fixed-width columns (32 bytes per
-    /// variable-width one) plus 28 bytes of header and line pointer. Views: `None`.
+    /// storage of its own), scaled like the planner does by the leaf's growth since ANALYZE
+    /// (current pages / `relpages`). A never-ANALYZEd leaf (`reltuples = -1`; before PG 14,
+    /// `reltuples = 0` with `relpages = 0`) is estimated from its size: pages ×
+    /// tuples-per-page, a tuple being its fixed-width columns (32 bytes per variable-width
+    /// one) plus 28 bytes of header and line pointer. Views: `None`.
     async fn estimate_rows(&self, schema: &str, table: &str) -> DResult<Option<i64>> {
         sqlx::query_scalar(
             "WITH RECURSIVE rel AS ( \
@@ -657,7 +659,10 @@ impl SqlDriver for PgDriver {
                WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('r', 'p', 'm') \
                UNION ALL \
                SELECT i.inhrelid FROM pg_inherits i JOIN rel ON i.inhparent = rel.oid) \
-             SELECT COALESCE(SUM(CASE WHEN c.reltuples >= 0 THEN c.reltuples::float8 \
+             SELECT COALESCE(SUM(CASE \
+               WHEN c.reltuples > 0 AND c.relpages > 0 \
+                 THEN c.reltuples::float8 / c.relpages * floor(pg_relation_size(c.oid) / s.bs) \
+               WHEN c.reltuples > 0 OR (c.reltuples = 0 AND c.relpages > 0) THEN c.reltuples::float8 \
                ELSE floor(pg_relation_size(c.oid) / s.bs) * floor(s.bs / (28 + ( \
                  SELECT COALESCE(SUM(CASE WHEN a.attlen > 0 THEN a.attlen ELSE 32 END), 0) \
                  FROM pg_attribute a \
