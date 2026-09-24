@@ -131,6 +131,10 @@ fn urlencode(s: &str) -> String {
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct ConnStore {
     pub connections: Vec<ConnConfig>,
+    /// Set when the file exists but could not be read, so `save` must refuse rather than
+    /// overwrite data we never saw. Never serialized — it describes this load, not the store.
+    #[serde(skip)]
+    unreadable: bool,
 }
 
 impl ConnStore {
@@ -144,11 +148,33 @@ impl ConnStore {
 
     /// Load from an explicit path. A file that exists but does not parse is moved aside
     /// rather than silently replaced by the next save — see `appdir::quarantine`.
+    ///
+    /// The only read failure that may yield an empty store is "there is no file yet".
+    /// Anything else (EACCES, a transient I/O fault, invalid UTF-8 — which is exactly what a
+    /// half-written file looks like) means the user's connections are still on disk and we
+    /// simply cannot see them; loading empty would let the next save atomically overwrite
+    /// the lot with `{"connections":[]}`, orphaning every keychain entry behind it. Mark the
+    /// store unreadable so `save` refuses instead.
     fn load_at(p: &Path) -> Self {
-        let Ok(text) = fs::read_to_string(p) else { return Self::default() };
+        let text = match fs::read_to_string(p) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Self::default(),
+            Err(e) => {
+                crate::applog::log(
+                    "error",
+                    &format!(
+                        "{} could not be read ({e}); leaving it untouched — saved connections \
+                         are unavailable until it can be read again",
+                        p.display()
+                    ),
+                );
+                return Self { connections: Vec::new(), unreadable: true };
+            }
+        };
         match serde_json::from_str(&text) {
             Ok(store) => store,
             Err(e) => {
+                // Quarantined, so the path is now free and the next save is safe.
                 crate::appdir::quarantine_corrupt(p, &e.to_string());
                 Self::default()
             }
@@ -156,8 +182,19 @@ impl ConnStore {
     }
 
     pub fn save(&self) -> Result<(), String> {
+        self.save_at(&Self::path())
+    }
+
+    fn save_at(&self, p: &Path) -> Result<(), String> {
+        if self.unreadable {
+            return Err(format!(
+                "{} could not be read, so it will not be overwritten. Fix its permissions or \
+                 move it aside, then restart TableIQ.",
+                p.display()
+            ));
+        }
         let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
-        crate::appdir::write_atomic(&Self::path(), json.as_bytes()).map_err(|e| e.to_string())
+        crate::appdir::write_atomic(p, json.as_bytes()).map_err(|e| e.to_string())
     }
 
     pub fn upsert(&mut self, cfg: ConnConfig) {
@@ -241,6 +278,7 @@ mod tests {
         };
         let store = ConnStore {
             connections: vec![cfg.clone()],
+            ..Default::default()
         };
         let json = serde_json::to_string(&store).unwrap();
         let back: ConnStore = serde_json::from_str(&json).unwrap();
@@ -524,6 +562,45 @@ mod tests {
             ssh: None,
         };
         assert!(cfg.url_with_password("pw").contains("@[::1]:3306/"), "IPv6 host was mangled");
+    }
+
+    /// The *parse*-failure path quarantines carefully. The *read*-failure path did not:
+    /// EACCES, a transient I/O error, or invalid UTF-8 — exactly what a half-written file
+    /// looks like — silently yielded an empty store, and the next save atomically overwrote
+    /// the user's entire connection set with `{"connections":[]}`, orphaning every keychain
+    /// entry behind it.
+    #[test]
+    fn an_unreadable_store_refuses_to_save_over_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("connections.json");
+        // Not valid UTF-8, so `read_to_string` fails before serde_json ever sees it.
+        let bytes: &[u8] = b"{\"connections\": [\xff\xfe";
+        std::fs::write(&p, bytes).unwrap();
+
+        let store = ConnStore::load_at(&p);
+        assert!(store.connections.is_empty(), "nothing could be read");
+        let err = store.save_at(&p).expect_err("saving would have destroyed the file");
+        assert!(err.contains("could not be read"), "unhelpful error: {err}");
+        assert_eq!(std::fs::read(&p).unwrap(), bytes, "the user's file was modified");
+    }
+
+    /// The one read failure that *is* safe to treat as an empty store: there is no file yet.
+    #[test]
+    fn a_missing_store_still_saves() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("connections.json");
+        assert_eq!(ConnStore::load_at(&p).save_at(&p), Ok(()));
+        assert!(p.exists());
+    }
+
+    /// A quarantined (unparseable) file is out of the way, so saving over the now-missing
+    /// path is safe and must keep working.
+    #[test]
+    fn a_quarantined_store_still_saves() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("connections.json");
+        std::fs::write(&p, b"{ truncated").unwrap();
+        assert_eq!(ConnStore::load_at(&p).save_at(&p), Ok(()));
     }
 
     #[test]
