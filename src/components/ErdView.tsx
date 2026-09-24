@@ -474,7 +474,11 @@ export function ErdView({
                       fontSize={9}
                       fill="var(--muted)"
                       stroke="var(--bg)"
-                      strokeWidth={3}
+                      // The halo knocks the connector out from behind the text. At 3 it
+                      // reached 1.5px around each glyph, which left the ~4px inter-word
+                      // space uncovered — the line showed through the gap after the comma
+                      // and `order_id, line_no` read as `order_id,,line_no`.
+                      strokeWidth={7}
                       paintOrder="stroke"
                     >
                       {label}
