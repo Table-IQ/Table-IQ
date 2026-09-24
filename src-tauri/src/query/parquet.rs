@@ -136,6 +136,59 @@ fn validate_ident(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Every fixed SQL type `arrow_type_to_sql` can emit, across all four dialects. The only
+/// other shape it produces is `numeric(p,s)`, handled separately in [`validate_sql_type`].
+/// `every_type_the_importer_emits_is_allowed` keeps this in sync with that function.
+/// Compared case-insensitively, so SQLite's `INTEGER`/`TEXT`/`REAL`/`NUMERIC` spellings need
+/// no separate entries.
+const ALLOWED_SQL_TYPES: &[&str] = &[
+    // booleans
+    "boolean", "tinyint(1)", "bit", //
+    // integers
+    "smallint", "integer", "bigint", //
+    // floats
+    "real", "float", "double precision", "double", //
+    // exact numerics (the parameterised `numeric(p,s)` is checked separately)
+    "numeric", //
+    // text
+    "text", "longtext", "nvarchar(max)", //
+    // binary
+    "bytea", "longblob", "blob", "varbinary(max)", //
+    // date / time
+    "date", "time", "timestamp", "timestamptz", "datetime(6)", "datetimeoffset", "datetime2",
+    // json
+    "json", "jsonb",
+];
+
+/// Reject a column type this importer would never emit.
+///
+/// The type string arrives from the caller alongside the column name, and the CREATE TABLE
+/// it lands in is executed through `run_script` = `sqlx::raw_sql`, which is multi-statement
+/// on Postgres, MySQL and SQL Server alike. Unlike `generate_ddl` (preview-only) nothing
+/// shows this SQL to the user first, so a `sqlType` of `bigint); DROP TABLE users; --` was
+/// arbitrary DDL. Names are quoted; a type cannot be, so it is allowlisted instead.
+pub fn validate_sql_type(ty: &str) -> Result<(), String> {
+    if ALLOWED_SQL_TYPES.iter().any(|a| a.eq_ignore_ascii_case(ty)) {
+        return Ok(());
+    }
+    // `numeric(p,s)` — the one parameterised type (arrow's scale is an i8 and may be negative).
+    if let Some(args) = ty
+        .strip_prefix("numeric(")
+        .or_else(|| ty.strip_prefix("NUMERIC("))
+        .and_then(|r| r.strip_suffix(')'))
+    {
+        if let Some((p, s)) = args.split_once(',') {
+            if p.parse::<u8>().is_ok() && s.parse::<i8>().is_ok() {
+                return Ok(());
+            }
+        }
+    }
+    Err(format!(
+        "unsupported column type {ty:?} — the parquet importer only creates columns of the \
+         types it derives from the file's own schema"
+    ))
+}
+
 /// Build a CREATE TABLE statement matching the parquet schema. All columns nullable
 /// (parquet's optional/repeated structure is mostly nullable in practice; we don't
 /// preserve the original required flag to keep the round-trip simple).
@@ -149,8 +202,9 @@ pub fn build_create_table_sql(
     if let Some(s) = schema {
         validate_ident(s)?;
     }
-    for (n, _) in cols {
+    for (n, ty) in cols {
         validate_ident(n)?;
+        validate_sql_type(ty)?;
     }
     let qualified = dialect.qualified(schema, table);
     let body = cols
@@ -350,6 +404,41 @@ mod tests {
         assert_eq!(arrow_type_to_sql(Dialect::Sqlite, &DataType::Binary), "BLOB");
     }
 
+    /// SQL Server got its own branch in every arm of `arrow_type_to_sql` in this change —
+    /// none of them were covered, so a bad mapping (e.g. an unsupported MSSQL type name)
+    /// would only have surfaced when a user actually imported a parquet file.
+    #[test]
+    fn arrow_to_sql_sqlserver() {
+        assert_eq!(arrow_type_to_sql(Dialect::SqlServer, &DataType::Boolean), "bit");
+        assert_eq!(arrow_type_to_sql(Dialect::SqlServer, &DataType::Int64), "bigint");
+        assert_eq!(arrow_type_to_sql(Dialect::SqlServer, &DataType::Float32), "real");
+        assert_eq!(arrow_type_to_sql(Dialect::SqlServer, &DataType::Float64), "float");
+        assert_eq!(arrow_type_to_sql(Dialect::SqlServer, &DataType::Decimal128(10, 2)), "numeric(10,2)");
+        assert_eq!(arrow_type_to_sql(Dialect::SqlServer, &DataType::Utf8), "nvarchar(max)");
+        assert_eq!(arrow_type_to_sql(Dialect::SqlServer, &DataType::Binary), "varbinary(max)");
+        // Timestamp with a timezone needs the offset-preserving type; naive does not.
+        assert_eq!(
+            arrow_type_to_sql(Dialect::SqlServer, &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))),
+            "datetimeoffset"
+        );
+        assert_eq!(
+            arrow_type_to_sql(Dialect::SqlServer, &DataType::Timestamp(TimeUnit::Microsecond, None)),
+            "datetime2"
+        );
+        let st = DataType::Struct(vec![Field::new("a", DataType::Int64, true)].into());
+        assert_eq!(arrow_type_to_sql(Dialect::SqlServer, &st), "nvarchar(max)");
+    }
+
+    #[test]
+    fn create_table_sqlserver_uses_brackets_and_schema() {
+        let cols = vec![("id".into(), "bigint".into()), ("name".into(), "nvarchar(max)".into())];
+        let sql = build_create_table_sql(Dialect::SqlServer, Some("dbo"), "orders", &cols).unwrap();
+        assert_eq!(
+            sql,
+            "CREATE TABLE [dbo].[orders] (\n  [id] bigint,\n  [name] nvarchar(max)\n)"
+        );
+    }
+
     #[test]
     fn create_table_pg_qualified_and_quoted() {
         let cols = vec![
@@ -375,6 +464,78 @@ mod tests {
         let cols = vec![("a".into(), "INTEGER".into())];
         let sql = build_create_table_sql(Dialect::Sqlite, Some("main"), "t", &cols).unwrap();
         assert_eq!(sql, "CREATE TABLE \"t\" (\n  \"a\" INTEGER\n)");
+    }
+
+    /// The column *type* is caller-supplied and was interpolated raw, while the result is
+    /// executed through `run_script` = `sqlx::raw_sql`, which is multi-statement on every
+    /// engine. A `sqlType` of `bigint); DROP TABLE users; --` was therefore arbitrary DDL
+    /// with no preview.
+    #[test]
+    fn create_table_rejects_a_sql_type_that_is_not_one_we_emit() {
+        let injected = "bigint); DROP TABLE users; --";
+        let err = build_create_table_sql(
+            Dialect::Postgres,
+            None,
+            "t",
+            &[("a".into(), injected.into())],
+        )
+        .expect_err("an arbitrary type string must be refused");
+        assert!(err.contains("unsupported column type"), "unhelpful error: {err}");
+
+        for bad in ["text DEFAULT (SELECT 1)", "int; DROP TABLE t", "text)", "", "text --"] {
+            assert!(
+                build_create_table_sql(Dialect::MySql, None, "t", &[("a".into(), bad.into())])
+                    .is_err(),
+                "accepted {bad:?}"
+            );
+        }
+    }
+
+    /// The allowlist must not drift away from what `arrow_type_to_sql` actually emits, or a
+    /// legitimate parquet file stops importing.
+    #[test]
+    fn every_type_the_importer_emits_is_allowed() {
+        let st = DataType::Struct(vec![Field::new("a", DataType::Int64, true)].into());
+        let types = [
+            DataType::Boolean,
+            DataType::Int8,
+            DataType::Int16,
+            DataType::Int32,
+            DataType::Int64,
+            DataType::UInt8,
+            DataType::UInt16,
+            DataType::UInt32,
+            DataType::UInt64,
+            DataType::Float32,
+            DataType::Float64,
+            DataType::Decimal128(10, 2),
+            DataType::Decimal256(38, 0),
+            DataType::Utf8,
+            DataType::LargeUtf8,
+            DataType::Binary,
+            DataType::LargeBinary,
+            DataType::FixedSizeBinary(16),
+            DataType::Date32,
+            DataType::Date64,
+            DataType::Time32(TimeUnit::Second),
+            DataType::Time64(TimeUnit::Nanosecond),
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            st,
+            DataType::Null, // the `_ =>` fallback arm
+        ];
+        for d in [Dialect::Postgres, Dialect::MySql, Dialect::Sqlite, Dialect::SqlServer] {
+            for t in &types {
+                let ty = arrow_type_to_sql(d, t);
+                assert!(
+                    build_create_table_sql(d, None, "t", &[("a".into(), ty.clone())]).is_ok(),
+                    "{d:?} emits {ty:?} but the allowlist rejects it"
+                );
+            }
+        }
+        // The frontend's own fallback when the preview has no type for a column.
+        assert!(build_create_table_sql(Dialect::Postgres, None, "t", &[("a".into(), "text".into())])
+            .is_ok());
     }
 
     #[test]

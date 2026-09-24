@@ -1,5 +1,6 @@
 //! Connection + browse IPC: manage saved connections, open live sessions, introspect,
-//! and stream table windows to the UI. Postgres only (Slice 1).
+//! and stream table windows to the UI. Routes all six engines — Postgres, MySQL/MariaDB,
+//! SQLite, SQL Server, MongoDB, and Redis.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -1033,8 +1034,10 @@ pub async fn import_rows(
 const PARQUET_MAX_BYTES: usize = 500 * 1024 * 1024;
 
 /// Reject identifiers (schema / table / target columns) that contain control
-/// characters or are empty. The engine-specific `quote_ident` would still escape
-/// embedded quotes, but failing fast keeps the error close to the user input.
+/// characters or are empty, and column types that are not ones the importer emits.
+/// The engine-specific `quote_ident` would still escape embedded quotes, but failing
+/// fast keeps the error close to the user input — and a *type* cannot be quoted at all,
+/// so the allowlist is the only thing between `sqlType` and `sqlx::raw_sql`.
 fn validate_target_idents(
     schema: Option<&str>,
     table: &str,
@@ -1053,8 +1056,9 @@ fn validate_target_idents(
         check(s, "schema")?;
     }
     check(table, "table")?;
-    for (_, name, _) in column_mapping {
+    for (_, name, sql_type) in column_mapping {
         check(name, "column")?;
+        crate::query::parquet::validate_sql_type(sql_type)?;
     }
     Ok(())
 }
@@ -1453,6 +1457,20 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    #[test]
+    fn parquet_import_rejects_a_smuggled_sql_type() {
+        // This check runs whether or not `create_table` is set, so the injection is refused
+        // before `build_create_table_sql` (which also allowlists) is ever reached.
+        let ok = vec![(0usize, "a".to_string(), "bigint".to_string())];
+        assert!(validate_target_idents(Some("public"), "t", &ok).is_ok());
+
+        let injected =
+            vec![(0usize, "a".to_string(), "bigint); DROP TABLE users; --".to_string())];
+        let err = validate_target_idents(Some("public"), "t", &injected)
+            .expect_err("an arbitrary type string must be refused");
+        assert!(err.contains("unsupported column type"), "unhelpful error: {err}");
     }
 
     #[test]
