@@ -145,13 +145,6 @@ async fn sqlserver_driver_browse_query_edit() {
     };
     assert_eq!(drv.apply_edit("dbo", "tiq_demo", &stale).await.expect("stale"), 0, "stale edit = conflict");
 
-    // ── Windowed cursor (Slice 19): page 3 rows at 2/page → 2, 1, 0 ──
-    let cur = drv.open_cursor("SELECT * FROM dbo.tiq_demo", 2).await.expect("open_cursor");
-    assert_eq!(drv.fetch_next(&cur, 2).await.expect("page1").num_rows(), 2);
-    assert_eq!(drv.fetch_next(&cur, 2).await.expect("page2").num_rows(), 1);
-    assert_eq!(drv.fetch_next(&cur, 2).await.expect("page3").num_rows(), 0);
-    drv.close_cursor(&cur).await.expect("close_cursor");
-
     drv.run_script("DROP TABLE dbo.tiq_demo;").await.ok();
 }
 
@@ -690,4 +683,52 @@ async fn a_committed_transaction_is_left_alone() {
     assert_eq!(n, "1", "a committed INSERT must survive");
 
     drv.run_script("DROP TABLE dbo.tiq_tx_ok").await.ok();
+}
+
+/// This driver holds ONE connection behind a mutex and never resets session state — it does
+/// not go through `exec::run_sqlx`, so `touches_session` is never consulted. Browse, edit and
+/// delete all emit two-part names (`[schema].[table]`), which resolve inside whatever database
+/// the session is currently on. So a `USE OtherDatabase` typed once in a query tab silently
+/// retargeted every later grid read, cell edit and row delete — while the UI went on showing
+/// the original database. Editing "the row you can see" wrote to a different database.
+#[tokio::test]
+async fn a_use_in_a_query_tab_does_not_retarget_the_rest_of_the_session() {
+    let _serialised = serialised().await;
+    let Some(drv) = connect().await else { return };
+    let tok = CancelToken::default();
+    drv.run_script("IF OBJECT_ID('dbo.tiq_use_guard') IS NOT NULL DROP TABLE dbo.tiq_use_guard")
+        .await
+        .expect("drop");
+    drv.run_script("CREATE TABLE dbo.tiq_use_guard (id int PRIMARY KEY)").await.expect("create");
+    drv.run_script("INSERT INTO dbo.tiq_use_guard VALUES (1),(2)").await.expect("seed");
+
+    let outs = drv
+        .run_statements(&["USE tempdb".to_string()], 100, &tok)
+        .await
+        .expect("batch runs");
+    // Everything after the batch must still be on the connection's own database.
+    let db = drv
+        .run_statements(&["SELECT DB_NAME() AS db".to_string()], 10, &tok)
+        .await
+        .expect("db name");
+    let b = db[0].batch.as_ref().expect("a result set");
+    let name = b.column(0).as_any().downcast_ref::<StringArray>().expect("text").value(0);
+    assert_eq!(name, "master", "the session was left pointing at another database");
+
+    // …and the grid, which emits two-part names, must still find its table.
+    let n = drv.count_rows("dbo", "tiq_use_guard", &[]).await.expect("count").count;
+    assert_eq!(n, Some(2), "the grid was reading a different database");
+    let w = drv.open_window("dbo", "tiq_use_guard", 0, 10).await.expect("browse");
+    assert_eq!(w.num_rows(), 2);
+
+    // The user must be told the session was put back, not left guessing.
+    assert!(
+        outs.last()
+            .and_then(|o| o.notice.as_deref())
+            .is_some_and(|n| n.to_lowercase().contains("database")),
+        "no notice, got {:?}",
+        outs.last().and_then(|o| o.notice.clone())
+    );
+
+    drv.run_script("DROP TABLE dbo.tiq_use_guard").await.ok();
 }

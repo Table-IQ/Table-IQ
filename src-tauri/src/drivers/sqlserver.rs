@@ -6,7 +6,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Mutex as StdMutex;
 
 use arrow::array::{ArrayRef, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
@@ -19,7 +18,7 @@ use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
 use super::{
     build_insert_sql, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
-    ColumnFilter, ColumnInfo, CursorId, DResult, DriverError, EditSpec, ForeignKey, IndexInfo,
+    ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec, ForeignKey, IndexInfo,
     ObjectInfo, ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver,
     StmtOutput, TableStructure, TriggerInfo,
 };
@@ -128,6 +127,27 @@ fn flag(r: &tiberius::Row, col: &str) -> DResult<bool> {
 /// holds its exclusive locks over everything that follows, silently enrols those writes,
 /// and loses them all when the connection drops. `IF @@TRANCOUNT > 0` makes this a no-op
 /// after a balanced BEGIN…COMMIT, so real work is never touched.
+/// Put the session back on the database it connected to, after a `USE` in a query tab.
+///
+/// The driver holds ONE connection behind a mutex and never resets session state — it does
+/// not go through `exec::run_sqlx`, so `touches_session` is never consulted. Browse, edit and
+/// delete all emit two-part names (`[schema].[table]`), which resolve inside the session's
+/// *current* database, so a single `USE OtherDatabase` silently retargeted every later grid
+/// read, cell edit and row delete while the UI still showed the original database.
+///
+/// This is the narrow fix: `SET ANSI_NULLS OFF`, isolation-level changes and other session
+/// settings still persist on the shared connection. A full session reset (or a pool, which is
+/// the real answer) is a larger change than this review should carry.
+async fn restore_database(c: &mut Conn, database: &str) {
+    use futures_util::StreamExt;
+    if database.is_empty() {
+        return;
+    }
+    if let Ok(mut s) = c.simple_query(format!("USE {}", quote_ident(database))).await {
+        while s.next().await.is_some() {}
+    }
+}
+
 async fn rollback_orphan_tx(c: &mut Conn) {
     use futures_util::StreamExt;
     if let Ok(mut s) = c.simple_query("IF @@TRANCOUNT > 0 ROLLBACK").await {
@@ -193,15 +213,14 @@ JOIN sys.trigger_events te ON te.object_id = tr.object_id \
 WHERE tr.parent_id = OBJECT_ID(@P1) AND tr.is_ms_shipped = 0 \
 ORDER BY tr.name, te.type";
 
-/// Client-side cursor state: the wrapped query + how far we've paged.
-struct CursorState {
-    sql: String,
-    offset: usize,
-}
-
 pub struct SqlServerDriver {
     client: Mutex<Conn>,
-    cursors: StdMutex<HashMap<String, CursorState>>,
+    /// The database this session belongs to, read back with `DB_NAME()` at connect (the
+    /// configured name may be empty, meaning "the login's default"). Everything outside the
+    /// query tab — browse, edit, delete — emits two-part names that resolve inside whatever
+    /// database the session is currently on, so a `USE` has to be undone. See
+    /// `run_statements`.
+    database: std::string::String,
 }
 
 /// How long to wait for the TCP connect before giving up. Without it an unreachable host
@@ -254,8 +273,21 @@ impl SqlServerDriver {
             .map_err(|_| DriverError::Db(format!("connection to {host}:{port} timed out")))?
             .map_err(db)?;
         tcp.set_nodelay(true).ok();
-        let client = Client::connect(config, tcp.compat_write()).await.map_err(db)?;
-        Ok(Self { client: Mutex::new(client), cursors: StdMutex::new(HashMap::new()) })
+        let mut client = Client::connect(config, tcp.compat_write()).await.map_err(db)?;
+        // Ask the server rather than trusting `database`: it may be empty (the login's default).
+        let row = client
+            .simple_query("SELECT DB_NAME()")
+            .await
+            .map_err(db)?
+            .into_row()
+            .await
+            .map_err(db)?;
+        let database = row
+            .as_ref()
+            .and_then(|r| r.try_get::<&str, _>(0).ok().flatten())
+            .unwrap_or_default()
+            .to_string();
+        Ok(Self { client: Mutex::new(client), database })
     }
 
     /// Ordered column names for one relation (empty ⇒ no such relation), used to validate
@@ -413,55 +445,31 @@ impl SqlDriver for SqlServerDriver {
                 notice: None,
             });
         }
+        // Session state this batch left behind on the shared connection. Slice to the
+        // statements that actually ran, exactly as `run_sqlx` does.
+        let ran = &stmts[..outs.len()];
+        let mut notices: Vec<std::string::String> = Vec::new();
         // A batch that opened a transaction and never closed it reported plain success while
         // the transaction stayed open on the shared connection. Postgres and MySQL get this
-        // from `exec::run_sqlx`; the pinned tiberius session needs it done here. Slice to the
-        // statements that actually ran, exactly as `run_sqlx` does.
-        if exec::left_open(&stmts[..outs.len()]) {
+        // from `exec::run_sqlx`; the pinned tiberius session needs it done here.
+        if exec::left_open(ran) {
             rollback_orphan_tx(&mut c).await;
+            notices.push("Transaction was not committed and has been rolled back".into());
+        }
+        // …and a `USE` would have retargeted the grid. See `restore_database`.
+        if ran.iter().any(|s| exec::first_keyword(s) == "USE") {
+            restore_database(&mut c, &self.database).await;
+            notices.push(format!(
+                "Switched back to database {} — this connection also serves the table grid",
+                self.database
+            ));
+        }
+        if !notices.is_empty() {
             if let Some(last) = outs.last_mut() {
-                last.notice = Some("Transaction was not committed and has been rolled back".into());
+                last.notice = Some(notices.join(". "));
             }
         }
         Ok(outs)
-    }
-
-    async fn open_cursor(&self, sql: &str, _page_size: usize) -> DResult<CursorId> {
-        let id = format!(
-            "mssql-cur-{:x}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        );
-        crate::lk(&self.cursors)
-            .insert(id.clone(), CursorState { sql: sql.to_string(), offset: 0 });
-        Ok(CursorId(id))
-    }
-
-    async fn fetch_next(&self, cursor: &CursorId, n: usize) -> DResult<RecordBatch> {
-        let (sql, offset) = {
-            let map = crate::lk(&self.cursors);
-            let s = map.get(&cursor.0).ok_or_else(|| DriverError::Db("unknown cursor".into()))?;
-            (s.sql.clone(), s.offset)
-        };
-        // Stable paging over an arbitrary query via OFFSET/FETCH (requires an ORDER BY).
-        let q = format!(
-            "SELECT * FROM ({sql}) AS _q ORDER BY (SELECT NULL) OFFSET {offset} ROWS FETCH NEXT {n} ROWS ONLY"
-        );
-        let (cols, d) = self.query_text(&q).await?;
-        let got = d.first().map(|c| c.len()).unwrap_or(0);
-        if got > 0 {
-            if let Some(s) = crate::lk(&self.cursors).get_mut(&cursor.0) {
-                s.offset += got;
-            }
-        }
-        to_batch(&cols, &d)
-    }
-
-    async fn close_cursor(&self, cursor: &CursorId) -> DResult<()> {
-        crate::lk(&self.cursors).remove(&cursor.0);
-        Ok(())
     }
 
     async fn introspect(&self) -> DResult<SchemaModel> {
