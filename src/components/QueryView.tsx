@@ -532,8 +532,8 @@ export function QueryView({
       <div className="relative min-h-0 flex-1">
         {running && <div className="tiq-progress absolute inset-x-0 top-0 z-10" aria-hidden />}
         <div
-          className={`h-full transition-opacity ${
-            running && run ? "opacity-60 delay-150" : ""
+          className={`tiq-dimmable h-full ${
+            running && run ? "is-busy" : ""
           }`}
         >
           {plan !== null ? (

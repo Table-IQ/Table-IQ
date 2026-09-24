@@ -202,6 +202,9 @@ State is never carried by motion alone; a tint, label or text always remains.
 | Rails (filters, new row, unsaved changes) | `.tiq-rail`: slide down + fade, `--dur` |
 | Busy (query run, page load) | `.tiq-progress`: 2px indeterminate bar in `--primary`, appears after 150ms |
 | Query results arrive | `.tiq-fade-in`, `--dur-fast`; stale results dim while running |
+| Stale content in flight (table page, query results) | `.tiq-dimmable` + `.is-busy`: opacity 0.6 after `--delay-busy`, un-dims at once; stays interactive (scroll, select, copy) — never `pointer-events: none` |
+| Running / counting timer | `<Elapsed>` (`ui/Elapsed.tsx`) owns its 100ms tick; appears after `--delay-busy`; `aria-hidden` inside a live region |
+| Row total while a new filter counts | previous total stays, drawn `--muted` until the new one lands |
 | Inline error / notice | `.tiq-slide-in`: 4px drop + fade, `--dur` |
 | Panels (Alter, New table, …) | `.tiq-pop-in` scale .98→1 + fade; `.tiq-pop-out` on close |
 | Cell saving | amber tint breathes (1s period) while any cell is writing |
@@ -296,7 +299,19 @@ floats recently-used connections to the top of the list without any UI grouping
 
 > Grid colors are hardcoded hex in `theme.ts`/`gridRowTints` on purpose —
 > glide-data-grid's canvas theme needs literal colors, not CSS custom properties.
-> Components still use tokens.
+> Components still use tokens. (A `var(--…)` handed to the canvas does not
+> resolve — FK cell text once painted invisibly that way; FK cells use
+> `gridTheme(mode).accentColor`.)
+
+**Grid cell tints** (`theme.ts`, canvas hex — light / dark):
+
+| Tint | Light | Dark | Source |
+|---|---|---|---|
+| Search hit (cell matches the table search) | `#c7d2fe` | `#312e81` | `searchHitBg` — the accent, one step stronger than the selected-row band so a hit still reads on a selected row |
+| Selected row | `#e0e7ff` | `#1e2540` | `gridRowTints.selected` |
+| FK cell text | `#4f46e5` | `#6366f1` | `gridTheme().accentColor` |
+
+A save-state tint (staged / saving / saved / error) wins over a search hit on the same cell.
 
 ## Do / Don't
 

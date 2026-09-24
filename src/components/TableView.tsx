@@ -876,7 +876,7 @@ export function TableView({ connId, schema, object, view }: Props) {
           <div className="h-[38px] border-b border-border bg-surface" aria-hidden />
         ) : view === "data" && source ? (
           <div
-            className={`h-full transition-opacity ${fetching ? "opacity-60 delay-150" : ""}`}
+            className={`tiq-dimmable h-full ${fetching ? "is-busy" : ""}`}
           >
           <DataGrid
             ref={gridRef}
