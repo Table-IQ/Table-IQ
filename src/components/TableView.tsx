@@ -997,8 +997,9 @@ export function TableView({ connId, schema, object, view }: Props) {
               {counting ? (
                 <span className="inline-flex items-center gap-1 text-muted" role="status">
                   Counting…
-                  {/* Fixed width, so the ticking time doesn't nudge the × out from under the pointer. */}
-                  <Elapsed since={counting.started} className="inline-block min-w-[6ch] tabular-nums" />
+                  {/* Fixed width, so the ticking time doesn't nudge the × out from under the pointer;
+                      aria-hidden, so the live region announces "Counting…" once, not every tick. */}
+                  <Elapsed since={counting.started} aria-hidden className="inline-block min-w-[6ch] tabular-nums" />
                   <StatusBarButton onClick={cancelCount} title="Stop counting">
                     <IconClose size={9} />
                     <span className="sr-only">Stop counting</span>
