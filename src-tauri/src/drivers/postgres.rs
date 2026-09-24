@@ -1,14 +1,10 @@
-//! Postgres `SqlDriver` — keyset (seek) cursor streaming with bounded RAM.
-//!
-//! Phase 0 spike: the cursor query is specialized to the seeded `wide` table so we can
-//! prove the streaming path end-to-end. A general SQL rewrite/keyset planner is Phase 1.
-//! Decimal is carried as exact text (plan spec #3) — no float round-trip.
+//! Postgres `SqlDriver`. Decimal is carried as exact text (plan spec #3) — no float
+//! round-trip.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 
-use arrow::array::{ArrayRef, Int64Array, StringArray, TimestampMicrosecondArray};
-use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+use arrow::array::StringArray;
+use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use sqlx::postgres::{PgDatabaseError, PgErrorPosition, PgPoolOptions, PgQueryResult, PgRow};
@@ -16,7 +12,7 @@ use sqlx::{Executor, Pool, Postgres, Row};
 
 use super::{
     build_insert_sql, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
-    ColumnFilter, ColumnInfo, CursorId, DResult, DriverError, EditSpec, IndexInfo, ObjectInfo,
+    ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec, IndexInfo, ObjectInfo,
     ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver, StmtOutput,
     TableStructure, TriggerInfo,
 };
@@ -160,12 +156,6 @@ fn pg_text_expr(col: &str) -> String {
 
 pub struct PgDriver {
     pool: Pool<Postgres>,
-    cursors: Mutex<HashMap<String, CursorState>>,
-}
-
-struct CursorState {
-    last_id: i64,
-    page_size: usize,
 }
 
 impl PgDriver {
@@ -216,10 +206,7 @@ impl PgDriver {
             .connect(url)
             .await
             .map_err(|e| DriverError::Db(e.to_string()))?;
-        Ok(Self {
-            pool,
-            cursors: Mutex::new(HashMap::new()),
-        })
+        Ok(Self { pool })
     }
 
     /// Ordered `(column, udt_name)` for one relation — the single catalog lookup that gives
@@ -304,67 +291,6 @@ impl SqlDriver for PgDriver {
                 Err(e)
             }
         }
-    }
-
-    async fn open_cursor(&self, _sql: &str, page_size: usize) -> DResult<CursorId> {
-        let id = format!(
-            "cur-{:x}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        );
-        crate::lk(&self.cursors).insert(
-            id.clone(),
-            CursorState {
-                last_id: 0,
-                page_size,
-            },
-        );
-        Ok(CursorId(id))
-    }
-
-    async fn fetch_next(&self, cursor: &CursorId, n: usize) -> DResult<RecordBatch> {
-        // Read cursor state without holding the lock across the await.
-        let (last_id, page) = {
-            let map = crate::lk(&self.cursors);
-            let s = map
-                .get(&cursor.0)
-                .ok_or_else(|| DriverError::Db("unknown cursor".into()))?;
-            (s.last_id, s.page_size.max(n))
-        };
-
-        // Keyset pagination: seek past last_id, bounded LIMIT. Decimal as exact text.
-        let q = "SELECT id, \
-                        amount_numeric::text AS amount_numeric, \
-                        (extract(epoch FROM created_at) * 1e6)::bigint AS created_us, \
-                        blob_text, \
-                        nullable_int \
-                 FROM wide WHERE id > $1 ORDER BY id LIMIT $2";
-        let rows = sqlx::query(q)
-            .bind(last_id)
-            .bind(page as i64)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| DriverError::Db(e.to_string()))?;
-
-        let batch = rows_to_batch(&rows)?;
-
-        // Advance the keyset to the last id we saw.
-        if let Some(ids) = batch.column(0).as_any().downcast_ref::<Int64Array>() {
-            if !ids.is_empty() {
-                let max = ids.value(ids.len() - 1);
-                if let Some(s) = crate::lk(&self.cursors).get_mut(&cursor.0) {
-                    s.last_id = max;
-                }
-            }
-        }
-        Ok(batch)
-    }
-
-    async fn close_cursor(&self, cursor: &CursorId) -> DResult<()> {
-        crate::lk(&self.cursors).remove(&cursor.0);
-        Ok(())
     }
 
     /// One catalog pass over `pg_namespace ⋈ pg_class ⋈ pg_attribute`. `information_schema`
@@ -808,69 +734,29 @@ impl SqlDriver for PgDriver {
     }
 }
 
-/// Build an all-Utf8 (nullable) Arrow batch from text-cast rows.
+/// Build an all-Utf8 (nullable) Arrow batch from text-cast rows. `cols` is the select list,
+/// in order, so column `i` of every row is `cols[i]`.
+///
+/// Cells go through the same `pg_cell` the query tab uses, so the two tabs cannot disagree
+/// about a byte. It used to be `try_get::<Option<String>>().unwrap_or_default()`, which
+/// would have turned a decode failure into an Arrow null the grid draws as NULL — as MySQL
+/// and SQLite both did. Postgres itself is stricter: it transcodes to the client encoding
+/// and raises `invalid byte sequence for encoding "UTF8"` rather than sending bytes that do
+/// not fit, so the mask was unreachable here. Reachable or not, a decode failure must not be
+/// silently renamed NULL in a tool whose job is to show what is in the database.
 fn text_rows_to_batch(cols: &[String], rows: &[PgRow]) -> DResult<RecordBatch> {
     let mut fields = Vec::with_capacity(cols.len());
     let mut arrays: Vec<arrow::array::ArrayRef> = Vec::with_capacity(cols.len());
-    for c in cols {
+    for (i, c) in cols.iter().enumerate() {
         fields.push(arrow::datatypes::Field::new(c, DataType::Utf8, true));
-        let col: StringArray = rows
-            .iter()
-            .map(|r| r.try_get::<Option<String>, _>(c.as_str()).unwrap_or_default())
-            .collect();
-        arrays.push(std::sync::Arc::new(col));
+        let mut vals: Vec<Option<String>> = Vec::with_capacity(rows.len());
+        for r in rows {
+            vals.push(pg_cell(r, i).map_err(db)?);
+        }
+        arrays.push(std::sync::Arc::new(vals.into_iter().collect::<StringArray>()));
     }
     RecordBatch::try_new(std::sync::Arc::new(arrow::datatypes::Schema::new(fields)), arrays)
         .map_err(|e| DriverError::Db(e.to_string()))
-}
-
-/// `try_get`, naming the column in the error. `Row::get` panics on a missing or mistyped
-/// column, which in a Tauri command means the whole app goes down over one odd result set.
-fn cell<'a, T>(row: &'a PgRow, col: &str) -> DResult<T>
-where
-    T: sqlx::Decode<'a, sqlx::Postgres> + sqlx::Type<sqlx::Postgres>,
-{
-    row.try_get(col).map_err(|e| DriverError::Db(format!("column {col}: {e}")))
-}
-
-fn rows_to_batch(rows: &[PgRow]) -> DResult<RecordBatch> {
-    let n = rows.len();
-    let (mut id, mut amount, mut created_us) = (Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n));
-    let (mut blob_text, mut nullable_int) = (Vec::with_capacity(n), Vec::with_capacity(n));
-    for r in rows {
-        id.push(cell::<i64>(r, "id")?);
-        amount.push(cell::<String>(r, "amount_numeric")?);
-        created_us.push(cell::<i64>(r, "created_us")?);
-        blob_text.push(cell::<String>(r, "blob_text")?);
-        nullable_int.push(cell::<Option<i64>>(r, "nullable_int")?);
-    }
-    let ids = Int64Array::from(id);
-    let amounts = StringArray::from(amount);
-    let created = TimestampMicrosecondArray::from(created_us).with_timezone("UTC");
-    let blob = StringArray::from(blob_text);
-    let nint = Int64Array::from(nullable_int);
-
-    let schema = Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        // exact text (plan spec #3 — no decimal float round-trip)
-        Field::new("amount_numeric", DataType::Utf8, false),
-        Field::new(
-            "created_at",
-            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
-            false,
-        ),
-        Field::new("blob_text", DataType::Utf8, false),
-        Field::new("nullable_int", DataType::Int64, true),
-    ]);
-
-    let cols: Vec<ArrayRef> = vec![
-        Arc::new(ids),
-        Arc::new(amounts),
-        Arc::new(created),
-        Arc::new(blob),
-        Arc::new(nint),
-    ];
-    RecordBatch::try_new(Arc::new(schema), cols).map_err(|e| DriverError::Db(e.to_string()))
 }
 
 #[cfg(test)]

@@ -12,7 +12,7 @@ use sqlx::{Pool, Row, Sqlite};
 
 use super::{
     build_insert_sql, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
-    ColumnFilter, ColumnInfo, CursorId, DResult, DriverError, EditSpec, ForeignKey, IndexInfo,
+    ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec, ForeignKey, IndexInfo,
     ObjectInfo, ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver,
     StmtOutput, TableStructure, TriggerInfo,
 };
@@ -125,13 +125,21 @@ fn reject_null_pk(pk: &[(String, Option<String>)]) -> DResult<()> {
     Ok(())
 }
 
+/// `cols` is the select list, in order, so column `i` of every row is `cols[i]`.
+/// Cells go through the same `sqlite_cell` the query tab uses, so the two tabs cannot
+/// disagree about a byte. It used to be `try_get::<Option<String>>().unwrap_or_default()`:
+/// `CAST(blob AS TEXT)` hands the raw bytes straight back (SQLite does not validate them),
+/// so a BLOB that is not UTF-8 failed to decode and the grid drew it as NULL.
 fn text_rows_to_batch(cols: &[String], rows: &[SqliteRow]) -> DResult<RecordBatch> {
     let mut fields = Vec::with_capacity(cols.len());
     let mut arrays: Vec<ArrayRef> = Vec::with_capacity(cols.len());
-    for c in cols {
+    for (i, c) in cols.iter().enumerate() {
         fields.push(Field::new(c, DataType::Utf8, true));
-        let col: StringArray = rows.iter().map(|r| r.try_get::<Option<String>, _>(c.as_str()).unwrap_or_default()).collect();
-        arrays.push(Arc::new(col));
+        let mut vals: Vec<Option<String>> = Vec::with_capacity(rows.len());
+        for r in rows {
+            vals.push(sqlite_cell(r, i).map_err(db)?);
+        }
+        arrays.push(Arc::new(vals.into_iter().collect::<StringArray>()));
     }
     RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays).map_err(|e| DriverError::Db(e.to_string()))
 }
@@ -170,16 +178,6 @@ impl SqlDriver for SqliteDriver {
                 Err(e)
             }
         }
-    }
-
-    async fn open_cursor(&self, _sql: &str, _page_size: usize) -> DResult<CursorId> {
-        Err(DriverError::NotImplemented)
-    }
-    async fn fetch_next(&self, _c: &CursorId, _n: usize) -> DResult<RecordBatch> {
-        Err(DriverError::NotImplemented)
-    }
-    async fn close_cursor(&self, _c: &CursorId) -> DResult<()> {
-        Ok(())
     }
 
     /// One query for the whole catalog: `sqlite_master` joined to the table-valued

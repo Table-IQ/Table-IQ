@@ -161,13 +161,20 @@ impl MySqlDriver {
     }
 }
 
+/// `cols` is the select list, in order, so column `i` of every row is `cols[i]`.
+/// Cells go through the same `mysql_cell` the query tab uses, so the two tabs cannot
+/// disagree about a byte. It used to be `try_get::<Option<String>>().unwrap_or_default()`,
+/// which turned a decode failure into an Arrow null the grid drew as NULL.
 fn text_rows_to_batch(cols: &[String], rows: &[MySqlRow]) -> DResult<RecordBatch> {
     let mut fields = Vec::with_capacity(cols.len());
     let mut arrays: Vec<ArrayRef> = Vec::with_capacity(cols.len());
-    for c in cols {
+    for (i, c) in cols.iter().enumerate() {
         fields.push(Field::new(c, DataType::Utf8, true));
-        let col: StringArray = rows.iter().map(|r| r.try_get::<Option<String>, _>(c.as_str()).unwrap_or_default()).collect();
-        arrays.push(Arc::new(col));
+        let mut vals: Vec<Option<String>> = Vec::with_capacity(rows.len());
+        for r in rows {
+            vals.push(mysql_cell(r, i).map_err(db)?);
+        }
+        arrays.push(Arc::new(vals.into_iter().collect::<StringArray>()));
     }
     RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays).map_err(|e| DriverError::Db(e.to_string()))
 }
@@ -332,7 +339,16 @@ impl SqlDriver for MySqlDriver {
         let order_sql = build_order_by(order, &pk, &cols, &quote_ident)?;
         let select_list = cols
             .iter()
-            .map(|c| format!("CAST({0} AS CHAR) AS {0}", quote_ident(c)))
+            // `CAST(col AS CHAR)` returns SQL **NULL** when the bytes are not valid in the
+            // connection charset (a BLOB holding arbitrary bytes), which the grid then
+            // showed as a plain NULL — indistinguishable from a real one, and a lie about
+            // what is in the table. Fall back to the same `0x…` hex the query tab renders
+            // (`exec::cell_text`). A genuine NULL still comes through as NULL: HEX(NULL) is
+            // NULL, so the CONCAT is NULL too.
+            .map(|c| {
+                let q = quote_ident(c);
+                format!("IFNULL(CAST({q} AS CHAR), CONCAT('0x', LOWER(HEX({q})))) AS {q}")
+            })
             .collect::<Vec<_>>()
             .join(", ");
         let (where_sql, binds) = build_where_clause(
