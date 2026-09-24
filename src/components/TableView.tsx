@@ -83,6 +83,10 @@ export function TableView({ connId, schema, object, view }: Props) {
    *  count it" — which must never be rendered as 0 rows. */
   const [total, setTotal] = useState<{ count: number | null; exact: boolean } | null>(null);
   const [pk, setPk] = useState<string[] | null>(null);
+  /** Why the primary key is unknown: the `primary_key` call itself failed. A
+   *  failure must never read as "this table has no primary key" — that tells the
+   *  user their rows can never be edited, which may be false. */
+  const [pkError, setPkError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [fks, setFks] = useState<ForeignKey[]>([]);
@@ -164,9 +168,20 @@ export function TableView({ connId, schema, object, view }: Props) {
     let cancelled = false;
     setNotice(null);
     setDirty(0);
+    setPkError(null);
     loadTableMeta(connId, schema, object.name)
-      .then((m) => !cancelled && setPk(m.pk))
-      .catch(() => !cancelled && setPk([]));
+      .then((m) => {
+        if (cancelled) return;
+        setPk(m.pk);
+        setPkError(null);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        // Leave `pk` unknown (null) rather than claiming an empty key.
+        setPk(null);
+        setPkError(String(e));
+        setNotice(`Couldn't read this table's primary key, so editing is off: ${e}`);
+      });
     loadForeignKeys(connId)
       .then((all) => !cancelled && setFks(outgoingForeignKeys(all, schema, object.name)))
       .catch(() => !cancelled && setFks([]));
@@ -755,9 +770,21 @@ export function TableView({ connId, schema, object, view }: Props) {
                 <span>editable</span>
               </span>
             ) : (
-              <span className="inline-flex items-center gap-1 text-muted" title={pk && pk.length === 0 ? "No primary key — editing disabled" : "Read-only"}>
-                <StatusDot tone="muted" />
-                <span>read-only{pk && pk.length === 0 ? " · no PK" : ""}</span>
+              <span
+                className={`inline-flex items-center gap-1 ${pkError ? "text-warn" : "text-muted"}`}
+                title={
+                  pkError
+                    ? `Couldn't read the primary key, so editing is disabled — this table may well have one. ${pkError}`
+                    : pk && pk.length === 0
+                      ? "No primary key — editing disabled"
+                      : "Read-only"
+                }
+              >
+                <StatusDot tone={pkError ? "warn" : "muted"} />
+                <span>
+                  read-only
+                  {pkError ? " · PK unknown" : pk && pk.length === 0 ? " · no PK" : ""}
+                </span>
               </span>
             )}
           </>
