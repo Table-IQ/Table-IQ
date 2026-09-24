@@ -75,6 +75,11 @@ export class WindowCache {
     }
   }
 
+  /** The decoded page holding `globalRow`, without touching LRU order. */
+  windowOf(globalRow: number): DecodedWindow | undefined {
+    return this.pages.get(this.pageOf(globalRow));
+  }
+
   /** Cell for a global row, or undefined if its page isn't loaded (a SQL NULL
    *  value is `null`, distinct from "not loaded yet"). Touch = mark recent. */
   getCell(globalRow: number, col: string): string | null | undefined {
