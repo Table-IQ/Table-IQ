@@ -883,7 +883,8 @@ export function TableView({ connId, schema, object, view }: Props) {
       )}
 
       {/* Body. While a page is in flight: a progress bar on the top edge and the
-          stale page dimmed (both only after 150ms, so fast pages don't flicker).
+          stale page dimmed (both only after 150ms, so fast pages don't flicker) but
+          still live — scrolling, selecting and copying never freeze on a fetch.
           Before the first page: an empty grid shell under the same bar. */}
       <div className="relative min-h-0 flex-1">
         {view === "data" && fetching && (
@@ -893,14 +894,17 @@ export function TableView({ connId, schema, object, view }: Props) {
           <div className="h-[38px] border-b border-border bg-surface" aria-hidden />
         ) : view === "data" && source ? (
           <div
-            className={`h-full transition-opacity ${fetching ? "pointer-events-none opacity-60 delay-150" : ""}`}
+            className={`h-full transition-opacity ${fetching ? "opacity-60 delay-150" : ""}`}
           >
           <DataGrid
             ref={gridRef}
             source={source}
             rowMarkerStart={firstRow + 1}
             highlight={searchTerm(pageData?.filters ?? [])}
-            onEdit={editable ? onEdit : undefined}
+            // Read-only while a page is in flight: the grid stays live for
+            // scrolling and copying, but an edit staged now would be wiped when
+            // the new page lands.
+            onEdit={editable && !fetching ? onEdit : undefined}
             fkByColumn={fkByColumn}
             onFkClick={(toTable) => {
               const fk = fks.find((f) => f.to_table === toTable);

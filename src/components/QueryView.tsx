@@ -527,12 +527,13 @@ export function QueryView({
       />
 
       {/* Results. While a run is in flight: a progress bar on the top edge and the
-          previous results dimmed (both only after 150ms, so fast runs don't flicker). */}
+          previous results dimmed (both only after 150ms, so fast runs don't flicker) but
+          still live to scroll, select and copy. */}
       <div className="relative min-h-0 flex-1">
         {running && <div className="tiq-progress absolute inset-x-0 top-0 z-10" aria-hidden />}
         <div
           className={`h-full transition-opacity ${
-            running && run ? "pointer-events-none opacity-60 delay-150" : ""
+            running && run ? "opacity-60 delay-150" : ""
           }`}
         >
           {plan !== null ? (
