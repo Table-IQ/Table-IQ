@@ -12,6 +12,7 @@ export const FILTER_OP_LABEL: Record<FilterOp, string> = {
   ILike: "ILIKE",
   IsNull: "is null",
   IsNotNull: "not null",
+  Search: "contains",
 };
 
 /** Ops that don't take a value (so the popover hides the value input). */

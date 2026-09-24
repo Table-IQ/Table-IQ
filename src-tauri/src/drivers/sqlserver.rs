@@ -17,7 +17,7 @@ use tokio::sync::Mutex;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
 use super::{
-    build_insert_sql, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
+    build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
     ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec, ForeignKey, IndexInfo,
     ObjectInfo, ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver,
     StmtOutput, TableStructure, TriggerInfo,
@@ -38,6 +38,25 @@ fn quote_ident(name: &str) -> String {
 /// target column type implicitly (display-first design), so no cast is added.
 fn mssql_placeholder(i: usize, _col: &str) -> String {
     format!("@P{i}")
+}
+
+/// `(columns, pk, column → DATA_TYPE)` for one table.
+type Meta = std::sync::Arc<(Vec<String>, Vec<String>, HashMap<String, String>)>;
+
+/// Left side of the textual comparisons (LIKE/ILIKE/Search), by the column's type. Most
+/// types CAST to NVARCHAR(MAX) (LOWER rejects `ntext` outright). The binary and CLR types
+/// (`image`, `geography`, …) have no conversion to text, so they compare as the hex the grid
+/// shows, and date/times in the grid's ISO shape (style 121) rather than `Sep 23 2026 1:45PM`.
+fn mssql_text_expr(col: &str, data_type: Option<&str>) -> String {
+    let q = quote_ident(col);
+    match data_type.unwrap_or("") {
+        "binary" | "varbinary" | "image" | "timestamp" | "geography" | "geometry"
+        | "hierarchyid" => format!("CONVERT(NVARCHAR(MAX), CONVERT(VARBINARY(MAX), {q}), 2)"),
+        "date" | "time" | "datetime" | "datetime2" | "smalldatetime" | "datetimeoffset" => {
+            format!("CONVERT(NVARCHAR(MAX), {q}, 121)")
+        }
+        _ => format!("CAST({q} AS NVARCHAR(MAX))"),
+    }
 }
 
 /// Render a `DECIMAL`/`NUMERIC` from its raw value and scale. tiberius' own `Display` builds
@@ -221,8 +240,8 @@ pub struct SqlServerDriver {
     /// database the session is currently on, so a `USE` has to be undone. See
     /// `run_statements`.
     database: std::string::String,
-    /// `(columns, pk)` per table for the browse path (see [`super::MetaCache`]).
-    meta: super::MetaCache<super::ColsPk>,
+    /// Per table for the browse path (see [`super::MetaCache`]).
+    meta: super::MetaCache<Meta>,
 }
 
 /// How long to wait for the TCP connect before giving up. Without it an unreachable host
@@ -294,24 +313,30 @@ impl SqlServerDriver {
 
     /// Cached `(columns, pk)` for the browse path. A missing relation is an error and is
     /// not cached.
-    async fn browse_meta(&self, schema: &str, table: &str) -> DResult<super::ColsPk> {
+    async fn browse_meta(&self, schema: &str, table: &str) -> DResult<Meta> {
         if let Some(m) = self.meta.get(schema, table) {
             return Ok(m);
         }
-        let cols = self.columns_of(schema, table).await?;
-        if cols.is_empty() {
+        let typed = self.columns_of(schema, table).await?;
+        if typed.is_empty() {
             return Err(DriverError::Db(format!("no such table {schema}.{table}")));
         }
-        let m = std::sync::Arc::new((cols, self.primary_key(schema, table).await?));
+        let cols = typed.iter().map(|(c, _)| c.clone()).collect();
+        let pk = self.primary_key(schema, table).await?;
+        let m = std::sync::Arc::new((cols, pk, typed.into_iter().collect()));
         self.meta.put(schema, table, m.clone());
         Ok(m)
     }
 
-    /// Ordered column names for one relation (empty ⇒ no such relation), used to validate
-    /// a requested sort column before it reaches the SQL text.
-    async fn columns_of(&self, schema: &str, table: &str) -> DResult<Vec<std::string::String>> {
+    /// Ordered `(column, DATA_TYPE)` for one relation (empty ⇒ no such relation), used to
+    /// validate a requested sort column before it reaches the SQL text.
+    async fn columns_of(
+        &self,
+        schema: &str,
+        table: &str,
+    ) -> DResult<Vec<(std::string::String, std::string::String)>> {
         let mut c = self.client.lock().await;
-        let q = "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS \
+        let q = "SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS \
                  WHERE TABLE_SCHEMA = @P1 AND TABLE_NAME = @P2 ORDER BY ORDINAL_POSITION";
         let rows = c
             .query(q, &[&schema, &table])
@@ -320,13 +345,13 @@ impl SqlServerDriver {
             .into_first_result()
             .await
             .map_err(db)?;
-        let mut names = Vec::with_capacity(rows.len());
+        let mut cols = Vec::with_capacity(rows.len());
         for r in &rows {
-            if let Some(n) = r.try_get::<&str, _>(0).map_err(db)? {
-                names.push(n.to_string());
+            if let (Some(n), Some(t)) = (text(r, "COLUMN_NAME")?, text(r, "DATA_TYPE")?) {
+                cols.push((n, t));
             }
         }
-        Ok(names)
+        Ok(cols)
     }
 
     /// Run `sql` and return (column names, **column-major** stringified data — `data[col][row]`).
@@ -557,36 +582,25 @@ impl SqlDriver for SqlServerDriver {
         Ok(SchemaModel { schemas })
     }
 
-    /// `sys.partitions` is an O(1) read of the maintained row count, but it is only an
-    /// estimate and only exists for a real table — a view (or any filter) needs the
-    /// exact count.
+    /// An unfiltered table reports its [`SqlDriver::estimate_rows`] at any size — it is
+    /// the maintained count — unless `force_exact`; a view (or any filter) needs the exact
+    /// count. There is no server-side cancel for this engine, so the token goes unused.
     async fn count_rows(
         &self,
         schema: &str,
         table: &str,
         filters: &[ColumnFilter],
+        force_exact: Option<&CancelToken>,
     ) -> DResult<RowCount> {
-        if filters.is_empty() {
-            let q = format!(
-                "SELECT SUM(p.rows) AS n FROM sys.partitions p \
-                 JOIN sys.objects o ON p.object_id = o.object_id \
-                 JOIN sys.schemas s ON o.schema_id = s.schema_id \
-                 WHERE o.type = 'U' AND s.name = '{}' AND o.name = '{}' AND p.index_id IN (0,1)",
-                schema.replace('\'', "''"),
-                table.replace('\'', "''")
-            );
-            let (_, d) = self.query_text(&q).await?;
-            if let Some(n) = d
-                .first()
-                .and_then(|c| c.first())
-                .and_then(|o| o.as_ref())
-                .and_then(|s| s.parse::<i64>().ok())
-            {
-                return Ok(RowCount { count: Some(n.max(0)), exact: false });
+        if filters.is_empty() && force_exact.is_none() {
+            if let Some(n) = self.estimate_rows(schema, table).await? {
+                return Ok(RowCount { count: Some(n), exact: false });
             }
         }
+        let meta = self.browse_meta(schema, table).await?;
+        let text_expr = |c: &str| mssql_text_expr(c, meta.2.get(c).map(|t| t.as_str()));
         let (where_sql, binds) =
-            build_where_clause(filters, &quote_ident, &mssql_placeholder, &quote_ident, 1);
+            build_where_clause(filters, &meta.0, &quote_ident, &mssql_placeholder, &text_expr, 1);
         let q = format!(
             "SELECT COUNT_BIG(*) AS n FROM {}.{}{}",
             quote_ident(schema),
@@ -609,6 +623,25 @@ impl SqlDriver for SqlServerDriver {
             None => 0,
         };
         Ok(RowCount { count: Some(n.max(0)), exact: true })
+    }
+
+    /// `sys.partitions` is an O(1) read of the maintained row count, but it is only an
+    /// estimate and only exists for a real table.
+    async fn estimate_rows(&self, schema: &str, table: &str) -> DResult<Option<i64>> {
+        let q = format!(
+            "SELECT SUM(p.rows) AS n FROM sys.partitions p \
+             JOIN sys.objects o ON p.object_id = o.object_id \
+             JOIN sys.schemas s ON o.schema_id = s.schema_id \
+             WHERE o.type = 'U' AND s.name = '{}' AND o.name = '{}' AND p.index_id IN (0,1)",
+            schema.replace('\'', "''"),
+            table.replace('\'', "''")
+        );
+        let (_, d) = self.query_text(&q).await?;
+        Ok(d.first()
+            .and_then(|c| c.first())
+            .and_then(|o| o.as_ref())
+            .and_then(|s| s.parse::<i64>().ok())
+            .map(|n| n.max(0)))
     }
 
     async fn primary_key(&self, schema: &str, table: &str) -> DResult<Vec<std::string::String>> {
@@ -722,6 +755,7 @@ impl SqlDriver for SqlServerDriver {
         len: usize,
         filters: &[ColumnFilter],
         order: &[SortKey],
+        after: Option<&[Option<String>]>,
     ) -> DResult<RecordBatch> {
         let meta = self.browse_meta(schema, table).await?;
         let (cols, pk) = (&meta.0, &meta.1);
@@ -732,8 +766,17 @@ impl SqlDriver for SqlServerDriver {
             s => s.to_string(),
         };
         // Tiberius uses @P1, @P2, … in declared order; we bind text values.
-        let (where_sql, binds) =
-            build_where_clause(filters, &quote_ident, &mssql_placeholder, &quote_ident, 1);
+        let text_expr = |c: &str| mssql_text_expr(c, meta.2.get(c).map(|t| t.as_str()));
+        let (mut where_sql, mut binds) =
+            build_where_clause(filters, cols, &quote_ident, &mssql_placeholder, &text_expr, 1);
+        let mut offset = offset;
+        if let Some((k, kb)) =
+            after.and_then(|a| build_keyset(order, pk, a, &quote_ident, &mssql_placeholder, binds.len() + 1, true))
+        {
+            where_sql = if where_sql.is_empty() { k } else { format!("{where_sql} AND {k}") };
+            binds.extend(kb);
+            offset = 0;
+        }
         let q = format!(
             "SELECT * FROM {}.{} AS _t{}{order_sql} OFFSET {offset} ROWS FETCH NEXT {len} ROWS ONLY",
             quote_ident(schema),

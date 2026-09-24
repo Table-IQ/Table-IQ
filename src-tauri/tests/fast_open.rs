@@ -6,7 +6,13 @@
 //!   TIQ_MYSQL_URL=mysql://root:tableiq@127.0.0.1:53306/tableiq \
 //!     cargo test --test fast_open -- --nocapture
 
-use tableiq_lib::drivers::{mysql::MySqlDriver, postgres::PgDriver, SqlDriver};
+use std::sync::Arc;
+use std::time::Duration;
+
+use tableiq_lib::drivers::{
+    mysql::MySqlDriver, postgres::PgDriver, sqlite::SqliteDriver, CancelToken, ColumnFilter,
+    DriverError, FilterOp, SortKey, SqlDriver,
+};
 
 fn pg() -> Option<String> {
     std::env::var("TIQ_PG_URL").ok()
@@ -80,4 +86,277 @@ async fn mysql_forget_meta_sees_a_new_column() {
     );
 
     run("DROP TABLE tiq_meta_t").await.unwrap();
+}
+
+/// A partitioned parent has no storage of its own: its estimate is the sum of its leaf
+/// partitions' `reltuples`. Faked to 3 × 5e9 here, which is what a trillion-row table
+/// looks like to the catalog — and `count_rows` must return it without a `COUNT(*)`.
+#[tokio::test]
+async fn pg_estimate_sums_partitions_and_count_skips_the_scan() {
+    let Some(url) = pg() else {
+        return;
+    };
+    let a = admin(&url).await;
+    run(&a, "DROP SCHEMA IF EXISTS tiq_est CASCADE; CREATE SCHEMA tiq_est; \
+             CREATE TABLE tiq_est.ev (id bigint PRIMARY KEY) PARTITION BY RANGE (id); \
+             CREATE TABLE tiq_est.ev0 PARTITION OF tiq_est.ev FOR VALUES FROM (0) TO (100); \
+             CREATE TABLE tiq_est.ev1 PARTITION OF tiq_est.ev FOR VALUES FROM (100) TO (200) \
+               PARTITION BY RANGE (id); \
+             CREATE TABLE tiq_est.ev1a PARTITION OF tiq_est.ev1 FOR VALUES FROM (100) TO (150); \
+             CREATE TABLE tiq_est.ev1b PARTITION OF tiq_est.ev1 FOR VALUES FROM (150) TO (200); \
+             INSERT INTO tiq_est.ev SELECT generate_series(0, 199); \
+             UPDATE pg_class SET reltuples = 5e9 \
+               WHERE oid IN ('tiq_est.ev0'::regclass, 'tiq_est.ev1a'::regclass, 'tiq_est.ev1b'::regclass); \
+             CREATE VIEW tiq_est.v AS SELECT * FROM tiq_est.ev;")
+        .await;
+    let drv = PgDriver::connect(&url).await.unwrap();
+
+    assert_eq!(drv.estimate_rows("tiq_est", "ev").await.unwrap(), Some(15_000_000_000));
+    assert_eq!(drv.estimate_rows("tiq_est", "ev1").await.unwrap(), Some(10_000_000_000), "sub-partitioned");
+    assert_eq!(drv.estimate_rows("tiq_est", "v").await.unwrap(), None, "a view has no estimate");
+    assert_eq!(drv.estimate_rows("tiq_est", "nope").await.unwrap(), None);
+
+    let c = drv.count_rows("tiq_est", "ev", &[], None).await.unwrap();
+    assert_eq!((c.count, c.exact), (Some(15_000_000_000), false), "the estimate, not a COUNT(*)");
+    let exact = drv.count_rows("tiq_est", "ev", &[], Some(&CancelToken::new())).await.unwrap();
+    assert_eq!((exact.count, exact.exact), (Some(200), true), "force_exact really counts");
+
+    run(&a, "DROP SCHEMA tiq_est CASCADE").await;
+}
+
+/// Never ANALYZEd (`reltuples = -1`): the estimate comes from the relation's size and its
+/// column widths, never from a scan. 20k rows of two ints is ~88 pages of ~226 tuples.
+#[tokio::test]
+async fn pg_estimate_of_a_never_analyzed_table_uses_its_size() {
+    let Some(url) = pg() else {
+        return;
+    };
+    let a = admin(&url).await;
+    run(&a, "DROP SCHEMA IF EXISTS tiq_est2 CASCADE; CREATE SCHEMA tiq_est2; \
+             CREATE TABLE tiq_est2.t (a int, b int) WITH (autovacuum_enabled = off); \
+             INSERT INTO tiq_est2.t SELECT g, g FROM generate_series(1, 20000) g; \
+             CREATE TABLE tiq_est2.empty (a int);")
+        .await;
+    let drv = PgDriver::connect(&url).await.unwrap();
+
+    let n = drv.estimate_rows("tiq_est2", "t").await.unwrap().expect("an estimate");
+    assert!((15_000..=25_000).contains(&n), "size-based estimate of 20000 rows, got {n}");
+    assert_eq!(drv.estimate_rows("tiq_est2", "empty").await.unwrap(), Some(0));
+
+    run(&a, "DROP SCHEMA tiq_est2 CASCADE").await;
+}
+
+/// `force_exact` drops the 2s bound, so it must be cancellable through the same token
+/// `cancel_query` uses.
+#[tokio::test]
+async fn pg_exact_count_is_cancellable() {
+    let Some(url) = pg() else {
+        return;
+    };
+    let a = admin(&url).await;
+    run(&a, "DROP SCHEMA IF EXISTS tiq_cnt CASCADE; CREATE SCHEMA tiq_cnt; \
+             CREATE VIEW tiq_cnt.slow AS SELECT pg_sleep(30)::text AS s;")
+        .await;
+    let drv = Arc::new(PgDriver::connect(&url).await.unwrap());
+    assert_exact_count_cancels(drv, "tiq_cnt", "slow").await;
+    run(&a, "DROP SCHEMA tiq_cnt CASCADE").await;
+}
+
+async fn assert_exact_count_cancels<D: SqlDriver + 'static>(drv: Arc<D>, schema: &str, table: &str) {
+    let token = CancelToken::new();
+    let (d2, t2, s, t) = (drv.clone(), token.clone(), schema.to_string(), table.to_string());
+    let start = std::time::Instant::now();
+    let h = tokio::spawn(async move { d2.count_rows(&s, &t, &[], Some(&t2)).await });
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    drv.cancel(&token).await.expect("cancel");
+    let res = h.await.unwrap();
+    assert!(matches!(res, Err(DriverError::Cancelled)), "expected Cancelled, got {res:?}");
+    assert!(start.elapsed() < Duration::from_secs(10));
+}
+
+#[tokio::test]
+async fn mysql_estimate_and_exact_count() {
+    let Some(url) = mysql() else {
+        return;
+    };
+    let a = sqlx::mysql::MySqlPoolOptions::new().connect(&url).await.unwrap();
+    for sql in [
+        "DROP VIEW IF EXISTS tiq_cnt_slow",
+        "CREATE VIEW tiq_cnt_slow AS SELECT * FROM (SELECT SLEEP(30) AS s) AS _q",
+    ] {
+        sqlx::raw_sql(sql).execute(&a).await.unwrap();
+    }
+    let drv = Arc::new(MySqlDriver::connect(&url).await.unwrap());
+
+    assert!(drv.estimate_rows("tableiq", "customers").await.unwrap().is_some());
+    assert_eq!(drv.estimate_rows("tableiq", "tiq_cnt_slow").await.unwrap(), None, "a view");
+    let c = drv.count_rows("tableiq", "customers", &[], Some(&CancelToken::new())).await.unwrap();
+    assert!(c.exact);
+    assert_exact_count_cancels(drv, "tableiq", "tiq_cnt_slow").await;
+
+    sqlx::raw_sql("DROP VIEW tiq_cnt_slow").execute(&a).await.unwrap();
+}
+
+#[tokio::test]
+async fn sqlite_has_no_estimate_and_counts_exactly() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("t.db");
+    let drv = SqliteDriver::connect(path.to_str().unwrap()).await.unwrap();
+    drv.run_script("CREATE TABLE t (id integer primary key); INSERT INTO t VALUES (1), (2);")
+        .await
+        .unwrap();
+    assert_eq!(drv.estimate_rows("main", "t").await.unwrap(), None);
+    let c = drv.count_rows("main", "t", &[], None).await.unwrap();
+    assert_eq!((c.count, c.exact), (Some(2), true));
+}
+
+// ── keyset paging ──────────────────────────────────────────────────────────
+
+type Rows = Vec<Vec<Option<String>>>;
+
+fn rows(b: &arrow::record_batch::RecordBatch) -> Rows {
+    use arrow::array::{Array, StringArray};
+    (0..b.num_rows())
+        .map(|r| {
+            b.columns()
+                .iter()
+                .map(|c| {
+                    let a = c.as_any().downcast_ref::<StringArray>().unwrap();
+                    (!a.is_null(r)).then(|| a.value(r).to_string())
+                })
+                .collect()
+        })
+        .collect()
+}
+
+fn key_of(b: &arrow::record_batch::RecordBatch, row: usize, key: &[&str]) -> Vec<Option<String>> {
+    let all = rows(b);
+    key.iter().map(|k| all[row][b.schema().index_of(k).unwrap()].clone()).collect()
+}
+
+fn sort(column: &str, desc: bool) -> SortKey {
+    SortKey { column: column.into(), desc }
+}
+
+/// The page after the row at `off - 1`, fetched by keyset, is exactly OFFSET `off`'s page.
+/// The keyset call passes offset 0, so only a keyset that really applied can land there.
+async fn keyset_equals_offset(
+    drv: &dyn SqlDriver,
+    (schema, table): (&str, &str),
+    key: &[&str],
+    order: &[SortKey],
+    filters: &[ColumnFilter],
+    off: usize,
+    len: usize,
+) {
+    let expect = drv.open_window_filtered(schema, table, off, len, filters, order, None).await.unwrap();
+    assert!(expect.num_rows() > 0, "{table}: an empty page proves nothing");
+    let prev = drv.open_window_filtered(schema, table, off - 1, 1, filters, order, None).await.unwrap();
+    let after = key_of(&prev, 0, key);
+    let got =
+        drv.open_window_filtered(schema, table, 0, len, filters, order, Some(&after)).await.unwrap();
+    assert_eq!(rows(&got), rows(&expect), "{table} {order:?} {filters:?}: keyset page != OFFSET page");
+}
+
+fn ge(column: &str, v: &str) -> Vec<ColumnFilter> {
+    vec![ColumnFilter { column: column.into(), op: FilterOp::Ge, value: Some(v.into()) }]
+}
+
+#[tokio::test]
+async fn pg_keyset_pages_equal_offset_pages() {
+    let Some(url) = pg() else {
+        return;
+    };
+    let drv = PgDriver::connect(&url).await.unwrap();
+    let t = ("public", "wide");
+    keyset_equals_offset(&drv, t, &["id"], &[], &[], 50_000, 100).await;
+    keyset_equals_offset(&drv, t, &["id"], &[sort("id", true)], &[], 5_000, 100).await;
+    keyset_equals_offset(&drv, t, &["id"], &[], &ge("id", "1000"), 500, 100).await;
+    let oi = ("public", "order_items");
+    keyset_equals_offset(&drv, oi, &["order_id", "line_no"], &[], &[], 101, 50).await;
+    let desc = [sort("order_id", true), sort("line_no", true)];
+    keyset_equals_offset(&drv, oi, &["order_id", "line_no"], &desc, &[], 101, 50).await;
+
+    // A non-PK sort can't seek: the cursor is ignored and OFFSET still answers.
+    let by_total = [sort("total", false)];
+    let expect = drv.open_window_filtered("public", "orders", 100, 10, &[], &by_total, None).await.unwrap();
+    let after = [Some("1".to_string())];
+    let got =
+        drv.open_window_filtered("public", "orders", 100, 10, &[], &by_total, Some(&after)).await.unwrap();
+    assert_eq!(rows(&got), rows(&expect));
+}
+
+/// No PK and no sort: Postgres keys on `ctid`, handed out as the last page column
+/// `__tiq_ctid`. Only then — a PK table and a view carry no such column.
+#[tokio::test]
+async fn pg_no_pk_table_pages_by_ctid() {
+    let Some(url) = pg() else {
+        return;
+    };
+    let a = admin(&url).await;
+    run(&a, "DROP SCHEMA IF EXISTS tiq_ctid CASCADE; CREATE SCHEMA tiq_ctid; \
+             CREATE TABLE tiq_ctid.t (n int, s text); \
+             INSERT INTO tiq_ctid.t SELECT g, md5(g::text) FROM generate_series(1, 5000) g; \
+             CREATE VIEW tiq_ctid.v AS SELECT * FROM tiq_ctid.t;")
+        .await;
+    let drv = PgDriver::connect(&url).await.unwrap();
+
+    let p0 = drv.open_window("tiq_ctid", "t", 0, 10).await.unwrap();
+    assert_eq!(col_names(&p0), ["n", "s", "__tiq_ctid"]);
+    keyset_equals_offset(&drv, ("tiq_ctid", "t"), &["__tiq_ctid"], &[], &[], 3000, 100).await;
+    // Walk the whole table by cursor: every row exactly once, in order.
+    let mut after: Option<Vec<Option<String>>> = None;
+    let mut seen = Vec::new();
+    loop {
+        let b = drv
+            .open_window_filtered("tiq_ctid", "t", 0, 1000, &[], &[], after.as_deref())
+            .await
+            .unwrap();
+        if b.num_rows() == 0 {
+            break;
+        }
+        seen.extend(rows(&b).into_iter().map(|r| r[0].clone().unwrap().parse::<i32>().unwrap()));
+        after = Some(key_of(&b, b.num_rows() - 1, &["__tiq_ctid"]));
+    }
+    assert_eq!(seen, (1..=5000).collect::<Vec<_>>());
+
+    let v = drv.open_window("tiq_ctid", "v", 0, 10).await.unwrap();
+    assert_eq!(col_names(&v), ["n", "s"], "a view has no ctid");
+    let pk = drv.open_window("public", "wide", 0, 1).await.unwrap();
+    assert!(!col_names(&pk).contains(&"__tiq_ctid".to_string()));
+
+    run(&a, "DROP SCHEMA tiq_ctid CASCADE").await;
+}
+
+#[tokio::test]
+async fn mysql_keyset_pages_equal_offset_pages() {
+    let Some(url) = mysql() else {
+        return;
+    };
+    let drv = MySqlDriver::connect(&url).await.unwrap();
+    let o = ("tableiq", "orders");
+    keyset_equals_offset(&drv, o, &["id"], &[], &[], 101, 50).await;
+    keyset_equals_offset(&drv, o, &["id"], &[sort("id", true)], &[], 101, 50).await;
+    let oi = ("tableiq", "order_items");
+    keyset_equals_offset(&drv, oi, &["order_id", "line_no"], &[], &[], 101, 50).await;
+    let desc = [sort("order_id", true), sort("line_no", true)];
+    keyset_equals_offset(&drv, oi, &["order_id", "line_no"], &desc, &ge("line_no", "2"), 51, 50).await;
+}
+
+#[tokio::test]
+async fn sqlite_keyset_pages_equal_offset_pages() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("k.db");
+    let drv = SqliteDriver::connect(path.to_str().unwrap()).await.unwrap();
+    drv.run_script(
+        "CREATE TABLE li (o integer, l text, v text, PRIMARY KEY (o, l)); \
+         WITH RECURSIVE s(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 999) \
+         INSERT INTO li SELECT n / 3, 'k' || (n % 3), 'v' || n FROM s;",
+    )
+    .await
+    .unwrap();
+    let t = ("main", "li");
+    keyset_equals_offset(&drv, t, &["o", "l"], &[], &[], 400, 100).await;
+    let desc = [sort("o", true), sort("l", true)];
+    keyset_equals_offset(&drv, t, &["o", "l"], &desc, &[], 400, 100).await;
 }

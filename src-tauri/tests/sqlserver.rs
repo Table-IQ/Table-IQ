@@ -118,7 +118,7 @@ async fn sqlserver_driver_browse_query_edit() {
     assert_eq!(names.value(0), "Ada");
 
     // Row count from sys.partitions (an estimate, so `exact` is false).
-    let c = drv.count_rows("dbo", "tiq_demo", &[]).await.expect("count");
+    let c = drv.count_rows("dbo", "tiq_demo", &[], None).await.expect("count");
     let est = c.count.expect("a table must report a count");
     assert!(est >= 3, "estimate {est} should be >= 3");
     assert!(!c.exact, "the sys.partitions count is an estimate");
@@ -428,14 +428,18 @@ async fn sqlserver_qa_seed_introspect_structure_paging_and_edit() {
     );
 
     // ── counts ──────────────────────────────────────────────────────────────
-    let c = drv.count_rows("dbo", "orders", &[]).await.expect("count");
+    let c = drv.count_rows("dbo", "orders", &[], None).await.expect("count");
     assert_eq!(c.count, Some(300), "sys.partitions estimate");
     assert!(!c.exact, "the unfiltered count is the stats estimate");
+    assert_eq!(drv.estimate_rows("dbo", "orders").await.expect("estimate"), Some(300));
+    let exact = drv.count_rows("dbo", "orders", &[], Some(&CancelToken::new())).await.expect("exact");
+    assert_eq!((exact.count, exact.exact), (Some(300), true), "force_exact runs COUNT_BIG");
     let filtered = drv
         .count_rows(
             "dbo",
             "order_items",
             &[ColumnFilter { column: "line_no".into(), op: FilterOp::Eq, value: Some("1".into()) }],
+            None,
         )
         .await
         .expect("filtered count");
@@ -444,8 +448,8 @@ async fn sqlserver_qa_seed_introspect_structure_paging_and_edit() {
 
     // ── ordering + paging ───────────────────────────────────────────────────
     let desc = [SortKey { column: "id".into(), desc: true }];
-    let page1 = drv.open_window_filtered("dbo", "orders", 0, 3, &[], &desc).await.expect("page1");
-    let page2 = drv.open_window_filtered("dbo", "orders", 3, 3, &[], &desc).await.expect("page2");
+    let page1 = drv.open_window_filtered("dbo", "orders", 0, 3, &[], &desc, None).await.expect("page1");
+    let page2 = drv.open_window_filtered("dbo", "orders", 3, 3, &[], &desc, None).await.expect("page2");
     let ids = |b: &arrow::record_batch::RecordBatch| -> Vec<String> {
         let c = b.column(b.schema().index_of("id").unwrap());
         let a = c.as_any().downcast_ref::<StringArray>().unwrap();
@@ -453,6 +457,25 @@ async fn sqlserver_qa_seed_introspect_structure_paging_and_edit() {
     };
     assert_eq!(ids(&page1), vec!["300", "299", "298"]);
     assert_eq!(ids(&page2), vec!["297", "296", "295"], "OFFSET paging is stable");
+    // Keyset: the page after id 298 (offset 0 — only a real seek lands there).
+    let after = [Some("298".to_string())];
+    let seek = drv.open_window_filtered("dbo", "orders", 0, 3, &[], &desc, Some(&after)).await.expect("seek");
+    assert_eq!(ids(&seek), ids(&page2), "keyset page == OFFSET page");
+    // Composite PK: SQL Server has no row values, so the predicate is the expanded OR form.
+    let cells = |b: &arrow::record_batch::RecordBatch, c: &str| -> Vec<String> {
+        let a = b.column(b.schema().index_of(c).unwrap());
+        let a = a.as_any().downcast_ref::<StringArray>().unwrap();
+        (0..b.num_rows()).map(|i| a.value(i).to_string()).collect()
+    };
+    let off = drv.open_window_filtered("dbo", "order_items", 100, 20, &[], &[], None).await.expect("oi");
+    let prev = drv.open_window_filtered("dbo", "order_items", 99, 1, &[], &[], None).await.expect("oi prev");
+    let after = [Some(cells(&prev, "order_id")[0].clone()), Some(cells(&prev, "line_no")[0].clone())];
+    let seek = drv.open_window_filtered("dbo", "order_items", 0, 20, &[], &[], Some(&after)).await.expect("oi seek");
+    assert_eq!(
+        (cells(&seek, "order_id"), cells(&seek, "line_no")),
+        (cells(&off, "order_id"), cells(&off, "line_no")),
+        "composite keyset page == OFFSET page"
+    );
 
     // A filter narrows the window and the NULL-safe operators work.
     let nulls = drv
@@ -463,6 +486,7 @@ async fn sqlserver_qa_seed_introspect_structure_paging_and_edit() {
             10,
             &[ColumnFilter { column: "manager_id".into(), op: FilterOp::IsNull, value: None }],
             &[],
+            None,
         )
         .await
         .expect("null filter");
@@ -470,7 +494,7 @@ async fn sqlserver_qa_seed_introspect_structure_paging_and_edit() {
 
     // ── display rendering of the seeded scalar types ────────────────────────
     let geo = drv
-        .open_window_filtered("dbo", "geo", 0, 3, &[], &[SortKey { column: "id".into(), desc: false }])
+        .open_window_filtered("dbo", "geo", 0, 3, &[], &[SortKey { column: "id".into(), desc: false }], None)
         .await
         .expect("geo");
     let text = |name: &str, row: usize| -> Option<String> {
@@ -716,7 +740,7 @@ async fn a_use_in_a_query_tab_does_not_retarget_the_rest_of_the_session() {
     assert_eq!(name, "master", "the session was left pointing at another database");
 
     // …and the grid, which emits two-part names, must still find its table.
-    let n = drv.count_rows("dbo", "tiq_use_guard", &[]).await.expect("count").count;
+    let n = drv.count_rows("dbo", "tiq_use_guard", &[], None).await.expect("count").count;
     assert_eq!(n, Some(2), "the grid was reading a different database");
     let w = drv.open_window("dbo", "tiq_use_guard", 0, 10).await.expect("browse");
     assert_eq!(w.num_rows(), 2);

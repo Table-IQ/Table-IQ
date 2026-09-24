@@ -520,7 +520,44 @@ pub async fn open_table(
 ) -> Result<OpenTableInfo, String> {
     let drv = state.session(&id)?;
     let f = filters.unwrap_or_default();
-    let c = drv.count_rows(&schema, &table, &f).await.map_err(|e| e.to_string())?;
+    let c = drv.count_rows(&schema, &table, &f, None).await.map_err(|e| e.to_string())?;
+    Ok(OpenTableInfo { count: c.count, exact: c.exact })
+}
+
+/// The catalog's row estimate (never a scan); `null` for a view or an engine without one.
+#[tauri::command]
+pub async fn estimate_rows(
+    state: State<'_, ConnState>,
+    id: String,
+    schema: String,
+    table: String,
+) -> Result<Option<i64>, String> {
+    let drv = state.session(&id)?;
+    drv.estimate_rows(&schema, &table).await.map_err(|e| e.to_string())
+}
+
+/// An exact, unbounded `COUNT(*)` — the "count exactly" the UI offers when `open_table`
+/// returned an estimate. Registered under `token_id` like `run_query`, so `cancel_query`
+/// stops it.
+#[tauri::command]
+pub async fn count_rows_exact(
+    state: State<'_, ConnState>,
+    id: String,
+    schema: String,
+    table: String,
+    filters: Option<Vec<ColumnFilter>>,
+    token_id: String,
+) -> Result<OpenTableInfo, String> {
+    let drv = state.session(&id)?;
+    let f = filters.unwrap_or_default();
+    let token = CancelToken::new();
+    lk(&state.cancels).insert(token_id.clone(), token.clone());
+    let res = drv.count_rows(&schema, &table, &f, Some(&token)).await;
+    lk(&state.cancels).remove(&token_id);
+    let c = res.map_err(|e| match e {
+        DriverError::Cancelled => "Query cancelled".to_string(),
+        other => other.to_string(),
+    })?;
     Ok(OpenTableInfo { count: c.count, exact: c.exact })
 }
 
@@ -535,12 +572,14 @@ pub async fn get_table_window(
     len: usize,
     filters: Option<Vec<ColumnFilter>>,
     order: Option<Vec<SortKey>>,
+    after: Option<Vec<Option<String>>>,
 ) -> Result<Response, String> {
     let drv = state.session(&id)?;
     let f = filters.unwrap_or_default();
     let o = order.unwrap_or_default();
+    // `after` (the previous page's last-row key) lets the driver seek instead of OFFSET.
     let batch = drv
-        .open_window_filtered(&schema, &table, offset, len, &f, &o)
+        .open_window_filtered(&schema, &table, offset, len, &f, &o, after.as_deref())
         .await
         .map_err(|e| e.to_string())?;
     let bytes = crate::query::window::encode_ipc(&batch).map_err(|e| e.to_string())?;
@@ -760,10 +799,14 @@ pub async fn export_table(
     let o = order.unwrap_or_default();
     // Export up to the same cap as queries (bounded), through the same filtered+ordered
     // window the grid shows.
-    let batch = drv
-        .open_window_filtered(&schema, &table, 0, QUERY_CAP, &f, &o)
+    let mut batch = drv
+        .open_window_filtered(&schema, &table, 0, QUERY_CAP, &f, &o, None)
         .await
         .map_err(|e| e.to_string())?;
+    // The ctid cursor column is paging plumbing, not table data.
+    if let Ok(i) = batch.schema().index_of(crate::drivers::postgres::CTID_COL) {
+        batch.remove_column(i);
+    }
     Ok(encode_export(&batch, &format))
 }
 
