@@ -1153,7 +1153,7 @@ function HelpMenu({ onTour, onClose }: { onTour: () => void; onClose: () => void
         <div className="text-[11px] text-muted">Walk through the workspace again</div>
       </button>
       <a
-        href="https://github.com/anthropics/claude-code/issues"
+        href="https://github.com/RudreshNarwal/Table-IQ/issues"
         target="_blank"
         rel="noreferrer"
         className="block rounded-md px-3 py-2 text-xs text-text hover:bg-surface-2"
