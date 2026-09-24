@@ -562,7 +562,8 @@ export interface StatementResultMeta {
   resultId: string | null;
   columns: { name: string; typeName: string }[];
   rowCount: number;
-  totalRows: number;
+  /** Rows the statement produced; null when reading stopped at the cap (total unknown). */
+  totalRows: number | null;
   truncated: boolean;
   rowsAffected: number | null;
   execMs: number;

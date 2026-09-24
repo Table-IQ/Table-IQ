@@ -12,6 +12,7 @@ import { DiffView } from "./DiffView";
 import { CommandPalette, type Command } from "./CommandPalette";
 import { ConnectionPicker } from "./ConnectionPicker";
 import { DatabasePicker } from "./DatabasePicker";
+import { isFileEngine } from "./ConnectionManager";
 import { Onboarding } from "./Onboarding";
 import { Inspector } from "./Inspector";
 import { ContextMenu, type ContextMenuItem } from "./ui/ContextMenu";
@@ -207,7 +208,8 @@ export function MainShell() {
   // Idempotent — repeated triggers reuse the cached items unless the user closes
   // the picker, which resets state so the next open re-fetches.
   const openDbPicker = async () => {
-    if (!active) return;
+    // A SQLite/DuckDB connection *is* its file — there is no other database to switch to.
+    if (!active || isFileEngine(active.engine as Engine)) return;
     setShowDbPicker(true);
     setDbList((s) => (s.items.length > 0 ? s : { loading: true, items: [], error: null }));
     try {
