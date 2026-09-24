@@ -982,12 +982,14 @@ export function TableView({ connId, schema, object, view }: Props) {
             <span className="text-muted">Opening…</span>
           ) : (
             <>
+              {/* Steps from the page on screen, not `page` (already moved while a
+                  fetch is in flight) — `hasNext` only speaks for the page shown. */}
               <RowPager
                 label={pagerLabel(firstRow, rowsOnPage, total?.count ?? null, total?.exact ?? false)}
-                hasPrev={page > 0 && !committing}
+                hasPrev={pageData.page > 0 && !committing}
                 hasNext={hasNext && !committing}
-                onPrev={() => goToPage(Math.max(0, page - 1))}
-                onNext={() => goToPage(page + 1)}
+                onPrev={() => goToPage(Math.max(0, pageData.page - 1))}
+                onNext={() => goToPage(pageData.page + 1)}
               />
               {counting ? (
                 <span className="inline-flex items-center gap-1 text-muted" role="status">
