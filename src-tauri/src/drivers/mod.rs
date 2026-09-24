@@ -41,6 +41,33 @@ impl CancelToken {
     }
 }
 
+/// Browse-path catalog cache keyed by `(schema, table)`. The grid pages one table many
+/// times; its column list and PK are read once and served from here until
+/// [`SqlDriver::forget_meta`]. Only the browse path reads it — edits and inserts keep
+/// their fresh lookups, so a stale entry can at worst mis-list columns, never mis-write.
+pub(crate) struct MetaCache<V>(Mutex<std::collections::HashMap<(String, String), V>>);
+
+impl<V> Default for MetaCache<V> {
+    fn default() -> Self {
+        Self(Mutex::new(std::collections::HashMap::new()))
+    }
+}
+
+impl<V: Clone> MetaCache<V> {
+    pub(crate) fn get(&self, schema: &str, table: &str) -> Option<V> {
+        crate::lk(&self.0).get(&(schema.to_string(), table.to_string())).cloned()
+    }
+    pub(crate) fn put(&self, schema: &str, table: &str, v: V) {
+        crate::lk(&self.0).insert((schema.to_string(), table.to_string()), v);
+    }
+    pub(crate) fn clear(&self) {
+        crate::lk(&self.0).clear();
+    }
+}
+
+/// The cached browse metadata of the engines that need no per-column type: `(columns, pk)`.
+pub(crate) type ColsPk = Arc<(Vec<String>, Vec<String>)>;
+
 /// How long a driver waits for the initial connection before giving up. Without it a dropped
 /// packet to an unreachable host leaves the UI spinning on the OS TCP timeout (~75s on macOS).
 pub(crate) const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
@@ -522,6 +549,9 @@ pub trait SqlDriver: Send + Sync {
     async fn cancel(&self, _token: &CancelToken) -> DResult<()> {
         Err(DriverError::NotImplemented)
     }
+    /// Drop any cached browse metadata (column lists, PKs). Called on sidebar Refresh and
+    /// after user-run SQL, which may have been DDL. Default: nothing cached.
+    fn forget_meta(&self) {}
     /// Primary-key column names for a table (empty if none).
     async fn primary_key(&self, schema: &str, table: &str) -> DResult<Vec<String>>;
     /// Apply a single-cell edit; returns rows affected (0 ⇒ optimistic-concurrency conflict).

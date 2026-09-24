@@ -221,6 +221,8 @@ pub struct SqlServerDriver {
     /// database the session is currently on, so a `USE` has to be undone. See
     /// `run_statements`.
     database: std::string::String,
+    /// `(columns, pk)` per table for the browse path (see [`super::MetaCache`]).
+    meta: super::MetaCache<super::ColsPk>,
 }
 
 /// How long to wait for the TCP connect before giving up. Without it an unreachable host
@@ -287,7 +289,22 @@ impl SqlServerDriver {
             .and_then(|r| r.try_get::<&str, _>(0).ok().flatten())
             .unwrap_or_default()
             .to_string();
-        Ok(Self { client: Mutex::new(client), database })
+        Ok(Self { client: Mutex::new(client), database, meta: Default::default() })
+    }
+
+    /// Cached `(columns, pk)` for the browse path. A missing relation is an error and is
+    /// not cached.
+    async fn browse_meta(&self, schema: &str, table: &str) -> DResult<super::ColsPk> {
+        if let Some(m) = self.meta.get(schema, table) {
+            return Ok(m);
+        }
+        let cols = self.columns_of(schema, table).await?;
+        if cols.is_empty() {
+            return Err(DriverError::Db(format!("no such table {schema}.{table}")));
+        }
+        let m = std::sync::Arc::new((cols, self.primary_key(schema, table).await?));
+        self.meta.put(schema, table, m.clone());
+        Ok(m)
     }
 
     /// Ordered column names for one relation (empty ⇒ no such relation), used to validate
@@ -682,6 +699,10 @@ impl SqlDriver for SqlServerDriver {
         Ok(res.total())
     }
 
+    fn forget_meta(&self) {
+        self.meta.clear();
+    }
+
     async fn run_script(&self, sql: &str) -> DResult<u64> {
         let mut c = self.client.lock().await;
         let res = c.execute(sql, &[]).await;
@@ -702,14 +723,11 @@ impl SqlDriver for SqlServerDriver {
         filters: &[ColumnFilter],
         order: &[SortKey],
     ) -> DResult<RecordBatch> {
-        let cols = self.columns_of(schema, table).await?;
-        if cols.is_empty() {
-            return Err(DriverError::Db(format!("no such table {schema}.{table}")));
-        }
-        let pk = self.primary_key(schema, table).await?;
+        let meta = self.browse_meta(schema, table).await?;
+        let (cols, pk) = (&meta.0, &meta.1);
         // OFFSET/FETCH is only legal after an ORDER BY, so a table with neither a sort
         // nor a PK falls back to the no-op `(SELECT NULL)`.
-        let order_sql = match build_order_by(order, &pk, &cols, &quote_ident)?.as_str() {
+        let order_sql = match build_order_by(order, pk, cols, &quote_ident)?.as_str() {
             "" => " ORDER BY (SELECT NULL)".to_string(),
             s => s.to_string(),
         };

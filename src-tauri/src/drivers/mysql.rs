@@ -118,6 +118,8 @@ fn mysql_placeholder(_i: usize, _col: &str) -> String {
 
 pub struct MySqlDriver {
     pool: Pool<MySql>,
+    /// `(columns, pk)` per table for the browse path (see [`super::MetaCache`]).
+    meta: super::MetaCache<super::ColsPk>,
 }
 
 impl MySqlDriver {
@@ -143,7 +145,22 @@ impl MySqlDriver {
             .connect(url)
             .await
             .map_err(db)?;
-        Ok(Self { pool })
+        Ok(Self { pool, meta: Default::default() })
+    }
+
+    /// Cached `(columns, pk)` for the browse path. A missing relation is an error and is
+    /// not cached.
+    async fn browse_meta(&self, schema: &str, table: &str) -> DResult<super::ColsPk> {
+        if let Some(m) = self.meta.get(schema, table) {
+            return Ok(m);
+        }
+        let cols = self.columns_of(schema, table).await?;
+        if cols.is_empty() {
+            return Err(DriverError::Db(format!("no such table {schema}.{table}")));
+        }
+        let m = Arc::new((cols, self.primary_key(schema, table).await?));
+        self.meta.put(schema, table, m.clone());
+        Ok(m)
     }
 
     /// Ordered column names for one relation (empty ⇒ no such relation). One catalog
@@ -331,12 +348,9 @@ impl SqlDriver for MySqlDriver {
         filters: &[ColumnFilter],
         order: &[SortKey],
     ) -> DResult<RecordBatch> {
-        let cols = self.columns_of(schema, table).await?;
-        if cols.is_empty() {
-            return Err(DriverError::Db(format!("no such table {schema}.{table}")));
-        }
-        let pk = self.primary_key(schema, table).await?;
-        let order_sql = build_order_by(order, &pk, &cols, &quote_ident)?;
+        let meta = self.browse_meta(schema, table).await?;
+        let (cols, pk) = (&meta.0, &meta.1);
+        let order_sql = build_order_by(order, pk, cols, &quote_ident)?;
         let select_list = cols
             .iter()
             // `CAST(col AS CHAR)` returns SQL **NULL** when the bytes are not valid in the
@@ -371,7 +385,11 @@ impl SqlDriver for MySqlDriver {
         }
         qy = qy.bind(len as i64).bind(offset as i64);
         let rows = qy.fetch_all(&self.pool).await.map_err(db)?;
-        text_rows_to_batch(&cols, &rows)
+        text_rows_to_batch(cols, &rows)
+    }
+
+    fn forget_meta(&self) {
+        self.meta.clear();
     }
 
     async fn cancel(&self, token: &CancelToken) -> DResult<()> {

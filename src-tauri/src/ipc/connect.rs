@@ -502,6 +502,8 @@ pub async fn kv_get(state: State<'_, ConnState>, id: String, key: String) -> Res
 #[tauri::command]
 pub async fn list_objects(state: State<'_, ConnState>, id: String) -> Result<SchemaModel, String> {
     let drv = state.session(&id)?;
+    // The sidebar Refresh: the grid's cached column lists / PKs are re-read on next page.
+    drv.forget_meta();
     drv.introspect().await.map_err(|e| e.to_string())
 }
 
@@ -615,6 +617,8 @@ pub async fn run_query(
     lk(&state.cancels).insert(query_id.clone(), token.clone());
     let res = drv.run_statements(&statements, QUERY_CAP, &token).await;
     lk(&state.cancels).remove(&query_id);
+    // User SQL may have been DDL; don't page a table with a stale column list.
+    drv.forget_meta();
 
     // History records the whole run once, success or failure — the same "one entry per Run
     // press" semantics the single-statement version had.
@@ -773,8 +777,9 @@ pub async fn run_script(
     sql: String,
 ) -> Result<ScriptResult, String> {
     let drv = state.session(&id)?;
-    let rows_affected = drv.run_script(&sql).await.map_err(|e| e.to_string())?;
-    Ok(ScriptResult { rows_affected })
+    let res = drv.run_script(&sql).await;
+    drv.forget_meta(); // the script may have been DDL, as in run_query
+    Ok(ScriptResult { rows_affected: res.map_err(|e| e.to_string())? })
 }
 
 #[tauri::command]

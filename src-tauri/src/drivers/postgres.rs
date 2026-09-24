@@ -154,8 +154,16 @@ fn pg_text_expr(col: &str) -> String {
     format!("{}::text", quote_ident(col))
 }
 
+/// What every page of a table needs from the catalog, cached per table (see
+/// [`super::MetaCache`]).
+struct PgMeta {
+    udts: Vec<(String, String)>,
+    pk: Vec<String>,
+}
+
 pub struct PgDriver {
     pool: Pool<Postgres>,
+    meta: super::MetaCache<std::sync::Arc<PgMeta>>,
 }
 
 impl PgDriver {
@@ -206,7 +214,23 @@ impl PgDriver {
             .connect(url)
             .await
             .map_err(|e| DriverError::Db(e.to_string()))?;
-        Ok(Self { pool })
+        Ok(Self { pool, meta: Default::default() })
+    }
+
+    /// [`PgMeta`] for one relation, from the cache after the first page. A missing
+    /// relation is an error and is not cached, so creating it later just works.
+    async fn browse_meta(&self, schema: &str, table: &str) -> DResult<std::sync::Arc<PgMeta>> {
+        if let Some(m) = self.meta.get(schema, table) {
+            return Ok(m);
+        }
+        let udts = self.column_udts(schema, table).await?;
+        if udts.is_empty() {
+            return Err(DriverError::Db(format!("no such table {schema}.{table}")));
+        }
+        let pk = self.primary_key(schema, table).await?;
+        let m = std::sync::Arc::new(PgMeta { udts, pk });
+        self.meta.put(schema, table, m.clone());
+        Ok(m)
     }
 
     /// Ordered `(column, udt_name)` for one relation — the single catalog lookup that gives
@@ -378,8 +402,8 @@ impl SqlDriver for PgDriver {
         table: &str,
         filters: &[ColumnFilter],
     ) -> DResult<RowCount> {
-        let udts: HashMap<String, String> =
-            self.column_udts(schema, table).await?.into_iter().collect();
+        let meta = self.browse_meta(schema, table).await?;
+        let udts: HashMap<String, String> = meta.udts.iter().cloned().collect();
         let (where_sql, binds) = build_where_clause(
             filters,
             &quote_ident,
@@ -425,14 +449,11 @@ impl SqlDriver for PgDriver {
         filters: &[ColumnFilter],
         order: &[SortKey],
     ) -> DResult<RecordBatch> {
-        let udts = self.column_udts(schema, table).await?;
-        if udts.is_empty() {
-            return Err(DriverError::Db(format!("no such table {schema}.{table}")));
-        }
-        let cols: Vec<String> = udts.iter().map(|(c, _)| c.clone()).collect();
-        let udts: HashMap<String, String> = udts.into_iter().collect();
-        let pk = self.primary_key(schema, table).await?;
-        let order_sql = build_order_by(order, &pk, &cols, &quote_ident)?;
+        let meta = self.browse_meta(schema, table).await?;
+        let cols: Vec<String> = meta.udts.iter().map(|(c, _)| c.clone()).collect();
+        let udts: HashMap<String, String> = meta.udts.iter().cloned().collect();
+        let pk = &meta.pk;
+        let order_sql = build_order_by(order, pk, &cols, &quote_ident)?;
 
         // Display-first browse: cast every column to text (lossless string view,
         // consistent with the decimal-as-text rule). Identifiers are quoted.
@@ -468,6 +489,10 @@ impl SqlDriver for PgDriver {
         let rows = qy.fetch_all(&self.pool).await.map_err(db)?;
 
         text_rows_to_batch(&cols, &rows)
+    }
+
+    fn forget_meta(&self) {
+        self.meta.clear();
     }
 
     async fn cancel(&self, token: &CancelToken) -> DResult<()> {
