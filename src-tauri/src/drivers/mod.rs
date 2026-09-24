@@ -335,7 +335,31 @@ pub const EXACT_COUNT_MAX: i64 = 10_000_000;
 
 /// Server-side bound on a filtered [`SqlDriver::open_window_cancellable`] page. A search
 /// can't use an index, so on a big table it would otherwise scan until it finds a page.
+/// An unfiltered page gets twice this: it reads only its own rows unless a sort on an
+/// unindexed column makes it read them all.
 pub const WINDOW_TIMEOUT_MS: u64 = 15_000;
+
+/// Await a pinned statement's `fetch`. A cancel that landed after the page checked its token
+/// but before the server started the statement found nothing running to stop, so look once
+/// more shortly after the statement is sent.
+pub(crate) async fn recheck_cancel<T, D: SqlDriver + ?Sized>(
+    drv: &D,
+    token: &CancelToken,
+    fetch: impl std::future::Future<Output = T>,
+) -> T {
+    let recheck = async {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        if token.is_cancelled() {
+            let _ = drv.cancel(token).await;
+        }
+        std::future::pending::<()>().await
+    };
+    tokio::select! {
+        biased;
+        r = fetch => r,
+        () = recheck => unreachable!("recheck never completes"),
+    }
+}
 
 /// Build the ORDER BY for one page of a table, or `""` for none. The table is aliased
 /// `_t`, so every term is qualified `_t.<quoted col>` and sorts on the real typed column
@@ -588,8 +612,8 @@ pub trait SqlDriver: Send + Sync {
     ) -> DResult<arrow::record_batch::RecordBatch>;
     /// The grid's page fetch: [`SqlDriver::open_window_filtered`], recording the server-side
     /// id in `token` so [`SqlDriver::cancel`] can stop it (failing with
-    /// [`DriverError::Cancelled`]), and — when any filter is present — bounded server-side at
-    /// [`WINDOW_TIMEOUT_MS`], failing with a message containing "timed out".
+    /// [`DriverError::Cancelled`]), and bounded server-side at [`WINDOW_TIMEOUT_MS`] (twice
+    /// that unfiltered), failing with a message containing "timed out".
     /// Default: neither; the engine runs the plain fetch.
     #[allow(clippy::too_many_arguments)]
     async fn open_window_cancellable(

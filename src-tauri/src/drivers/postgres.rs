@@ -170,6 +170,9 @@ struct PgMeta {
 
 pub struct PgDriver {
     pool: Pool<Postgres>,
+    /// Where `cancel` runs: one connection, opened on first use. On `pool` a cancel would
+    /// wait behind the very pages it is meant to stop.
+    cancel_pool: Pool<Postgres>,
     meta: super::MetaCache<std::sync::Arc<PgMeta>>,
     /// [`super::WINDOW_TIMEOUT_MS`]; only tests shorten it.
     window_timeout_ms: u64,
@@ -238,10 +241,19 @@ impl PgDriver {
             .connect(url)
             .await
             .map_err(|e| DriverError::Db(e.to_string()))?;
-        Ok(Self { pool, meta: Default::default(), window_timeout_ms: super::WINDOW_TIMEOUT_MS })
+        let cancel_pool = PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_secs(10))
+            .connect_lazy_with((*pool.connect_options()).clone());
+        Ok(Self {
+            pool,
+            cancel_pool,
+            meta: Default::default(),
+            window_timeout_ms: super::WINDOW_TIMEOUT_MS,
+        })
     }
 
-    /// Shorten the filtered-page timeout, so a test can reach it quickly.
+    /// Shorten the page timeouts, so a test can reach them quickly.
     #[doc(hidden)]
     pub fn with_window_timeout_ms(mut self, ms: u64) -> Self {
         self.window_timeout_ms = ms;
@@ -393,7 +405,6 @@ impl PgDriver {
             qy = qy.bind(b.clone());
         }
         qy = qy.bind(offset as i64).bind(len as i64);
-        let ms = self.window_timeout_ms;
         let rows = match token {
             None if by_ctid => {
                 let mut tx = self.pool.begin().await.map_err(db)?;
@@ -403,20 +414,16 @@ impl PgDriver {
                 res.map_err(db)?
             }
             None => qy.fetch_all(&self.pool).await.map_err(db)?,
-            // Pinned, so `cancel` can target the PID.
-            Some(t) if filters.is_empty() && !by_ctid => {
-                let mut conn = self.pool.acquire().await.map_err(db)?;
-                Self::pin(&mut conn, t, None).await?;
-                qy.fetch_all(&mut *conn).await.map_err(|e| window_err(e, t, ms))?
-            }
-            // SET LOCAL needs a transaction; it also reverts on its own when this one ends.
+            // Pinned, so `cancel` can target the PID, and bounded. SET LOCAL needs a
+            // transaction; it also reverts on its own when this one ends.
             Some(t) => {
+                let ms = self.window_timeout_ms * if filters.is_empty() { 2 } else { 1 };
                 let mut tx = self.pool.begin().await.map_err(db)?;
                 if by_ctid {
                     Self::tid_scan(&mut tx).await?;
                 }
-                Self::pin(&mut tx, t, (!filters.is_empty()).then_some(ms)).await?;
-                let res = qy.fetch_all(&mut *tx).await;
+                Self::pin(&mut tx, t, Some(ms)).await?;
+                let res = super::recheck_cancel(self, t, qy.fetch_all(&mut *tx)).await;
                 let _ = tx.rollback().await;
                 res.map_err(|e| window_err(e, t, ms))?
             }
@@ -715,7 +722,7 @@ impl SqlDriver for PgDriver {
         )
         .bind(pid as i32)
         .bind(token.tag_pattern())
-        .execute(&self.pool)
+        .execute(&self.cancel_pool)
         .await
         .map_err(db)?;
         Ok(())

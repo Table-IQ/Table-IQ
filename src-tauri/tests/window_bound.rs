@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use tableiq_lib::drivers::{
     mysql::MySqlDriver, postgres::PgDriver, CancelToken, ColumnFilter, DriverError, FilterOp,
-    SqlDriver,
+    SortKey, SqlDriver,
 };
 
 fn search(term: &str) -> Vec<ColumnFilter> {
@@ -45,10 +45,19 @@ async fn pg_filtered_window_times_out() {
         .expect_err("a search that outlives the timeout must fail");
     assert!(err.to_string().contains("timed out"), "got {err}");
     assert!(start.elapsed() < Duration::from_secs(5), "took {:?}", start.elapsed());
-    // An unfiltered page is not bounded (and this one is fast: it reads 10 rows).
+    // An unfiltered page reads just its rows, so this one is fast…
     drv.open_window_cancellable("tiq_win_timeout", "slow", 0, 10, &[], &[], None, &CancelToken::new())
         .await
         .expect("unfiltered page");
+    // …but it is bounded too (at twice the filtered bound): a sort still reads everything.
+    let start = Instant::now();
+    let by_name = [SortKey { column: "name".into(), desc: false }];
+    let err = drv
+        .open_window_cancellable("tiq_win_timeout", "slow", 0, 10, &[], &by_name, None, &CancelToken::new())
+        .await
+        .expect_err("an unfiltered page that outlives its bound must fail");
+    assert!(err.to_string().contains("timed out"), "got {err}");
+    assert!(start.elapsed() < Duration::from_secs(5), "took {:?}", start.elapsed());
     drv.run_script("DROP SCHEMA tiq_win_timeout CASCADE").await.unwrap();
 }
 
@@ -114,6 +123,14 @@ async fn mysql_window_timeout_and_cancel() {
         .open_window_cancellable("tableiq", "tiq_win_slow", 0, 10, &search("zzz"), &[], None, &CancelToken::new())
         .await
         .expect_err("a search that outlives the timeout must fail");
+    assert!(err.to_string().contains("timed out"), "got {err}");
+    assert!(start.elapsed() < Duration::from_secs(5), "took {:?}", start.elapsed());
+    let start = Instant::now();
+    let by_name = [SortKey { column: "name".into(), desc: false }];
+    let err = drv
+        .open_window_cancellable("tableiq", "tiq_win_slow", 0, 10, &[], &by_name, None, &CancelToken::new())
+        .await
+        .expect_err("an unfiltered page is bounded too");
     assert!(err.to_string().contains("timed out"), "got {err}");
     assert!(start.elapsed() < Duration::from_secs(5), "took {:?}", start.elapsed());
 
@@ -254,4 +271,67 @@ async fn mysql_stale_cancel_spares_the_next_query_on_the_same_connection() {
     let res = h.await.unwrap();
     assert!(matches!(res, Err(DriverError::Cancelled)), "got {:?}", res.err());
     drv.run_script("DROP VIEW tiq_stale_slow; DROP TABLE tiq_stale_base;").await.unwrap();
+}
+
+/// Every pooled connection busy with a slow page: the cancel for one of them must not wait
+/// for a free connection — the pages it would wait for are the ones it is meant to stop.
+async fn cancel_with_the_pool_saturated<D: SqlDriver + 'static>(drv: Arc<D>, schema: &str, table: &str) {
+    let tokens: Vec<CancelToken> = (0..4).map(|_| CancelToken::new()).collect();
+    let pages: Vec<_> = tokens
+        .iter()
+        .map(|t| {
+            let (d, t, s, n) = (drv.clone(), t.clone(), schema.to_string(), table.to_string());
+            tokio::spawn(async move { d.open_window_cancellable(&s, &n, 0, 10, &search("zzz"), &[], None, &t).await })
+        })
+        .collect();
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let start = Instant::now();
+    for t in &tokens {
+        t.mark_cancelled();
+        tokio::time::timeout(Duration::from_secs(3), drv.cancel(t))
+            .await
+            .expect("the cancel waited for the pool")
+            .expect("cancel");
+    }
+    for p in pages {
+        let res = p.await.unwrap();
+        assert!(matches!(res, Err(DriverError::Cancelled)), "got {:?}", res.err());
+    }
+    assert!(start.elapsed() < Duration::from_secs(5), "took {:?}", start.elapsed());
+}
+
+/// A cancel that lands after the page recorded its backend but before the server started
+/// the statement finds nothing running to stop. The page looks again once it is sent.
+async fn cancel_flagged_right_after_the_pin<D: SqlDriver + 'static>(drv: Arc<D>, schema: &str, table: &str) {
+    let token = CancelToken::new();
+    let (d, t, s, n) = (drv.clone(), token.clone(), schema.to_string(), table.to_string());
+    let h = tokio::spawn(async move { d.open_window_cancellable(&s, &n, 0, 10, &search("zzz"), &[], None, &t).await });
+    while token.backend_id().is_none() {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    token.mark_cancelled(); // …and no `cancel` call follows
+    let res = tokio::time::timeout(Duration::from_secs(5), h).await.expect("the page kept running").unwrap();
+    assert!(matches!(res, Err(DriverError::Cancelled)), "got {:?}", res.err());
+}
+
+#[tokio::test]
+async fn pg_cancel_never_waits_for_the_pool_and_rechecks_after_the_send() {
+    let Ok(url) = std::env::var("TIQ_PG_URL") else {
+        return;
+    };
+    let drv = Arc::new(pg_slow(&url, "tiq_win_sat").await.with_window_timeout_ms(60_000));
+    cancel_with_the_pool_saturated(drv.clone(), "tiq_win_sat", "slow").await;
+    cancel_flagged_right_after_the_pin(drv.clone(), "tiq_win_sat", "slow").await;
+    drv.run_script("DROP SCHEMA tiq_win_sat CASCADE").await.unwrap();
+}
+
+#[tokio::test]
+async fn mysql_cancel_never_waits_for_the_pool_and_rechecks_after_the_send() {
+    let Ok(url) = std::env::var("TIQ_MYSQL_URL") else {
+        return;
+    };
+    let drv = Arc::new(mysql_slow_named(&url, "tiq_sat").await.with_window_timeout_ms(60_000));
+    cancel_with_the_pool_saturated(drv.clone(), "tableiq", "tiq_sat_slow").await;
+    cancel_flagged_right_after_the_pin(drv.clone(), "tableiq", "tiq_sat_slow").await;
+    drv.run_script("DROP VIEW tiq_sat_slow; DROP TABLE tiq_sat_base;").await.unwrap();
 }

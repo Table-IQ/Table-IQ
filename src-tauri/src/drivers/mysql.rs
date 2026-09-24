@@ -145,6 +145,9 @@ struct MyMeta {
 
 pub struct MySqlDriver {
     pool: Pool<MySql>,
+    /// Where `cancel` runs: one connection, opened on first use. On `pool` a cancel would
+    /// wait behind the very pages it is meant to stop.
+    cancel_pool: Pool<MySql>,
     /// [`super::WINDOW_TIMEOUT_MS`]; only tests shorten it.
     window_timeout_ms: u64,
     meta: super::MetaCache<Arc<MyMeta>>,
@@ -173,10 +176,19 @@ impl MySqlDriver {
             .connect(url)
             .await
             .map_err(db)?;
-        Ok(Self { pool, meta: Default::default(), window_timeout_ms: super::WINDOW_TIMEOUT_MS })
+        let cancel_pool = MySqlPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_secs(10))
+            .connect_lazy_with((*pool.connect_options()).clone());
+        Ok(Self {
+            pool,
+            cancel_pool,
+            meta: Default::default(),
+            window_timeout_ms: super::WINDOW_TIMEOUT_MS,
+        })
     }
 
-    /// Shorten the filtered-page timeout, so a test can reach it quickly.
+    /// Shorten the page timeouts, so a test can reach them quickly.
     #[doc(hidden)]
     pub fn with_window_timeout_ms(mut self, ms: u64) -> Self {
         self.window_timeout_ms = ms;
@@ -249,10 +261,10 @@ impl MySqlDriver {
         }
         // The optimizer hint bounds only the top-level SELECT, which is this one. MariaDB
         // reads it as a comment, so there the page stays unbounded.
-        let ms = self.window_timeout_ms;
+        let ms = self.window_timeout_ms * if filters.is_empty() { 2 } else { 1 };
         let hint = match token {
-            Some(_) if !filters.is_empty() => format!("/*+ MAX_EXECUTION_TIME({ms}) */ "),
-            _ => String::new(),
+            Some(_) => format!("/*+ MAX_EXECUTION_TIME({ms}) */ "),
+            None => String::new(),
         };
         let tag = token.map(CancelToken::tag).unwrap_or_default();
         let q = format!(
@@ -282,7 +294,7 @@ impl MySqlDriver {
                     return Err(DriverError::Cancelled);
                 }
                 // The timeout first: MySQL words it as an "interrupted" query too.
-                qy.fetch_all(&mut *conn).await.map_err(|e| match e {
+                super::recheck_cancel(self, t, qy.fetch_all(&mut *conn)).await.map_err(|e| match e {
                     e if is_exec_timeout(&e) => {
                         DriverError::Db(format!("query timed out after {ms} ms"))
                     }
@@ -543,7 +555,7 @@ impl SqlDriver for MySqlDriver {
             )
             .bind(cid as u64)
             .bind(pat)
-            .fetch_optional(&self.pool)
+            .fetch_optional(&self.cancel_pool)
             .await
             .map_err(db)?;
             if running.is_none() {
@@ -551,7 +563,7 @@ impl SqlDriver for MySqlDriver {
             }
         }
         sqlx::raw_sql(&kill_query_sql(cid as u64))
-            .execute(&self.pool)
+            .execute(&self.cancel_pool)
             .await
             .map_err(db)?;
         Ok(())
