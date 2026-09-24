@@ -27,6 +27,7 @@ import { outgoingForeignKeys } from "../lib/fk";
 import { decodeWindow, type DecodedWindow } from "../lib/arrowWindow";
 import { pageCursor } from "../lib/keyset";
 import { pagerLabel } from "../lib/pager";
+import { isFindShortcut, isMacPlatform } from "../lib/shortcut";
 import { cycleSort } from "../lib/tableSort";
 import { useTabs } from "../state/tabsStore";
 import {
@@ -412,11 +413,13 @@ export function TableView({ connId, schema, object, view }: Props) {
     appliedSearch.current = t;
     setSearchText(t);
   }, [filters]);
-  // ⌘F focuses the search box (only the active tab's view is mounted).
+  // ⌘F (Ctrl+F off macOS) focuses the search box — only the active tab's view is
+  // mounted. Not while a modal / panel is open over it: that owns the keyboard.
   useEffect(() => {
     if (view !== "data") return;
+    const mac = isMacPlatform();
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "f") {
+      if (isFindShortcut(e, mac) && !document.querySelector(".tiq-overlay")) {
         e.preventDefault();
         searchRef.current?.focus();
         searchRef.current?.select();
@@ -746,7 +749,7 @@ export function TableView({ connId, schema, object, view }: Props) {
               placeholder="Search rows"
               className="min-w-0 flex-1 bg-transparent text-[11px] text-text outline-none placeholder:text-muted [&::-webkit-search-cancel-button]:hidden"
             />
-            {searchText === "" && <span className="tiq-kbd">⌘F</span>}
+            {searchText === "" && <span className="tiq-kbd">{isMacPlatform() ? "⌘F" : "Ctrl F"}</span>}
           </label>
         )}
         {(["csv", "json"] as ExportFormat[]).map((fmt) => (
