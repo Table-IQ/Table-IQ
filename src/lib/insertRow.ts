@@ -1,16 +1,16 @@
 /**
  * Build the `(column, text_value)[]` payload for the `insert_row` IPC command from
- * a column list + draft-row map. Empty strings collapse to null (matches the
- * server's CSV/JSON import convention; an explicit "" goes through SQL coercion).
+ * a column list + draft-row map. Only filled columns are sent: a blank or untouched
+ * cell is left out so the database applies its DEFAULT (a serial id, `now()`), or
+ * NULL when the column has none. An explicit `null` in the draft is sent as NULL.
  */
 export function buildInsertValues(
   columns: string[],
   draft: Record<string, string | null | undefined>,
 ): [string, string | null][] {
-  return columns.map((c) => {
+  return columns.flatMap((c): [string, string | null][] => {
     const v = draft[c];
-    if (v === undefined || v === null || v === "") return [c, null];
-    return [c, v];
+    return v === undefined || v === "" ? [] : [[c, v]];
   });
 }
 

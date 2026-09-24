@@ -2,25 +2,27 @@ import { describe, expect, it } from "vitest";
 import { buildInsertValues, insertedPkMatch, isDraftDirty } from "./insertRow";
 
 describe("insertRow", () => {
-  it("columns align to the column list", () => {
-    const v = buildInsertValues(["id", "name", "email"], { id: "1", name: "Ada" });
+  it("sends only the columns the user filled, in column-list order", () => {
+    const v = buildInsertValues(["id", "name", "email"], { email: "a@b", name: "Ada" });
     expect(v).toEqual([
-      ["id", "1"],
       ["name", "Ada"],
-      ["email", null],
+      ["email", "a@b"],
     ]);
   });
 
-  it("empty string becomes null", () => {
-    const v = buildInsertValues(["a"], { a: "" });
-    expect(v).toEqual([["a", null]]);
+  // Regression: a blank serial `id` was sent as an explicit NULL, so every + Row on
+  // a table with a generated key failed "null value in column id violates not-null
+  // constraint". A blank cell must leave the column to its DEFAULT (NULL if none).
+  // Found by /qa on 2026-09-25.
+  it("leaves blank and untouched columns to the database default", () => {
+    expect(buildInsertValues(["id", "name"], { id: "", name: "x" })).toEqual([["name", "x"]]);
+    expect(buildInsertValues(["id", "name"], { id: undefined, name: "x" })).toEqual([["name", "x"]]);
   });
 
-  it("undefined and missing both become null", () => {
-    const v = buildInsertValues(["a", "b"], { a: undefined });
-    expect(v).toEqual([
+  it("keeps an explicit NULL", () => {
+    expect(buildInsertValues(["a", "b"], { a: null, b: "1" })).toEqual([
       ["a", null],
-      ["b", null],
+      ["b", "1"],
     ]);
   });
 
