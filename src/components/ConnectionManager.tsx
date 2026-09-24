@@ -93,7 +93,8 @@ function hostLineOf(c: ConnConfig): string {
  * unless an SSH bastion is configured.
  */
 function envTagOf(c: ConnConfig): { label: string; tone: "ok" | "warn" | "muted" } {
-  if (isFileEngine(c.engine)) return { label: "(file)", tone: "muted" };
+  if (isFileEngine(c.engine))
+    return { label: c.database === ":memory:" ? "(in-memory)" : "(file)", tone: "muted" };
   const isLoopback = c.host === "127.0.0.1" || c.host === "localhost" || c.host === "::1";
   if (c.ssh?.enabled) return { label: "(ssh)", tone: "warn" };
   if (isLoopback) return { label: "(local)", tone: "ok" };
