@@ -22,9 +22,14 @@ pub mod sqlserver;
 /// (Postgres backend PID / MySQL connection id) that a *second* connection uses to cancel
 /// the in-flight query. The id is recorded by `run_statements` once the query's
 /// connection is known, then read by `cancel`.
+///
+/// It also carries a cancelled flag, under the same lock as the id: a query that records its
+/// id and *then* checks the flag cannot slip between a canceller setting the flag and *then*
+/// reading the id — one of the two always sees the other. That covers a cancel that lands
+/// before the query had an id to target.
 #[derive(Clone, Default)]
 pub struct CancelToken {
-    backend_id: Arc<Mutex<Option<i64>>>,
+    state: Arc<Mutex<(Option<i64>, bool)>>,
 }
 
 impl CancelToken {
@@ -33,11 +38,22 @@ impl CancelToken {
     }
     /// Record the server-side id (PG backend PID / MySQL connection id) for this query.
     pub fn set_backend_id(&self, id: i64) {
-        *crate::lk(&self.backend_id) = Some(id);
+        crate::lk(&self.state).0 = Some(id);
     }
     /// The recorded server-side id, or `None` if the query hasn't started yet.
     pub fn backend_id(&self) -> Option<i64> {
-        *crate::lk(&self.backend_id)
+        crate::lk(&self.state).0
+    }
+    /// Flag the query as cancelled by the user; call before [`SqlDriver::cancel`].
+    pub fn mark_cancelled(&self) {
+        crate::lk(&self.state).1 = true;
+    }
+    pub fn is_cancelled(&self) -> bool {
+        crate::lk(&self.state).1
+    }
+    /// The same token (a clone of it), not merely an equal one.
+    pub fn same(&self, other: &CancelToken) -> bool {
+        Arc::ptr_eq(&self.state, &other.state)
     }
 }
 
@@ -292,6 +308,10 @@ pub struct RowCount {
 /// instead of running `COUNT(*)`: past it an exact count is too slow to wait for on open.
 pub const EXACT_COUNT_MAX: i64 = 10_000_000;
 
+/// Server-side bound on a filtered [`SqlDriver::open_window_cancellable`] page. A search
+/// can't use an index, so on a big table it would otherwise scan until it finds a page.
+pub const WINDOW_TIMEOUT_MS: u64 = 15_000;
+
 /// Build the ORDER BY for one page of a table, or `""` for none. The table is aliased
 /// `_t`, so every term is qualified `_t.<quoted col>` and sorts on the real typed column
 /// rather than the `::text` output alias.
@@ -541,6 +561,25 @@ pub trait SqlDriver: Send + Sync {
         order: &[SortKey],
         after: Option<&[Option<String>]>,
     ) -> DResult<arrow::record_batch::RecordBatch>;
+    /// The grid's page fetch: [`SqlDriver::open_window_filtered`], recording the server-side
+    /// id in `token` so [`SqlDriver::cancel`] can stop it (failing with
+    /// [`DriverError::Cancelled`]), and — when any filter is present — bounded server-side at
+    /// [`WINDOW_TIMEOUT_MS`], failing with a message containing "timed out".
+    /// Default: neither; the engine runs the plain fetch.
+    #[allow(clippy::too_many_arguments)]
+    async fn open_window_cancellable(
+        &self,
+        schema: &str,
+        table: &str,
+        offset: usize,
+        len: usize,
+        filters: &[ColumnFilter],
+        order: &[SortKey],
+        after: Option<&[Option<String>]>,
+        _token: &CancelToken,
+    ) -> DResult<arrow::record_batch::RecordBatch> {
+        self.open_window_filtered(schema, table, offset, len, filters, order, after).await
+    }
     /// Unfiltered, unsorted window read (the natural/PK order).
     async fn open_window(
         &self,
@@ -939,6 +978,16 @@ mod tests {
             build_insert_sql("dbo", "tbl", &vals, &mssql_ident, &mssql_ph, true);
         assert_eq!(sql, "INSERT INTO [dbo].[tbl] ([a], [b]) VALUES (@P1, @P2)");
         assert_eq!(binds, vec![Some("1".into()), None]);
+    }
+
+    #[test]
+    fn cancel_token_flag_is_shared_by_clones_only() {
+        let t = CancelToken::new();
+        let (clone, other) = (t.clone(), CancelToken::new());
+        assert!(!t.is_cancelled());
+        clone.mark_cancelled();
+        assert!(t.is_cancelled() && !other.is_cancelled());
+        assert!(t.same(&clone) && !t.same(&other));
     }
 
     #[test]

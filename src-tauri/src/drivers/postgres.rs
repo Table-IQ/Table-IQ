@@ -170,6 +170,20 @@ struct PgMeta {
 pub struct PgDriver {
     pool: Pool<Postgres>,
     meta: super::MetaCache<std::sync::Arc<PgMeta>>,
+    /// [`super::WINDOW_TIMEOUT_MS`]; only tests shorten it.
+    window_timeout_ms: u64,
+}
+
+/// A failed cancellable page: 57014 is our own cancel when the token says so, and otherwise
+/// the statement timeout.
+fn window_err(e: sqlx::Error, token: &CancelToken, timeout_ms: u64) -> DriverError {
+    if !is_cancel(&e) {
+        db(e)
+    } else if token.is_cancelled() {
+        DriverError::Cancelled
+    } else {
+        DriverError::Db(format!("query timed out after {timeout_ms} ms"))
+    }
 }
 
 impl PgDriver {
@@ -220,7 +234,41 @@ impl PgDriver {
             .connect(url)
             .await
             .map_err(|e| DriverError::Db(e.to_string()))?;
-        Ok(Self { pool, meta: Default::default() })
+        Ok(Self { pool, meta: Default::default(), window_timeout_ms: super::WINDOW_TIMEOUT_MS })
+    }
+
+    /// Shorten the filtered-page timeout, so a test can reach it quickly.
+    #[doc(hidden)]
+    pub fn with_window_timeout_ms(mut self, ms: u64) -> Self {
+        self.window_timeout_ms = ms;
+        self
+    }
+
+    /// Record this connection's PID in `token` — and, given a timeout, make it the
+    /// transaction's statement_timeout (`set_config(…, true)` is `SET LOCAL`) in the same
+    /// round trip. A token already cancelled stops the page here.
+    async fn pin(
+        conn: &mut sqlx::PgConnection,
+        token: &CancelToken,
+        timeout_ms: Option<u64>,
+    ) -> DResult<()> {
+        let pid: i32 = match timeout_ms {
+            None => sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *conn).await,
+            Some(ms) => {
+                sqlx::query_scalar(
+                    "SELECT pg_backend_pid() FROM set_config('statement_timeout', $1, true)",
+                )
+                .bind(ms.to_string())
+                .fetch_one(&mut *conn)
+                .await
+            }
+        }
+        .map_err(db)?;
+        token.set_backend_id(pid as i64);
+        if token.is_cancelled() {
+            return Err(DriverError::Cancelled);
+        }
+        Ok(())
     }
 
     /// [`PgMeta`] for one relation, from the cache after the first page. A missing
@@ -247,6 +295,104 @@ impl PgDriver {
         let m = std::sync::Arc::new(PgMeta { udts, pk, ctid_ok });
         self.meta.put(schema, table, m.clone());
         Ok(m)
+    }
+
+    /// One page of a table; see [`SqlDriver::open_window_cancellable`] for `token`.
+    #[allow(clippy::too_many_arguments)]
+    async fn window(
+        &self,
+        schema: &str,
+        table: &str,
+        offset: usize,
+        len: usize,
+        filters: &[ColumnFilter],
+        order: &[SortKey],
+        after: Option<&[Option<String>]>,
+        token: Option<&CancelToken>,
+    ) -> DResult<RecordBatch> {
+        let meta = self.browse_meta(schema, table).await?;
+        let mut cols: Vec<String> = meta.udts.iter().map(|(c, _)| c.clone()).collect();
+        let udts: HashMap<String, String> = meta.udts.iter().cloned().collect();
+        let pk = &meta.pk;
+        let order_sql = build_order_by(order, pk, &cols, &quote_ident)?;
+
+        // Display-first browse: cast every column to text (lossless string view,
+        // consistent with the decimal-as-text rule). Identifiers are quoted.
+        let select_list = cols
+            .iter()
+            .map(|c| format!("{0}::text AS {0}", quote_ident(c)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        // Filter binds come first ($1..), then the keyset's, then the offset/limit.
+        let (mut where_sql, mut binds) = build_where_clause(
+            filters,
+            &cols,
+            &quote_ident,
+            &pg_placeholder(&udts),
+            &pg_text_expr,
+            1,
+        );
+        // No PK, sort or filter: key on `ctid`. There is deliberately no ORDER BY ctid —
+        // Postgres can't produce that order from an index, so it would sort the whole
+        // table per page. `ctid > $n` runs as a TID Range Scan, which walks the heap in
+        // ctid order from the cursor on; an unordered first page is the same heap order.
+        let by_ctid = meta.ctid_ok && pk.is_empty() && order.is_empty() && filters.is_empty();
+        let seek = match after {
+            Some([Some(tid)]) if by_ctid => {
+                Some((format!("_t.ctid > ${}::tid", binds.len() + 1), vec![Some(tid.clone())]))
+            }
+            Some(a) => build_keyset(order, pk, a, &quote_ident, &pg_placeholder(&udts), binds.len() + 1, false),
+            None => None,
+        };
+        let mut offset = offset;
+        if let Some((k, kb)) = seek {
+            where_sql = if where_sql.is_empty() { k } else { format!("{where_sql} AND {k}") };
+            binds.extend(kb);
+            offset = 0;
+        }
+        let (inner, select_list) = if by_ctid {
+            cols.push(CTID_COL.into());
+            let c = quote_ident(CTID_COL);
+            (format!("_t.*, _t.ctid AS {c}"), format!("{select_list}, {c}::text AS {c}"))
+        } else {
+            ("*".to_string(), select_list)
+        };
+        let off_ph = format!("${}", binds.len() + 1);
+        let lim_ph = format!("${}", binds.len() + 2);
+        // Order (and filter) on the REAL columns inside the subquery, THEN cast to text —
+        // ordering by the text cast would sort numbers lexicographically.
+        let q = format!(
+            "SELECT {select_list} FROM \
+             (SELECT {inner} FROM {}.{} AS _t{}{order_sql} OFFSET {off_ph} LIMIT {lim_ph}) AS _w",
+            quote_ident(schema),
+            quote_ident(table),
+            if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },
+        );
+        let mut qy = sqlx::query(&q);
+        for b in &binds {
+            qy = qy.bind(b.clone());
+        }
+        qy = qy.bind(offset as i64).bind(len as i64);
+        let ms = self.window_timeout_ms;
+        let rows = match token {
+            None => qy.fetch_all(&self.pool).await.map_err(db)?,
+            // Pinned, so `cancel` can target the PID.
+            Some(t) if filters.is_empty() => {
+                let mut conn = self.pool.acquire().await.map_err(db)?;
+                Self::pin(&mut conn, t, None).await?;
+                qy.fetch_all(&mut *conn).await.map_err(|e| window_err(e, t, ms))?
+            }
+            // SET LOCAL needs a transaction; it also reverts on its own when this one ends.
+            Some(t) => {
+                let mut tx = self.pool.begin().await.map_err(db)?;
+                Self::pin(&mut tx, t, Some(ms)).await?;
+                let res = qy.fetch_all(&mut *tx).await;
+                let _ = tx.rollback().await;
+                res.map_err(|e| window_err(e, t, ms))?
+            }
+        };
+
+        text_rows_to_batch(&cols, &rows)
     }
 
     /// Ordered `(column, udt_name)` for one relation — the single catalog lookup that gives
@@ -503,72 +649,21 @@ impl SqlDriver for PgDriver {
         order: &[SortKey],
         after: Option<&[Option<String>]>,
     ) -> DResult<RecordBatch> {
-        let meta = self.browse_meta(schema, table).await?;
-        let mut cols: Vec<String> = meta.udts.iter().map(|(c, _)| c.clone()).collect();
-        let udts: HashMap<String, String> = meta.udts.iter().cloned().collect();
-        let pk = &meta.pk;
-        let order_sql = build_order_by(order, pk, &cols, &quote_ident)?;
+        self.window(schema, table, offset, len, filters, order, after, None).await
+    }
 
-        // Display-first browse: cast every column to text (lossless string view,
-        // consistent with the decimal-as-text rule). Identifiers are quoted.
-        let select_list = cols
-            .iter()
-            .map(|c| format!("{0}::text AS {0}", quote_ident(c)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        // Filter binds come first ($1..), then the keyset's, then the offset/limit.
-        let (mut where_sql, mut binds) = build_where_clause(
-            filters,
-            &cols,
-            &quote_ident,
-            &pg_placeholder(&udts),
-            &pg_text_expr,
-            1,
-        );
-        // No PK, sort or filter: key on `ctid`. There is deliberately no ORDER BY ctid —
-        // Postgres can't produce that order from an index, so it would sort the whole
-        // table per page. `ctid > $n` runs as a TID Range Scan, which walks the heap in
-        // ctid order from the cursor on; an unordered first page is the same heap order.
-        let by_ctid = meta.ctid_ok && pk.is_empty() && order.is_empty() && filters.is_empty();
-        let seek = match after {
-            Some([Some(tid)]) if by_ctid => {
-                Some((format!("_t.ctid > ${}::tid", binds.len() + 1), vec![Some(tid.clone())]))
-            }
-            Some(a) => build_keyset(order, pk, a, &quote_ident, &pg_placeholder(&udts), binds.len() + 1, false),
-            None => None,
-        };
-        let mut offset = offset;
-        if let Some((k, kb)) = seek {
-            where_sql = if where_sql.is_empty() { k } else { format!("{where_sql} AND {k}") };
-            binds.extend(kb);
-            offset = 0;
-        }
-        let (inner, select_list) = if by_ctid {
-            cols.push(CTID_COL.into());
-            let c = quote_ident(CTID_COL);
-            (format!("_t.*, _t.ctid AS {c}"), format!("{select_list}, {c}::text AS {c}"))
-        } else {
-            ("*".to_string(), select_list)
-        };
-        let off_ph = format!("${}", binds.len() + 1);
-        let lim_ph = format!("${}", binds.len() + 2);
-        // Order (and filter) on the REAL columns inside the subquery, THEN cast to text —
-        // ordering by the text cast would sort numbers lexicographically.
-        let q = format!(
-            "SELECT {select_list} FROM \
-             (SELECT {inner} FROM {}.{} AS _t{}{order_sql} OFFSET {off_ph} LIMIT {lim_ph}) AS _w",
-            quote_ident(schema),
-            quote_ident(table),
-            if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },
-        );
-        let mut qy = sqlx::query(&q);
-        for b in &binds {
-            qy = qy.bind(b.clone());
-        }
-        qy = qy.bind(offset as i64).bind(len as i64);
-        let rows = qy.fetch_all(&self.pool).await.map_err(db)?;
-
-        text_rows_to_batch(&cols, &rows)
+    async fn open_window_cancellable(
+        &self,
+        schema: &str,
+        table: &str,
+        offset: usize,
+        len: usize,
+        filters: &[ColumnFilter],
+        order: &[SortKey],
+        after: Option<&[Option<String>]>,
+        token: &CancelToken,
+    ) -> DResult<RecordBatch> {
+        self.window(schema, table, offset, len, filters, order, after, Some(token)).await
     }
 
     fn forget_meta(&self) {
