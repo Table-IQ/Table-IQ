@@ -13,7 +13,7 @@ use super::{
     build_insert_sql, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
     ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec, ForeignKey, IndexInfo,
     ObjectInfo, ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver,
-    StmtOutput, TableStructure, TriggerInfo,
+    StmtOutput, TableStructure, TriggerInfo, EXACT_COUNT_MAX,
 };
 
 use std::collections::HashMap;
@@ -302,7 +302,15 @@ impl SqlDriver for MySqlDriver {
         schema: &str,
         table: &str,
         filters: &[ColumnFilter],
+        force_exact: Option<&CancelToken>,
     ) -> DResult<RowCount> {
+        if force_exact.is_none() && filters.is_empty() {
+            if let Some(n) = self.estimate_rows(schema, table).await? {
+                if n > EXACT_COUNT_MAX {
+                    return Ok(RowCount { count: Some(n), exact: false });
+                }
+            }
+        }
         let (where_sql, binds) = build_where_clause(
             filters,
             &quote_ident,
@@ -311,7 +319,8 @@ impl SqlDriver for MySqlDriver {
             1,
         );
         let q = format!(
-            "SELECT /*+ MAX_EXECUTION_TIME(2000) */ COUNT(*) FROM {}.{}{}",
+            "SELECT {}COUNT(*) FROM {}.{}{}",
+            if force_exact.is_some() { "" } else { "/*+ MAX_EXECUTION_TIME(2000) */ " },
             quote_ident(schema),
             quote_ident(table),
             if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },
@@ -320,23 +329,42 @@ impl SqlDriver for MySqlDriver {
         for b in &binds {
             qy = qy.bind(b.clone());
         }
+        if let Some(token) = force_exact {
+            // Unbounded, so pinned to one connection whose id `cancel` can KILL QUERY.
+            let mut conn = self.pool.acquire().await.map_err(db)?;
+            let cid: u64 = sqlx::query_scalar("SELECT CONNECTION_ID()")
+                .fetch_one(&mut *conn)
+                .await
+                .map_err(db)?;
+            token.set_backend_id(cid as i64);
+            return match qy.fetch_one(&mut *conn).await {
+                Ok(n) => Ok(RowCount { count: Some(n), exact: true }),
+                Err(e) if is_cancel(&e) => Err(DriverError::Cancelled),
+                Err(e) => Err(db(e)),
+            };
+        }
         match qy.fetch_one(&self.pool).await {
             Ok(n) => Ok(RowCount { count: Some(n), exact: true }),
             Err(e) if is_exec_timeout(&e) => {
-                let est: Option<u64> = sqlx::query_scalar(
-                    "SELECT TABLE_ROWS AS table_rows FROM information_schema.tables \
-                     WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
-                )
-                .bind(schema)
-                .bind(table)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(db)?
-                .flatten();
-                Ok(RowCount { count: est.map(|n| n as i64), exact: false })
+                Ok(RowCount { count: self.estimate_rows(schema, table).await?, exact: false })
             }
             Err(e) => Err(db(e)),
         }
+    }
+
+    /// The data dictionary's `TABLE_ROWS` (InnoDB's sampled estimate). A view has none.
+    async fn estimate_rows(&self, schema: &str, table: &str) -> DResult<Option<i64>> {
+        let est: Option<u64> = sqlx::query_scalar(
+            "SELECT TABLE_ROWS AS table_rows FROM information_schema.tables \
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND TABLE_TYPE = 'BASE TABLE'",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?
+        .flatten();
+        Ok(est.map(|n| n as i64))
     }
 
     async fn open_window_filtered(

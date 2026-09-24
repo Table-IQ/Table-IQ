@@ -230,6 +230,7 @@ impl SqlDriver for SqliteDriver {
         _schema: &str,
         table: &str,
         filters: &[ColumnFilter],
+        _force_exact: Option<&CancelToken>,
     ) -> DResult<RowCount> {
         let (where_sql, binds) = build_where_clause(
             filters,

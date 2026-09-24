@@ -517,7 +517,7 @@ pub async fn open_table(
 ) -> Result<OpenTableInfo, String> {
     let drv = state.session(&id)?;
     let f = filters.unwrap_or_default();
-    let c = drv.count_rows(&schema, &table, &f).await.map_err(|e| e.to_string())?;
+    let c = drv.count_rows(&schema, &table, &f, None).await.map_err(|e| e.to_string())?;
     Ok(OpenTableInfo { count: c.count, exact: c.exact })
 }
 

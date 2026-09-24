@@ -285,6 +285,10 @@ pub struct RowCount {
     pub exact: bool,
 }
 
+/// Above this many estimated rows, an unfiltered `count_rows` reports the catalog estimate
+/// instead of running `COUNT(*)`: past it an exact count is too slow to wait for on open.
+pub const EXACT_COUNT_MAX: i64 = 10_000_000;
+
 /// Build the ORDER BY for one page of a table, or `""` for none. The table is aliased
 /// `_t`, so every term is qualified `_t.<quoted col>` and sorts on the real typed column
 /// rather than the `::text` output alias.
@@ -465,15 +469,24 @@ pub fn build_where_clause(
 pub trait SqlDriver: Send + Sync {
     /// Browse the connection's schemas → tables/views → columns.
     async fn introspect(&self) -> DResult<SchemaModel>;
-    /// Row count for a table under `filters`. Engines that can be slow bound the exact
-    /// `COUNT(*)` with a 2s server-side timeout and fall back to their stats catalog
-    /// (`exact: false`), or to `None` when even that has nothing to offer.
+    /// Row count for a table under `filters`. With `force_exact: None`, engines that can
+    /// be slow skip `COUNT(*)` for an unfiltered table estimated above [`EXACT_COUNT_MAX`],
+    /// bound it otherwise with a 2s server-side timeout, and fall back to their stats
+    /// catalog (`exact: false`), or to `None` when even that has nothing to offer.
+    /// `force_exact: Some(token)` always counts, unbounded, recording the server-side id in
+    /// `token` so [`SqlDriver::cancel`] can stop it.
     async fn count_rows(
         &self,
         schema: &str,
         table: &str,
         filters: &[ColumnFilter],
+        force_exact: Option<&CancelToken>,
     ) -> DResult<RowCount>;
+    /// The catalog's row estimate for a table — a metadata read, never a scan. `None` for
+    /// a view, an unknown table, or an engine without one.
+    async fn estimate_rows(&self, _schema: &str, _table: &str) -> DResult<Option<i64>> {
+        Ok(None)
+    }
     /// Read a window of rows from a table as Arrow (read-only browse), filtered and
     /// ordered. See [`build_order_by`] for what `order` means when it is empty.
     async fn open_window_filtered(

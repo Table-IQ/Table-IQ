@@ -118,7 +118,7 @@ async fn sqlserver_driver_browse_query_edit() {
     assert_eq!(names.value(0), "Ada");
 
     // Row count from sys.partitions (an estimate, so `exact` is false).
-    let c = drv.count_rows("dbo", "tiq_demo", &[]).await.expect("count");
+    let c = drv.count_rows("dbo", "tiq_demo", &[], None).await.expect("count");
     let est = c.count.expect("a table must report a count");
     assert!(est >= 3, "estimate {est} should be >= 3");
     assert!(!c.exact, "the sys.partitions count is an estimate");
@@ -428,14 +428,18 @@ async fn sqlserver_qa_seed_introspect_structure_paging_and_edit() {
     );
 
     // ── counts ──────────────────────────────────────────────────────────────
-    let c = drv.count_rows("dbo", "orders", &[]).await.expect("count");
+    let c = drv.count_rows("dbo", "orders", &[], None).await.expect("count");
     assert_eq!(c.count, Some(300), "sys.partitions estimate");
     assert!(!c.exact, "the unfiltered count is the stats estimate");
+    assert_eq!(drv.estimate_rows("dbo", "orders").await.expect("estimate"), Some(300));
+    let exact = drv.count_rows("dbo", "orders", &[], Some(&CancelToken::new())).await.expect("exact");
+    assert_eq!((exact.count, exact.exact), (Some(300), true), "force_exact runs COUNT_BIG");
     let filtered = drv
         .count_rows(
             "dbo",
             "order_items",
             &[ColumnFilter { column: "line_no".into(), op: FilterOp::Eq, value: Some("1".into()) }],
+            None,
         )
         .await
         .expect("filtered count");
@@ -716,7 +720,7 @@ async fn a_use_in_a_query_tab_does_not_retarget_the_rest_of_the_session() {
     assert_eq!(name, "master", "the session was left pointing at another database");
 
     // …and the grid, which emits two-part names, must still find its table.
-    let n = drv.count_rows("dbo", "tiq_use_guard", &[]).await.expect("count").count;
+    let n = drv.count_rows("dbo", "tiq_use_guard", &[], None).await.expect("count").count;
     assert_eq!(n, Some(2), "the grid was reading a different database");
     let w = drv.open_window("dbo", "tiq_use_guard", 0, 10).await.expect("browse");
     assert_eq!(w.num_rows(), 2);

@@ -557,32 +557,19 @@ impl SqlDriver for SqlServerDriver {
         Ok(SchemaModel { schemas })
     }
 
-    /// `sys.partitions` is an O(1) read of the maintained row count, but it is only an
-    /// estimate and only exists for a real table — a view (or any filter) needs the
-    /// exact count.
+    /// An unfiltered table reports its [`SqlDriver::estimate_rows`] at any size — it is
+    /// the maintained count — unless `force_exact`; a view (or any filter) needs the exact
+    /// count. There is no server-side cancel for this engine, so the token goes unused.
     async fn count_rows(
         &self,
         schema: &str,
         table: &str,
         filters: &[ColumnFilter],
+        force_exact: Option<&CancelToken>,
     ) -> DResult<RowCount> {
-        if filters.is_empty() {
-            let q = format!(
-                "SELECT SUM(p.rows) AS n FROM sys.partitions p \
-                 JOIN sys.objects o ON p.object_id = o.object_id \
-                 JOIN sys.schemas s ON o.schema_id = s.schema_id \
-                 WHERE o.type = 'U' AND s.name = '{}' AND o.name = '{}' AND p.index_id IN (0,1)",
-                schema.replace('\'', "''"),
-                table.replace('\'', "''")
-            );
-            let (_, d) = self.query_text(&q).await?;
-            if let Some(n) = d
-                .first()
-                .and_then(|c| c.first())
-                .and_then(|o| o.as_ref())
-                .and_then(|s| s.parse::<i64>().ok())
-            {
-                return Ok(RowCount { count: Some(n.max(0)), exact: false });
+        if filters.is_empty() && force_exact.is_none() {
+            if let Some(n) = self.estimate_rows(schema, table).await? {
+                return Ok(RowCount { count: Some(n), exact: false });
             }
         }
         let (where_sql, binds) =
@@ -609,6 +596,25 @@ impl SqlDriver for SqlServerDriver {
             None => 0,
         };
         Ok(RowCount { count: Some(n.max(0)), exact: true })
+    }
+
+    /// `sys.partitions` is an O(1) read of the maintained row count, but it is only an
+    /// estimate and only exists for a real table.
+    async fn estimate_rows(&self, schema: &str, table: &str) -> DResult<Option<i64>> {
+        let q = format!(
+            "SELECT SUM(p.rows) AS n FROM sys.partitions p \
+             JOIN sys.objects o ON p.object_id = o.object_id \
+             JOIN sys.schemas s ON o.schema_id = s.schema_id \
+             WHERE o.type = 'U' AND s.name = '{}' AND o.name = '{}' AND p.index_id IN (0,1)",
+            schema.replace('\'', "''"),
+            table.replace('\'', "''")
+        );
+        let (_, d) = self.query_text(&q).await?;
+        Ok(d.first()
+            .and_then(|c| c.first())
+            .and_then(|o| o.as_ref())
+            .and_then(|s| s.parse::<i64>().ok())
+            .map(|n| n.max(0)))
     }
 
     async fn primary_key(&self, schema: &str, table: &str) -> DResult<Vec<std::string::String>> {
