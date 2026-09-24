@@ -116,6 +116,12 @@ fn mysql_placeholder(_i: usize, _col: &str) -> String {
     "?".to_string()
 }
 
+/// Left side of the textual comparisons (LIKE/ILIKE/Search): the column in the connection
+/// charset, so LOWER folds a binary string too and every column compares under one collation.
+fn mysql_text_expr(col: &str) -> String {
+    format!("CAST({} AS CHAR)", quote_ident(col))
+}
+
 pub struct MySqlDriver {
     pool: Pool<MySql>,
     /// `(columns, pk)` per table for the browse path (see [`super::MetaCache`]).
@@ -311,11 +317,13 @@ impl SqlDriver for MySqlDriver {
                 }
             }
         }
+        let meta = self.browse_meta(schema, table).await?;
         let (where_sql, binds) = build_where_clause(
             filters,
+            &meta.0,
             &quote_ident,
             &mysql_placeholder,
-            &quote_ident,
+            &mysql_text_expr,
             1,
         );
         let q = format!(
@@ -396,9 +404,10 @@ impl SqlDriver for MySqlDriver {
             .join(", ");
         let (mut where_sql, mut binds) = build_where_clause(
             filters,
+            cols,
             &quote_ident,
             &mysql_placeholder,
-            &quote_ident,
+            &mysql_text_expr,
             1,
         );
         let mut offset = offset;

@@ -259,6 +259,9 @@ pub enum FilterOp {
     ILike,
     IsNull,
     IsNotNull,
+    /// All-column "contains" search: `column` is ignored (the UI sends `"*"`) and `value`
+    /// is the raw term. See [`build_where_clause`].
+    Search,
 }
 
 /// One AND-clause in a per-column filter set (Slice 21 #1).
@@ -415,8 +418,14 @@ pub fn build_keyset(
 /// `ILike` translates to a cross-engine `LOWER(col) LIKE LOWER(val)` form so a non-PG
 /// engine never sees an unsupported keyword. PG keeps that translation too (correct +
 /// portable), trading a tiny perf hit for one less SQL dialect quirk.
+///
+/// `Search` expands to that same case-insensitive contains, ORed over `columns` (the
+/// searchable columns, in table order) with one bind per column — MySQL's `?` cannot be
+/// reused. The term is wrapped `%…%` with its own wildcards escaped by `!`: a backslash
+/// escape is itself an escape in a MySQL string literal, `!` means the same everywhere.
 pub fn build_where_clause(
     filters: &[ColumnFilter],
+    columns: &[String],
     quote_ident: &dyn Fn(&str) -> String,
     placeholder: &dyn Fn(usize, &str) -> String,
     text_expr: &dyn Fn(&str) -> String,
@@ -433,6 +442,20 @@ pub fn build_where_clause(
         match f.op {
             FilterOp::IsNull => parts.push(format!("{col} IS NULL")),
             FilterOp::IsNotNull => parts.push(format!("{col} IS NOT NULL")),
+            FilterOp::Search if columns.is_empty() => parts.push("1 = 0".into()),
+            FilterOp::Search => {
+                let pat = format!("%{}%", like_escape(f.value.as_deref().unwrap_or("")));
+                let ors: Vec<String> = columns
+                    .iter()
+                    .map(|c| {
+                        let ph = placeholder(idx, "");
+                        idx += 1;
+                        binds.push(Some(pat.clone()));
+                        format!("LOWER({}) LIKE LOWER({ph}) ESCAPE '!'", text_expr(c))
+                    })
+                    .collect();
+                parts.push(format!("({})", ors.join(" OR ")));
+            }
             FilterOp::Like | FilterOp::ILike => {
                 let lhs = text_expr(&f.column);
                 let ph = placeholder(idx, "");
@@ -452,7 +475,7 @@ pub fn build_where_clause(
                     FilterOp::Le => "<=",
                     FilterOp::Gt => ">",
                     FilterOp::Ge => ">=",
-                    _ => unreachable!("null/LIKE ops handled above"),
+                    _ => unreachable!("null/LIKE/search ops handled above"),
                 };
                 let ph = placeholder(idx, &f.column);
                 parts.push(format!("{col} {sym} {ph}"));
@@ -462,6 +485,19 @@ pub fn build_where_clause(
         }
     }
     (parts.join(" AND "), binds)
+}
+
+/// Escape a term's LIKE metacharacters with `!` so it matches literally: `%`, `_`, the
+/// escape itself, and `[` (a character class in SQL Server).
+fn like_escape(term: &str) -> String {
+    let mut out = String::with_capacity(term.len());
+    for ch in term.chars() {
+        if matches!(ch, '%' | '_' | '!' | '[') {
+            out.push('!');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 /// SQL engines (PG/MySQL/MariaDB/SQLite/SQL Server). Results stream as Arrow.
@@ -724,7 +760,7 @@ mod tests {
 
     #[test]
     fn where_clause_empty_filters() {
-        let (sql, binds) = build_where_clause(&[], &pg_ident, &pg_ph, &pg_text, 1);
+        let (sql, binds) = build_where_clause(&[], &[], &pg_ident, &pg_ph, &pg_text, 1);
         assert_eq!(sql, "");
         assert!(binds.is_empty());
     }
@@ -736,7 +772,7 @@ mod tests {
             ColumnFilter { column: "age".into(), op: FilterOp::Ge, value: Some("18".into()) },
             ColumnFilter { column: "email".into(), op: FilterOp::IsNotNull, value: None },
         ];
-        let (sql, binds) = build_where_clause(&f, &pg_ident, &pg_ph, &pg_text, 1);
+        let (sql, binds) = build_where_clause(&f, &[], &pg_ident, &pg_ph, &pg_text, 1);
         // Each bind carries the column's own type: without `::int4` the `age` comparison
         // reaches Postgres as `bigint >= text` and raises "operator does not exist".
         assert_eq!(
@@ -752,7 +788,7 @@ mod tests {
             ColumnFilter { column: "x".into(), op: FilterOp::Lt, value: Some("5".into()) },
             ColumnFilter { column: "y".into(), op: FilterOp::Like, value: Some("%foo%".into()) },
         ];
-        let (sql, binds) = build_where_clause(&f, &mysql_ident, &mysql_ph, &mysql_ident, 1);
+        let (sql, binds) = build_where_clause(&f, &[], &mysql_ident, &mysql_ph, &mysql_ident, 1);
         assert_eq!(sql, "`x` < ? AND `y` LIKE ?");
         assert_eq!(binds, vec![Some("5".into()), Some("%foo%".into())]);
     }
@@ -763,7 +799,7 @@ mod tests {
             ColumnFilter { column: "a".into(), op: FilterOp::Ne, value: Some("1".into()) },
             ColumnFilter { column: "b".into(), op: FilterOp::IsNull, value: None },
         ];
-        let (sql, binds) = build_where_clause(&f, &pg_ident, &sqlite_ph, &pg_ident, 3);
+        let (sql, binds) = build_where_clause(&f, &[], &pg_ident, &sqlite_ph, &pg_ident, 3);
         assert_eq!(sql, "\"a\" <> ?3 AND \"b\" IS NULL");
         assert_eq!(binds, vec![Some("1".into())]);
     }
@@ -775,7 +811,7 @@ mod tests {
             op: FilterOp::Eq,
             value: Some("v".into()),
         }];
-        let (sql, _binds) = build_where_clause(&f, &mssql_ident, &mssql_ph, &mssql_ident, 1);
+        let (sql, _binds) = build_where_clause(&f, &[], &mssql_ident, &mssql_ph, &mssql_ident, 1);
         assert_eq!(sql, "[col]]name] = @P1");
     }
 
@@ -786,9 +822,80 @@ mod tests {
             op: FilterOp::ILike,
             value: Some("%Bob%".into()),
         }];
-        let (sql, binds) = build_where_clause(&f, &pg_ident, &pg_ph, &pg_text, 1);
+        let (sql, binds) = build_where_clause(&f, &[], &pg_ident, &pg_ph, &pg_text, 1);
         assert_eq!(sql, "LOWER(\"name\"::text) LIKE LOWER($1::text)");
         assert_eq!(binds, vec![Some("%Bob%".into())]);
+    }
+
+    fn search(term: &str) -> Vec<ColumnFilter> {
+        vec![ColumnFilter { column: "*".into(), op: FilterOp::Search, value: Some(term.into()) }]
+    }
+    fn cols(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Search ORs a case-insensitive contains over every column's text rendering, one bind
+    /// per column (MySQL's `?` cannot be reused), each column cast by the engine's text_expr.
+    #[test]
+    fn search_expands_to_every_column_postgres() {
+        let (sql, binds) =
+            build_where_clause(&search("Bob"), &cols(&["id", "name"]), &pg_ident, &pg_ph, &pg_text, 1);
+        assert_eq!(
+            sql,
+            "(LOWER(\"id\"::text) LIKE LOWER($1::text) ESCAPE '!' \
+             OR LOWER(\"name\"::text) LIKE LOWER($2::text) ESCAPE '!')"
+        );
+        assert_eq!(binds, vec![Some("%Bob%".into()), Some("%Bob%".into())]);
+    }
+
+    #[test]
+    fn search_mysql_casts_and_binds_per_column() {
+        let cast = |c: &str| format!("CAST({} AS CHAR)", mysql_ident(c));
+        let (sql, binds) =
+            build_where_clause(&search("x"), &cols(&["a", "b"]), &mysql_ident, &mysql_ph, &cast, 1);
+        assert_eq!(
+            sql,
+            "(LOWER(CAST(`a` AS CHAR)) LIKE LOWER(?) ESCAPE '!' \
+             OR LOWER(CAST(`b` AS CHAR)) LIKE LOWER(?) ESCAPE '!')"
+        );
+        assert_eq!(binds.len(), 2);
+    }
+
+    /// The term's own wildcards match literally: `%`, `_`, the escape char `!` and SQL
+    /// Server's `[` class opener are escaped; a backslash is an ordinary character.
+    #[test]
+    fn search_term_wildcards_are_escaped() {
+        let (_, binds) =
+            build_where_clause(&search("5%_a!b[c\\d"), &cols(&["a"]), &pg_ident, &sqlite_ph, &pg_ident, 1);
+        assert_eq!(binds, vec![Some("%5!%!_a!!b![c\\d%".into())]);
+    }
+
+    /// Search composes with the other filters and keeps the placeholder numbering going.
+    #[test]
+    fn search_and_filters_number_on() {
+        let mut f = vec![ColumnFilter { column: "a".into(), op: FilterOp::Eq, value: Some("1".into()) }];
+        f.extend(search("q"));
+        let (sql, binds) =
+            build_where_clause(&f, &cols(&["a", "b"]), &mssql_ident, &mssql_ph, &mssql_ident, 3);
+        assert_eq!(
+            sql,
+            "[a] = @P3 AND (LOWER([a]) LIKE LOWER(@P4) ESCAPE '!' OR LOWER([b]) LIKE LOWER(@P5) ESCAPE '!')"
+        );
+        assert_eq!(binds.len(), 3);
+    }
+
+    #[test]
+    fn search_with_no_searchable_column_matches_nothing() {
+        let (sql, binds) = build_where_clause(&search("q"), &[], &pg_ident, &pg_ph, &pg_text, 1);
+        assert_eq!(sql, "1 = 0");
+        assert!(binds.is_empty());
+    }
+
+    #[test]
+    fn search_filter_deserializes_from_the_frontend_contract() {
+        let f: ColumnFilter =
+            serde_json::from_str(r#"{"column":"*","op":"Search","value":"bob"}"#).unwrap();
+        assert_eq!(f.op, FilterOp::Search);
     }
 
     #[test]

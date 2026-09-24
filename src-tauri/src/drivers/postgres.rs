@@ -413,8 +413,10 @@ impl SqlDriver for PgDriver {
         }
         let meta = self.browse_meta(schema, table).await?;
         let udts: HashMap<String, String> = meta.udts.iter().cloned().collect();
+        let cols: Vec<String> = meta.udts.iter().map(|(c, _)| c.clone()).collect();
         let (where_sql, binds) = build_where_clause(
             filters,
+            &cols,
             &quote_ident,
             &pg_placeholder(&udts),
             &pg_text_expr,
@@ -517,6 +519,7 @@ impl SqlDriver for PgDriver {
         // Filter binds come first ($1..), then the keyset's, then the offset/limit.
         let (mut where_sql, mut binds) = build_where_clause(
             filters,
+            &cols,
             &quote_ident,
             &pg_placeholder(&udts),
             &pg_text_expr,
