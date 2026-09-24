@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { DataGrid, type DataGridHandle, type GridSource } from "./DataGrid";
 import {
   applyEdit,
@@ -139,11 +139,8 @@ export function TableView({ connId, schema, object, view }: Props) {
     key: "",
     map: new Map(),
   });
-  /** Search box text. The applied term lives in `filters` (one Search filter);
-   *  `appliedSearch` is the last term this box pushed there, so a chip removed
-   *  elsewhere can clear the box without clobbering what the user is typing. */
-  const [searchText, setSearchText] = useState("");
-  const appliedSearch = useRef("");
+  /** The search box (its text is local to {@link SearchBox}; the applied term
+   *  lives in `filters` as one Search filter). */
   const searchRef = useRef<HTMLInputElement>(null);
   /** An exact COUNT(*) the user asked for, cancellable by `token`. */
   const [counting, setCounting] = useState<{ token: string; started: number } | null>(null);
@@ -394,25 +391,15 @@ export function TableView({ connId, schema, object, view }: Props) {
     };
   }, [connId, schema, object.name, page, pageSize, pageKey, filters, order, requestKey, refreshKey]);
 
-  // Search box → one Search filter, after a typing pause. A no-op when the term
-  // is unchanged (withSearch returns the same array), so nothing refetches.
-  useEffect(() => {
-    const id = window.setTimeout(() => {
-      const next = withSearch(filters, searchText);
-      if (next === filters) return;
-      appliedSearch.current = searchTerm(next);
-      applyFilters(next);
-    }, SEARCH_DEBOUNCE_MS);
-    return () => window.clearTimeout(id);
-    // `locked`: a term typed just before an edit was staged applies once it's saved.
-  }, [searchText, filters, applyFilters, locked]);
-  // The search chip was removed (or "clear all"): empty the box to match.
-  useEffect(() => {
-    const t = searchTerm(filters);
-    if (t === appliedSearch.current) return;
-    appliedSearch.current = t;
-    setSearchText(t);
-  }, [filters]);
+  // Search box → one Search filter. A no-op when the term is unchanged
+  // (withSearch returns the same array), so nothing refetches or re-pages.
+  const onSearch = useCallback(
+    (text: string) => {
+      const next = withSearch(filters, text);
+      if (next !== filters) applyFilters(next);
+    },
+    [filters, applyFilters],
+  );
   // ⌘F (Ctrl+F off macOS) focuses the search box — only the active tab's view is
   // mounted. Not while a modal / panel is open over it: that owns the keyboard.
   useEffect(() => {
@@ -731,27 +718,12 @@ export function TableView({ connId, schema, object, view }: Props) {
         )}
         <ToolbarSpacer />
         {view === "data" && (
-          <label className="mr-1 flex h-6 w-52 items-center gap-1.5 rounded-[var(--radius)] border border-border bg-bg px-1.5 text-muted focus-within:border-primary focus-within:text-text">
-            <IconSearch size={11} />
-            <input
-              ref={searchRef}
-              type="search"
-              aria-label="Search all columns"
-              value={searchText}
-              disabled={locked}
-              title={locked ? "Commit or discard your changes to search" : undefined}
-              onChange={(e) => setSearchText(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") {
-                  e.preventDefault();
-                  setSearchText("");
-                }
-              }}
-              placeholder="Search rows"
-              className="min-w-0 flex-1 bg-transparent text-[11px] text-text outline-none placeholder:text-muted [&::-webkit-search-cancel-button]:hidden"
-            />
-            {searchText === "" && <span className="tiq-kbd">{isMacPlatform() ? "⌘F" : "Ctrl F"}</span>}
-          </label>
+          <SearchBox
+            term={searchTerm(filters)}
+            onSearch={onSearch}
+            disabled={locked}
+            inputRef={searchRef}
+          />
         )}
         {(["csv", "json"] as ExportFormat[]).map((fmt) => (
           <ToolbarButton
@@ -1476,6 +1448,74 @@ function Ellipsis({ text }: { text: string | null }) {
     <span className="block max-w-[38ch] truncate" title={text}>
       {text}
     </span>
+  );
+}
+
+/** The toolbar's all-column search. Its text is local state, so a keystroke
+ *  re-renders only this box — never the table view or the grid. The term is
+ *  applied after a typing pause, or at once on Enter; Esc clears the box. */
+function SearchBox({
+  term,
+  onSearch,
+  disabled,
+  inputRef,
+}: {
+  /** The applied term (from the filters). */
+  term: string;
+  onSearch: (text: string) => void;
+  disabled: boolean;
+  inputRef: RefObject<HTMLInputElement | null>;
+}) {
+  const [text, setText] = useState(term);
+  const onSearchRef = useRef(onSearch);
+  onSearchRef.current = onSearch;
+  // The last term this box applied. When the applied term moves to anything
+  // else (its chip removed, "clear all"), the box follows — but the echo of its
+  // own apply must not clobber what the user has typed since.
+  const pushed = useRef(term);
+  useEffect(() => {
+    if (term === pushed.current) return;
+    pushed.current = term;
+    setText(term);
+  }, [term]);
+  const apply = (t: string) => {
+    pushed.current = t.trim();
+    onSearchRef.current(t);
+  };
+  // `disabled` re-arms it: a term typed just before an edit was staged applies
+  // once the edit is committed or discarded.
+  useEffect(() => {
+    if (disabled || text.trim() === term) return;
+    const id = window.setTimeout(() => apply(text), SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(id);
+  }, [text, term, disabled]);
+  return (
+    <label className="mr-1 flex h-6 w-52 items-center gap-1.5 rounded-[var(--radius)] border border-border bg-bg px-1.5 text-muted focus-within:border-primary focus-within:text-text">
+      <IconSearch size={11} />
+      <input
+        ref={inputRef}
+        type="search"
+        aria-label="Search all columns"
+        value={text}
+        disabled={disabled}
+        title={disabled ? "Commit or discard your changes to search" : undefined}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            apply(text);
+          } else if (e.key === "Escape") {
+            // Clearing the box is this Esc's whole job — no panel above may close on it.
+            e.preventDefault();
+            e.stopPropagation();
+            setText("");
+          }
+        }}
+        placeholder="Search rows"
+        className="min-w-0 flex-1 bg-transparent text-[11px] text-text outline-none placeholder:text-muted [&::-webkit-search-cancel-button]:hidden"
+      />
+      {text === "" && <span className="tiq-kbd">{isMacPlatform() ? "⌘F" : "Ctrl F"}</span>}
+    </label>
   );
 }
 
