@@ -30,12 +30,12 @@ pub mod sqlserver;
 /// before the query had an id to target.
 ///
 /// The id names a pooled *connection*, which goes on to serve other queries once this one
-/// ends. A statement that carries [`CancelToken::tag`] lets `cancel` stop only itself: the
-/// engine matches the tag against the connection's running statement in the same step.
+/// ends. A token with a [`CancelToken::scope`] lets `cancel` stop only its own statement: the
+/// engine matches the scope against what the connection is running in the same step.
 #[derive(Clone)]
 pub struct CancelToken {
-    /// (backend id, cancelled, tagged)
-    state: Arc<Mutex<(Option<i64>, bool, bool)>>,
+    /// (backend id, cancelled, scope)
+    state: Arc<Mutex<(Option<i64>, bool, Option<String>)>>,
     nonce: u64,
 }
 
@@ -51,15 +51,28 @@ impl CancelToken {
     pub fn new() -> Self {
         Self::default()
     }
-    /// A SQL comment unique to this token, for the statement it starts; from now on
-    /// [`CancelToken::tag_pattern`] asks `cancel` to stop only a statement carrying it.
+    /// A SQL comment unique to this token, for the statement it starts; from now on `cancel`
+    /// stops only a statement whose text matches it (the scope is a LIKE pattern).
+    /// It makes the statement text unique, so keep it off anything run often (pages).
     pub fn tag(&self) -> String {
-        crate::lk(&self.state).2 = true;
+        self.scope_to(&format!("%/*tiq:{}*/%", self.nonce));
         format!("/*tiq:{}*/ ", self.nonce)
     }
-    /// A LIKE pattern matching the statement text of [`CancelToken::tag`], once tagged.
-    pub fn tag_pattern(&self) -> Option<String> {
-        crate::lk(&self.state).2.then(|| format!("%/*tiq:{}*/%", self.nonce))
+    /// A session name unique to this token (Postgres `application_name`); from now on the
+    /// scope is exactly this name.
+    pub fn label(&self) -> String {
+        let name = format!("tiq:{}", self.nonce);
+        self.scope_to(&name);
+        name
+    }
+    /// Scope `cancel` to whatever the engine matches `scope` against.
+    pub fn scope_to(&self, scope: &str) {
+        crate::lk(&self.state).2 = Some(scope.to_string());
+    }
+    /// What `cancel` must find the connection running before it stops it; `None` stops
+    /// whatever the connection runs.
+    pub fn scope(&self) -> Option<String> {
+        crate::lk(&self.state).2.clone()
     }
     /// Record the server-side id (PG backend PID / MySQL connection id) for this query.
     pub fn set_backend_id(&self, id: i64) {
@@ -1047,12 +1060,20 @@ mod tests {
     #[test]
     fn cancel_token_tag_is_unique_and_scopes_only_once_used() {
         let (a, b) = (CancelToken::new(), CancelToken::new());
-        assert_eq!(a.tag_pattern(), None, "untagged: cancel targets the backend as before");
+        assert_eq!(a.scope(), None, "untagged: cancel targets the backend as before");
         let (ta, tb) = (a.tag(), b.tag());
         assert_ne!(ta, tb);
-        let pat = a.tag_pattern().unwrap();
+        let pat = a.scope().unwrap();
         assert!(pat.starts_with('%') && pat.ends_with('%') && pat.contains(ta.trim()));
-        assert_eq!(a.clone().tag_pattern(), Some(pat), "clones share it");
+        assert_eq!(a.clone().scope(), Some(pat), "clones share it");
+        // Postgres names the session instead, so the statement text stays the same.
+        let (c, d) = (CancelToken::new(), CancelToken::new());
+        let lc = c.label();
+        assert!(lc.starts_with("tiq:") && lc != d.label());
+        assert_eq!(c.scope(), Some(lc), "the scope is the exact name");
+        let e = CancelToken::new();
+        e.scope_to("SELECT /*+ x */%");
+        assert_eq!(e.scope().as_deref(), Some("SELECT /*+ x */%"));
     }
 
     #[test]

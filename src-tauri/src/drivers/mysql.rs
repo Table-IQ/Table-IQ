@@ -79,6 +79,10 @@ fn is_exec_timeout(e: &sqlx::Error) -> bool {
         .is_some_and(|d| d.number() == 3024)
 }
 
+/// What every cancellable page's text starts with (its `MAX_EXECUTION_TIME` hint): the
+/// `cancel` scope that keeps a KILL QUERY off a connection that moved on to a non-page query.
+const PAGE_SCOPE: &str = "SELECT /*+ MAX_EXECUTION_TIME(%";
+
 /// Backtick-quote a MySQL identifier (escape embedded backticks).
 fn quote_ident(name: &str) -> String {
     format!("`{}`", name.replace('`', "``"))
@@ -318,27 +322,41 @@ impl MySqlDriver {
             Some(_) => format!("/*+ MAX_EXECUTION_TIME({ms}) */ "),
             None => String::new(),
         };
-        let tag = token.map(CancelToken::tag).unwrap_or_default();
+        // No per-token comment: that made every page's text unique, so each one was
+        // prepared anew (an extra round trip) and churned sqlx's statement cache.
         let q = format!(
-            "{tag}SELECT {hint}{select_list} FROM (SELECT * FROM {}.{} AS _t{}{order_sql} LIMIT ? OFFSET ?) AS _w",
+            "SELECT {hint}{select_list} FROM (SELECT * FROM {}.{} AS _t{}{order_sql} LIMIT ? OFFSET ?) AS _w",
             quote_ident(schema),
             quote_ident(table),
             if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },
         );
         // MySQL placeholders are positional in statement order: the filters, the keyset,
         // then LIMIT/OFFSET.
-        let mut qy = sqlx::query(&q);
-        for b in &binds {
-            qy = qy.bind(b.clone());
-        }
-        qy = qy.bind(len as i64).bind(offset as i64);
+        let qy = || {
+            let mut qy = sqlx::query(&q);
+            for b in &binds {
+                qy = qy.bind(b.clone());
+            }
+            qy.bind(len as i64).bind(offset as i64)
+        };
         let res = match token {
-            None => qy.fetch_all(&self.pool).await,
-            // Pinned, so `cancel` can KILL QUERY this connection's id.
+            None => qy().fetch_all(&self.pool).await,
+            // Pinned, so `cancel` can KILL QUERY this connection's id — only while it runs a
+            // page (every page starts with the same hint), so an edit is never the victim.
             Some(t) => {
+                t.scope_to(PAGE_SCOPE);
                 let mut conn = self.pool.acquire().await.map_err(db)?;
                 Self::pin(&mut conn, t).await?;
-                super::recheck_cancel(self, t, qy.fetch_all(&mut *conn)).await
+                let res = super::recheck_cancel(self, t, qy().fetch_all(&mut *conn)).await;
+                match res {
+                    // Interrupted, but not by this token: a KILL meant for another page that
+                    // had just ended on this connection. Run it again rather than report a
+                    // cancel nobody asked for.
+                    Err(e) if is_cancel(&e) && !is_exec_timeout(&e) && !t.is_cancelled() => {
+                        super::recheck_cancel(self, t, qy().fetch_all(&mut *conn)).await
+                    }
+                    res => res,
+                }
             }
         };
         let rows = res.map_err(|e| {
@@ -591,9 +609,10 @@ impl SqlDriver for MySqlDriver {
         let Some(cid) = token.backend_id() else {
             return Ok(());
         };
-        // A tagged statement must still be what the connection runs: once it ends, the
-        // pooled connection serves other queries, and KILL QUERY would stop those.
-        if let Some(pat) = token.tag_pattern() {
+        // A scoped statement must still be what the connection runs: once it ends, the
+        // pooled connection serves other queries, and KILL QUERY would stop those. (Pages
+        // share one scope, so a stale page cancel can hit the next page; that one retries.)
+        if let Some(pat) = token.scope() {
             let running: Option<u64> = sqlx::query_scalar(
                 "SELECT ID FROM information_schema.processlist WHERE ID = ? AND INFO LIKE ?",
             )

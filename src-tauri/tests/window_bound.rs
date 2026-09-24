@@ -335,3 +335,115 @@ async fn mysql_cancel_never_waits_for_the_pool_and_rechecks_after_the_send() {
     cancel_flagged_right_after_the_pin(drv.clone(), "tableiq", "tiq_sat_slow").await;
     drv.run_script("DROP VIEW tiq_sat_slow; DROP TABLE tiq_sat_base;").await.unwrap();
 }
+
+/// Two slow pages in flight at once, each under its own token.
+async fn running_page_sql<D: SqlDriver + 'static>(
+    drv: &Arc<D>,
+    schema: &str,
+    table: &str,
+) -> (Vec<CancelToken>, Vec<tokio::task::JoinHandle<Result<arrow::record_batch::RecordBatch, DriverError>>>) {
+    let tokens: Vec<CancelToken> = (0..2).map(|_| CancelToken::new()).collect();
+    let pages = tokens
+        .iter()
+        .map(|t| {
+            let (d, t, s, n) = (drv.clone(), t.clone(), schema.to_string(), table.to_string());
+            tokio::spawn(async move { d.open_window_cancellable(&s, &n, 0, 10, &search("zzz"), &[], None, &t).await })
+        })
+        .collect();
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    (tokens, pages)
+}
+
+/// Every page's SQL is the same text whatever its token, so the driver's prepared-statement
+/// cache hits on every page after the first (a per-token comment made each one a Parse, and
+/// churned the cache). The cancel scope rides on `application_name` instead.
+#[tokio::test]
+async fn pg_page_sql_is_identical_across_tokens() {
+    let Ok(url) = std::env::var("TIQ_PG_URL") else {
+        eprintln!("skip: no TIQ_PG_URL");
+        return;
+    };
+    let drv = Arc::new(pg_slow(&url, "tiq_win_same").await.with_window_timeout_ms(60_000));
+    let (tokens, pages) = running_page_sql(&drv, "tiq_win_same", "slow").await;
+    let admin = sqlx::PgPool::connect(&url).await.unwrap();
+    let mut seen = Vec::new();
+    for t in &tokens {
+        let (query, app): (String, String) = sqlx::query_as(
+            "SELECT query, application_name FROM pg_stat_activity WHERE pid = $1 AND state = 'active'",
+        )
+        .bind(t.backend_id().unwrap() as i32)
+        .fetch_one(&admin)
+        .await
+        .unwrap();
+        assert_eq!(Some(app), t.scope(), "the session is named after its token");
+        seen.push(query);
+    }
+    assert_eq!(seen[0], seen[1], "the page SQL must not vary with the token");
+    assert!(!seen[0].contains("tiq:"), "{}", seen[0]);
+    for t in &tokens {
+        t.mark_cancelled();
+        drv.cancel(t).await.unwrap();
+    }
+    for p in pages {
+        assert!(matches!(p.await.unwrap(), Err(DriverError::Cancelled)));
+    }
+    drv.run_script("DROP SCHEMA tiq_win_same CASCADE").await.unwrap();
+}
+
+#[tokio::test]
+async fn mysql_page_sql_is_identical_across_tokens() {
+    let Ok(url) = std::env::var("TIQ_MYSQL_URL") else {
+        eprintln!("skip: no TIQ_MYSQL_URL");
+        return;
+    };
+    let drv = Arc::new(mysql_slow_named(&url, "tiq_same").await.with_window_timeout_ms(60_000));
+    let (tokens, pages) = running_page_sql(&drv, "tableiq", "tiq_same_slow").await;
+    let admin = sqlx::MySqlPool::connect(&url).await.unwrap();
+    let mut seen = Vec::new();
+    for t in &tokens {
+        let info: String = sqlx::query_scalar(
+            "SELECT CAST(INFO AS CHAR) FROM information_schema.processlist WHERE ID = ?",
+        )
+        .bind(t.backend_id().unwrap() as u64)
+        .fetch_one(&admin)
+        .await
+        .unwrap();
+        seen.push(info);
+    }
+    assert_eq!(seen[0], seen[1], "the page SQL must not vary with the token");
+    assert!(!seen[0].contains("tiq:"), "{}", seen[0]);
+    for t in &tokens {
+        t.mark_cancelled();
+        drv.cancel(t).await.unwrap();
+    }
+    for p in pages {
+        assert!(matches!(p.await.unwrap(), Err(DriverError::Cancelled)));
+    }
+    drv.run_script("DROP VIEW tiq_same_slow; DROP TABLE tiq_same_base;").await.unwrap();
+}
+
+/// Untagged, a MySQL cancel is a KILL QUERY on a connection id — which, once its page ended,
+/// may be running someone else's page. That victim was not cancelled, so it runs again
+/// instead of reporting a cancel nobody asked for.
+#[tokio::test]
+async fn mysql_page_killed_without_its_token_cancelled_retries() {
+    let Ok(url) = std::env::var("TIQ_MYSQL_URL") else {
+        eprintln!("skip: no TIQ_MYSQL_URL");
+        return;
+    };
+    let drv = Arc::new(mysql_slow_named(&url, "tiq_spur").await.with_window_timeout_ms(60_000));
+    let token = CancelToken::new();
+    let (d, t) = (drv.clone(), token.clone());
+    let h = tokio::spawn(async move {
+        d.open_window_cancellable("tableiq", "tiq_spur_slow", 0, 40, &[], &[], None, &t).await
+    });
+    while token.backend_id().is_none() {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let admin = sqlx::MySqlPool::connect(&url).await.unwrap();
+    sqlx::raw_sql(&format!("KILL QUERY {}", token.backend_id().unwrap())).execute(&admin).await.unwrap();
+    let page = h.await.unwrap().expect("a page nobody cancelled must not fail");
+    assert_eq!(page.num_rows(), 40);
+    drv.run_script("DROP VIEW tiq_spur_slow; DROP TABLE tiq_spur_base;").await.unwrap();
+}

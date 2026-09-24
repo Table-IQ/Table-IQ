@@ -260,37 +260,37 @@ impl PgDriver {
         self
     }
 
-    /// Record this connection's PID in `token` — and, given a timeout, make it the
-    /// transaction's statement_timeout (`set_config(…, true)` is `SET LOCAL`) in the same
-    /// round trip. A token already cancelled stops the page here.
+    /// Set up a page's transaction in ONE round trip and record the PID in `token`: the
+    /// session is named after the token (`application_name`, which `cancel` matches — the
+    /// page SQL itself stays the same text for every token, so it is prepared once per
+    /// connection), a timeout bounds the statement, and `tid_scan` turns seq scans off (see
+    /// `window`). `set_config(…, true)` is `SET LOCAL`: it needs the caller's transaction and
+    /// reverts when it ends. A token already cancelled stops the page here.
     async fn pin(
         conn: &mut sqlx::PgConnection,
-        token: &CancelToken,
+        token: Option<&CancelToken>,
         timeout_ms: Option<u64>,
+        tid_scan: bool,
     ) -> DResult<()> {
-        let pid: i32 = match timeout_ms {
-            None => sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *conn).await,
-            Some(ms) => {
-                sqlx::query_scalar(
-                    "SELECT pg_backend_pid() FROM set_config('statement_timeout', $1, true)",
-                )
-                .bind(ms.to_string())
-                .fetch_one(&mut *conn)
-                .await
+        let pid: i32 = sqlx::query_scalar(
+            "SELECT pg_backend_pid() FROM \
+             set_config('application_name', COALESCE($1, current_setting('application_name')), true) a, \
+             set_config('statement_timeout', COALESCE($2, current_setting('statement_timeout')), true) t, \
+             set_config('enable_seqscan', \
+                        CASE WHEN $3 THEN 'off' ELSE current_setting('enable_seqscan') END, true) s",
+        )
+        .bind(token.map(CancelToken::label))
+        .bind(timeout_ms.map(|ms| ms.to_string()))
+        .bind(tid_scan)
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(db)?;
+        if let Some(token) = token {
+            token.set_backend_id(pid as i64);
+            if token.is_cancelled() {
+                return Err(DriverError::Cancelled);
             }
         }
-        .map_err(db)?;
-        token.set_backend_id(pid as i64);
-        if token.is_cancelled() {
-            return Err(DriverError::Cancelled);
-        }
-        Ok(())
-    }
-
-    /// Make this transaction's ctid page a TID Range Scan: it walks the heap in ctid order
-    /// from the cursor (or block 0), where a Seq Scan may start mid-table (see `window`).
-    async fn tid_scan(conn: &mut sqlx::PgConnection) -> DResult<()> {
-        sqlx::query("SET LOCAL enable_seqscan = off").execute(conn).await.map_err(db)?;
         Ok(())
     }
 
@@ -399,7 +399,7 @@ impl PgDriver {
             // past shared_buffers/4 is a synchronized one: it starts wherever another scan
             // of the table is, and the next page's `ctid >` then skips the blocks before.
             // Its selectivity is ~1, so the planner still prefers that Seq Scan: every ctid
-            // page runs with `enable_seqscan = off` (see `tid_scan`).
+            // page runs with `enable_seqscan = off` (see `pin`).
             where_sql = "_t.ctid >= '(0,0)'::tid".into();
         }
         let (inner, select_list) = if by_ctid {
@@ -411,11 +411,10 @@ impl PgDriver {
         };
         let off_ph = format!("${}", binds.len() + 1);
         let lim_ph = format!("${}", binds.len() + 2);
-        let tag = token.map(CancelToken::tag).unwrap_or_default();
         // Order (and filter) on the REAL columns inside the subquery, THEN cast to text —
         // ordering by the text cast would sort numbers lexicographically.
         let q = format!(
-            "{tag}SELECT {select_list} FROM \
+            "SELECT {select_list} FROM \
              (SELECT {inner} FROM {}.{} AS _t{}{order_sql} OFFSET {off_ph} LIMIT {lim_ph}) AS _w",
             quote_ident(schema),
             quote_ident(table),
@@ -427,26 +426,18 @@ impl PgDriver {
         }
         qy = qy.bind(offset as i64).bind(len as i64);
         let ms = self.window_timeout_ms * if filters.is_empty() { 2 } else { 1 };
-        let res = match token {
-            None if by_ctid => {
-                let mut tx = self.pool.begin().await.map_err(db)?;
-                Self::tid_scan(&mut tx).await?;
-                let res = qy.fetch_all(&mut *tx).await;
-                let _ = tx.rollback().await;
-                res
-            }
-            None => qy.fetch_all(&self.pool).await,
-            // Pinned, so `cancel` can target the PID, and bounded. SET LOCAL needs a
-            // transaction; it also reverts on its own when this one ends.
-            Some(t) => {
-                let mut tx = self.pool.begin().await.map_err(db)?;
-                if by_ctid {
-                    Self::tid_scan(&mut tx).await?;
-                }
-                Self::pin(&mut tx, t, Some(ms)).await?;
-                let res = super::recheck_cancel(self, t, qy.fetch_all(&mut *tx)).await;
-                let _ = tx.rollback().await;
-                res
+        let res = if token.is_none() && !by_ctid {
+            qy.fetch_all(&self.pool).await
+        } else {
+            // Pinned, so `cancel` can target the PID, and bounded — both SET LOCAL, so in a
+            // transaction. Dropping it (rather than awaiting `rollback`) queues the ROLLBACK,
+            // which the pool flushes as the connection comes back: the page's answer does
+            // not wait a round trip for it, and nobody gets the connection before it lands.
+            let mut tx = self.pool.begin().await.map_err(db)?;
+            Self::pin(&mut tx, token, token.map(|_| ms), by_ctid).await?;
+            match token {
+                Some(t) => super::recheck_cancel(self, t, qy.fetch_all(&mut *tx)).await,
+                None => qy.fetch_all(&mut *tx).await,
             }
         };
         let rows = res.map_err(|e| {
@@ -637,8 +628,7 @@ impl SqlDriver for PgDriver {
             1,
         );
         let q = format!(
-            "{}SELECT COUNT(*)::bigint FROM {}.{}{}",
-            force_exact.map(CancelToken::tag).unwrap_or_default(),
+            "SELECT COUNT(*)::bigint FROM {}.{}{}",
             quote_ident(schema),
             quote_ident(table),
             if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },
@@ -648,23 +638,25 @@ impl SqlDriver for PgDriver {
             qy = qy.bind(b.clone());
         }
         if let Some(token) = force_exact {
-            // Unbounded, so pinned to one connection whose PID `cancel` can target.
-            let mut conn = self.pool.acquire().await.map_err(db)?;
-            Self::pin(&mut conn, token, None).await?;
-            return match super::recheck_cancel(self, token, qy.fetch_one(&mut *conn)).await {
+            // Unbounded, so pinned to one connection whose PID `cancel` can target — named
+            // in a transaction, as a page is (see `pin`).
+            let mut tx = self.pool.begin().await.map_err(db)?;
+            Self::pin(&mut tx, Some(token), None, false).await?;
+            return match super::recheck_cancel(self, token, qy.fetch_one(&mut *tx)).await {
                 Ok(n) => Ok(RowCount { count: Some(n), exact: true }),
                 Err(e) if is_cancel(&e) => Err(DriverError::Cancelled),
                 Err(e) => Err(db(e)),
             };
         }
-        // SET LOCAL needs a transaction; it also reverts on its own when this one ends.
-        let mut tx = self.pool.begin().await.map_err(db)?;
-        sqlx::query("SET LOCAL statement_timeout = 2000")
-            .execute(&mut *tx)
+        // SET LOCAL needs a transaction; it also reverts on its own when this one ends. Sent
+        // with the BEGIN in one round trip; the ROLLBACK is queued on drop (see `window`).
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN; SET LOCAL statement_timeout = 2000")
             .await
             .map_err(db)?;
         let res = qy.fetch_one(&mut *tx).await;
-        let _ = tx.rollback().await;
+        drop(tx);
         match res {
             Ok(n) => Ok(RowCount { count: Some(n), exact: true }),
             // 57014 here is the statement_timeout firing — this query carries no cancel token.
@@ -747,15 +739,15 @@ impl SqlDriver for PgDriver {
         let Some(pid) = token.backend_id() else {
             return Ok(());
         };
-        // The cancel request must come from a *second* connection (plan spec #6). A tagged
-        // statement is matched in the same step, so a connection that has since moved on
-        // to another query is left alone.
+        // The cancel request must come from a *second* connection (plan spec #6). A named
+        // session (see `pin`) is matched in the same step, so a connection that has since
+        // moved on to another query — its transaction over, its name reverted — is left alone.
         sqlx::query(
             "SELECT pg_cancel_backend(pid) FROM pg_stat_activity \
-             WHERE pid = $1 AND ($2::text IS NULL OR (state = 'active' AND query LIKE $2))",
+             WHERE pid = $1 AND ($2::text IS NULL OR (state = 'active' AND application_name = $2))",
         )
         .bind(pid as i32)
-        .bind(token.tag_pattern())
+        .bind(token.scope())
         .execute(&self.cancel_pool)
         .await
         .map_err(db)?;
