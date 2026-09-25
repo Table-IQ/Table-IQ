@@ -574,7 +574,7 @@ async fn pg_export_of_a_no_pk_table_has_no_ctid_column() {
         .await;
     let drv = PgDriver::connect(&url).await.unwrap();
     for format in ["csv", "json"] {
-        let out = table_export(&drv, "tiq_exp", "t", &format, &[], &[]).await.unwrap();
+        let out = table_export(&drv, "tiq_exp", "t", format, &[], &[]).await.unwrap();
         assert!(!out.contains("__tiq_ctid") && !out.contains("(0,"), "{format}: {out}");
         assert!(out.contains("r3"), "{format}: every row is exported: {out}");
     }

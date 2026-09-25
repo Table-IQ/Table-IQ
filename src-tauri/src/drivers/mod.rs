@@ -34,10 +34,12 @@ pub mod sqlserver;
 /// engine matches the scope against what the connection is running in the same step.
 #[derive(Clone)]
 pub struct CancelToken {
-    /// (backend id, cancelled, scope)
-    state: Arc<Mutex<(Option<i64>, bool, Option<String>)>>,
+    state: Arc<Mutex<TokenState>>,
     nonce: u64,
 }
+
+/// (backend id, cancelled, scope)
+type TokenState = (Option<i64>, bool, Option<String>);
 
 impl Default for CancelToken {
     fn default() -> Self {
