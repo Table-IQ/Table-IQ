@@ -10,10 +10,10 @@ use sqlx::mysql::{MySqlDatabaseError, MySqlPoolOptions, MySqlQueryResult, MySqlR
 use sqlx::{MySql, Pool, Row};
 
 use super::{
-    build_insert_sql, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
-    ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec, ForeignKey, IndexInfo,
+    build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
+    ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec, FilterOp, ForeignKey, IndexInfo,
     ObjectInfo, ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver,
-    StmtOutput, TableStructure, TriggerInfo,
+    StmtOutput, TableStructure, TriggerInfo, EXACT_COUNT_MAX,
 };
 
 use std::collections::HashMap;
@@ -79,6 +79,19 @@ fn is_exec_timeout(e: &sqlx::Error) -> bool {
         .is_some_and(|d| d.number() == 3024)
 }
 
+/// What every cancellable page's text starts with (its `MAX_EXECUTION_TIME` hint): the
+/// `cancel` scope that keeps a KILL QUERY off a connection that moved on to a non-page query.
+const PAGE_SCOPE: &str = "SELECT /*+ MAX_EXECUTION_TIME(%";
+
+/// [`build_insert_sql`], except that MySQL has no `DEFAULT VALUES`: an all-defaults row is
+/// `() VALUES ()`.
+fn insert_sql(schema: &str, table: &str, values: &[(String, Option<String>)]) -> (String, Vec<Option<String>>) {
+    if values.is_empty() {
+        return (format!("INSERT INTO {}.{} () VALUES ()", quote_ident(schema), quote_ident(table)), vec![]);
+    }
+    build_insert_sql(schema, table, values, &quote_ident, &mysql_placeholder, true)
+}
+
 /// Backtick-quote a MySQL identifier (escape embedded backticks).
 fn quote_ident(name: &str) -> String {
     format!("`{}`", name.replace('`', "``"))
@@ -116,8 +129,60 @@ fn mysql_placeholder(_i: usize, _col: &str) -> String {
     "?".to_string()
 }
 
+/// Left side of the textual comparisons (LIKE/ILIKE/Search): the column in the connection
+/// charset, so LOWER folds a binary string too and every column compares under one collation.
+fn mysql_text_expr(col: &str) -> String {
+    format!("CAST({} AS CHAR)", quote_ident(col))
+}
+
+/// The WHERE for `filters`. Search CASTs every column ([`mysql_text_expr`]); LIKE/ILIKE
+/// CAST only a non-text column, and compare a text column bare — under its own collation,
+/// with an index range scan for a prefix pattern.
+fn mysql_where(filters: &[ColumnFilter], meta: &MyMeta) -> (String, Vec<Option<String>>) {
+    let (search, rest): (Vec<ColumnFilter>, Vec<ColumnFilter>) =
+        filters.iter().cloned().partition(|f| f.op == FilterOp::Search);
+    let like_expr =
+        |c: &str| if meta.text.iter().any(|t| t == c) { quote_ident(c) } else { mysql_text_expr(c) };
+    let (a, mut binds) =
+        build_where_clause(&rest, &meta.cols, &quote_ident, &mysql_placeholder, &like_expr, 1);
+    let (b, more) =
+        build_where_clause(&search, &meta.cols, &quote_ident, &mysql_placeholder, &mysql_text_expr, 1);
+    binds.extend(more);
+    let sql = [a, b].into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join(" AND ");
+    (sql, binds)
+}
+
+/// PK types a keyset cursor can seek on. The cursor is the grid's text, compared back
+/// against the column, so the type must read that text back exactly: a binary string renders
+/// as `0x…` hex (or bytes the charset mangles) and FLOAT/DOUBLE as a rounded decimal, so a
+/// seek there repeats or skips rows. Anything else pages by OFFSET.
+fn seekable(data_type: &str) -> bool {
+    matches!(
+        data_type,
+        "tinyint" | "smallint" | "mediumint" | "int" | "bigint" | "decimal" | "char" | "varchar"
+            | "tinytext" | "text" | "mediumtext" | "longtext" | "date" | "datetime" | "timestamp"
+    )
+}
+
+/// What every page of a table needs from the catalog, cached per table (see
+/// [`super::MetaCache`]).
+struct MyMeta {
+    cols: Vec<String>,
+    /// The char/varchar/text columns — the ones LIKE can compare bare.
+    text: Vec<String>,
+    pk: Vec<String>,
+    /// Every PK column is [`seekable`].
+    seek_ok: bool,
+}
+
 pub struct MySqlDriver {
     pool: Pool<MySql>,
+    /// Where `cancel` runs: one connection, opened on first use. On `pool` a cancel would
+    /// wait behind the very pages it is meant to stop.
+    cancel_pool: Pool<MySql>,
+    /// [`super::WINDOW_TIMEOUT_MS`]; only tests shorten it.
+    window_timeout_ms: u64,
+    meta: super::MetaCache<Arc<MyMeta>>,
 }
 
 impl MySqlDriver {
@@ -143,14 +208,188 @@ impl MySqlDriver {
             .connect(url)
             .await
             .map_err(db)?;
-        Ok(Self { pool })
+        let cancel_pool = MySqlPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_secs(10))
+            .connect_lazy_with((*pool.connect_options()).clone());
+        Ok(Self {
+            pool,
+            cancel_pool,
+            meta: Default::default(),
+            window_timeout_ms: super::WINDOW_TIMEOUT_MS,
+        })
     }
 
-    /// Ordered column names for one relation (empty ⇒ no such relation). One catalog
-    /// lookup per window/export call.
-    async fn columns_of(&self, schema: &str, table: &str) -> DResult<Vec<String>> {
-        sqlx::query_scalar(
-            "SELECT CAST(COLUMN_NAME AS CHAR) AS column_name FROM information_schema.columns \
+    /// Shorten the page timeouts, so a test can reach them quickly.
+    #[doc(hidden)]
+    pub fn with_window_timeout_ms(mut self, ms: u64) -> Self {
+        self.window_timeout_ms = ms;
+        self
+    }
+
+    /// Record this connection's id in `token`, so `cancel` can KILL QUERY it. A token
+    /// already cancelled stops the statement here.
+    async fn pin(conn: &mut sqlx::MySqlConnection, token: &CancelToken) -> DResult<()> {
+        let cid: u64 =
+            sqlx::query_scalar("SELECT CONNECTION_ID()").fetch_one(&mut *conn).await.map_err(db)?;
+        token.set_backend_id(cid as i64);
+        if token.is_cancelled() {
+            return Err(DriverError::Cancelled);
+        }
+        Ok(())
+    }
+
+    /// Cached [`MyMeta`] for the browse path. A missing relation is an error and is not
+    /// cached.
+    async fn browse_meta(&self, schema: &str, table: &str) -> DResult<Arc<MyMeta>> {
+        if let Some(m) = self.meta.get(schema, table) {
+            return Ok(m);
+        }
+        let typed = self.columns_of(schema, table).await?;
+        if typed.is_empty() {
+            return Err(DriverError::Db(format!("no such table {schema}.{table}")));
+        }
+        let pk = self.primary_key(schema, table).await?;
+        let seek_ok = pk.iter().all(|p| typed.iter().any(|(c, t)| c == p && seekable(t)));
+        let text = typed
+            .iter()
+            .filter(|(_, t)| {
+                matches!(t.as_str(), "char" | "varchar" | "tinytext" | "text" | "mediumtext" | "longtext")
+            })
+            .map(|(c, _)| c.clone())
+            .collect();
+        let cols = typed.into_iter().map(|(c, _)| c).collect();
+        let m = Arc::new(MyMeta { cols, text, pk, seek_ok });
+        self.meta.put(schema, table, m.clone());
+        Ok(m)
+    }
+
+    /// One page of a table; see [`SqlDriver::open_window_cancellable`] for `token`. A page
+    /// that failed on a stale cached column list (see `window_once`) is retried once.
+    #[allow(clippy::too_many_arguments)]
+    async fn window(
+        &self,
+        schema: &str,
+        table: &str,
+        offset: usize,
+        len: usize,
+        filters: &[ColumnFilter],
+        order: &[SortKey],
+        after: Option<&[Option<String>]>,
+        token: Option<&CancelToken>,
+    ) -> DResult<RecordBatch> {
+        let cached = self.meta.get(schema, table).is_some();
+        let res = self.window_once(schema, table, offset, len, filters, order, after, token).await;
+        if res.is_err() && cached && self.meta.get(schema, table).is_none() {
+            return self.window_once(schema, table, offset, len, filters, order, after, token).await;
+        }
+        res
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn window_once(
+        &self,
+        schema: &str,
+        table: &str,
+        offset: usize,
+        len: usize,
+        filters: &[ColumnFilter],
+        order: &[SortKey],
+        after: Option<&[Option<String>]>,
+        token: Option<&CancelToken>,
+    ) -> DResult<RecordBatch> {
+        let meta = self.browse_meta(schema, table).await?;
+        let (cols, pk) = (&meta.cols, &meta.pk);
+        let order_sql = build_order_by(order, pk, cols, &quote_ident)?;
+        let select_list = cols
+            .iter()
+            // `CAST(col AS CHAR)` returns SQL **NULL** when the bytes are not valid in the
+            // connection charset (a BLOB holding arbitrary bytes), which the grid then
+            // showed as a plain NULL — indistinguishable from a real one, and a lie about
+            // what is in the table. Fall back to the same `0x…` hex the query tab renders
+            // (`exec::cell_text`). A genuine NULL still comes through as NULL: HEX(NULL) is
+            // NULL, so the CONCAT is NULL too.
+            .map(|c| {
+                let q = quote_ident(c);
+                format!("IFNULL(CAST({q} AS CHAR), CONCAT('0x', LOWER(HEX({q})))) AS {q}")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let (mut where_sql, mut binds) = mysql_where(filters, &meta);
+        let mut offset = offset;
+        if let Some((k, kb)) = after.filter(|_| meta.seek_ok).and_then(|a| {
+            build_keyset(order, pk, a, &quote_ident, &mysql_placeholder, binds.len() + 1, true)
+        }) {
+            where_sql = if where_sql.is_empty() { k } else { format!("{where_sql} AND {k}") };
+            binds.extend(kb);
+            offset = 0;
+        }
+        // The optimizer hint bounds only the top-level SELECT, which is this one. MariaDB
+        // reads it as a comment, so there the page stays unbounded.
+        let ms = self.window_timeout_ms * if filters.is_empty() { 2 } else { 1 };
+        let hint = match token {
+            Some(_) => format!("/*+ MAX_EXECUTION_TIME({ms}) */ "),
+            None => String::new(),
+        };
+        // No per-token comment: that made every page's text unique, so each one was
+        // prepared anew (an extra round trip) and churned sqlx's statement cache.
+        let q = format!(
+            "SELECT {hint}{select_list} FROM (SELECT * FROM {}.{} AS _t{}{order_sql} LIMIT ? OFFSET ?) AS _w",
+            quote_ident(schema),
+            quote_ident(table),
+            if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },
+        );
+        // MySQL placeholders are positional in statement order: the filters, the keyset,
+        // then LIMIT/OFFSET.
+        let qy = || {
+            let mut qy = sqlx::query(&q);
+            for b in &binds {
+                qy = qy.bind(b.clone());
+            }
+            qy.bind(len as i64).bind(offset as i64)
+        };
+        let res = match token {
+            None => qy().fetch_all(&self.pool).await,
+            // Pinned, so `cancel` can KILL QUERY this connection's id — only while it runs a
+            // page (every page starts with the same hint), so an edit is never the victim.
+            Some(t) => {
+                t.scope_to(PAGE_SCOPE);
+                let mut conn = self.pool.acquire().await.map_err(db)?;
+                Self::pin(&mut conn, t).await?;
+                let res = super::recheck_cancel(self, t, qy().fetch_all(&mut *conn)).await;
+                match res {
+                    // Interrupted, but not by this token: a KILL meant for another page that
+                    // had just ended on this connection. Run it again rather than report a
+                    // cancel nobody asked for.
+                    Err(e) if is_cancel(&e) && !is_exec_timeout(&e) && !t.is_cancelled() => {
+                        super::recheck_cancel(self, t, qy().fetch_all(&mut *conn)).await
+                    }
+                    res => res,
+                }
+            }
+        };
+        let rows = res.map_err(|e| {
+            // Unknown column (1054) / no such table (1146): the cached list is stale.
+            let my = e.as_database_error().and_then(|d| d.try_downcast_ref::<MySqlDatabaseError>());
+            if my.is_some_and(|d| matches!(d.number(), 1054 | 1146)) {
+                self.meta.forget(schema, table);
+            }
+            match e {
+                // The timeout first: MySQL words it as an "interrupted" query too.
+                e if token.is_some() && is_exec_timeout(&e) => {
+                    DriverError::Db(format!("query timed out after {ms} ms"))
+                }
+                e if token.is_some() && is_cancel(&e) => DriverError::Cancelled,
+                e => db(e),
+            }
+        })?;
+        text_rows_to_batch(cols, &rows)
+    }
+
+    /// Ordered `(column, DATA_TYPE)` for one relation (empty ⇒ no such relation).
+    async fn columns_of(&self, schema: &str, table: &str) -> DResult<Vec<(String, String)>> {
+        sqlx::query_as(
+            "SELECT CAST(COLUMN_NAME AS CHAR), CAST(DATA_TYPE AS CHAR) FROM information_schema.columns \
              WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
         )
         .bind(schema)
@@ -285,16 +524,21 @@ impl SqlDriver for MySqlDriver {
         schema: &str,
         table: &str,
         filters: &[ColumnFilter],
+        force_exact: Option<&CancelToken>,
     ) -> DResult<RowCount> {
-        let (where_sql, binds) = build_where_clause(
-            filters,
-            &quote_ident,
-            &mysql_placeholder,
-            &quote_ident,
-            1,
-        );
+        if force_exact.is_none() && filters.is_empty() {
+            if let Some(n) = self.estimate_rows(schema, table).await? {
+                if n > EXACT_COUNT_MAX {
+                    return Ok(RowCount { count: Some(n), exact: false });
+                }
+            }
+        }
+        let meta = self.browse_meta(schema, table).await?;
+        let (where_sql, binds) = mysql_where(filters, &meta);
         let q = format!(
-            "SELECT /*+ MAX_EXECUTION_TIME(2000) */ COUNT(*) FROM {}.{}{}",
+            "{}SELECT {}COUNT(*) FROM {}.{}{}",
+            force_exact.map(CancelToken::tag).unwrap_or_default(),
+            if force_exact.is_some() { "" } else { "/*+ MAX_EXECUTION_TIME(2000) */ " },
             quote_ident(schema),
             quote_ident(table),
             if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },
@@ -303,23 +547,40 @@ impl SqlDriver for MySqlDriver {
         for b in &binds {
             qy = qy.bind(b.clone());
         }
+        if let Some(token) = force_exact {
+            // Unbounded, so pinned to one connection whose id `cancel` can KILL QUERY.
+            let mut conn = self.pool.acquire().await.map_err(db)?;
+            Self::pin(&mut conn, token).await?;
+            return match super::recheck_cancel(self, token, qy.fetch_one(&mut *conn)).await {
+                Ok(n) => Ok(RowCount { count: Some(n), exact: true }),
+                Err(e) if is_cancel(&e) => Err(DriverError::Cancelled),
+                Err(e) => Err(db(e)),
+            };
+        }
         match qy.fetch_one(&self.pool).await {
             Ok(n) => Ok(RowCount { count: Some(n), exact: true }),
-            Err(e) if is_exec_timeout(&e) => {
-                let est: Option<u64> = sqlx::query_scalar(
-                    "SELECT TABLE_ROWS AS table_rows FROM information_schema.tables \
-                     WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
-                )
-                .bind(schema)
-                .bind(table)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(db)?
-                .flatten();
-                Ok(RowCount { count: est.map(|n| n as i64), exact: false })
-            }
+            // The catalog estimate is the whole table's, so a filtered count has none.
+            Err(e) if is_exec_timeout(&e) => Ok(RowCount {
+                count: if filters.is_empty() { self.estimate_rows(schema, table).await? } else { None },
+                exact: false,
+            }),
             Err(e) => Err(db(e)),
         }
+    }
+
+    /// The data dictionary's `TABLE_ROWS` (InnoDB's sampled estimate). A view has none.
+    async fn estimate_rows(&self, schema: &str, table: &str) -> DResult<Option<i64>> {
+        let est: Option<u64> = sqlx::query_scalar(
+            "SELECT TABLE_ROWS AS table_rows FROM information_schema.tables \
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND TABLE_TYPE = 'BASE TABLE'",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?
+        .flatten();
+        Ok(est.map(|n| n as i64))
     }
 
     async fn open_window_filtered(
@@ -330,56 +591,51 @@ impl SqlDriver for MySqlDriver {
         len: usize,
         filters: &[ColumnFilter],
         order: &[SortKey],
+        after: Option<&[Option<String>]>,
     ) -> DResult<RecordBatch> {
-        let cols = self.columns_of(schema, table).await?;
-        if cols.is_empty() {
-            return Err(DriverError::Db(format!("no such table {schema}.{table}")));
-        }
-        let pk = self.primary_key(schema, table).await?;
-        let order_sql = build_order_by(order, &pk, &cols, &quote_ident)?;
-        let select_list = cols
-            .iter()
-            // `CAST(col AS CHAR)` returns SQL **NULL** when the bytes are not valid in the
-            // connection charset (a BLOB holding arbitrary bytes), which the grid then
-            // showed as a plain NULL — indistinguishable from a real one, and a lie about
-            // what is in the table. Fall back to the same `0x…` hex the query tab renders
-            // (`exec::cell_text`). A genuine NULL still comes through as NULL: HEX(NULL) is
-            // NULL, so the CONCAT is NULL too.
-            .map(|c| {
-                let q = quote_ident(c);
-                format!("IFNULL(CAST({q} AS CHAR), CONCAT('0x', LOWER(HEX({q})))) AS {q}")
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        let (where_sql, binds) = build_where_clause(
-            filters,
-            &quote_ident,
-            &mysql_placeholder,
-            &quote_ident,
-            1,
-        );
-        let q = format!(
-            "SELECT {select_list} FROM (SELECT * FROM {}.{} AS _t{}{order_sql} LIMIT ? OFFSET ?) AS _w",
-            quote_ident(schema),
-            quote_ident(table),
-            if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },
-        );
-        // MySQL placeholders are positional in statement order: the filters, then LIMIT/OFFSET.
-        let mut qy = sqlx::query(&q);
-        for b in &binds {
-            qy = qy.bind(b.clone());
-        }
-        qy = qy.bind(len as i64).bind(offset as i64);
-        let rows = qy.fetch_all(&self.pool).await.map_err(db)?;
-        text_rows_to_batch(&cols, &rows)
+        self.window(schema, table, offset, len, filters, order, after, None).await
+    }
+
+    async fn open_window_cancellable(
+        &self,
+        schema: &str,
+        table: &str,
+        offset: usize,
+        len: usize,
+        filters: &[ColumnFilter],
+        order: &[SortKey],
+        after: Option<&[Option<String>]>,
+        token: &CancelToken,
+    ) -> DResult<RecordBatch> {
+        self.window(schema, table, offset, len, filters, order, after, Some(token)).await
+    }
+
+    fn forget_meta(&self) {
+        self.meta.clear();
     }
 
     async fn cancel(&self, token: &CancelToken) -> DResult<()> {
         let Some(cid) = token.backend_id() else {
             return Ok(());
         };
+        // A scoped statement must still be what the connection runs: once it ends, the
+        // pooled connection serves other queries, and KILL QUERY would stop those. (Pages
+        // share one scope, so a stale page cancel can hit the next page; that one retries.)
+        if let Some(pat) = token.scope() {
+            let running: Option<u64> = sqlx::query_scalar(
+                "SELECT ID FROM information_schema.processlist WHERE ID = ? AND INFO LIKE ?",
+            )
+            .bind(cid as u64)
+            .bind(pat)
+            .fetch_optional(&self.cancel_pool)
+            .await
+            .map_err(db)?;
+            if running.is_none() {
+                return Ok(());
+            }
+        }
         sqlx::raw_sql(&kill_query_sql(cid as u64))
-            .execute(&self.pool)
+            .execute(&self.cancel_pool)
             .await
             .map_err(db)?;
         Ok(())
@@ -457,11 +713,7 @@ impl SqlDriver for MySqlDriver {
         table: &str,
         values: &[(String, Option<String>)],
     ) -> DResult<u64> {
-        if values.is_empty() {
-            return Err(DriverError::Db("no columns to insert".into()));
-        }
-        let (sql, binds) =
-            build_insert_sql(schema, table, values, &quote_ident, &mysql_placeholder, true);
+        let (sql, binds) = insert_sql(schema, table, values);
         let mut q = sqlx::query(&sql);
         for b in &binds {
             q = q.bind(b.clone());
@@ -632,7 +884,17 @@ impl SqlDriver for MySqlDriver {
 
 #[cfg(test)]
 mod tests {
-    use super::kill_query_sql;
+    use super::{insert_sql, kill_query_sql};
+
+    /// MySQL has no `DEFAULT VALUES`; an all-blank draft is `() VALUES ()`.
+    #[test]
+    fn insert_sql_with_no_values_inserts_defaults() {
+        let (sql, binds) = insert_sql("db", "t", &[]);
+        assert_eq!(sql, "INSERT INTO `db`.`t` () VALUES ()");
+        assert!(binds.is_empty());
+        let (sql, _) = insert_sql("db", "t", &[("c".into(), Some("v".into()))]);
+        assert_eq!(sql, "INSERT INTO `db`.`t` (`c`) VALUES (?)");
+    }
 
     #[test]
     fn kill_query_sql_targets_connection_id() {

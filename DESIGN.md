@@ -182,10 +182,36 @@ Two tiers only:
 
 ## Motion
 
-- Hover transitions: 120ms ease-out
-- Modal open/close: 160ms cubic-bezier(0.2, 0.8, 0.2, 1)
-- Tab switch: instant — feels snappier
-- Filter / Insert row appearance: 180ms slide-down
+Motion answers an action: it shows what opened, what is working, what changed.
+State is never carried by motion alone; a tint, label or text always remains.
+
+**Tokens** (`src/index.css`): `--dur-fast: 120ms`, `--dur: 180ms`,
+`--delay-busy: 150ms`, `--ease-out` (enter), `--ease-in` (exit).
+
+**Rules**
+- Animate only `opacity` and `transform`. The one exception: rails may animate `max-height`.
+- Enter eases out; exit eases in and runs faster (`--dur-fast`).
+- Busy indicators wait `--delay-busy` so a fast operation never flashes one.
+- `prefers-reduced-motion: reduce` turns all of it off (one media query in
+  `index.css`; the canvas grid checks `matchMedia` and skips its rAF loop).
+- Tab switch: instant. Hover: 120ms colour transition.
+
+**Where it is used**
+| Moment | Treatment |
+|---|---|
+| Rails (filters, new row, unsaved changes) | `.tiq-rail`: slide down + fade, `--dur` |
+| Busy (query run, page load) | `.tiq-progress`: 2px indeterminate bar in `--primary`, appears after 150ms |
+| Query results arrive | `.tiq-fade-in`, `--dur-fast`; stale results dim while running |
+| Stale content in flight (table page, query results) | `.tiq-dimmable` + `.is-busy`: opacity 0.6 after `--delay-busy`, un-dims at once; stays interactive (scroll, select, copy) — never `pointer-events: none` |
+| Running / counting timer | `<Elapsed>` (`ui/Elapsed.tsx`) owns its 100ms tick; appears after `--delay-busy`; `aria-hidden` inside a live region |
+| Row total while a new filter counts | previous total stays, drawn `--muted` until the new one lands |
+| Inline error / notice | `.tiq-slide-in`: 4px drop + fade, `--dur` |
+| Panels (Alter, New table, …) | `.tiq-pop-in` scale .98→1 + fade; `.tiq-pop-out` on close |
+| Cell saving | amber tint breathes (1s period) while any cell is writing |
+| Cell saved | green holds 800ms, then fades out over 300ms (canvas rAF) |
+| Row deleted | red tint fades over 300ms, then the page refetches |
+| Row inserted | the new row flashes green if its PK was typed |
+| Saved n changes | status-bar text, `.tiq-flash`: fade in, hold, fade out over 2s |
 
 ## Connection manager (welcome) — TablePlus parity
 
@@ -229,12 +255,13 @@ Lives in [src/components/ui/EngineIcon.tsx](src/components/ui/EngineIcon.tsx).
 TablePlus-style 2-letter monogram circle (not square tile, not avatar): flat
 engine colour fill + an inset 1px white-on-top / black-on-bottom highlight that
 reads as glass depth. Used everywhere a connection is identified (welcome list,
-⌘O picker). Sizes: sm 16 / md 22 / lg 32 / xl 44. Monograms: Pg, My, Sq, Re, Mo, Ms.
+⌘O picker). Sizes: sm 16 / md 22 / lg 32 / xl 44. Monograms: Pg, My, Sq, Dk, Re, Mo, Ms.
 
 ### Env tag derivation
 Without a dedicated `environment` field on `ConnConfig`, we derive the row's
 parenthetical tag from existing data: `(local)` for loopback host, `(ssh)` for
-SSH-tunneled, `(remote)` otherwise, `(file)` for SQLite. Coloured by tone:
+SSH-tunneled, `(remote)` otherwise, `(file)` for a SQLite or DuckDB file and
+`(in-memory)` for a DuckDB `:memory:` connection. Coloured by tone:
 green / amber / muted / muted. The user's `color` hex still renders as a small
 dot next to the tag for custom environments.
 
@@ -273,7 +300,19 @@ floats recently-used connections to the top of the list without any UI grouping
 
 > Grid colors are hardcoded hex in `theme.ts`/`gridRowTints` on purpose —
 > glide-data-grid's canvas theme needs literal colors, not CSS custom properties.
-> Components still use tokens.
+> Components still use tokens. (A `var(--…)` handed to the canvas does not
+> resolve — FK cell text once painted invisibly that way; FK cells use
+> `gridTheme(mode).accentColor`.)
+
+**Grid cell tints** (`theme.ts`, canvas hex — light / dark):
+
+| Tint | Light | Dark | Source |
+|---|---|---|---|
+| Search hit (cell matches the table search) | `#c7d2fe` | `#312e81` | `searchHitBg` — the accent, one step stronger than the selected-row band so a hit still reads on a selected row |
+| Selected row | `#e0e7ff` | `#1e2540` | `gridRowTints.selected` |
+| FK cell text | `#4f46e5` | `#6366f1` | `gridTheme().accentColor` |
+
+A save-state tint (staged / saving / saved / error) wins over a search hit on the same cell.
 
 ## Do / Don't
 

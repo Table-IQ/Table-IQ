@@ -17,7 +17,7 @@ use tokio::sync::Mutex;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
 use super::{
-    build_insert_sql, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
+    build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
     ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec, ForeignKey, IndexInfo,
     ObjectInfo, ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver,
     StmtOutput, TableStructure, TriggerInfo,
@@ -38,6 +38,38 @@ fn quote_ident(name: &str) -> String {
 /// target column type implicitly (display-first design), so no cast is added.
 fn mssql_placeholder(i: usize, _col: &str) -> String {
     format!("@P{i}")
+}
+
+/// PK types a keyset cursor can seek on. The cursor is the grid's text, bound back as
+/// NVARCHAR, so the type must parse that text back exactly and compare it the way the column
+/// sorts: `varchar` compares as NVARCHAR (SQL_ collations sort the two differently),
+/// `datetime` rejects the 9 fractional digits its 1/300 s renders with, and binary types
+/// render as hex that doesn't convert back. Anything else pages by OFFSET.
+fn seekable(data_type: &str) -> bool {
+    matches!(
+        data_type,
+        "int" | "bigint" | "smallint" | "tinyint" | "uniqueidentifier" | "nvarchar" | "nchar"
+            | "date" | "datetime2"
+    )
+}
+
+/// `(columns, pk, column → DATA_TYPE)` for one table.
+type Meta = std::sync::Arc<(Vec<String>, Vec<String>, HashMap<String, String>)>;
+
+/// Left side of the textual comparisons (LIKE/ILIKE/Search), by the column's type. Most
+/// types CAST to NVARCHAR(MAX) (LOWER rejects `ntext` outright). The binary and CLR types
+/// (`image`, `geography`, …) have no conversion to text, so they compare as the hex the grid
+/// shows, and date/times in the grid's ISO shape (style 121) rather than `Sep 23 2026 1:45PM`.
+fn mssql_text_expr(col: &str, data_type: Option<&str>) -> String {
+    let q = quote_ident(col);
+    match data_type.unwrap_or("") {
+        "binary" | "varbinary" | "image" | "timestamp" | "geography" | "geometry"
+        | "hierarchyid" => format!("CONVERT(NVARCHAR(MAX), CONVERT(VARBINARY(MAX), {q}), 2)"),
+        "date" | "time" | "datetime" | "datetime2" | "smalldatetime" | "datetimeoffset" => {
+            format!("CONVERT(NVARCHAR(MAX), {q}, 121)")
+        }
+        _ => format!("CAST({q} AS NVARCHAR(MAX))"),
+    }
 }
 
 /// Render a `DECIMAL`/`NUMERIC` from its raw value and scale. tiberius' own `Display` builds
@@ -155,6 +187,87 @@ async fn rollback_orphan_tx(c: &mut Conn) {
     }
 }
 
+/// Words that make a batch more than a plain read. `SET ROWCOUNT` caps DML, procedure calls
+/// and everything else in the batch too, so any of these — outside a string, comment or
+/// quoted identifier — means "don't cap". A false alarm just means reading to the end.
+const NOT_A_PLAIN_SELECT: &[&str] = &[
+    "INTO", "UPDATE", "DELETE", "INSERT", "MERGE", "EXEC", "EXECUTE", "TRUNCATE", "DROP",
+    "ALTER", "CREATE", "SET", "DECLARE", "BEGIN", "END", "COMMIT", "ROLLBACK", "SAVE", "WAITFOR",
+    "GRANT", "REVOKE", "DENY", "USE", "IF", "WHILE", "GOTO", "RETURN", "PRINT", "RAISERROR",
+    "THROW", "BULK", "BACKUP", "RESTORE", "DBCC", "KILL", "OPEN", "FETCH", "CLOSE", "DEALLOCATE",
+    "RECONFIGURE", "CHECKPOINT", "SHUTDOWN", "WRITETEXT", "UPDATETEXT", "ENABLE", "DISABLE",
+];
+
+/// True when `stmt` is only SELECTs: it starts with SELECT and no word in
+/// [`NOT_A_PLAIN_SELECT`] appears outside `'…'`, `"…"`, `[…]`, `--` and (nested) `/* */`.
+/// An unterminated string, identifier or comment is not trusted.
+fn plain_select(stmt: &str) -> bool {
+    if exec::first_keyword(stmt) != "SELECT" {
+        return false;
+    }
+    let b = stmt.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'\'' | b'"' | b'[' => {
+                let close = if b[i] == b'[' { b']' } else { b[i] };
+                i += 1;
+                // `''`, `""` and `]]` escape the closer; scanning past both halves is the same.
+                while i < b.len() && b[i] != close {
+                    i += 1;
+                }
+                if i == b.len() {
+                    return false;
+                }
+                i += 1;
+            }
+            b'-' if b.get(i + 1) == Some(&b'-') => {
+                i = stmt[i..].find('\n').map_or(b.len(), |n| i + n);
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                let mut depth = 0;
+                loop {
+                    if i + 1 >= b.len() {
+                        return false;
+                    }
+                    if b[i] == b'/' && b[i + 1] == b'*' {
+                        depth += 1;
+                        i += 2;
+                    } else if b[i] == b'*' && b[i + 1] == b'/' {
+                        depth -= 1;
+                        i += 2;
+                        if depth == 0 {
+                            break;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            c if c.is_ascii_alphabetic() || c == b'_' || c == b'@' || c == b'#' => {
+                let start = i;
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || matches!(b[i], b'_' | b'@' | b'#' | b'$')) {
+                    i += 1;
+                }
+                let word = stmt[start..i].to_ascii_uppercase();
+                if NOT_A_PLAIN_SELECT.contains(&word.as_str()) {
+                    return false;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    true
+}
+
+/// `SET ROWCOUNT n` on the pinned session (`0` lifts it).
+async fn set_rowcount(c: &mut Conn, n: usize) {
+    use futures_util::StreamExt;
+    if let Ok(mut s) = c.simple_query(format!("SET ROWCOUNT {n}")).await {
+        while s.next().await.is_some() {}
+    }
+}
+
 async fn rowcount(c: &mut Conn) -> Option<u64> {
     let row = c.simple_query("SELECT @@ROWCOUNT").await.ok()?.into_row().await.ok()??;
     row.try_get::<i32, _>(0).ok().flatten().map(|n| n.max(0) as u64)
@@ -221,6 +334,8 @@ pub struct SqlServerDriver {
     /// database the session is currently on, so a `USE` has to be undone. See
     /// `run_statements`.
     database: std::string::String,
+    /// Per table for the browse path (see [`super::MetaCache`]).
+    meta: super::MetaCache<Meta>,
 }
 
 /// How long to wait for the TCP connect before giving up. Without it an unreachable host
@@ -287,14 +402,35 @@ impl SqlServerDriver {
             .and_then(|r| r.try_get::<&str, _>(0).ok().flatten())
             .unwrap_or_default()
             .to_string();
-        Ok(Self { client: Mutex::new(client), database })
+        Ok(Self { client: Mutex::new(client), database, meta: Default::default() })
     }
 
-    /// Ordered column names for one relation (empty ⇒ no such relation), used to validate
-    /// a requested sort column before it reaches the SQL text.
-    async fn columns_of(&self, schema: &str, table: &str) -> DResult<Vec<std::string::String>> {
+    /// Cached `(columns, pk)` for the browse path. A missing relation is an error and is
+    /// not cached.
+    async fn browse_meta(&self, schema: &str, table: &str) -> DResult<Meta> {
+        if let Some(m) = self.meta.get(schema, table) {
+            return Ok(m);
+        }
+        let typed = self.columns_of(schema, table).await?;
+        if typed.is_empty() {
+            return Err(DriverError::Db(format!("no such table {schema}.{table}")));
+        }
+        let cols = typed.iter().map(|(c, _)| c.clone()).collect();
+        let pk = self.primary_key(schema, table).await?;
+        let m = std::sync::Arc::new((cols, pk, typed.into_iter().collect()));
+        self.meta.put(schema, table, m.clone());
+        Ok(m)
+    }
+
+    /// Ordered `(column, DATA_TYPE)` for one relation (empty ⇒ no such relation), used to
+    /// validate a requested sort column before it reaches the SQL text.
+    async fn columns_of(
+        &self,
+        schema: &str,
+        table: &str,
+    ) -> DResult<Vec<(std::string::String, std::string::String)>> {
         let mut c = self.client.lock().await;
-        let q = "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS \
+        let q = "SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS \
                  WHERE TABLE_SCHEMA = @P1 AND TABLE_NAME = @P2 ORDER BY ORDINAL_POSITION";
         let rows = c
             .query(q, &[&schema, &table])
@@ -303,13 +439,13 @@ impl SqlServerDriver {
             .into_first_result()
             .await
             .map_err(db)?;
-        let mut names = Vec::with_capacity(rows.len());
+        let mut cols = Vec::with_capacity(rows.len());
         for r in &rows {
-            if let Some(n) = r.try_get::<&str, _>(0).map_err(db)? {
-                names.push(n.to_string());
+            if let (Some(n), Some(t)) = (text(r, "COLUMN_NAME")?, text(r, "DATA_TYPE")?) {
+                cols.push((n, t));
             }
         }
-        Ok(names)
+        Ok(cols)
     }
 
     /// Run `sql` and return (column names, **column-major** stringified data — `data[col][row]`).
@@ -362,6 +498,12 @@ impl SqlDriver for SqlServerDriver {
     /// One `simple_query` batch per statement, streamed: rows past `cap` are counted but never
     /// materialised. tiberius only surfaces a server error at the *end* of the response, so the
     /// stream is always drained to the end — which is also what leaves the connection clean.
+    ///
+    /// Draining a `SELECT * FROM` a trillion-row table never ends, so a plain SELECT runs under
+    /// `SET ROWCOUNT cap + 1`: the server itself stops one row past the cap, and the total is
+    /// reported unknown. Only a batch that is nothing but SELECTs ([`plain_select`]) — T-SQL
+    /// functions cannot write, so it has nothing to lose by stopping; `SET ROWCOUNT` would also
+    /// cap an UPDATE on the next line — and the limit is lifted before anything else runs.
     async fn run_statements(
         &self,
         stmts: &[String],
@@ -381,6 +523,10 @@ impl SqlDriver for SqlServerDriver {
             let mut rows: Vec<Vec<Option<std::string::String>>> = Vec::new();
             let mut total: u64 = 0;
             let mut failed: Option<tiberius::error::Error> = None;
+            let limit = cap < i32::MAX as usize && plain_select(stmt);
+            if limit {
+                set_rowcount(&mut c, cap + 1).await;
+            }
 
             match c.simple_query(stmt.as_str()).await {
                 // An error before any metadata is raised by `simple_query` itself.
@@ -417,6 +563,9 @@ impl SqlDriver for SqlServerDriver {
                 }
             }
             let exec_ms = start.elapsed().as_millis() as u64;
+            if limit {
+                set_rowcount(&mut c, 0).await;
+            }
             if let Some(e) = failed {
                 // The pinned session outlives the failed batch, so an aborted transaction would
                 // otherwise hold its locks over every statement that follows it.
@@ -438,7 +587,7 @@ impl SqlDriver for SqlServerDriver {
                 batch: if names.is_empty() { None } else { Some(exec::text_batch(&names, &rows)?) },
                 columns: names.into_iter().zip(types).collect(),
                 row_count: rows.len(),
-                total_rows: total,
+                total_rows: (!limit || total <= cap as u64).then_some(total),
                 truncated: total > rows.len() as u64,
                 exec_ms,
                 error: None,
@@ -540,36 +689,25 @@ impl SqlDriver for SqlServerDriver {
         Ok(SchemaModel { schemas })
     }
 
-    /// `sys.partitions` is an O(1) read of the maintained row count, but it is only an
-    /// estimate and only exists for a real table — a view (or any filter) needs the
-    /// exact count.
+    /// An unfiltered table reports its [`SqlDriver::estimate_rows`] at any size — it is
+    /// the maintained count — unless `force_exact`; a view (or any filter) needs the exact
+    /// count. There is no server-side cancel for this engine, so the token goes unused.
     async fn count_rows(
         &self,
         schema: &str,
         table: &str,
         filters: &[ColumnFilter],
+        force_exact: Option<&CancelToken>,
     ) -> DResult<RowCount> {
-        if filters.is_empty() {
-            let q = format!(
-                "SELECT SUM(p.rows) AS n FROM sys.partitions p \
-                 JOIN sys.objects o ON p.object_id = o.object_id \
-                 JOIN sys.schemas s ON o.schema_id = s.schema_id \
-                 WHERE o.type = 'U' AND s.name = '{}' AND o.name = '{}' AND p.index_id IN (0,1)",
-                schema.replace('\'', "''"),
-                table.replace('\'', "''")
-            );
-            let (_, d) = self.query_text(&q).await?;
-            if let Some(n) = d
-                .first()
-                .and_then(|c| c.first())
-                .and_then(|o| o.as_ref())
-                .and_then(|s| s.parse::<i64>().ok())
-            {
-                return Ok(RowCount { count: Some(n.max(0)), exact: false });
+        if filters.is_empty() && force_exact.is_none() {
+            if let Some(n) = self.estimate_rows(schema, table).await? {
+                return Ok(RowCount { count: Some(n), exact: false });
             }
         }
+        let meta = self.browse_meta(schema, table).await?;
+        let text_expr = |c: &str| mssql_text_expr(c, meta.2.get(c).map(|t| t.as_str()));
         let (where_sql, binds) =
-            build_where_clause(filters, &quote_ident, &mssql_placeholder, &quote_ident, 1);
+            build_where_clause(filters, &meta.0, &quote_ident, &mssql_placeholder, &text_expr, 1);
         let q = format!(
             "SELECT COUNT_BIG(*) AS n FROM {}.{}{}",
             quote_ident(schema),
@@ -592,6 +730,25 @@ impl SqlDriver for SqlServerDriver {
             None => 0,
         };
         Ok(RowCount { count: Some(n.max(0)), exact: true })
+    }
+
+    /// `sys.partitions` is an O(1) read of the maintained row count, but it is only an
+    /// estimate and only exists for a real table.
+    async fn estimate_rows(&self, schema: &str, table: &str) -> DResult<Option<i64>> {
+        let q = format!(
+            "SELECT SUM(p.rows) AS n FROM sys.partitions p \
+             JOIN sys.objects o ON p.object_id = o.object_id \
+             JOIN sys.schemas s ON o.schema_id = s.schema_id \
+             WHERE o.type = 'U' AND s.name = '{}' AND o.name = '{}' AND p.index_id IN (0,1)",
+            schema.replace('\'', "''"),
+            table.replace('\'', "''")
+        );
+        let (_, d) = self.query_text(&q).await?;
+        Ok(d.first()
+            .and_then(|c| c.first())
+            .and_then(|o| o.as_ref())
+            .and_then(|s| s.parse::<i64>().ok())
+            .map(|n| n.max(0)))
     }
 
     async fn primary_key(&self, schema: &str, table: &str) -> DResult<Vec<std::string::String>> {
@@ -682,6 +839,10 @@ impl SqlDriver for SqlServerDriver {
         Ok(res.total())
     }
 
+    fn forget_meta(&self) {
+        self.meta.clear();
+    }
+
     async fn run_script(&self, sql: &str) -> DResult<u64> {
         let mut c = self.client.lock().await;
         let res = c.execute(sql, &[]).await;
@@ -701,21 +862,29 @@ impl SqlDriver for SqlServerDriver {
         len: usize,
         filters: &[ColumnFilter],
         order: &[SortKey],
+        after: Option<&[Option<String>]>,
     ) -> DResult<RecordBatch> {
-        let cols = self.columns_of(schema, table).await?;
-        if cols.is_empty() {
-            return Err(DriverError::Db(format!("no such table {schema}.{table}")));
-        }
-        let pk = self.primary_key(schema, table).await?;
+        let meta = self.browse_meta(schema, table).await?;
+        let (cols, pk) = (&meta.0, &meta.1);
         // OFFSET/FETCH is only legal after an ORDER BY, so a table with neither a sort
         // nor a PK falls back to the no-op `(SELECT NULL)`.
-        let order_sql = match build_order_by(order, &pk, &cols, &quote_ident)?.as_str() {
+        let order_sql = match build_order_by(order, pk, cols, &quote_ident)?.as_str() {
             "" => " ORDER BY (SELECT NULL)".to_string(),
             s => s.to_string(),
         };
         // Tiberius uses @P1, @P2, … in declared order; we bind text values.
-        let (where_sql, binds) =
-            build_where_clause(filters, &quote_ident, &mssql_placeholder, &quote_ident, 1);
+        let text_expr = |c: &str| mssql_text_expr(c, meta.2.get(c).map(|t| t.as_str()));
+        let (mut where_sql, mut binds) =
+            build_where_clause(filters, cols, &quote_ident, &mssql_placeholder, &text_expr, 1);
+        let mut offset = offset;
+        let seek_ok = pk.iter().all(|c| meta.2.get(c).is_some_and(|t| seekable(t)));
+        if let Some((k, kb)) = after.filter(|_| seek_ok).and_then(|a| {
+            build_keyset(order, pk, a, &quote_ident, &mssql_placeholder, binds.len() + 1, true)
+        }) {
+            where_sql = if where_sql.is_empty() { k } else { format!("{where_sql} AND {k}") };
+            binds.extend(kb);
+            offset = 0;
+        }
         let q = format!(
             "SELECT * FROM {}.{} AS _t{}{order_sql} OFFSET {offset} ROWS FETCH NEXT {len} ROWS ONLY",
             quote_ident(schema),
@@ -755,9 +924,6 @@ impl SqlDriver for SqlServerDriver {
         table: &str,
         values: &[(String, Option<String>)],
     ) -> DResult<u64> {
-        if values.is_empty() {
-            return Err(DriverError::Db("no columns to insert".into()));
-        }
         let (sql, binds) =
             build_insert_sql(schema, table, values, &quote_ident, &mssql_placeholder, true);
         let owned: Vec<Option<std::string::String>> = binds.to_vec();
@@ -914,7 +1080,45 @@ impl SqlDriver for SqlServerDriver {
 
 #[cfg(test)]
 mod tests {
-    use super::{cell_to_string, encryption_for};
+    use super::{cell_to_string, encryption_for, plain_select};
+
+    /// `SET ROWCOUNT` also caps DML and procedure calls, so it may only wrap a batch that is
+    /// nothing but a SELECT. The query tab splits T-SQL on `;`/GO only, so a newline-separated
+    /// `SELECT …\nUPDATE …` arrives as ONE statement.
+    #[test]
+    fn rowcount_only_wraps_a_plain_select() {
+        for q in [
+            "SELECT * FROM t",
+            "-- c\nselect a, b FROM t WHERE x = 'UPDATE t SET y=1'",
+            "SELECT [update], [set] FROM t /* DELETE FROM t */",
+            "SELECT \"insert\" FROM t",
+            "SELECT 1\nSELECT 2",
+            "SELECT N'it''s EXEC' AS s",
+            "SELECT a FROM t /* nested /* DROP */ still comment */",
+        ] {
+            assert!(plain_select(q), "{q}");
+        }
+        for q in [
+            "SELECT * FROM t\nUPDATE t SET x = 1",
+            "SELECT * INTO t2 FROM t",
+            "select 1 delete from t",
+            "SELECT 1 EXEC sp_who",
+            "SELECT 1 execute('x')",
+            "SELECT 1\nINSERT INTO t VALUES (1)",
+            "SELECT 1 MERGE t USING s ON 1=1 WHEN MATCHED THEN DELETE;",
+            "SELECT 1 TRUNCATE TABLE t",
+            "SELECT 1 DROP TABLE t",
+            "SELECT 1 DECLARE @x int",
+            "SELECT 1 SET NOCOUNT ON",
+            "SELECT 1 WAITFOR DELAY '00:00:05'",
+            "SELECT 1 BEGIN TRAN",
+            "UPDATE t SET x = 1",
+            "WITH c AS (SELECT 1 a) SELECT * FROM c",
+            "SELECT 'unterminated",
+        ] {
+            assert!(!plain_select(q), "{q}");
+        }
+    }
     use tiberius::{ColumnData, EncryptionLevel};
 
     /// `sslmode` is the only TLS knob the UI exposes. The old driver hardcoded

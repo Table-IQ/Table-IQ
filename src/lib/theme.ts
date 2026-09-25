@@ -101,6 +101,12 @@ export function editTints(
   return { staged: "#dbeafe", saving: "#fef3c7", saved: "#dcfce7", error: "#fee2e2" };
 }
 
+/** Background of a cell matching the table search: the accent, one step
+ *  stronger than the selected-row band so a hit still reads on that row. */
+export function searchHitBg(mode: ResolvedTheme): string {
+  return mode === "dark" ? "#312e81" : "#c7d2fe";
+}
+
 export function systemPrefersDark(): boolean {
   return typeof window !== "undefined" && !!window.matchMedia?.("(prefers-color-scheme: dark)").matches;
 }

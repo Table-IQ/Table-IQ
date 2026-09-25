@@ -118,7 +118,7 @@ async fn sqlserver_driver_browse_query_edit() {
     assert_eq!(names.value(0), "Ada");
 
     // Row count from sys.partitions (an estimate, so `exact` is false).
-    let c = drv.count_rows("dbo", "tiq_demo", &[]).await.expect("count");
+    let c = drv.count_rows("dbo", "tiq_demo", &[], None).await.expect("count");
     let est = c.count.expect("a table must report a count");
     assert!(est >= 3, "estimate {est} should be >= 3");
     assert!(!c.exact, "the sys.partitions count is an estimate");
@@ -180,7 +180,7 @@ async fn sqlserver_run_statements_affected_cap_errors_and_cancel() {
 
     let sel = &outs[4];
     assert_eq!(sel.row_count, 3);
-    assert_eq!(sel.total_rows, 3);
+    assert_eq!(sel.total_rows, Some(3));
     assert!(!sel.truncated);
     assert_eq!(sel.rows_affected, None, "a SELECT reports rows through row_count");
     let names: Vec<&str> = sel.columns.iter().map(|(n, _)| n.as_str()).collect();
@@ -191,14 +191,23 @@ async fn sqlserver_run_statements_affected_cap_errors_and_cancel() {
     assert_eq!(col.value(0), "Grace");
     assert!(col.is_null(2), "a SQL NULL stays an Arrow null");
 
-    // Row cap: 3 rows with cap 2 keeps 2 and counts 3.
+    // Row cap: 3 rows with cap 1 keeps 1 and stops reading — the total is unknown.
     let outs = drv
-        .run_statements(&v(&["SELECT id FROM dbo.tiq_stmts ORDER BY id"]), 2, &tok)
+        .run_statements(&v(&["SELECT id FROM dbo.tiq_stmts ORDER BY id"]), 1, &tok)
         .await
         .expect("cap");
-    assert_eq!(outs[0].row_count, 2, "only `cap` rows are materialised");
-    assert_eq!(outs[0].total_rows, 3, "the rest are still counted");
+    assert_eq!(outs[0].row_count, 1, "only `cap` rows are materialised");
+    assert_eq!(outs[0].total_rows, None, "reading stopped past the cap");
     assert!(outs[0].truncated);
+    // The row limit is not left on the session the grid shares.
+    assert_eq!(drv.open_window("dbo", "tiq_stmts", 0, 10).await.expect("browse").num_rows(), 3);
+    // ~8e9 rows: the server stops at the cap instead of streaming them all to be counted.
+    let start = std::time::Instant::now();
+    let huge = "SELECT a.object_id FROM sys.all_objects a CROSS JOIN sys.all_objects b \
+                CROSS JOIN sys.all_objects c";
+    let outs = drv.run_statements(&v(&[huge]), 50_000, &tok).await.expect("huge");
+    assert!(start.elapsed() < std::time::Duration::from_secs(3), "took {:?}", start.elapsed());
+    assert_eq!((outs[0].row_count, outs[0].total_rows, outs[0].truncated), (50_000, None, true));
 
     // Typed rendering: no debug formatting reaches the grid.
     let outs = drv
@@ -428,14 +437,18 @@ async fn sqlserver_qa_seed_introspect_structure_paging_and_edit() {
     );
 
     // ── counts ──────────────────────────────────────────────────────────────
-    let c = drv.count_rows("dbo", "orders", &[]).await.expect("count");
+    let c = drv.count_rows("dbo", "orders", &[], None).await.expect("count");
     assert_eq!(c.count, Some(300), "sys.partitions estimate");
     assert!(!c.exact, "the unfiltered count is the stats estimate");
+    assert_eq!(drv.estimate_rows("dbo", "orders").await.expect("estimate"), Some(300));
+    let exact = drv.count_rows("dbo", "orders", &[], Some(&CancelToken::new())).await.expect("exact");
+    assert_eq!((exact.count, exact.exact), (Some(300), true), "force_exact runs COUNT_BIG");
     let filtered = drv
         .count_rows(
             "dbo",
             "order_items",
             &[ColumnFilter { column: "line_no".into(), op: FilterOp::Eq, value: Some("1".into()) }],
+            None,
         )
         .await
         .expect("filtered count");
@@ -444,8 +457,8 @@ async fn sqlserver_qa_seed_introspect_structure_paging_and_edit() {
 
     // ── ordering + paging ───────────────────────────────────────────────────
     let desc = [SortKey { column: "id".into(), desc: true }];
-    let page1 = drv.open_window_filtered("dbo", "orders", 0, 3, &[], &desc).await.expect("page1");
-    let page2 = drv.open_window_filtered("dbo", "orders", 3, 3, &[], &desc).await.expect("page2");
+    let page1 = drv.open_window_filtered("dbo", "orders", 0, 3, &[], &desc, None).await.expect("page1");
+    let page2 = drv.open_window_filtered("dbo", "orders", 3, 3, &[], &desc, None).await.expect("page2");
     let ids = |b: &arrow::record_batch::RecordBatch| -> Vec<String> {
         let c = b.column(b.schema().index_of("id").unwrap());
         let a = c.as_any().downcast_ref::<StringArray>().unwrap();
@@ -453,6 +466,25 @@ async fn sqlserver_qa_seed_introspect_structure_paging_and_edit() {
     };
     assert_eq!(ids(&page1), vec!["300", "299", "298"]);
     assert_eq!(ids(&page2), vec!["297", "296", "295"], "OFFSET paging is stable");
+    // Keyset: the page after id 298 (offset 0 — only a real seek lands there).
+    let after = [Some("298".to_string())];
+    let seek = drv.open_window_filtered("dbo", "orders", 0, 3, &[], &desc, Some(&after)).await.expect("seek");
+    assert_eq!(ids(&seek), ids(&page2), "keyset page == OFFSET page");
+    // Composite PK: SQL Server has no row values, so the predicate is the expanded OR form.
+    let cells = |b: &arrow::record_batch::RecordBatch, c: &str| -> Vec<String> {
+        let a = b.column(b.schema().index_of(c).unwrap());
+        let a = a.as_any().downcast_ref::<StringArray>().unwrap();
+        (0..b.num_rows()).map(|i| a.value(i).to_string()).collect()
+    };
+    let off = drv.open_window_filtered("dbo", "order_items", 100, 20, &[], &[], None).await.expect("oi");
+    let prev = drv.open_window_filtered("dbo", "order_items", 99, 1, &[], &[], None).await.expect("oi prev");
+    let after = [Some(cells(&prev, "order_id")[0].clone()), Some(cells(&prev, "line_no")[0].clone())];
+    let seek = drv.open_window_filtered("dbo", "order_items", 0, 20, &[], &[], Some(&after)).await.expect("oi seek");
+    assert_eq!(
+        (cells(&seek, "order_id"), cells(&seek, "line_no")),
+        (cells(&off, "order_id"), cells(&off, "line_no")),
+        "composite keyset page == OFFSET page"
+    );
 
     // A filter narrows the window and the NULL-safe operators work.
     let nulls = drv
@@ -463,6 +495,7 @@ async fn sqlserver_qa_seed_introspect_structure_paging_and_edit() {
             10,
             &[ColumnFilter { column: "manager_id".into(), op: FilterOp::IsNull, value: None }],
             &[],
+            None,
         )
         .await
         .expect("null filter");
@@ -470,7 +503,7 @@ async fn sqlserver_qa_seed_introspect_structure_paging_and_edit() {
 
     // ── display rendering of the seeded scalar types ────────────────────────
     let geo = drv
-        .open_window_filtered("dbo", "geo", 0, 3, &[], &[SortKey { column: "id".into(), desc: false }])
+        .open_window_filtered("dbo", "geo", 0, 3, &[], &[SortKey { column: "id".into(), desc: false }], None)
         .await
         .expect("geo");
     let text = |name: &str, row: usize| -> Option<String> {
@@ -716,7 +749,7 @@ async fn a_use_in_a_query_tab_does_not_retarget_the_rest_of_the_session() {
     assert_eq!(name, "master", "the session was left pointing at another database");
 
     // …and the grid, which emits two-part names, must still find its table.
-    let n = drv.count_rows("dbo", "tiq_use_guard", &[]).await.expect("count").count;
+    let n = drv.count_rows("dbo", "tiq_use_guard", &[], None).await.expect("count").count;
     assert_eq!(n, Some(2), "the grid was reading a different database");
     let w = drv.open_window("dbo", "tiq_use_guard", 0, 10).await.expect("browse");
     assert_eq!(w.num_rows(), 2);
@@ -731,4 +764,163 @@ async fn a_use_in_a_query_tab_does_not_retarget_the_rest_of_the_session() {
     );
 
     drv.run_script("DROP TABLE dbo.tiq_use_guard").await.ok();
+}
+
+/// Every row of `b`, as text.
+fn text_rows(b: &arrow::record_batch::RecordBatch) -> Vec<Vec<Option<String>>> {
+    (0..b.num_rows())
+        .map(|r| {
+            b.columns()
+                .iter()
+                .map(|c| {
+                    let a = c.as_any().downcast_ref::<StringArray>().unwrap();
+                    (!a.is_null(r)).then(|| a.value(r).to_string())
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// Keyset paging is only as good as the PK's text round trip: the cursor is the grid's
+/// rendering, bound back as NVARCHAR. Per PK type, walking the table the way the grid does
+/// (OFFSET *and* the previous page's last key) must return exactly the OFFSET pages — a
+/// type that can't seek exactly must fall back to OFFSET, not skip rows or fail.
+#[tokio::test]
+async fn sqlserver_keyset_only_seeks_on_exact_pk_types() {
+    let _serialised = serialised().await;
+    let Some(drv) = connect().await else { return };
+    let strings = "(N'a-c'),(N'ab'),(N'a''b'),(N'b-a'),(N'ba'),(N'c'),(N'co-op'),(N'coop'),(N'cop'),(N'x'),(N'y-'),(N'z')";
+    // (type, 12 PK values, seeks?)
+    let cases: [(&str, String, bool); 12] = [
+        ("int", "(1),(2),(3),(4),(5),(6),(7),(8),(9),(10),(11),(12)".into(), true),
+        ("bigint", "(-9000000000),(-2),(-1),(0),(1),(2),(3),(4),(5),(6),(9000000000),(9000000001)".into(), true),
+        ("smallint", "(-300),(-2),(-1),(0),(1),(2),(3),(4),(5),(6),(300),(301)".into(), true),
+        ("tinyint", "(0),(1),(2),(3),(4),(5),(6),(7),(8),(9),(254),(255)".into(), true),
+        ("uniqueidentifier", (0..12).map(|_| "(NEWID())").collect::<Vec<_>>().join(","), true),
+        ("nvarchar(20)", strings.into(), true),
+        ("nchar(6)", strings.into(), true),
+        ("date", (1..=12).map(|d| format!("('2026-01-{d:02}')")).collect::<Vec<_>>().join(","), true),
+        (
+            "datetime2",
+            (0..12).map(|s| format!("('2026-01-01 00:00:{s:02}.1234567')")).collect::<Vec<_>>().join(","),
+            true,
+        ),
+        // SQL_Latin1 sorts varchar by string rules and its NVARCHAR cursor by word rules.
+        ("varchar(20)", strings.into(), false),
+        // 1/300 s: renders with 9 fractional digits, which DATETIME will not parse back.
+        (
+            "datetime",
+            (0..12).map(|s| format!("('2026-01-01 00:00:{s:02}.003')")).collect::<Vec<_>>().join(","),
+            false,
+        ),
+        ("varbinary(8)", (1..=12).map(|i| format!("(0x{i:04x}ff)")).collect::<Vec<_>>().join(","), false),
+    ];
+    for (i, (ty, values, seeks)) in cases.iter().enumerate() {
+        let t = format!("tiq_ks_{i}");
+        drv.run_script(&format!(
+            "IF OBJECT_ID('dbo.{t}','U') IS NOT NULL DROP TABLE dbo.{t}; \
+             CREATE TABLE dbo.{t} (k {ty} NOT NULL PRIMARY KEY); INSERT INTO dbo.{t} (k) VALUES {values};"
+        ))
+        .await
+        .unwrap_or_else(|e| panic!("{ty}: {e}"));
+        let all = text_rows(&drv.open_window("dbo", &t, 0, 100).await.unwrap());
+        assert_eq!(all.len(), 12, "{ty}");
+        let mut walked = Vec::new();
+        let mut after: Option<Vec<Option<String>>> = None;
+        for page in 0..4 {
+            let b = drv
+                .open_window_filtered("dbo", &t, page * 3, 3, &[], &[], after.as_deref())
+                .await
+                .unwrap_or_else(|e| panic!("{ty} page {page}: {e}"));
+            let r = text_rows(&b);
+            after = r.last().map(|row| vec![row[0].clone()]);
+            walked.extend(r);
+        }
+        assert_eq!(walked, all, "{ty}: the walk must return every row once, in order");
+        // With offset 0, only a seek can land on the second page.
+        let cursor = [all[2][0].clone()];
+        let got = text_rows(&drv.open_window_filtered("dbo", &t, 0, 3, &[], &[], Some(&cursor)).await.unwrap());
+        assert_eq!(got == all[3..6], *seeks, "{ty}: seeks = {seeks}");
+        drv.run_script(&format!("DROP TABLE dbo.{t}")).await.unwrap();
+    }
+}
+
+/// `SET ROWCOUNT` caps DML too. The query tab splits T-SQL on `;`/GO only, so a SELECT with
+/// an UPDATE on the next line is ONE statement — capping it silently updated only `cap + 1`
+/// rows.
+#[tokio::test]
+async fn a_select_then_update_batch_updates_every_row() {
+    let _serialised = serialised().await;
+    let Some(drv) = connect().await else { return };
+    let tok = CancelToken::new();
+    drv.run_script(
+        "IF OBJECT_ID('dbo.tiq_rc','U') IS NOT NULL DROP TABLE dbo.tiq_rc; \
+         CREATE TABLE dbo.tiq_rc (id INT PRIMARY KEY, x INT NOT NULL); \
+         INSERT INTO dbo.tiq_rc VALUES (1,0),(2,0),(3,0),(4,0),(5,0),(6,0);",
+    )
+    .await
+    .expect("seed");
+    let outs = drv
+        .run_statements(&["SELECT * FROM dbo.tiq_rc\nUPDATE dbo.tiq_rc SET x = 1".to_string()], 2, &tok)
+        .await
+        .expect("run");
+    assert!(outs[0].error.is_none(), "{:?}", outs[0].error);
+    let outs = drv
+        .run_statements(&["SELECT COUNT(*) FROM dbo.tiq_rc WHERE x = 1".to_string()], 10, &tok)
+        .await
+        .expect("count");
+    let b = outs[0].batch.as_ref().unwrap();
+    let n = b.column(0).as_any().downcast_ref::<StringArray>().unwrap().value(0).to_string();
+    drv.run_script("DROP TABLE dbo.tiq_rc").await.ok();
+    assert_eq!(n, "6", "the UPDATE must not be capped by the SELECT's row limit");
+}
+
+/// An all-blank "+ Row" draft sends no columns: `INSERT … DEFAULT VALUES`.
+#[tokio::test]
+async fn sqlserver_inserts_an_all_defaults_row() {
+    let _serialised = serialised().await;
+    let Some(drv) = connect().await else { return };
+    drv.run_script(
+        "IF OBJECT_ID('dbo.tiq_defaults','U') IS NOT NULL DROP TABLE dbo.tiq_defaults; \
+         CREATE TABLE dbo.tiq_defaults (id INT IDENTITY PRIMARY KEY, n INT DEFAULT 7);",
+    )
+    .await
+    .expect("seed");
+    let n = drv.insert_row("dbo", "tiq_defaults", &[]).await;
+    let rows = text_rows(&drv.open_window("dbo", "tiq_defaults", 0, 10).await.unwrap());
+    drv.run_script("DROP TABLE dbo.tiq_defaults").await.ok();
+    assert_eq!(n.expect("all-defaults insert"), 1);
+    assert_eq!(rows, vec![vec![Some("1".to_string()), Some("7".to_string())]]);
+}
+
+/// A column Like filter on a datetime compares the grid's ISO text (style 121), not
+/// `Sep 23 2026 1:45PM`; on a varbinary it compares the hex, which has no plain CAST.
+#[tokio::test]
+async fn sqlserver_like_filter_on_datetime_and_varbinary() {
+    let _serialised = serialised().await;
+    let Some(drv) = connect().await else { return };
+    drv.run_script(
+        "IF OBJECT_ID('dbo.tiq_like','U') IS NOT NULL DROP TABLE dbo.tiq_like; \
+         CREATE TABLE dbo.tiq_like (id INT PRIMARY KEY, d DATETIME NOT NULL, b VARBINARY(16) NULL); \
+         INSERT INTO dbo.tiq_like VALUES (1, '2026-09-23 13:45:07', 0xDEADBEEF), \
+                                         (2, '2025-01-02 00:00:00', 0x00FF);",
+    )
+    .await
+    .expect("seed");
+    let like = |column: &str, value: &str| {
+        vec![ColumnFilter { column: column.into(), op: FilterOp::Like, value: Some(value.into()) }]
+    };
+    let mut got = Vec::new();
+    for f in [like("d", "2026-09-23 13:45%"), like("b", "DEADBE%"), like("d", "Sep%")] {
+        let page = drv.open_window_filtered("dbo", "tiq_like", 0, 10, &f, &[], None).await;
+        let count = drv.count_rows("dbo", "tiq_like", &f, None).await;
+        got.push((page.map(|b| text_rows(&b).into_iter().map(|r| r[0].clone()).collect::<Vec<_>>()), count));
+    }
+    drv.run_script("DROP TABLE dbo.tiq_like").await.ok();
+    let one = Some("1".to_string());
+    assert_eq!(got[0].0.as_ref().unwrap(), &vec![one.clone()], "datetime LIKE on the ISO text");
+    assert_eq!(got[0].1.as_ref().unwrap().count, Some(1));
+    assert_eq!(got[1].0.as_ref().unwrap(), &vec![one], "varbinary LIKE on the hex");
+    assert_eq!(got[1].1.as_ref().unwrap().count, Some(1));
+    assert!(got[2].0.as_ref().unwrap().is_empty(), "not the legacy `Sep 23 2026` rendering");
 }

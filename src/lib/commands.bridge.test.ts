@@ -89,3 +89,32 @@ describe("isNotImplementedError", () => {
     expect(cmds.isNotImplementedError(new Error("permission denied for table orders"))).toBe(false);
   });
 });
+
+// T1: estimate-first open, the cancellable exact count, and keyset paging.
+describe("fast table open commands", () => {
+  it("estimateRows sends id/schema/table to estimate_rows and returns the number or null", async () => {
+    reply("123456789012", 200, "application/json");
+    await expect(cmds.estimateRows("c1", "big", "events")).resolves.toBe(123456789012);
+    expect(fetchMock.mock.calls[0][0]).toBe("/__ipc/estimate_rows");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ id: "c1", schema: "big", table: "events" });
+  });
+
+  it("countRowsExact passes the filters and the tokenId cancelQuery will use", async () => {
+    reply(JSON.stringify({ count: 42, exact: true }), 200, "application/json");
+    const f = [{ column: "id", op: "Ge" as const, value: "7" }];
+    await expect(cmds.countRowsExact("c1", "public", "orders", "tok-1", f)).resolves.toEqual({ count: 42, exact: true });
+    expect(fetchMock.mock.calls[0][0]).toBe("/__ipc/count_rows_exact");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      id: "c1", schema: "public", table: "orders", filters: f, tokenId: "tok-1",
+    });
+  });
+
+  it("fetchTableWindow sends the keyset cursor as `after` (null when absent)", async () => {
+    reply(new Uint8Array([1]), 200, "application/octet-stream");
+    await cmds.fetchTableWindow("c1", "public", "orders", 100, 50, undefined, undefined, ["99"]);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({ offset: 100, after: ["99"] });
+    reply(new Uint8Array([1]), 200, "application/octet-stream");
+    await cmds.fetchTableWindow("c1", "public", "orders", 0, 50);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toMatchObject({ after: null });
+  });
+});

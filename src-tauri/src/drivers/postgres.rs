@@ -11,10 +11,10 @@ use sqlx::postgres::{PgDatabaseError, PgErrorPosition, PgPoolOptions, PgQueryRes
 use sqlx::{Executor, Pool, Postgres, Row};
 
 use super::{
-    build_insert_sql, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
+    build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
     ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec, IndexInfo, ObjectInfo,
     ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver, StmtOutput,
-    TableStructure, TriggerInfo,
+    TableStructure, TriggerInfo, EXACT_COUNT_MAX,
 };
 
 /// Postgres reports "canceling statement due to user request" as SQLSTATE 57014; that is a
@@ -154,8 +154,43 @@ fn pg_text_expr(col: &str) -> String {
     format!("{}::text", quote_ident(col))
 }
 
+/// The last page column of a PK-less table: each row's `ctid`, the keyset cursor there.
+pub const CTID_COL: &str = "__tiq_ctid";
+
+/// What every page of a table needs from the catalog, cached per table (see
+/// [`super::MetaCache`]).
+struct PgMeta {
+    udts: Vec<(String, String)>,
+    pk: Vec<String>,
+    /// `ctid` identifies a row of this relation: a plain table or matview with no
+    /// inheritance children (a parent's scan spans relations whose ctids collide), on
+    /// Postgres 14+ — before it there is no TID Range Scan, so a ctid seek scans the table.
+    ctid_ok: bool,
+}
+
 pub struct PgDriver {
     pool: Pool<Postgres>,
+    /// Where `cancel` runs: one connection, opened on first use. On `pool` a cancel would
+    /// wait behind the very pages it is meant to stop.
+    cancel_pool: Pool<Postgres>,
+    meta: super::MetaCache<std::sync::Arc<PgMeta>>,
+    /// [`super::WINDOW_TIMEOUT_MS`]; only tests shorten it.
+    window_timeout_ms: u64,
+}
+
+/// A failed cancellable page: 57014 is a cancel when the token says so or the server says
+/// "due to user request" (someone else's `pg_cancel_backend`), and otherwise the statement
+/// timeout.
+fn window_err(e: sqlx::Error, token: &CancelToken, timeout_ms: u64) -> DriverError {
+    if !is_cancel(&e) {
+        db(e)
+    } else if token.is_cancelled()
+        || e.as_database_error().is_some_and(|d| d.message().contains("user request"))
+    {
+        DriverError::Cancelled
+    } else {
+        DriverError::Db(format!("query timed out after {timeout_ms} ms"))
+    }
 }
 
 impl PgDriver {
@@ -206,7 +241,217 @@ impl PgDriver {
             .connect(url)
             .await
             .map_err(|e| DriverError::Db(e.to_string()))?;
-        Ok(Self { pool })
+        let cancel_pool = PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_secs(10))
+            .connect_lazy_with((*pool.connect_options()).clone());
+        Ok(Self {
+            pool,
+            cancel_pool,
+            meta: Default::default(),
+            window_timeout_ms: super::WINDOW_TIMEOUT_MS,
+        })
+    }
+
+    /// Shorten the page timeouts, so a test can reach them quickly.
+    #[doc(hidden)]
+    pub fn with_window_timeout_ms(mut self, ms: u64) -> Self {
+        self.window_timeout_ms = ms;
+        self
+    }
+
+    /// Set up a page's transaction in ONE round trip and record the PID in `token`: the
+    /// session is named after the token (`application_name`, which `cancel` matches — the
+    /// page SQL itself stays the same text for every token, so it is prepared once per
+    /// connection), a timeout bounds the statement, and `tid_scan` turns seq scans off (see
+    /// `window`). `set_config(…, true)` is `SET LOCAL`: it needs the caller's transaction and
+    /// reverts when it ends. A token already cancelled stops the page here.
+    async fn pin(
+        conn: &mut sqlx::PgConnection,
+        token: Option<&CancelToken>,
+        timeout_ms: Option<u64>,
+        tid_scan: bool,
+    ) -> DResult<()> {
+        let pid: i32 = sqlx::query_scalar(
+            "SELECT pg_backend_pid() FROM \
+             set_config('application_name', COALESCE($1, current_setting('application_name')), true) a, \
+             set_config('statement_timeout', COALESCE($2, current_setting('statement_timeout')), true) t, \
+             set_config('enable_seqscan', \
+                        CASE WHEN $3 THEN 'off' ELSE current_setting('enable_seqscan') END, true) s",
+        )
+        .bind(token.map(CancelToken::label))
+        .bind(timeout_ms.map(|ms| ms.to_string()))
+        .bind(tid_scan)
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(db)?;
+        if let Some(token) = token {
+            token.set_backend_id(pid as i64);
+            if token.is_cancelled() {
+                return Err(DriverError::Cancelled);
+            }
+        }
+        Ok(())
+    }
+
+    /// [`PgMeta`] for one relation, from the cache after the first page. A missing
+    /// relation is an error and is not cached, so creating it later just works.
+    async fn browse_meta(&self, schema: &str, table: &str) -> DResult<std::sync::Arc<PgMeta>> {
+        if let Some(m) = self.meta.get(schema, table) {
+            return Ok(m);
+        }
+        let udts = self.column_udts(schema, table).await?;
+        if udts.is_empty() {
+            return Err(DriverError::Db(format!("no such table {schema}.{table}")));
+        }
+        let pk = self.primary_key(schema, table).await?;
+        let ctid_ok: bool = sqlx::query_scalar(
+            "SELECT c.relkind IN ('r', 'm') AND NOT c.relhassubclass \
+               AND current_setting('server_version_num')::int >= 140000 FROM pg_class c \
+             JOIN pg_namespace n ON n.oid = c.relnamespace \
+             WHERE n.nspname = $1 AND c.relname = $2",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db)?;
+        let m = std::sync::Arc::new(PgMeta { udts, pk, ctid_ok });
+        self.meta.put(schema, table, m.clone());
+        Ok(m)
+    }
+
+    /// One page of a table; see [`SqlDriver::open_window_cancellable`] for `token`. A page
+    /// that failed on a stale cached column list (see `window_once`) is retried once.
+    #[allow(clippy::too_many_arguments)]
+    async fn window(
+        &self,
+        schema: &str,
+        table: &str,
+        offset: usize,
+        len: usize,
+        filters: &[ColumnFilter],
+        order: &[SortKey],
+        after: Option<&[Option<String>]>,
+        token: Option<&CancelToken>,
+    ) -> DResult<RecordBatch> {
+        let cached = self.meta.get(schema, table).is_some();
+        let res = self.window_once(schema, table, offset, len, filters, order, after, token).await;
+        if res.is_err() && cached && self.meta.get(schema, table).is_none() {
+            return self.window_once(schema, table, offset, len, filters, order, after, token).await;
+        }
+        res
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn window_once(
+        &self,
+        schema: &str,
+        table: &str,
+        offset: usize,
+        len: usize,
+        filters: &[ColumnFilter],
+        order: &[SortKey],
+        after: Option<&[Option<String>]>,
+        token: Option<&CancelToken>,
+    ) -> DResult<RecordBatch> {
+        let meta = self.browse_meta(schema, table).await?;
+        let mut cols: Vec<String> = meta.udts.iter().map(|(c, _)| c.clone()).collect();
+        let udts: HashMap<String, String> = meta.udts.iter().cloned().collect();
+        let pk = &meta.pk;
+        let order_sql = build_order_by(order, pk, &cols, &quote_ident)?;
+
+        // Display-first browse: cast every column to text (lossless string view,
+        // consistent with the decimal-as-text rule). Identifiers are quoted.
+        let select_list = cols
+            .iter()
+            .map(|c| format!("{0}::text AS {0}", quote_ident(c)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        // Filter binds come first ($1..), then the keyset's, then the offset/limit.
+        let (mut where_sql, mut binds) = build_where_clause(
+            filters,
+            &cols,
+            &quote_ident,
+            &pg_placeholder(&udts),
+            &pg_text_expr,
+            1,
+        );
+        // No PK, sort or filter: key on `ctid`. There is deliberately no ORDER BY ctid —
+        // Postgres can't produce that order from an index, so it would sort the whole
+        // table per page. `ctid > $n` runs as a TID Range Scan, which walks the heap in
+        // ctid order from the cursor on; an unordered first page is the same heap order.
+        let by_ctid = meta.ctid_ok && pk.is_empty() && order.is_empty() && filters.is_empty();
+        let seek = match after {
+            Some([Some(tid)]) if by_ctid => {
+                Some((format!("_t.ctid > ${}::tid", binds.len() + 1), vec![Some(tid.clone())]))
+            }
+            Some(a) => build_keyset(order, pk, a, &quote_ident, &pg_placeholder(&udts), binds.len() + 1, false),
+            None => None,
+        };
+        let mut offset = offset;
+        if let Some((k, kb)) = seek {
+            where_sql = if where_sql.is_empty() { k } else { format!("{where_sql} AND {k}") };
+            binds.extend(kb);
+            offset = 0;
+        } else if by_ctid {
+            // Without it the first (or an OFFSET) page is a plain Seq Scan, which on a table
+            // past shared_buffers/4 is a synchronized one: it starts wherever another scan
+            // of the table is, and the next page's `ctid >` then skips the blocks before.
+            // Its selectivity is ~1, so the planner still prefers that Seq Scan: every ctid
+            // page runs with `enable_seqscan = off` (see `pin`).
+            where_sql = "_t.ctid >= '(0,0)'::tid".into();
+        }
+        let (inner, select_list) = if by_ctid {
+            cols.push(CTID_COL.into());
+            let c = quote_ident(CTID_COL);
+            (format!("_t.*, _t.ctid AS {c}"), format!("{select_list}, {c}::text AS {c}"))
+        } else {
+            ("*".to_string(), select_list)
+        };
+        let off_ph = format!("${}", binds.len() + 1);
+        let lim_ph = format!("${}", binds.len() + 2);
+        // Order (and filter) on the REAL columns inside the subquery, THEN cast to text —
+        // ordering by the text cast would sort numbers lexicographically.
+        let q = format!(
+            "SELECT {select_list} FROM \
+             (SELECT {inner} FROM {}.{} AS _t{}{order_sql} OFFSET {off_ph} LIMIT {lim_ph}) AS _w",
+            quote_ident(schema),
+            quote_ident(table),
+            if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },
+        );
+        let mut qy = sqlx::query(&q);
+        for b in &binds {
+            qy = qy.bind(b.clone());
+        }
+        qy = qy.bind(offset as i64).bind(len as i64);
+        let ms = self.window_timeout_ms * if filters.is_empty() { 2 } else { 1 };
+        let res = if token.is_none() && !by_ctid {
+            qy.fetch_all(&self.pool).await
+        } else {
+            // Pinned, so `cancel` can target the PID, and bounded — both SET LOCAL, so in a
+            // transaction. Dropping it (rather than awaiting `rollback`) queues the ROLLBACK,
+            // which the pool flushes as the connection comes back: the page's answer does
+            // not wait a round trip for it, and nobody gets the connection before it lands.
+            let mut tx = self.pool.begin().await.map_err(db)?;
+            Self::pin(&mut tx, token, token.map(|_| ms), by_ctid).await?;
+            match token {
+                Some(t) => super::recheck_cancel(self, t, qy.fetch_all(&mut *tx)).await,
+                None => qy.fetch_all(&mut *tx).await,
+            }
+        };
+        let rows = res.map_err(|e| {
+            // A column or the table itself is gone (42703 / 42P01): the cached list is stale.
+            if matches!(e.as_database_error().and_then(|d| d.code()).as_deref(), Some("42703" | "42P01")) {
+                self.meta.forget(schema, table);
+            }
+            match token {
+                Some(t) => window_err(e, t, ms),
+                None => db(e),
+            }
+        })?;
+
+        text_rows_to_batch(&cols, &rows)
     }
 
     /// Ordered `(column, udt_name)` for one relation — the single catalog lookup that gives
@@ -232,22 +477,6 @@ impl PgDriver {
         rows.iter()
             .map(|r| Ok((r.try_get("column_name").map_err(db)?, r.try_get("udt_name").map_err(db)?)))
             .collect()
-    }
-
-    /// The planner's row estimate. `-1` means "never ANALYZEd" (and is what every view
-    /// carries), so this is only ever a fallback for a `COUNT(*)` that timed out.
-    async fn reltuples(&self, schema: &str, table: &str) -> DResult<Option<f32>> {
-        Ok(sqlx::query_scalar(
-            "SELECT reltuples FROM pg_class c \
-             JOIN pg_namespace n ON n.oid = c.relnamespace \
-             WHERE n.nspname = $1 AND c.relname = $2",
-        )
-        .bind(schema)
-        .bind(table)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(db)?
-        .flatten())
     }
 }
 
@@ -371,17 +600,28 @@ impl SqlDriver for PgDriver {
     /// Exact `COUNT(*)` under a 2s server-side timeout, falling back to the planner's
     /// estimate. The `reltuples` shortcut this replaces reported **0** for a table that
     /// had never been ANALYZEd and for every view (both carry `reltuples = -1`), so the
-    /// grid then fetched nothing.
+    /// grid then fetched nothing — so the shortcut is now taken only past
+    /// [`EXACT_COUNT_MAX`], where a count could never finish in time anyway.
     async fn count_rows(
         &self,
         schema: &str,
         table: &str,
         filters: &[ColumnFilter],
+        force_exact: Option<&CancelToken>,
     ) -> DResult<RowCount> {
-        let udts: HashMap<String, String> =
-            self.column_udts(schema, table).await?.into_iter().collect();
+        if force_exact.is_none() && filters.is_empty() {
+            if let Some(n) = self.estimate_rows(schema, table).await? {
+                if n > EXACT_COUNT_MAX {
+                    return Ok(RowCount { count: Some(n), exact: false });
+                }
+            }
+        }
+        let meta = self.browse_meta(schema, table).await?;
+        let udts: HashMap<String, String> = meta.udts.iter().cloned().collect();
+        let cols: Vec<String> = meta.udts.iter().map(|(c, _)| c.clone()).collect();
         let (where_sql, binds) = build_where_clause(
             filters,
+            &cols,
             &quote_ident,
             &pg_placeholder(&udts),
             &pg_text_expr,
@@ -393,27 +633,74 @@ impl SqlDriver for PgDriver {
             quote_ident(table),
             if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },
         );
-        // SET LOCAL needs a transaction; it also reverts on its own when this one ends.
-        let mut tx = self.pool.begin().await.map_err(db)?;
-        sqlx::query("SET LOCAL statement_timeout = 2000")
-            .execute(&mut *tx)
-            .await
-            .map_err(db)?;
         let mut qy = sqlx::query_scalar::<_, i64>(&q);
         for b in &binds {
             qy = qy.bind(b.clone());
         }
+        if let Some(token) = force_exact {
+            // Unbounded, so pinned to one connection whose PID `cancel` can target — named
+            // in a transaction, as a page is (see `pin`).
+            let mut tx = self.pool.begin().await.map_err(db)?;
+            Self::pin(&mut tx, Some(token), None, false).await?;
+            return match super::recheck_cancel(self, token, qy.fetch_one(&mut *tx)).await {
+                Ok(n) => Ok(RowCount { count: Some(n), exact: true }),
+                Err(e) if is_cancel(&e) => Err(DriverError::Cancelled),
+                Err(e) => Err(db(e)),
+            };
+        }
+        // SET LOCAL needs a transaction; it also reverts on its own when this one ends. Sent
+        // with the BEGIN in one round trip; the ROLLBACK is queued on drop (see `window`).
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN; SET LOCAL statement_timeout = 2000")
+            .await
+            .map_err(db)?;
         let res = qy.fetch_one(&mut *tx).await;
-        let _ = tx.rollback().await;
+        drop(tx);
         match res {
             Ok(n) => Ok(RowCount { count: Some(n), exact: true }),
             // 57014 here is the statement_timeout firing — this query carries no cancel token.
-            Err(e) if is_cancel(&e) => Ok(match self.reltuples(schema, table).await? {
-                Some(est) if est >= 0.0 => RowCount { count: Some(est as i64), exact: false },
-                _ => RowCount { count: None, exact: false },
+            // The catalog estimate is the whole table's, so a filtered count has none.
+            Err(e) if is_cancel(&e) => Ok(RowCount {
+                count: if filters.is_empty() { self.estimate_rows(schema, table).await? } else { None },
+                exact: false,
             }),
             Err(e) => Err(db(e)),
         }
+    }
+
+    /// Leaf `reltuples` summed down the `pg_inherits` tree (a partitioned parent has no
+    /// storage of its own), scaled like the planner does by the leaf's growth since ANALYZE
+    /// (current pages / `relpages`). A never-ANALYZEd leaf (`reltuples = -1`; before PG 14,
+    /// `reltuples = 0` with `relpages = 0`) is estimated from its size: pages ×
+    /// tuples-per-page, a tuple being its fixed-width columns (32 bytes per variable-width
+    /// one) plus 28 bytes of header and line pointer. Views: `None`.
+    async fn estimate_rows(&self, schema: &str, table: &str) -> DResult<Option<i64>> {
+        sqlx::query_scalar(
+            "WITH RECURSIVE rel AS ( \
+               SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+               WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('r', 'p', 'm') \
+               UNION ALL \
+               SELECT i.inhrelid FROM pg_inherits i JOIN rel ON i.inhparent = rel.oid) \
+             SELECT COALESCE(SUM(CASE \
+               WHEN c.reltuples > 0 AND c.relpages > 0 \
+                 THEN c.reltuples::float8 / c.relpages * floor(pg_relation_size(c.oid) / s.bs) \
+               WHEN c.reltuples > 0 OR (c.reltuples = 0 AND c.relpages > 0) THEN c.reltuples::float8 \
+               ELSE floor(pg_relation_size(c.oid) / s.bs) * floor(s.bs / (28 + ( \
+                 SELECT COALESCE(SUM(CASE WHEN a.attlen > 0 THEN a.attlen ELSE 32 END), 0) \
+                 FROM pg_attribute a \
+                 WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped))) \
+               END), 0)::bigint \
+             FROM rel JOIN pg_class c ON c.oid = rel.oid \
+             CROSS JOIN (SELECT current_setting('block_size')::float8 AS bs) s \
+             WHERE c.relkind IN ('r', 'm') \
+             HAVING EXISTS (SELECT 1 FROM rel)",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)
     }
 
     async fn open_window_filtered(
@@ -424,50 +711,27 @@ impl SqlDriver for PgDriver {
         len: usize,
         filters: &[ColumnFilter],
         order: &[SortKey],
+        after: Option<&[Option<String>]>,
     ) -> DResult<RecordBatch> {
-        let udts = self.column_udts(schema, table).await?;
-        if udts.is_empty() {
-            return Err(DriverError::Db(format!("no such table {schema}.{table}")));
-        }
-        let cols: Vec<String> = udts.iter().map(|(c, _)| c.clone()).collect();
-        let udts: HashMap<String, String> = udts.into_iter().collect();
-        let pk = self.primary_key(schema, table).await?;
-        let order_sql = build_order_by(order, &pk, &cols, &quote_ident)?;
+        self.window(schema, table, offset, len, filters, order, after, None).await
+    }
 
-        // Display-first browse: cast every column to text (lossless string view,
-        // consistent with the decimal-as-text rule). Identifiers are quoted.
-        let select_list = cols
-            .iter()
-            .map(|c| format!("{0}::text AS {0}", quote_ident(c)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        // Filter binds come first ($1..), then the offset/limit.
-        let (where_sql, binds) = build_where_clause(
-            filters,
-            &quote_ident,
-            &pg_placeholder(&udts),
-            &pg_text_expr,
-            1,
-        );
-        let off_ph = format!("${}", binds.len() + 1);
-        let lim_ph = format!("${}", binds.len() + 2);
-        // Order (and filter) on the REAL columns inside the subquery, THEN cast to text —
-        // ordering by the text cast would sort numbers lexicographically.
-        let q = format!(
-            "SELECT {select_list} FROM \
-             (SELECT * FROM {}.{} AS _t{}{order_sql} OFFSET {off_ph} LIMIT {lim_ph}) AS _w",
-            quote_ident(schema),
-            quote_ident(table),
-            if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },
-        );
-        let mut qy = sqlx::query(&q);
-        for b in &binds {
-            qy = qy.bind(b.clone());
-        }
-        qy = qy.bind(offset as i64).bind(len as i64);
-        let rows = qy.fetch_all(&self.pool).await.map_err(db)?;
+    async fn open_window_cancellable(
+        &self,
+        schema: &str,
+        table: &str,
+        offset: usize,
+        len: usize,
+        filters: &[ColumnFilter],
+        order: &[SortKey],
+        after: Option<&[Option<String>]>,
+        token: &CancelToken,
+    ) -> DResult<RecordBatch> {
+        self.window(schema, table, offset, len, filters, order, after, Some(token)).await
+    }
 
-        text_rows_to_batch(&cols, &rows)
+    fn forget_meta(&self) {
+        self.meta.clear();
     }
 
     async fn cancel(&self, token: &CancelToken) -> DResult<()> {
@@ -475,12 +739,18 @@ impl SqlDriver for PgDriver {
         let Some(pid) = token.backend_id() else {
             return Ok(());
         };
-        // The cancel request must come from a *second* connection (plan spec #6).
-        sqlx::query("SELECT pg_cancel_backend($1)")
-            .bind(pid as i32)
-            .execute(&self.pool)
-            .await
-            .map_err(db)?;
+        // The cancel request must come from a *second* connection (plan spec #6). A named
+        // session (see `pin`) is matched in the same step, so a connection that has since
+        // moved on to another query — its transaction over, its name reverted — is left alone.
+        sqlx::query(
+            "SELECT pg_cancel_backend(pid) FROM pg_stat_activity \
+             WHERE pid = $1 AND ($2::text IS NULL OR (state = 'active' AND application_name = $2))",
+        )
+        .bind(pid as i32)
+        .bind(token.scope())
+        .execute(&self.cancel_pool)
+        .await
+        .map_err(db)?;
         Ok(())
     }
 
@@ -550,9 +820,6 @@ impl SqlDriver for PgDriver {
         table: &str,
         values: &[(String, Option<String>)],
     ) -> DResult<u64> {
-        if values.is_empty() {
-            return Err(DriverError::Db("no columns to insert".into()));
-        }
         let udts: HashMap<String, String> =
             self.column_udts(schema, table).await?.into_iter().collect();
         let (sql, binds) =

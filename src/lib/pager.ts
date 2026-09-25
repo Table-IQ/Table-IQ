@@ -4,9 +4,9 @@ const EXACT = new Intl.NumberFormat("en-US");
 const APPROX = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
 
 /**
- * TablePlus's row-window label: `1–300 of 1,234`. An estimated total reads
- * `of ~1.2M`; an unknown total drops the "of …" half entirely rather than
- * pretending the table is empty.
+ * TablePlus's row-window label: `1–300 of 1,234 rows`. An estimated total reads
+ * `of ~1.2T rows` (K/M/B/T); an unknown total drops the "of …" half entirely
+ * rather than pretending the table is empty.
  *
  * @param offset first row of the page, 0-based
  * @param rows   rows actually on this page
@@ -22,5 +22,5 @@ export function pagerLabel(
   if (rows <= 0) return "0 rows";
   const range = `${EXACT.format(offset + 1)}–${EXACT.format(offset + rows)}`;
   if (count === null) return range;
-  return `${range} of ${exact ? EXACT.format(count) : `~${APPROX.format(count)}`}`;
+  return `${range} of ${exact ? EXACT.format(count) : `~${APPROX.format(count)}`} ${count === 1 && exact ? "row" : "rows"}`;
 }

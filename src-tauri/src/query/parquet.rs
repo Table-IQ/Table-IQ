@@ -46,7 +46,7 @@ pub fn arrow_type_to_sql(dialect: Dialect, dt: &DataType) -> String {
     use DataType::*;
     match dt {
         Boolean => match dialect {
-            Dialect::Postgres => "boolean".into(),
+            Dialect::Postgres | Dialect::DuckDb => "boolean".into(),
             Dialect::MySql => "tinyint(1)".into(),
             Dialect::Sqlite => "INTEGER".into(),
             Dialect::SqlServer => "bit".into(),
@@ -64,13 +64,13 @@ pub fn arrow_type_to_sql(dialect: Dialect, dt: &DataType) -> String {
             _ => "bigint".into(),
         },
         Float32 => match dialect {
-            Dialect::Postgres => "real".into(),
+            Dialect::Postgres | Dialect::DuckDb => "real".into(),
             Dialect::MySql => "float".into(),
             Dialect::Sqlite => "REAL".into(),
             Dialect::SqlServer => "real".into(),
         },
         Float64 => match dialect {
-            Dialect::Postgres => "double precision".into(),
+            Dialect::Postgres | Dialect::DuckDb => "double precision".into(),
             Dialect::MySql => "double".into(),
             Dialect::Sqlite => "REAL".into(),
             Dialect::SqlServer => "float".into(),
@@ -87,6 +87,7 @@ pub fn arrow_type_to_sql(dialect: Dialect, dt: &DataType) -> String {
         },
         Binary | LargeBinary | FixedSizeBinary(_) => match dialect {
             Dialect::Postgres => "bytea".into(),
+            Dialect::DuckDb => "blob".into(),
             Dialect::MySql => "longblob".into(),
             Dialect::Sqlite => "BLOB".into(),
             Dialect::SqlServer => "varbinary(max)".into(),
@@ -100,8 +101,8 @@ pub fn arrow_type_to_sql(dialect: Dialect, dt: &DataType) -> String {
             _ => "time".into(),
         },
         Timestamp(_, tz) => match (dialect, tz.is_some()) {
-            (Dialect::Postgres, true) => "timestamptz".into(),
-            (Dialect::Postgres, false) => "timestamp".into(),
+            (Dialect::Postgres | Dialect::DuckDb, true) => "timestamptz".into(),
+            (Dialect::Postgres | Dialect::DuckDb, false) => "timestamp".into(),
             (Dialect::MySql, _) => "datetime(6)".into(),
             (Dialect::Sqlite, _) => "TEXT".into(),
             (Dialect::SqlServer, true) => "datetimeoffset".into(),
@@ -110,6 +111,8 @@ pub fn arrow_type_to_sql(dialect: Dialect, dt: &DataType) -> String {
         // Composite / nullable container types collapse to JSON / text.
         Struct(_) | List(_) | LargeList(_) | FixedSizeList(_, _) | Map(_, _) => match dialect {
             Dialect::Postgres => "jsonb".into(),
+            // DuckDB's JSON type lives in an extension this build doesn't bundle.
+            Dialect::DuckDb => "text".into(),
             Dialect::MySql => "json".into(),
             Dialect::Sqlite => "TEXT".into(),
             Dialect::SqlServer => "nvarchar(max)".into(),
@@ -395,6 +398,14 @@ mod tests {
     }
 
     #[test]
+    fn arrow_to_sql_duckdb() {
+        assert_eq!(arrow_type_to_sql(Dialect::DuckDb, &DataType::Int64), "bigint");
+        assert_eq!(arrow_type_to_sql(Dialect::DuckDb, &DataType::Boolean), "boolean");
+        assert_eq!(arrow_type_to_sql(Dialect::DuckDb, &DataType::Binary), "blob");
+        assert_eq!(arrow_type_to_sql(Dialect::DuckDb, &DataType::Utf8), "text");
+    }
+
+    #[test]
     fn arrow_to_sql_mysql_and_sqlite() {
         assert_eq!(arrow_type_to_sql(Dialect::MySql, &DataType::Int64), "bigint");
         assert_eq!(arrow_type_to_sql(Dialect::MySql, &DataType::Utf8), "longtext");
@@ -524,7 +535,7 @@ mod tests {
             st,
             DataType::Null, // the `_ =>` fallback arm
         ];
-        for d in [Dialect::Postgres, Dialect::MySql, Dialect::Sqlite, Dialect::SqlServer] {
+        for d in [Dialect::Postgres, Dialect::MySql, Dialect::Sqlite, Dialect::SqlServer, Dialect::DuckDb] {
             for t in &types {
                 let ty = arrow_type_to_sql(d, t);
                 assert!(

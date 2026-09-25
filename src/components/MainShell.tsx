@@ -12,6 +12,7 @@ import { DiffView } from "./DiffView";
 import { CommandPalette, type Command } from "./CommandPalette";
 import { ConnectionPicker } from "./ConnectionPicker";
 import { DatabasePicker } from "./DatabasePicker";
+import { isFileEngine } from "./ConnectionManager";
 import { Onboarding } from "./Onboarding";
 import { Inspector } from "./Inspector";
 import { ContextMenu, type ContextMenuItem } from "./ui/ContextMenu";
@@ -207,7 +208,8 @@ export function MainShell() {
   // Idempotent — repeated triggers reuse the cached items unless the user closes
   // the picker, which resets state so the next open re-fetches.
   const openDbPicker = async () => {
-    if (!active) return;
+    // A SQLite/DuckDB connection *is* its file — there is no other database to switch to.
+    if (!active || isFileEngine(active.engine as Engine)) return;
     setShowDbPicker(true);
     setDbList((s) => (s.items.length > 0 ? s : { loading: true, items: [], error: null }));
     try {
@@ -285,6 +287,7 @@ export function MainShell() {
   }, [schema, openTable, openQuery, openErd]);
 
   if (!active || !schema) return null;
+  const fileEngine = isFileEngine(active.engine as Engine);
 
   const activeTab = tabs.find((t) => t.key === activeKey) ?? null;
   const activeObj =
@@ -449,6 +452,9 @@ export function MainShell() {
               : `CREATE SCHEMA ${q("new_schema")};`,
           ),
       });
+    }
+    // DuckDB has schemas but no roles or users.
+    if (engine !== "sqlite" && engine !== "duckdb") {
       items.push({
         id: "n-group",
         label: "New Group / Role…",
@@ -545,17 +551,24 @@ export function MainShell() {
       {sep("|")}
       <span className="uppercase tracking-wide">{active.engine}</span>
       {sep(":")}
-      <button
-        onClick={() => void openDbPicker()}
-        title="Switch database · ⌘D"
-        className="inline-flex h-[18px] items-center rounded-full px-1 text-text transition-colors hover:bg-surface-2"
-        data-testid="breadcrumb-db"
-      >
-        {active.database || "(none)"}
-        <span aria-hidden className="ml-1 text-muted-2">
-          ▾
+      {fileEngine ? (
+        // A file engine has one database — the file — so there is nothing to switch to.
+        <span className="truncate px-1 text-text" data-testid="breadcrumb-db">
+          {active.database || "(none)"}
         </span>
-      </button>
+      ) : (
+        <button
+          onClick={() => void openDbPicker()}
+          title="Switch database · ⌘D"
+          className="inline-flex h-[18px] items-center rounded-full px-1 text-text transition-colors hover:bg-surface-2"
+          data-testid="breadcrumb-db"
+        >
+          {active.database || "(none)"}
+          <span aria-hidden className="ml-1 text-muted-2">
+            ▾
+          </span>
+        </button>
+      )}
       {activeTab?.kind === "table" && activeTab.schema && activeTab.table && (
         <>
           {sep(":")}
@@ -598,12 +611,14 @@ export function MainShell() {
             label="Refresh schema"
             onClick={() => void onRefreshSchema()}
           />
-          <IconButton
-            icon={<IconDatabase size={16} />}
-            label="Switch database"
-            shortcut="⌘D"
-            onClick={() => void openDbPicker()}
-          />
+          {!fileEngine && (
+            <IconButton
+              icon={<IconDatabase size={16} />}
+              label="Switch database"
+              shortcut="⌘D"
+              onClick={() => void openDbPicker()}
+            />
+          )}
           <IconButton
             icon={<IconCommand size={16} />}
             label="Command palette"

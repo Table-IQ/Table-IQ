@@ -7,8 +7,9 @@ bastion, with host-key verification) — no required cloud dependency.
 
 ## Supported engines
 
-PostgreSQL, MySQL/MariaDB, SQL Server, and SQLite get the full relational experience:
-connect, browse (paged, sortable, filterable grid), run arbitrary SQL (including DDL,
+PostgreSQL, MySQL/MariaDB, SQL Server, SQLite, and DuckDB (a `.duckdb` file or `:memory:`)
+get the full relational experience: connect, browse (a paged, sortable, filterable grid with
+⌘F search across every column and a row total), run arbitrary SQL (including DDL,
 multi-statement scripts, and NULL-safe inline edits), Structure (real columns/indexes/
 triggers per engine), and an ERD with FK-accurate connectors.
 
@@ -49,7 +50,8 @@ cd src-tauri && cargo test
 ```
 
 Rust also has live integration tests per engine (`src-tauri/tests/`) that only run when
-their database is reachable, gated on environment variables — unset, they skip themselves:
+their database is reachable, gated on environment variables — unset, they skip themselves.
+The SQLite and DuckDB cases run in-process on a temp file, so they need nothing:
 
 ```sh
 TIQ_PG_URL=postgres://postgres:tableiq@127.0.0.1:55432/tableiq \
@@ -79,9 +81,17 @@ types) whose row count is a psql variable defaulting to `1000000`; CI instead se
 2,000-row `wide` by passing `-v rows=2000` by hand — see `ci.yml` — since the live tests that
 read it (`introspect_browse`, `profile`, `explain`, `table_page_live`) only need the table and
 its first rows in id order, not the full set. `qa.sql` in each engine's folder (plus
-`docker/sqlite/qa.sql`) seeds the shapes the QA harness and the live tests read: a
-self-referencing FK, a cross-schema FK, a composite PK/FK, a view, a trigger, an index, and
-assorted NULLs.
+`docker/sqlite/qa.sql` and `docker/duckdb/qa.sql`) seeds the shapes the QA harness and the
+live tests read: a self-referencing FK, a cross-schema FK, a composite PK/FK, a view, a
+trigger, an index, and assorted NULLs.
+
+`docker/postgres/big.sql` is a scale fixture that is not auto-loaded: 20M real rows in a
+partitioned table whose planner stats are faked to ~1T, plus a 2M-row table with no PK, for
+checking paging, estimates and search at size. Load it with
+`docker exec -i tableiq-pg psql -U postgres -d tableiq < docker/postgres/big.sql`.
+
+DuckDB needs no container: `duckdb /tmp/tiq-qa.duckdb < docker/duckdb/qa.sql` builds a
+seeded file (or open that path in TableIQ and run the file from a query tab).
 
 SQL Server has no compose file — `azure-sql-edge` SIGABRTs on Apple Silicon during the
 master-database upgrade, so the amd64 `mssql/server` image runs under Rosetta instead:
@@ -110,8 +120,9 @@ Commands can also be called directly: `curl -s -XPOST localhost:1430/invoke/list
 
 See `pending.md` for the full list. The short version: no auto-updater or code signing yet
 (both need infrastructure this repo doesn't have), no LICENSE chosen yet, SQL Server queries
-can't be cancelled (tiberius has no cancel API), and a per-tab SQL session (an open
-transaction or `SET` surviving between runs) isn't implemented.
+can't be cancelled (tiberius has no cancel API), DuckDB's Stop button isn't implemented yet
+(it needs an arrow upgrade first), and a per-tab SQL session (an open transaction or `SET`
+surviving between runs) isn't implemented.
 
 ## Recommended IDE Setup
 

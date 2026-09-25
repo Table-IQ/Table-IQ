@@ -1,7 +1,7 @@
 //! Driver layer for Table-IQ.
 //!
 //! Split by data model (plan spec #1): SQL engines (Postgres, MySQL/MariaDB, SQLite,
-//! SQL Server) stream Arrow via [`SqlDriver`], the document store (MongoDB) returns
+//! SQL Server, DuckDB) stream Arrow via [`SqlDriver`], the document store (MongoDB) returns
 //! JSON/tree via [`DocumentDriver`], and the key-value store (Redis) returns typed
 //! values via [`KvDriver`]. All six engines are real implementations.
 
@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 pub mod doc_mongo;
+pub mod duckdb;
 pub mod exec;
 pub mod kv_redis;
 pub mod mysql;
@@ -22,24 +23,109 @@ pub mod sqlserver;
 /// (Postgres backend PID / MySQL connection id) that a *second* connection uses to cancel
 /// the in-flight query. The id is recorded by `run_statements` once the query's
 /// connection is known, then read by `cancel`.
-#[derive(Clone, Default)]
+///
+/// It also carries a cancelled flag, under the same lock as the id: a query that records its
+/// id and *then* checks the flag cannot slip between a canceller setting the flag and *then*
+/// reading the id — one of the two always sees the other. That covers a cancel that lands
+/// before the query had an id to target.
+///
+/// The id names a pooled *connection*, which goes on to serve other queries once this one
+/// ends. A token with a [`CancelToken::scope`] lets `cancel` stop only its own statement: the
+/// engine matches the scope against what the connection is running in the same step.
+#[derive(Clone)]
 pub struct CancelToken {
-    backend_id: Arc<Mutex<Option<i64>>>,
+    state: Arc<Mutex<TokenState>>,
+    nonce: u64,
+}
+
+/// (backend id, cancelled, scope)
+type TokenState = (Option<i64>, bool, Option<String>);
+
+impl Default for CancelToken {
+    fn default() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let nonce = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self { state: Arc::default(), nonce }
+    }
 }
 
 impl CancelToken {
     pub fn new() -> Self {
         Self::default()
     }
+    /// A SQL comment unique to this token, for the statement it starts; from now on `cancel`
+    /// stops only a statement whose text matches it (the scope is a LIKE pattern).
+    /// It makes the statement text unique, so keep it off anything run often (pages).
+    pub fn tag(&self) -> String {
+        self.scope_to(&format!("%/*tiq:{}*/%", self.nonce));
+        format!("/*tiq:{}*/ ", self.nonce)
+    }
+    /// A session name unique to this token (Postgres `application_name`); from now on the
+    /// scope is exactly this name.
+    pub fn label(&self) -> String {
+        let name = format!("tiq:{}", self.nonce);
+        self.scope_to(&name);
+        name
+    }
+    /// Scope `cancel` to whatever the engine matches `scope` against.
+    pub fn scope_to(&self, scope: &str) {
+        crate::lk(&self.state).2 = Some(scope.to_string());
+    }
+    /// What `cancel` must find the connection running before it stops it; `None` stops
+    /// whatever the connection runs.
+    pub fn scope(&self) -> Option<String> {
+        crate::lk(&self.state).2.clone()
+    }
     /// Record the server-side id (PG backend PID / MySQL connection id) for this query.
     pub fn set_backend_id(&self, id: i64) {
-        *crate::lk(&self.backend_id) = Some(id);
+        crate::lk(&self.state).0 = Some(id);
     }
     /// The recorded server-side id, or `None` if the query hasn't started yet.
     pub fn backend_id(&self) -> Option<i64> {
-        *crate::lk(&self.backend_id)
+        crate::lk(&self.state).0
+    }
+    /// Flag the query as cancelled by the user; call before [`SqlDriver::cancel`].
+    pub fn mark_cancelled(&self) {
+        crate::lk(&self.state).1 = true;
+    }
+    pub fn is_cancelled(&self) -> bool {
+        crate::lk(&self.state).1
+    }
+    /// The same token (a clone of it), not merely an equal one.
+    pub fn same(&self, other: &CancelToken) -> bool {
+        Arc::ptr_eq(&self.state, &other.state)
     }
 }
+
+/// Browse-path catalog cache keyed by `(schema, table)`. The grid pages one table many
+/// times; its column list and PK are read once and served from here until
+/// [`SqlDriver::forget_meta`]. Only the browse path reads it — edits and inserts keep
+/// their fresh lookups, so a stale entry can at worst mis-list columns, never mis-write.
+pub(crate) struct MetaCache<V>(Mutex<std::collections::HashMap<(String, String), V>>);
+
+impl<V> Default for MetaCache<V> {
+    fn default() -> Self {
+        Self(Mutex::new(std::collections::HashMap::new()))
+    }
+}
+
+impl<V: Clone> MetaCache<V> {
+    pub(crate) fn get(&self, schema: &str, table: &str) -> Option<V> {
+        crate::lk(&self.0).get(&(schema.to_string(), table.to_string())).cloned()
+    }
+    pub(crate) fn put(&self, schema: &str, table: &str, v: V) {
+        crate::lk(&self.0).insert((schema.to_string(), table.to_string()), v);
+    }
+    pub(crate) fn clear(&self) {
+        crate::lk(&self.0).clear();
+    }
+    pub(crate) fn forget(&self, schema: &str, table: &str) {
+        crate::lk(&self.0).remove(&(schema.to_string(), table.to_string()));
+    }
+}
+
+/// The cached browse metadata of the engines that need no per-column type: `(columns, pk)`.
+pub(crate) type ColsPk = Arc<(Vec<String>, Vec<String>)>;
 
 /// How long a driver waits for the initial connection before giving up. Without it a dropped
 /// packet to an unreachable host leaves the UI spinning on the OS TCP timeout (~75s on macOS).
@@ -185,8 +271,9 @@ pub struct StmtOutput {
     pub batch: Option<arrow::record_batch::RecordBatch>,
     /// Rows in `batch` (≤ cap).
     pub row_count: usize,
-    /// Rows the statement actually produced, counted past the cap.
-    pub total_rows: u64,
+    /// Rows the statement produced, or `None` when reading stopped at the cap (the rest were
+    /// never read, so their number is unknown).
+    pub total_rows: Option<u64>,
     pub truncated: bool,
     pub rows_affected: Option<u64>,
     pub exec_ms: u64,
@@ -232,6 +319,9 @@ pub enum FilterOp {
     ILike,
     IsNull,
     IsNotNull,
+    /// All-column "contains" search: `column` is ignored (the UI sends `"*"`) and `value`
+    /// is the raw term. See [`build_where_clause`].
+    Search,
 }
 
 /// One AND-clause in a per-column filter set (Slice 21 #1).
@@ -256,6 +346,38 @@ pub struct SortKey {
 pub struct RowCount {
     pub count: Option<i64>,
     pub exact: bool,
+}
+
+/// Above this many estimated rows, an unfiltered `count_rows` reports the catalog estimate
+/// instead of running `COUNT(*)`: past it an exact count is too slow to wait for on open.
+pub const EXACT_COUNT_MAX: i64 = 10_000_000;
+
+/// Server-side bound on a filtered [`SqlDriver::open_window_cancellable`] page. A search
+/// can't use an index, so on a big table it would otherwise scan until it finds a page.
+/// An unfiltered page gets twice this: it reads only its own rows unless a sort on an
+/// unindexed column makes it read them all.
+pub const WINDOW_TIMEOUT_MS: u64 = 15_000;
+
+/// Await a pinned statement's `fetch`. A cancel that landed after the page checked its token
+/// but before the server started the statement found nothing running to stop, so look once
+/// more shortly after the statement is sent.
+pub(crate) async fn recheck_cancel<T, D: SqlDriver + ?Sized>(
+    drv: &D,
+    token: &CancelToken,
+    fetch: impl std::future::Future<Output = T>,
+) -> T {
+    let recheck = async {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        if token.is_cancelled() {
+            let _ = drv.cancel(token).await;
+        }
+        std::future::pending::<()>().await
+    };
+    tokio::select! {
+        biased;
+        r = fetch => r,
+        () = recheck => unreachable!("recheck never completes"),
+    }
 }
 
 /// Build the ORDER BY for one page of a table, or `""` for none. The table is aliased
@@ -302,6 +424,73 @@ pub fn build_order_by(
     })
 }
 
+/// Keyset ("seek") predicate for the page after `after` — the previous page's last-row PK
+/// values, in `pk` order. Unlike OFFSET it costs one index seek at any depth.
+///
+/// Returns `None` (the caller keeps OFFSET) unless the effective ORDER BY that
+/// [`build_order_by`] would emit is exactly the PK in PK order with one direction, and
+/// `after` holds a non-NULL value per PK column. `expand` writes the composite case as
+/// `a > ? OR (a = ? AND b > ?)`: SQL Server has no row values, and MySQL full-scans the
+/// index for a row-value range instead of seeking. Terms are qualified `_t.`, binds start
+/// at `start_idx`.
+pub fn build_keyset(
+    order: &[SortKey],
+    pk: &[String],
+    after: &[Option<String>],
+    quote_ident: &dyn Fn(&str) -> String,
+    placeholder: &dyn Fn(usize, &str) -> String,
+    start_idx: usize,
+    expand: bool,
+) -> Option<(String, Vec<Option<String>>)> {
+    if pk.is_empty() || after.len() != pk.len() || after.iter().any(Option::is_none) {
+        return None;
+    }
+    // The effective order: the requested keys, then the PK columns not named (ASC).
+    let mut eff: Vec<(&str, bool)> = Vec::new();
+    for k in order {
+        if !eff.iter().any(|(c, _)| *c == k.column) {
+            eff.push((&k.column, k.desc));
+        }
+    }
+    for c in pk {
+        if !eff.iter().any(|(e, _)| e == c) {
+            eff.push((c, false));
+        }
+    }
+    let desc = eff[0].1;
+    if eff.len() != pk.len() || eff.iter().zip(pk).any(|((c, d), p)| c != p || *d != desc) {
+        return None;
+    }
+    let op = if desc { "<" } else { ">" };
+    let col = |c: &str| format!("_t.{}", quote_ident(c));
+    let mut idx = start_idx;
+    let mut binds = Vec::new();
+    let mut bind = |i: usize| {
+        let p = placeholder(idx, &pk[i]);
+        idx += 1;
+        binds.push(after[i].clone());
+        p
+    };
+    let sql = if pk.len() == 1 {
+        format!("{} {op} {}", col(&pk[0]), bind(0))
+    } else if expand {
+        let terms: Vec<String> = (0..pk.len())
+            .map(|i| {
+                let mut t: Vec<String> =
+                    (0..i).map(|j| format!("{} = {}", col(&pk[j]), bind(j))).collect();
+                t.push(format!("{} {op} {}", col(&pk[i]), bind(i)));
+                if i == 0 { t.remove(0) } else { format!("({})", t.join(" AND ")) }
+            })
+            .collect();
+        format!("({})", terms.join(" OR "))
+    } else {
+        let cols: Vec<String> = pk.iter().map(|c| col(c)).collect();
+        let phs: Vec<String> = (0..pk.len()).map(&mut bind).collect();
+        format!("({}) {op} ({})", cols.join(", "), phs.join(", "))
+    };
+    Some((sql, binds))
+}
+
 /// Build a parameterized WHERE fragment from a filter set. Returns `(sql, binds)` where
 /// `sql` is "" for an empty filter set, otherwise a "<col> <op> <ph> AND …" string with
 /// no leading "WHERE" (callers wrap as needed). `start_idx` is the first placeholder index
@@ -317,8 +506,14 @@ pub fn build_order_by(
 /// `ILike` translates to a cross-engine `LOWER(col) LIKE LOWER(val)` form so a non-PG
 /// engine never sees an unsupported keyword. PG keeps that translation too (correct +
 /// portable), trading a tiny perf hit for one less SQL dialect quirk.
+///
+/// `Search` expands to that same case-insensitive contains, ORed over `columns` (the
+/// searchable columns, in table order) with one bind per column — MySQL's `?` cannot be
+/// reused. The term is wrapped `%…%` with its own wildcards escaped by `!`: a backslash
+/// escape is itself an escape in a MySQL string literal, `!` means the same everywhere.
 pub fn build_where_clause(
     filters: &[ColumnFilter],
+    columns: &[String],
     quote_ident: &dyn Fn(&str) -> String,
     placeholder: &dyn Fn(usize, &str) -> String,
     text_expr: &dyn Fn(&str) -> String,
@@ -335,6 +530,20 @@ pub fn build_where_clause(
         match f.op {
             FilterOp::IsNull => parts.push(format!("{col} IS NULL")),
             FilterOp::IsNotNull => parts.push(format!("{col} IS NOT NULL")),
+            FilterOp::Search if columns.is_empty() => parts.push("1 = 0".into()),
+            FilterOp::Search => {
+                let pat = format!("%{}%", like_escape(f.value.as_deref().unwrap_or("")));
+                let ors: Vec<String> = columns
+                    .iter()
+                    .map(|c| {
+                        let ph = placeholder(idx, "");
+                        idx += 1;
+                        binds.push(Some(pat.clone()));
+                        format!("LOWER({}) LIKE LOWER({ph}) ESCAPE '!'", text_expr(c))
+                    })
+                    .collect();
+                parts.push(format!("({})", ors.join(" OR ")));
+            }
             FilterOp::Like | FilterOp::ILike => {
                 let lhs = text_expr(&f.column);
                 let ph = placeholder(idx, "");
@@ -354,7 +563,7 @@ pub fn build_where_clause(
                     FilterOp::Le => "<=",
                     FilterOp::Gt => ">",
                     FilterOp::Ge => ">=",
-                    _ => unreachable!("null/LIKE ops handled above"),
+                    _ => unreachable!("null/LIKE/search ops handled above"),
                 };
                 let ph = placeholder(idx, &f.column);
                 parts.push(format!("{col} {sym} {ph}"));
@@ -366,22 +575,50 @@ pub fn build_where_clause(
     (parts.join(" AND "), binds)
 }
 
+/// Escape a term's LIKE metacharacters with `!` so it matches literally: `%`, `_`, the
+/// escape itself, and `[` (a character class in SQL Server).
+fn like_escape(term: &str) -> String {
+    let mut out = String::with_capacity(term.len());
+    for ch in term.chars() {
+        if matches!(ch, '%' | '_' | '!' | '[') {
+            out.push('!');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 /// SQL engines (PG/MySQL/MariaDB/SQLite/SQL Server). Results stream as Arrow.
 #[async_trait]
 pub trait SqlDriver: Send + Sync {
     /// Browse the connection's schemas → tables/views → columns.
     async fn introspect(&self) -> DResult<SchemaModel>;
-    /// Row count for a table under `filters`. Engines that can be slow bound the exact
-    /// `COUNT(*)` with a 2s server-side timeout and fall back to their stats catalog
-    /// (`exact: false`), or to `None` when even that has nothing to offer.
+    /// Row count for a table under `filters`. With `force_exact: None`, engines that can
+    /// be slow skip `COUNT(*)` for an unfiltered table estimated above [`EXACT_COUNT_MAX`],
+    /// bound it otherwise with a 2s server-side timeout, and fall back to their stats
+    /// catalog (`exact: false`), or to `None` when even that has nothing to offer.
+    /// `force_exact: Some(token)` always counts, unbounded, recording the server-side id in
+    /// `token` so [`SqlDriver::cancel`] can stop it.
     async fn count_rows(
         &self,
         schema: &str,
         table: &str,
         filters: &[ColumnFilter],
+        force_exact: Option<&CancelToken>,
     ) -> DResult<RowCount>;
+    /// The catalog's row estimate for a table — a metadata read, never a scan. `None` for
+    /// a view, an unknown table, or an engine without one.
+    async fn estimate_rows(&self, _schema: &str, _table: &str) -> DResult<Option<i64>> {
+        Ok(None)
+    }
     /// Read a window of rows from a table as Arrow (read-only browse), filtered and
     /// ordered. See [`build_order_by`] for what `order` means when it is empty.
+    ///
+    /// `after` is the previous page's last-row key (PK values in PK order; Postgres'
+    /// `__tiq_ctid` for a table without one). Where [`build_keyset`] applies, the page
+    /// seeks past it and `offset` is ignored; everywhere else `after` is ignored and
+    /// `offset` answers — so a caller always passes both.
+    #[allow(clippy::too_many_arguments)]
     async fn open_window_filtered(
         &self,
         schema: &str,
@@ -390,7 +627,27 @@ pub trait SqlDriver: Send + Sync {
         len: usize,
         filters: &[ColumnFilter],
         order: &[SortKey],
+        after: Option<&[Option<String>]>,
     ) -> DResult<arrow::record_batch::RecordBatch>;
+    /// The grid's page fetch: [`SqlDriver::open_window_filtered`], recording the server-side
+    /// id in `token` so [`SqlDriver::cancel`] can stop it (failing with
+    /// [`DriverError::Cancelled`]), and bounded server-side at [`WINDOW_TIMEOUT_MS`] (twice
+    /// that unfiltered), failing with a message containing "timed out".
+    /// Default: neither; the engine runs the plain fetch.
+    #[allow(clippy::too_many_arguments)]
+    async fn open_window_cancellable(
+        &self,
+        schema: &str,
+        table: &str,
+        offset: usize,
+        len: usize,
+        filters: &[ColumnFilter],
+        order: &[SortKey],
+        after: Option<&[Option<String>]>,
+        _token: &CancelToken,
+    ) -> DResult<arrow::record_batch::RecordBatch> {
+        self.open_window_filtered(schema, table, offset, len, filters, order, after).await
+    }
     /// Unfiltered, unsorted window read (the natural/PK order).
     async fn open_window(
         &self,
@@ -399,7 +656,7 @@ pub trait SqlDriver: Send + Sync {
         offset: usize,
         len: usize,
     ) -> DResult<arrow::record_batch::RecordBatch> {
-        self.open_window_filtered(schema, table, offset, len, &[], &[]).await
+        self.open_window_filtered(schema, table, offset, len, &[], &[], None).await
     }
     /// Insert a single row built from `(column, text_value)` pairs.
     /// Default: unsupported (KV/Document drivers don't reach here).
@@ -455,6 +712,9 @@ pub trait SqlDriver: Send + Sync {
     async fn cancel(&self, _token: &CancelToken) -> DResult<()> {
         Err(DriverError::NotImplemented)
     }
+    /// Drop any cached browse metadata (column lists, PKs). Called on sidebar Refresh and
+    /// after user-run SQL, which may have been DDL. Default: nothing cached.
+    fn forget_meta(&self) {}
     /// Primary-key column names for a table (empty if none).
     async fn primary_key(&self, schema: &str, table: &str) -> DResult<Vec<String>>;
     /// Apply a single-cell edit; returns rows affected (0 ⇒ optimistic-concurrency conflict).
@@ -559,6 +819,11 @@ pub fn build_insert_sql(
     } else {
         quote_ident(table)
     };
+    // Every cell left to its default. `()`/`VALUES ()` is invalid outside MySQL (which in
+    // turn lacks this form — see `mysql::insert_sql`).
+    if values.is_empty() {
+        return (format!("INSERT INTO {qualified} DEFAULT VALUES"), binds);
+    }
     let sql = format!(
         "INSERT INTO {} ({}) VALUES ({})",
         qualified,
@@ -607,7 +872,7 @@ mod tests {
 
     #[test]
     fn where_clause_empty_filters() {
-        let (sql, binds) = build_where_clause(&[], &pg_ident, &pg_ph, &pg_text, 1);
+        let (sql, binds) = build_where_clause(&[], &[], &pg_ident, &pg_ph, &pg_text, 1);
         assert_eq!(sql, "");
         assert!(binds.is_empty());
     }
@@ -619,7 +884,7 @@ mod tests {
             ColumnFilter { column: "age".into(), op: FilterOp::Ge, value: Some("18".into()) },
             ColumnFilter { column: "email".into(), op: FilterOp::IsNotNull, value: None },
         ];
-        let (sql, binds) = build_where_clause(&f, &pg_ident, &pg_ph, &pg_text, 1);
+        let (sql, binds) = build_where_clause(&f, &[], &pg_ident, &pg_ph, &pg_text, 1);
         // Each bind carries the column's own type: without `::int4` the `age` comparison
         // reaches Postgres as `bigint >= text` and raises "operator does not exist".
         assert_eq!(
@@ -635,7 +900,7 @@ mod tests {
             ColumnFilter { column: "x".into(), op: FilterOp::Lt, value: Some("5".into()) },
             ColumnFilter { column: "y".into(), op: FilterOp::Like, value: Some("%foo%".into()) },
         ];
-        let (sql, binds) = build_where_clause(&f, &mysql_ident, &mysql_ph, &mysql_ident, 1);
+        let (sql, binds) = build_where_clause(&f, &[], &mysql_ident, &mysql_ph, &mysql_ident, 1);
         assert_eq!(sql, "`x` < ? AND `y` LIKE ?");
         assert_eq!(binds, vec![Some("5".into()), Some("%foo%".into())]);
     }
@@ -646,7 +911,7 @@ mod tests {
             ColumnFilter { column: "a".into(), op: FilterOp::Ne, value: Some("1".into()) },
             ColumnFilter { column: "b".into(), op: FilterOp::IsNull, value: None },
         ];
-        let (sql, binds) = build_where_clause(&f, &pg_ident, &sqlite_ph, &pg_ident, 3);
+        let (sql, binds) = build_where_clause(&f, &[], &pg_ident, &sqlite_ph, &pg_ident, 3);
         assert_eq!(sql, "\"a\" <> ?3 AND \"b\" IS NULL");
         assert_eq!(binds, vec![Some("1".into())]);
     }
@@ -658,7 +923,7 @@ mod tests {
             op: FilterOp::Eq,
             value: Some("v".into()),
         }];
-        let (sql, _binds) = build_where_clause(&f, &mssql_ident, &mssql_ph, &mssql_ident, 1);
+        let (sql, _binds) = build_where_clause(&f, &[], &mssql_ident, &mssql_ph, &mssql_ident, 1);
         assert_eq!(sql, "[col]]name] = @P1");
     }
 
@@ -669,9 +934,80 @@ mod tests {
             op: FilterOp::ILike,
             value: Some("%Bob%".into()),
         }];
-        let (sql, binds) = build_where_clause(&f, &pg_ident, &pg_ph, &pg_text, 1);
+        let (sql, binds) = build_where_clause(&f, &[], &pg_ident, &pg_ph, &pg_text, 1);
         assert_eq!(sql, "LOWER(\"name\"::text) LIKE LOWER($1::text)");
         assert_eq!(binds, vec![Some("%Bob%".into())]);
+    }
+
+    fn search(term: &str) -> Vec<ColumnFilter> {
+        vec![ColumnFilter { column: "*".into(), op: FilterOp::Search, value: Some(term.into()) }]
+    }
+    fn cols(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Search ORs a case-insensitive contains over every column's text rendering, one bind
+    /// per column (MySQL's `?` cannot be reused), each column cast by the engine's text_expr.
+    #[test]
+    fn search_expands_to_every_column_postgres() {
+        let (sql, binds) =
+            build_where_clause(&search("Bob"), &cols(&["id", "name"]), &pg_ident, &pg_ph, &pg_text, 1);
+        assert_eq!(
+            sql,
+            "(LOWER(\"id\"::text) LIKE LOWER($1::text) ESCAPE '!' \
+             OR LOWER(\"name\"::text) LIKE LOWER($2::text) ESCAPE '!')"
+        );
+        assert_eq!(binds, vec![Some("%Bob%".into()), Some("%Bob%".into())]);
+    }
+
+    #[test]
+    fn search_mysql_casts_and_binds_per_column() {
+        let cast = |c: &str| format!("CAST({} AS CHAR)", mysql_ident(c));
+        let (sql, binds) =
+            build_where_clause(&search("x"), &cols(&["a", "b"]), &mysql_ident, &mysql_ph, &cast, 1);
+        assert_eq!(
+            sql,
+            "(LOWER(CAST(`a` AS CHAR)) LIKE LOWER(?) ESCAPE '!' \
+             OR LOWER(CAST(`b` AS CHAR)) LIKE LOWER(?) ESCAPE '!')"
+        );
+        assert_eq!(binds.len(), 2);
+    }
+
+    /// The term's own wildcards match literally: `%`, `_`, the escape char `!` and SQL
+    /// Server's `[` class opener are escaped; a backslash is an ordinary character.
+    #[test]
+    fn search_term_wildcards_are_escaped() {
+        let (_, binds) =
+            build_where_clause(&search("5%_a!b[c\\d"), &cols(&["a"]), &pg_ident, &sqlite_ph, &pg_ident, 1);
+        assert_eq!(binds, vec![Some("%5!%!_a!!b![c\\d%".into())]);
+    }
+
+    /// Search composes with the other filters and keeps the placeholder numbering going.
+    #[test]
+    fn search_and_filters_number_on() {
+        let mut f = vec![ColumnFilter { column: "a".into(), op: FilterOp::Eq, value: Some("1".into()) }];
+        f.extend(search("q"));
+        let (sql, binds) =
+            build_where_clause(&f, &cols(&["a", "b"]), &mssql_ident, &mssql_ph, &mssql_ident, 3);
+        assert_eq!(
+            sql,
+            "[a] = @P3 AND (LOWER([a]) LIKE LOWER(@P4) ESCAPE '!' OR LOWER([b]) LIKE LOWER(@P5) ESCAPE '!')"
+        );
+        assert_eq!(binds.len(), 3);
+    }
+
+    #[test]
+    fn search_with_no_searchable_column_matches_nothing() {
+        let (sql, binds) = build_where_clause(&search("q"), &[], &pg_ident, &pg_ph, &pg_text, 1);
+        assert_eq!(sql, "1 = 0");
+        assert!(binds.is_empty());
+    }
+
+    #[test]
+    fn search_filter_deserializes_from_the_frontend_contract() {
+        let f: ColumnFilter =
+            serde_json::from_str(r#"{"column":"*","op":"Search","value":"bob"}"#).unwrap();
+        assert_eq!(f.op, FilterOp::Search);
     }
 
     #[test]
@@ -715,6 +1051,49 @@ mod tests {
             build_insert_sql("dbo", "tbl", &vals, &mssql_ident, &mssql_ph, true);
         assert_eq!(sql, "INSERT INTO [dbo].[tbl] ([a], [b]) VALUES (@P1, @P2)");
         assert_eq!(binds, vec![Some("1".into()), None]);
+    }
+
+    /// A draft with every cell left blank sends no columns. `INSERT INTO t () VALUES ()` is
+    /// MySQL-only syntax; the others spell an all-defaults row `DEFAULT VALUES`.
+    #[test]
+    fn insert_sql_with_no_values_inserts_defaults() {
+        let (sql, binds) = build_insert_sql("public", "users", &[], &pg_ident, &pg_ph, true);
+        assert_eq!(sql, "INSERT INTO \"public\".\"users\" DEFAULT VALUES", "postgres / duckdb");
+        assert!(binds.is_empty());
+        let (sql, _) = build_insert_sql("main", "users", &[], &pg_ident, &sqlite_ph, false);
+        assert_eq!(sql, "INSERT INTO \"users\" DEFAULT VALUES", "sqlite");
+        let (sql, _) = build_insert_sql("dbo", "tbl", &[], &mssql_ident, &mssql_ph, true);
+        assert_eq!(sql, "INSERT INTO [dbo].[tbl] DEFAULT VALUES", "sql server");
+    }
+
+    #[test]
+    fn cancel_token_flag_is_shared_by_clones_only() {
+        let t = CancelToken::new();
+        let (clone, other) = (t.clone(), CancelToken::new());
+        assert!(!t.is_cancelled());
+        clone.mark_cancelled();
+        assert!(t.is_cancelled() && !other.is_cancelled());
+        assert!(t.same(&clone) && !t.same(&other));
+    }
+
+    /// Each token's tag is its own, and `cancel` only scopes to it once a statement carries it.
+    #[test]
+    fn cancel_token_tag_is_unique_and_scopes_only_once_used() {
+        let (a, b) = (CancelToken::new(), CancelToken::new());
+        assert_eq!(a.scope(), None, "untagged: cancel targets the backend as before");
+        let (ta, tb) = (a.tag(), b.tag());
+        assert_ne!(ta, tb);
+        let pat = a.scope().unwrap();
+        assert!(pat.starts_with('%') && pat.ends_with('%') && pat.contains(ta.trim()));
+        assert_eq!(a.clone().scope(), Some(pat), "clones share it");
+        // Postgres names the session instead, so the statement text stays the same.
+        let (c, d) = (CancelToken::new(), CancelToken::new());
+        let lc = c.label();
+        assert!(lc.starts_with("tiq:") && lc != d.label());
+        assert_eq!(c.scope(), Some(lc), "the scope is the exact name");
+        let e = CancelToken::new();
+        e.scope_to("SELECT /*+ x */%");
+        assert_eq!(e.scope().as_deref(), Some("SELECT /*+ x */%"));
     }
 
     #[test]
@@ -813,6 +1192,104 @@ mod order_by_tests {
         assert_eq!(fk.to_schema, "");
         assert_eq!(fk.constraint, "");
         assert_eq!(fk.from_table, "orders");
+    }
+}
+
+#[cfg(test)]
+mod keyset_tests {
+    use super::*;
+
+    fn pg_ident(n: &str) -> String {
+        format!("\"{}\"", n.replace('"', "\"\""))
+    }
+    fn ph(i: usize, _c: &str) -> String {
+        format!("${i}")
+    }
+    fn key(c: &str, desc: bool) -> SortKey {
+        SortKey { column: c.into(), desc }
+    }
+    fn s(v: &[&str]) -> Vec<String> {
+        v.iter().map(|x| x.to_string()).collect()
+    }
+    fn vals(v: &[&str]) -> Vec<Option<String>> {
+        v.iter().map(|x| Some(x.to_string())).collect()
+    }
+
+    #[test]
+    fn single_column_asc() {
+        let (sql, binds) =
+            build_keyset(&[], &s(&["id"]), &vals(&["42"]), &pg_ident, &ph, 3, false).unwrap();
+        assert_eq!(sql, "_t.\"id\" > $3");
+        assert_eq!(binds, vals(&["42"]));
+    }
+
+    #[test]
+    fn single_column_desc() {
+        let (sql, _) =
+            build_keyset(&[key("id", true)], &s(&["id"]), &vals(&["42"]), &pg_ident, &ph, 1, false)
+                .unwrap();
+        assert_eq!(sql, "_t.\"id\" < $1");
+    }
+
+    #[test]
+    fn composite_row_value() {
+        let (sql, binds) =
+            build_keyset(&[], &s(&["a", "b"]), &vals(&["1", "x"]), &pg_ident, &ph, 1, false)
+                .unwrap();
+        assert_eq!(sql, "(_t.\"a\", _t.\"b\") > ($1, $2)");
+        assert_eq!(binds, vals(&["1", "x"]));
+    }
+
+    #[test]
+    fn composite_row_value_desc() {
+        let order = [key("a", true), key("b", true)];
+        let (sql, _) =
+            build_keyset(&order, &s(&["a", "b"]), &vals(&["1", "x"]), &pg_ident, &ph, 1, false)
+                .unwrap();
+        assert_eq!(sql, "(_t.\"a\", _t.\"b\") < ($1, $2)");
+    }
+
+    /// MySQL only range-scans the expanded form; SQL Server has no row values at all.
+    #[test]
+    fn composite_expanded() {
+        let (sql, binds) =
+            build_keyset(&[], &s(&["a", "b"]), &vals(&["1", "x"]), &pg_ident, &ph, 1, true)
+                .unwrap();
+        assert_eq!(sql, "(_t.\"a\" > $1 OR (_t.\"a\" = $2 AND _t.\"b\" > $3))");
+        assert_eq!(binds, vals(&["1", "1", "x"]));
+    }
+
+    #[test]
+    fn composite_expanded_desc() {
+        let order = [key("a", true), key("b", true)];
+        let (sql, _) =
+            build_keyset(&order, &s(&["a", "b"]), &vals(&["1", "x"]), &pg_ident, &ph, 1, true)
+                .unwrap();
+        assert_eq!(sql, "(_t.\"a\" < $1 OR (_t.\"a\" = $2 AND _t.\"b\" < $3))");
+    }
+
+    /// Sorting on a PK prefix still orders by exactly the PK (the rest is appended ASC).
+    #[test]
+    fn pk_prefix_sort_asc_applies() {
+        let order = [key("a", false)];
+        assert!(build_keyset(&order, &s(&["a", "b"]), &vals(&["1", "x"]), &pg_ident, &ph, 1, false)
+            .is_some());
+    }
+
+    #[test]
+    fn does_not_apply_when_the_order_is_not_the_pk() {
+        let pk = s(&["a", "b"]);
+        let after = vals(&["1", "x"]);
+        let none = |order: &[SortKey]| build_keyset(order, &pk, &after, &pg_ident, &ph, 1, false);
+        assert!(none(&[key("name", false)]).is_none(), "non-PK sort");
+        assert!(none(&[key("b", false)]).is_none(), "PK columns out of order");
+        assert!(none(&[key("a", true)]).is_none(), "mixed directions (b is appended ASC)");
+        assert!(build_keyset(&[], &[], &[], &pg_ident, &ph, 1, false).is_none(), "no PK");
+        assert!(build_keyset(&[], &pk, &vals(&["1"]), &pg_ident, &ph, 1, false).is_none(), "short cursor");
+        assert!(
+            build_keyset(&[], &pk, &[Some("1".into()), None], &pg_ident, &ph, 1, false).is_none(),
+            "NULL key value"
+        );
     }
 }
 

@@ -44,7 +44,7 @@ async fn row_count_is_positive() {
         return;
     };
     let drv = PgDriver::connect(&url).await.unwrap();
-    let c = drv.count_rows("public", "wide", &[]).await.unwrap();
+    let c = drv.count_rows("public", "wide", &[], None).await.unwrap();
     let n = c.count.expect("wide must report a count");
     assert!(n > 0, "count should be > 0, got {n}");
 }

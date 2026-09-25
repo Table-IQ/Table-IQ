@@ -1,6 +1,6 @@
 [package]
 name = "tableiq"
-version = "0.2.0"
+version = "0.3.0"
 description = "TableIQ — fast, local-first, AI-assisted database client"
 authors = ["Rudresh Narwal"]
 edition = "2021"
@@ -52,6 +52,7 @@ russh = "0.45"
 tiberius = { version = "0.12", default-features = false, features = ["tds73", "rustls", "chrono"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 extism = "1"
+duckdb = { version = "1", features = ["bundled"] }
 
 [dev-dependencies]
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "mysql", "sqlite", "json"] }

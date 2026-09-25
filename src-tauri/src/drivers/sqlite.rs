@@ -11,7 +11,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteQueryResult, S
 use sqlx::{Pool, Row, Sqlite};
 
 use super::{
-    build_insert_sql, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
+    build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
     ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec, ForeignKey, IndexInfo,
     ObjectInfo, ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver,
     StmtOutput, TableStructure, TriggerInfo,
@@ -230,9 +230,13 @@ impl SqlDriver for SqliteDriver {
         _schema: &str,
         table: &str,
         filters: &[ColumnFilter],
+        _force_exact: Option<&CancelToken>,
     ) -> DResult<RowCount> {
+        let cols: Vec<String> =
+            self.columns_of(table).await?.into_iter().map(|c| c.name).collect();
         let (where_sql, binds) = build_where_clause(
             filters,
+            &cols,
             &quote_ident,
             &sqlite_placeholder,
             &quote_ident,
@@ -258,26 +262,36 @@ impl SqlDriver for SqliteDriver {
         len: usize,
         filters: &[ColumnFilter],
         order: &[SortKey],
+        after: Option<&[Option<String>]>,
     ) -> DResult<RecordBatch> {
         let cols: Vec<String> =
             self.columns_of(table).await?.into_iter().map(|c| c.name).collect();
         if cols.is_empty() {
             return Err(DriverError::Db(format!("no such table {table}")));
         }
-        let pk = self.primary_key(_schema, table).await?;
-        let order_sql = build_order_by(order, &pk, &cols, &quote_ident)?;
+        let pk = &self.primary_key(_schema, table).await?;
+        let order_sql = build_order_by(order, pk, &cols, &quote_ident)?;
         let select_list = cols
             .iter()
             .map(|c| format!("CAST({0} AS TEXT) AS {0}", quote_ident(c)))
             .collect::<Vec<_>>()
             .join(", ");
-        let (where_sql, binds) = build_where_clause(
+        let (mut where_sql, mut binds) = build_where_clause(
             filters,
+            &cols,
             &quote_ident,
             &sqlite_placeholder,
             &quote_ident,
             1,
         );
+        let mut offset = offset;
+        if let Some((k, kb)) =
+            after.and_then(|a| build_keyset(order, pk, a, &quote_ident, &sqlite_placeholder, binds.len() + 1, false))
+        {
+            where_sql = if where_sql.is_empty() { k } else { format!("{where_sql} AND {k}") };
+            binds.extend(kb);
+            offset = 0;
+        }
         let off_ph = format!("?{}", binds.len() + 1);
         let lim_ph = format!("?{}", binds.len() + 2);
         let q = format!(
@@ -383,9 +397,6 @@ impl SqlDriver for SqliteDriver {
         table: &str,
         values: &[(String, Option<String>)],
     ) -> DResult<u64> {
-        if values.is_empty() {
-            return Err(DriverError::Db("no columns to insert".into()));
-        }
         let (sql, binds) =
             build_insert_sql(_schema, table, values, &quote_ident, &sqlite_placeholder, false);
         let mut q = sqlx::query(&sql);
@@ -529,15 +540,11 @@ impl SqlDriver for SqliteDriver {
         })
     }
 
+    /// None: the connection *is* one file, and `switch_database` refuses file engines.
+    /// Listing `PRAGMA database_list`'s `main` offered a switch that opened a new, empty
+    /// file called `main`.
     async fn list_databases(&self) -> DResult<Vec<String>> {
-        // SQLite is a single-file engine — `PRAGMA database_list` returns the
-        // attached databases (always at least `main`). We expose them as labels
-        // so the picker doesn't disappear for SQLite users.
-        let rows = sqlx::query("PRAGMA database_list")
-            .fetch_all(&self.pool)
-            .await
-            .map_err(db)?;
-        Ok(rows.iter().filter_map(|r| r.try_get::<String, _>("name").ok()).collect())
+        Ok(Vec::new())
     }
 }
 

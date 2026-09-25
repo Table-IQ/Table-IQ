@@ -31,6 +31,7 @@ async fn sqlite_browse_and_edit() {
         .unwrap();
 
     let drv = SqliteDriver::connect(path.to_str().unwrap()).await.unwrap();
+    assert!(drv.list_databases().await.unwrap().is_empty(), "a file has no other databases");
 
     // introspect
     let model = drv.introspect().await.unwrap();

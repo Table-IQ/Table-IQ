@@ -9,6 +9,12 @@
  */
 export type SqlDialect = "postgres" | "mysql" | "sqlite" | "sqlserver";
 
+/** The splitting dialect for a connection's engine. DuckDB (and anything without a
+ *  dialect of its own) splits like Postgres — `$$` bodies, nested block comments. */
+export function dialectFor(engine: string | undefined): SqlDialect {
+  return engine === "mysql" || engine === "sqlite" || engine === "sqlserver" ? engine : "postgres";
+}
+
 export interface SqlStatement {
   text: string;
   /** Doc-coords [from, to) covering `text` exactly: `doc.slice(from, to) === text`. */

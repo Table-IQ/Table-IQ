@@ -14,9 +14,10 @@ use arrow::record_batch::RecordBatch;
 use crate::connections::{self, ConnConfig, ConnStore};
 use crate::lk;
 use crate::drivers::{
-    doc_mongo::MongoDriver, kv_redis::RedisDriver, mysql::MySqlDriver, postgres::PgDriver,
-    sqlite::SqliteDriver, sqlserver::SqlServerDriver, CancelToken, ColumnFilter, DocumentDriver,
-    DriverError, EditSpec, KeyInfo, KvDriver, KvValue, SchemaModel, SortKey, SqlDriver,
+    doc_mongo::MongoDriver, duckdb::DuckDriver, kv_redis::RedisDriver, mysql::MySqlDriver,
+    postgres::PgDriver, sqlite::SqliteDriver, sqlserver::SqlServerDriver, CancelToken,
+    ColumnFilter, DocumentDriver, DriverError, EditSpec, KeyInfo, KvDriver, KvValue, SchemaModel,
+    SortKey, SqlDriver,
 };
 use crate::ssh::tunnel::{RemoteTarget, Tunnel};
 use crate::ssh::SshAuth;
@@ -75,7 +76,8 @@ pub struct ConnState {
     results: Mutex<ResultStore>,
     /// Live SSH tunnels keyed by conn id. Dropping a `Tunnel` (on disconnect/delete) tears it down.
     tunnels: Mutex<HashMap<String, Tunnel>>,
-    /// In-flight query cancel tokens keyed by client-supplied query id (plan spec #6).
+    /// In-flight cancel tokens keyed by client-supplied query id (plan spec #6), or by a
+    /// page fetch's `request_key`.
     cancels: Mutex<HashMap<String, CancelToken>>,
     /// Saved queries + searchable run history (persisted JSON).
     library: Mutex<crate::library::QueryLibrary>,
@@ -83,7 +85,7 @@ pub struct ConnState {
 
 /// If `cfg` has SSH enabled, open a tunnel to the bastion forwarding to the remote DB and return
 /// it alongside a `ConnConfig` whose host/port point at the local forward. Otherwise returns the
-/// config unchanged and no tunnel. sqlite (a file engine) ignores SSH.
+/// config unchanged and no tunnel. File engines (sqlite, duckdb) ignore SSH.
 ///
 /// `conn_id` is used to read the SSH secret (key passphrase / bastion password) from the keychain
 /// under `ssh:<conn_id>`.
@@ -92,7 +94,7 @@ async fn maybe_open_tunnel(
     conn_id: &str,
 ) -> Result<(ConnConfig, Option<Tunnel>), String> {
     let ssh = match &cfg.ssh {
-        Some(s) if s.enabled && cfg.engine != "sqlite" => s,
+        Some(s) if s.enabled && !cfg.is_file_engine() => s,
         _ => return Ok((cfg.clone(), None)),
     };
     // Agent auth needs no stored secret; password/keyfile read the keychain (may be empty).
@@ -126,7 +128,7 @@ async fn maybe_open_tunnel(
     Ok((rewritten, Some(tunnel)))
 }
 
-/// Build the right driver for an engine. `pw` is unused for sqlite.
+/// Build the right driver for an engine. `pw` is unused for the file engines.
 async fn open_driver(cfg: &ConnConfig, pw: &str) -> Result<Arc<dyn SqlDriver>, String> {
     // SQL Server takes the parts, not a URL: tiberius' ADO string has no escaping rule for a
     // password containing `;` or `=`, and it is where `sslmode` becomes a TDS encryption level.
@@ -140,8 +142,10 @@ async fn open_driver(cfg: &ConnConfig, pw: &str) -> Result<Arc<dyn SqlDriver>, S
     let url = cfg.url_with_password(pw);
     let drv: Arc<dyn SqlDriver> = match cfg.engine.as_str() {
         "sqlite" => Arc::new(SqliteDriver::connect(&url).await.map_err(|e| e.to_string())?),
+        "duckdb" => Arc::new(DuckDriver::connect(&url).await.map_err(|e| e.to_string())?),
         "mysql" => Arc::new(MySqlDriver::connect(&url).await.map_err(|e| e.to_string())?),
-        _ => Arc::new(PgDriver::connect(&url).await.map_err(|e| e.to_string())?),
+        "postgres" => Arc::new(PgDriver::connect(&url).await.map_err(|e| e.to_string())?),
+        other => return Err(format!("unsupported engine {other}")),
     };
     Ok(drv)
 }
@@ -293,8 +297,8 @@ pub async fn connect(state: State<'_, ConnState>, id: String) -> Result<Connecte
             .cloned()
             .ok_or_else(|| "unknown connection".to_string())?
     };
-    // sqlite needs no keychain password; others read it (redis password optional).
-    let password = if cfg.engine == "sqlite" {
+    // file engines need no keychain password; others read it (redis password optional).
+    let password = if cfg.is_file_engine() {
         String::new()
     } else {
         connections::get_password(&id).unwrap_or_default()
@@ -372,6 +376,15 @@ pub async fn list_databases(state: State<'_, ConnState>, id: String) -> Result<V
     Err("not connected".to_string())
 }
 
+/// `cfg` pointed at `database`. A file engine's `database` is its file path, so "switching"
+/// would open — and create — an empty file named after the catalog: refused.
+fn switch_target(cfg: &ConnConfig, database: String) -> Result<ConnConfig, String> {
+    if cfg.is_file_engine() {
+        return Err("A file database has no other databases to switch to — open another file as its own connection".into());
+    }
+    Ok(ConnConfig { database, ..cfg.clone() })
+}
+
 /// Switch the active connection to a different database without persisting the
 /// change to the saved `ConnConfig`. Tears down the current session and opens a
 /// fresh one against the same server + credentials but with `database` swapped
@@ -394,10 +407,9 @@ pub async fn switch_database(
             .cloned()
             .ok_or_else(|| "unknown connection".to_string())?
     };
-    let mut new_cfg = cfg.clone();
-    new_cfg.database = database;
+    let new_cfg = switch_target(&cfg, database)?;
 
-    let password = if new_cfg.engine == "sqlite" {
+    let password = if new_cfg.is_file_engine() {
         String::new()
     } else {
         connections::get_password(&id).unwrap_or_default()
@@ -502,6 +514,8 @@ pub async fn kv_get(state: State<'_, ConnState>, id: String, key: String) -> Res
 #[tauri::command]
 pub async fn list_objects(state: State<'_, ConnState>, id: String) -> Result<SchemaModel, String> {
     let drv = state.session(&id)?;
+    // The sidebar Refresh: the grid's cached column lists / PKs are re-read on next page.
+    drv.forget_meta();
     drv.introspect().await.map_err(|e| e.to_string())
 }
 
@@ -515,7 +529,55 @@ pub async fn open_table(
 ) -> Result<OpenTableInfo, String> {
     let drv = state.session(&id)?;
     let f = filters.unwrap_or_default();
-    let c = drv.count_rows(&schema, &table, &f).await.map_err(|e| e.to_string())?;
+    let c = drv.count_rows(&schema, &table, &f, None).await.map_err(|e| e.to_string())?;
+    Ok(OpenTableInfo { count: c.count, exact: c.exact })
+}
+
+/// The catalog's row estimate (never a scan); `null` for a view or an engine without one.
+#[tauri::command]
+pub async fn estimate_rows(
+    state: State<'_, ConnState>,
+    id: String,
+    schema: String,
+    table: String,
+) -> Result<Option<i64>, String> {
+    let drv = state.session(&id)?;
+    drv.estimate_rows(&schema, &table).await.map_err(|e| e.to_string())
+}
+
+/// An exact, unbounded `COUNT(*)` — the "count exactly" the UI offers when `open_table`
+/// returned an estimate. Registered under `token_id` like `run_query`, so `cancel_query`
+/// stops it.
+#[tauri::command]
+pub async fn count_rows_exact(
+    state: State<'_, ConnState>,
+    id: String,
+    schema: String,
+    table: String,
+    filters: Option<Vec<ColumnFilter>>,
+    token_id: String,
+) -> Result<OpenTableInfo, String> {
+    let drv = state.session(&id)?;
+    exact_count(&state.cancels, drv.as_ref(), &schema, &table, &filters.unwrap_or_default(), &token_id).await
+}
+
+/// The body of [`count_rows_exact`], outside Tauri so it can be tested.
+pub async fn exact_count(
+    cancels: &Mutex<HashMap<String, CancelToken>>,
+    drv: &dyn SqlDriver,
+    schema: &str,
+    table: &str,
+    filters: &[ColumnFilter],
+    token_id: &str,
+) -> Result<OpenTableInfo, String> {
+    let token = CancelToken::new();
+    lk(cancels).insert(token_id.to_string(), token.clone());
+    let res = drv.count_rows(schema, table, filters, Some(&token)).await;
+    lk(cancels).remove(token_id);
+    let c = res.map_err(|e| match e {
+        DriverError::Cancelled => "Query cancelled".to_string(),
+        other => other.to_string(),
+    })?;
     Ok(OpenTableInfo { count: c.count, exact: c.exact })
 }
 
@@ -530,16 +592,70 @@ pub async fn get_table_window(
     len: usize,
     filters: Option<Vec<ColumnFilter>>,
     order: Option<Vec<SortKey>>,
+    after: Option<Vec<Option<String>>>,
+    request_key: Option<String>,
 ) -> Result<Response, String> {
     let drv = state.session(&id)?;
     let f = filters.unwrap_or_default();
     let o = order.unwrap_or_default();
-    let batch = drv
-        .open_window_filtered(&schema, &table, offset, len, &f, &o)
-        .await
-        .map_err(|e| e.to_string())?;
+    // `after` (the previous page's last-row key) lets the driver seek instead of OFFSET.
+    let batch = table_window(
+        &state.cancels,
+        drv.as_ref(),
+        &schema,
+        &table,
+        offset,
+        len,
+        &f,
+        &o,
+        after.as_deref(),
+        request_key.as_deref(),
+    )
+    .await?;
     let bytes = crate::query::window::encode_ipc(&batch).map_err(|e| e.to_string())?;
     Ok(Response::new(bytes))
+}
+
+/// The body of [`get_table_window`], outside Tauri so it can be tested. The page is
+/// cancellable and, when filtered, bounded (see [`SqlDriver::open_window_cancellable`]).
+/// Under a `request_key` (the tab), a newer page cancels the one still in flight — the tab
+/// has moved on to a new search term or page — and a superseded page fails "Query cancelled".
+#[allow(clippy::too_many_arguments)]
+pub async fn table_window(
+    cancels: &Mutex<HashMap<String, CancelToken>>,
+    drv: &dyn SqlDriver,
+    schema: &str,
+    table: &str,
+    offset: usize,
+    len: usize,
+    filters: &[ColumnFilter],
+    order: &[SortKey],
+    after: Option<&[Option<String>]>,
+    request_key: Option<&str>,
+) -> Result<RecordBatch, String> {
+    let token = CancelToken::new();
+    if let Some(key) = request_key {
+        let prev = lk(cancels).insert(key.to_string(), token.clone());
+        if let Some(prev) = prev {
+            prev.mark_cancelled();
+            // Best effort: an engine without server-side cancel lets the old page finish.
+            let _ = drv.cancel(&prev).await;
+        }
+    }
+    let res = drv
+        .open_window_cancellable(schema, table, offset, len, filters, order, after, &token)
+        .await;
+    if let Some(key) = request_key {
+        let mut c = lk(cancels);
+        // Only our own entry: a newer page may already hold the key.
+        if c.get(key).is_some_and(|t| t.same(&token)) {
+            c.remove(key);
+        }
+    }
+    res.map_err(|e| match e {
+        DriverError::Cancelled => "Query cancelled".to_string(),
+        other => other.to_string(),
+    })
 }
 
 /// Insert a single row built from `(column, text_value)` pairs (Slice 21 #2).
@@ -590,7 +706,8 @@ pub struct StatementResultMeta {
     pub result_id: Option<String>,
     pub columns: Vec<ColumnMeta>,
     pub row_count: usize,
-    pub total_rows: u64,
+    /// `None`: reading stopped at the cap, so the total is unknown.
+    pub total_rows: Option<u64>,
     pub truncated: bool,
     pub rows_affected: Option<u64>,
     pub exec_ms: u64,
@@ -615,6 +732,8 @@ pub async fn run_query(
     lk(&state.cancels).insert(query_id.clone(), token.clone());
     let res = drv.run_statements(&statements, QUERY_CAP, &token).await;
     lk(&state.cancels).remove(&query_id);
+    // User SQL may have been DDL; don't page a table with a stale column list.
+    drv.forget_meta();
 
     // History records the whole run once, success or failure — the same "one entry per Run
     // press" semantics the single-statement version had.
@@ -673,11 +792,25 @@ pub async fn cancel_query(
     id: String,
     query_id: String,
 ) -> Result<(), String> {
-    let token = lk(&state.cancels).get(&query_id).cloned();
+    if !lk(&state.cancels).contains_key(&query_id) {
+        return Ok(()); // already completed/removed
+    }
+    let drv = state.session(&id)?;
+    cancel_registered(&state.cancels, drv.as_ref(), &query_id).await
+}
+
+/// The body of [`cancel_query`], outside Tauri so it can be tested.
+pub async fn cancel_registered(
+    cancels: &Mutex<HashMap<String, CancelToken>>,
+    drv: &dyn SqlDriver,
+    query_id: &str,
+) -> Result<(), String> {
+    let token = lk(cancels).get(query_id).cloned();
     let Some(token) = token else {
         return Ok(()); // already completed/removed
     };
-    let drv = state.session(&id)?;
+    // A page fetch tells this apart from its own statement timeout by the flag.
+    token.mark_cancelled();
     match drv.cancel(&token).await {
         Ok(()) => Ok(()),
         Err(DriverError::NotImplemented) => {
@@ -749,15 +882,30 @@ pub async fn export_table(
     order: Option<Vec<SortKey>>,
 ) -> Result<String, String> {
     let drv = state.session(&id)?;
-    let f = filters.unwrap_or_default();
-    let o = order.unwrap_or_default();
+    let (f, o) = (filters.unwrap_or_default(), order.unwrap_or_default());
+    table_export(drv.as_ref(), &schema, &table, &format, &f, &o).await
+}
+
+/// The body of [`export_table`], outside Tauri so it can be tested.
+pub async fn table_export(
+    drv: &dyn SqlDriver,
+    schema: &str,
+    table: &str,
+    format: &str,
+    filters: &[ColumnFilter],
+    order: &[SortKey],
+) -> Result<String, String> {
     // Export up to the same cap as queries (bounded), through the same filtered+ordered
     // window the grid shows.
-    let batch = drv
-        .open_window_filtered(&schema, &table, 0, QUERY_CAP, &f, &o)
+    let mut batch = drv
+        .open_window_filtered(schema, table, 0, QUERY_CAP, filters, order, None)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(encode_export(&batch, &format))
+    // The ctid cursor column is paging plumbing, not table data.
+    if let Ok(i) = batch.schema().index_of(crate::drivers::postgres::CTID_COL) {
+        batch.remove_column(i);
+    }
+    Ok(encode_export(&batch, format))
 }
 
 #[derive(Serialize)]
@@ -773,8 +921,9 @@ pub async fn run_script(
     sql: String,
 ) -> Result<ScriptResult, String> {
     let drv = state.session(&id)?;
-    let rows_affected = drv.run_script(&sql).await.map_err(|e| e.to_string())?;
-    Ok(ScriptResult { rows_affected })
+    let res = drv.run_script(&sql).await;
+    drv.forget_meta(); // the script may have been DDL, as in run_query
+    Ok(ScriptResult { rows_affected: res.map_err(|e| e.to_string())? })
 }
 
 #[tauri::command]
@@ -862,7 +1011,7 @@ async fn introspect_any(state: &ConnState, id: &str) -> Result<SchemaModel, Stri
     if matches!(cfg.engine.as_str(), "redis" | "mongodb") {
         return Err("schema diff supports SQL connections only".into());
     }
-    let pw = if cfg.engine == "sqlite" {
+    let pw = if cfg.is_file_engine() {
         String::new()
     } else {
         connections::get_password(id).unwrap_or_default()
@@ -1476,6 +1625,25 @@ mod tests {
         )
     }
 
+    /// An engine this build doesn't know must not silently become a Postgres connection.
+    #[tokio::test]
+    async fn open_driver_refuses_an_unknown_engine() {
+        let cfg = ConnConfig {
+            id: "x".into(),
+            name: "x".into(),
+            color: None,
+            engine: "oracle".into(),
+            host: "127.0.0.1".into(),
+            port: 1,
+            database: "d".into(),
+            username: "u".into(),
+            sslmode: "prefer".into(),
+            ssh: None,
+        };
+        let err = open_driver(&cfg, "").await.err().expect("unknown engine must fail");
+        assert!(err.contains("unsupported engine oracle"), "got {err}");
+    }
+
     #[test]
     fn parquet_import_rejects_a_smuggled_sql_type() {
         // This check runs whether or not `create_table` is set, so the injection is refused
@@ -1571,6 +1739,30 @@ mod tests {
         // A real export destination outside the config dir still works.
         let ok = tmp.path().join("result.csv");
         assert_eq!(check_export_path_in(ok.to_str().unwrap(), &app), Ok(()));
+    }
+
+    /// A file engine's `database` is its file path: "switching" to the catalog name the
+    /// picker showed opened (and created) an empty file of that name.
+    #[test]
+    fn switching_database_is_refused_for_file_engines() {
+        let cfg = |engine: &str, database: &str| ConnConfig {
+            id: "x".into(),
+            name: "x".into(),
+            color: None,
+            engine: engine.into(),
+            host: "h".into(),
+            port: 0,
+            database: database.into(),
+            username: "".into(),
+            sslmode: "prefer".into(),
+            ssh: None,
+        };
+        for e in ["duckdb", "sqlite"] {
+            let err = switch_target(&cfg(e, "/tmp/a.db"), "main".into()).expect_err(e);
+            assert!(err.contains("file"), "{e}: {err}");
+        }
+        let pg = switch_target(&cfg("postgres", "app"), "other".into()).expect("postgres switches");
+        assert_eq!(pg.database, "other");
     }
 
     #[test]

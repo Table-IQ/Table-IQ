@@ -25,6 +25,24 @@ export function decodeWindow(buf: Uint8Array): DecodedWindow {
 }
 
 /**
+ * The cells of `win` whose text contains `term` (case-insensitive), as
+ * `row * columns.length + colIndex`. One pass per page, so the grid's
+ * per-cell highlight check is a Set lookup instead of a lowercase + scan.
+ */
+export function searchHits(win: DecodedWindow, columns: string[], term: string): Set<number> {
+  const hits = new Set<number>();
+  const t = term.toLowerCase();
+  if (t === "") return hits;
+  for (let c = 0; c < columns.length; c++) {
+    for (let r = 0; r < win.numRows; r++) {
+      const v = win.getCell(r, columns[c]);
+      if (v !== null && v.toLowerCase().includes(t)) hits.add(r * columns.length + c);
+    }
+  }
+  return hits;
+}
+
+/**
  * LRU cache of decoded page-windows. Keeps at most `maxPages` resident so the JS
  * heap stays bounded regardless of total result size (the Phase 0 gate).
  */
@@ -55,6 +73,11 @@ export class WindowCache {
       const oldest = this.pages.keys().next().value as number;
       this.pages.delete(oldest);
     }
+  }
+
+  /** The decoded page holding `globalRow`, without touching LRU order. */
+  windowOf(globalRow: number): DecodedWindow | undefined {
+    return this.pages.get(this.pageOf(globalRow));
   }
 
   /** Cell for a global row, or undefined if its page isn't loaded (a SQL NULL

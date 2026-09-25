@@ -1,15 +1,15 @@
 //! Task 3: `run_statements` against real engines — statements run **as written**, so DML, DDL,
 //! `SHOW`, `EXPLAIN` and a bare `SELECT 1;` all work, and a script reports one output each.
 //!
-//! SQLite always runs (tempfile). Postgres and MySQL are gated:
+//! SQLite and DuckDB always run (tempfile). Postgres and MySQL are gated:
 //!   TIQ_PG_URL=postgres://postgres:tableiq@127.0.0.1:55432/tableiq \
 //!   TIQ_MYSQL_URL=mysql://root:tableiq@127.0.0.1:53306/tableiq \
 //!     cargo test --test exec_live -- --nocapture
 
 use arrow::array::{Array, StringArray};
 use tableiq_lib::drivers::{
-    mysql::MySqlDriver, postgres::PgDriver, sqlite::SqliteDriver, CancelToken, SqlDriver,
-    StmtOutput,
+    duckdb::DuckDriver, mysql::MySqlDriver, postgres::PgDriver, sqlite::SqliteDriver, CancelToken,
+    SqlDriver, StmtOutput,
 };
 
 fn tok() -> CancelToken {
@@ -42,6 +42,43 @@ async fn one(drv: &dyn SqlDriver, sql: &str) -> StmtOutput {
     let o = outs.remove(0);
     assert!(o.error.is_none(), "{sql} errored: {:?}", o.error);
     o
+}
+
+/// Run one statement under `cap` and unwrap the single output, asserting it did not error.
+async fn one_capped(drv: &dyn SqlDriver, sql: &str, cap: usize) -> StmtOutput {
+    let o = drv.run_statements(&v(&[sql]), cap, &tok()).await.expect("run").remove(0);
+    assert!(o.error.is_none(), "{sql} errored: {:?}", o.error);
+    o
+}
+
+/// sqlx engines: a statement followed by another has to be read to the end before the
+/// connection can run the next one, so there it still counts past the cap.
+async fn counts_before_another_statement(drv: &dyn SqlDriver, series: &str) {
+    let outs = drv.run_statements(&v(&[series, "SELECT 1"]), 100, &tok()).await.expect("two");
+    assert_eq!((outs[0].row_count, outs[0].total_rows, outs[0].truncated), (100, Some(1000), true));
+    assert_eq!(cell(&outs[1], 0, 0).as_deref(), Some("1"));
+}
+
+/// A read-only-looking last statement that stops at the cap is cancelled — so if it did
+/// write (a function with side effects), that write is gone, and the output says so.
+async fn stopping_early_says_writes_were_rolled_back(drv: &dyn SqlDriver, series: &str) {
+    let o = one_capped(drv, series, 100).await;
+    assert_eq!(
+        o.notice.as_deref(),
+        Some("Stopped reading after 100 rows; the statement was cancelled, so any writes it made (e.g. via functions) were rolled back."),
+    );
+    let o = one_capped(drv, series, 1000).await;
+    assert_eq!(o.notice, None, "a statement read to the end was not cancelled");
+}
+
+/// An all-blank "+ Row" draft sends no columns: the row is every column's DEFAULT
+/// (`DEFAULT VALUES`, or MySQL's `() VALUES ()` — never the invalid `() VALUES ()` elsewhere).
+async fn inserts_an_all_defaults_row(drv: &dyn SqlDriver, schema: &str, t: &str) {
+    let _ = drv.run_statements(&v(&[&format!("DROP TABLE IF EXISTS {t}")]), 10, &tok()).await;
+    one(drv, &format!("CREATE TABLE {t} (n INT DEFAULT 7)")).await;
+    assert_eq!(drv.insert_row(schema, t, &[]).await.expect("all-defaults insert"), 1);
+    assert_eq!(cell(&one(drv, &format!("SELECT n FROM {t}")).await, 0, 0).as_deref(), Some("7"));
+    let _ = drv.run_statements(&v(&[&format!("DROP TABLE {t}")]), 10, &tok()).await;
 }
 
 /// The cases every engine must satisfy. `series` yields 1000 rows in column `n`;
@@ -86,13 +123,16 @@ async fn shared_cases(drv: &dyn SqlDriver, series: &str, t: &str) {
     assert_eq!(cell(&o, 0, 0), None, "NULL must stay null");
     assert_eq!(cell(&o, 0, 1).as_deref(), Some(""), "'' must stay an empty string");
 
-    // ── cap: collect 100, still count all 1000 ─────────────────────────────
+    // ── cap: collect 100 and stop reading — the total is unknown ───────────
     let mut outs = drv.run_statements(&v(&[series]), 100, &tok()).await.expect("series");
     let o = outs.remove(0);
     assert!(o.error.is_none(), "series errored: {:?}", o.error);
     assert_eq!(o.row_count, 100, "row_count must stop at the cap");
-    assert_eq!(o.total_rows, 1000, "total_rows must count past the cap");
+    assert_eq!(o.total_rows, None, "reading stops past the cap, so the total is unknown");
     assert!(o.truncated);
+    // A result with room to spare still reports its exact total.
+    let o = drv.run_statements(&v(&[series]), 1000, &tok()).await.expect("series").remove(0);
+    assert_eq!((o.row_count, o.total_rows, o.truncated), (1000, Some(1000), false));
 
     // ── an error in statement 2 of 3 stops the run ─────────────────────────
     let outs = drv
@@ -132,6 +172,9 @@ async fn sqlite_run_statements() {
     let series = "WITH RECURSIVE s(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 1000) \
                   SELECT n FROM s";
     shared_cases(&drv, series, "tiq_exec_sqlite").await;
+    counts_before_another_statement(&drv, series).await;
+    inserts_an_all_defaults_row(&drv, "main", "tiq_defaults_sqlite").await;
+    stopping_early_says_writes_were_rolled_back(&drv, series).await;
 
     // SQLite is dynamically typed: INTEGER/REAL must render as numbers, not raw bytes.
     let o = one(&drv, "SELECT 42 AS i, 1.5 AS r, 'txt' AS t").await;
@@ -144,6 +187,34 @@ async fn sqlite_run_statements() {
     assert_eq!(o.row_count, 1);
 }
 
+/// DuckDB is in-process, so like SQLite it always runs (temp file, never a server).
+#[tokio::test]
+async fn duckdb_run_statements() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("exec.duckdb");
+    let drv = DuckDriver::connect(path.to_str().unwrap()).await.expect("connect duckdb");
+    shared_cases(&drv, "SELECT * FROM range(1, 1001) t(n)", "tiq_exec_duck").await;
+    inserts_an_all_defaults_row(&drv, "main", "tiq_defaults_duck").await;
+
+    // Typed values render as DuckDB-ish text, not debug output.
+    let o = one(&drv, "SELECT 42 AS i, 1.5::DECIMAL(4,2) AS d, DATE '2024-01-02' AS dt, true AS b").await;
+    assert_eq!(cell(&o, 0, 0).as_deref(), Some("42"));
+    assert_eq!(cell(&o, 0, 1).as_deref(), Some("1.50"));
+    assert_eq!(cell(&o, 0, 2).as_deref(), Some("2024-01-02"));
+    assert_eq!(cell(&o, 0, 3).as_deref(), Some("true"));
+
+    // Query-shaped statements beyond SELECT return rows; RETURNING returns rows, not a count.
+    for sql in ["SHOW TABLES", "DESCRIBE SELECT 1 AS x", "EXPLAIN SELECT 1", "PRAGMA database_list"] {
+        assert!(one(&drv, sql).await.batch.is_some(), "{sql} must return a result set");
+    }
+    one(&drv, "CREATE TABLE tiq_ret (id int)").await;
+    let o = one(&drv, "INSERT INTO tiq_ret VALUES (7) RETURNING id").await;
+    assert_eq!(cell(&o, 0, 0).as_deref(), Some("7"), "RETURNING rows must come back");
+    // `SET` / `BEGIN; COMMIT` answer DuckDB's `Success` status, which is not a grid.
+    let o = one(&drv, "SET threads = 2").await;
+    assert!(o.batch.is_none() && o.rows_affected.is_none(), "{o:?}");
+}
+
 #[tokio::test]
 async fn pg_run_statements() {
     let Ok(url) = std::env::var("TIQ_PG_URL") else {
@@ -152,6 +223,9 @@ async fn pg_run_statements() {
     };
     let drv = PgDriver::connect(&url).await.expect("connect pg");
     shared_cases(&drv, "SELECT * FROM generate_series(1, 1000)", "tiq_exec_pg").await;
+    counts_before_another_statement(&drv, "SELECT * FROM generate_series(1, 1000)").await;
+    inserts_an_all_defaults_row(&drv, "public", "tiq_defaults_pg").await;
+    stopping_early_says_writes_were_rolled_back(&drv, "SELECT * FROM generate_series(1, 1000)").await;
 
     // SHOW / EXPLAIN — neither survives the old `SELECT * FROM (…) AS _q` wrapper.
     let o = one(&drv, "SHOW server_version").await;
@@ -165,6 +239,36 @@ async fn pg_run_statements() {
     let o = one(&drv, "WITH x AS (INSERT INTO tiq_exec_cte VALUES (7) RETURNING id) SELECT * FROM x").await;
     assert_eq!(cell(&o, 0, 0).as_deref(), Some("7"), "RETURNING rows must come back");
     let _ = drv.run_statements(&v(&["DROP TABLE tiq_exec_cte"]), 10, &tok()).await;
+
+    // A trillion-row table in the query tab: the run returns the cap at once instead of
+    // reading every row to count them, and the server stops scanning.
+    let big: bool = sqlx::query_scalar("SELECT to_regclass('big.events') IS NOT NULL")
+        .fetch_one(&sqlx::PgPool::connect(&url).await.unwrap())
+        .await
+        .unwrap();
+    if big {
+        let start = std::time::Instant::now();
+        let o = one_capped(&drv, "SELECT * FROM big.events", 50_000).await;
+        assert!(start.elapsed() < std::time::Duration::from_secs(1), "took {:?}", start.elapsed());
+        assert_eq!((o.row_count, o.total_rows, o.truncated), (50_000, None, true));
+        let admin = sqlx::PgPool::connect(&url).await.unwrap();
+        let mut running = 1i64;
+        for _ in 0..40 {
+            running = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_stat_activity WHERE query = 'SELECT * FROM big.events'",
+            )
+            .fetch_one(&admin)
+            .await
+            .unwrap();
+            if running == 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert_eq!(running, 0, "the scan must end with the dropped result");
+    } else {
+        eprintln!("skip big.events: load docker/postgres/big.sql");
+    }
 
     // bytea renders as hex text rather than mojibake.
     let o = one(&drv, r"SELECT '\xdeadbeef'::bytea AS b").await;
@@ -190,7 +294,18 @@ async fn mysql_run_statements() {
     let series = "WITH RECURSIVE s(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 1000) \
                   SELECT n FROM s";
     shared_cases(&drv, series, "tiq_exec_mysql").await;
+    counts_before_another_statement(&drv, series).await;
+    inserts_an_all_defaults_row(&drv, "tableiq", "tiq_defaults_mysql").await;
+    stopping_early_says_writes_were_rolled_back(&drv, series).await;
 
     let o = one(&drv, "SHOW TABLES").await;
     assert!(!o.columns.is_empty(), "SHOW TABLES must name its column");
+
+    // 1e9 rows: returns the cap at once instead of reading them all to count.
+    let start = std::time::Instant::now();
+    let huge = "WITH RECURSIVE s(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 1000) \
+                SELECT a.n FROM s a CROSS JOIN s b CROSS JOIN s c";
+    let o = one_capped(&drv, huge, 50_000).await;
+    assert!(start.elapsed() < std::time::Duration::from_secs(2), "took {:?}", start.elapsed());
+    assert_eq!((o.row_count, o.total_rows, o.truncated), (50_000, None, true));
 }

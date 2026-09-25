@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   generateDdl,
   listObjects,
@@ -10,6 +10,7 @@ import {
 import { blankColumn } from "../lib/ddl";
 import { useConnections } from "../state/connectionStore";
 import { Panel } from "./ui/Panel";
+import { IconRefresh } from "./ui/Icon";
 
 const field =
   "rounded-md border border-border bg-bg px-2 py-1 text-xs text-text focus:border-primary focus:outline-none";
@@ -42,6 +43,12 @@ export function AlterTablePanel({
     kind: "idle",
     msg: "",
   });
+  // Apply shows its own pending state (spinner, disabled) while the DDL runs.
+  const applying = status.kind === "busy" && status.msg === "Applying…";
+
+  // A preview answers for the drafts it was built from: any change to them, or a
+  // successful Apply, retires it so Apply can never run stale or twice.
+  useEffect(() => setSql(null), [edits, drops, add]);
 
   const addValid = !!add && !!add.name.trim() && !!add.data_type.trim();
   const edited = (c: ColumnInfo) => {
@@ -113,6 +120,7 @@ export function AlterTablePanel({
       await runScript(connId, sql);
       const refreshed = await listObjects(connId).catch(() => null);
       if (refreshed) setSchema(refreshed);
+      setSql(null);
       setStatus({ kind: "ok", msg: "Applied" });
     } catch (e) {
       setStatus({ kind: "err", msg: String(e) });
@@ -142,11 +150,12 @@ export function AlterTablePanel({
           <button
             onClick={apply}
             disabled={!sql || status.kind === "busy"}
-            className="rounded-md bg-primary px-3 py-1 text-xs font-medium text-white hover:bg-primary-hover disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1 text-xs font-medium text-white hover:bg-primary-hover disabled:opacity-50"
           >
-            Apply
+            {applying && <IconRefresh size={11} className="animate-spin" />}
+            {applying ? "Applying…" : "Apply"}
           </button>
-          {status.kind !== "idle" && (
+          {status.kind !== "idle" && !applying && (
             <span
               className={`text-xs ${
                 status.kind === "ok"

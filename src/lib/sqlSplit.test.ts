@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { lineColAt, splitStatements, statementAt } from "./sqlSplit";
+import { dialectFor, lineColAt, splitStatements, statementAt } from "./sqlSplit";
 
 describe("splitStatements", () => {
   it("splits simple statements on ; and trims whitespace", () => {
@@ -249,5 +249,24 @@ describe("lineColAt", () => {
     const doc = "SELECT 1;\nSELECT 2;";
     expect(lineColAt(doc, 10)).toEqual({ line: 2, col: 1 });
     expect(lineColAt(doc, 13)).toEqual({ line: 2, col: 4 });
+  });
+});
+
+describe("dialectFor", () => {
+  it("splits DuckDB like Postgres: $$ bodies, nested comments and quoted ; stay whole", () => {
+    expect(dialectFor("duckdb")).toBe("postgres");
+    const doc =
+      "CREATE MACRO m(a) AS a + 1; SELECT $$x;y$$ AS s; /* a /* b; */ c; */ SELECT 'p;q'; SELECT m(1)";
+    expect(splitStatements(doc, dialectFor("duckdb")).map((s) => s.text)).toEqual([
+      "CREATE MACRO m(a) AS a + 1",
+      "SELECT $$x;y$$ AS s",
+      "/* a /* b; */ c; */ SELECT 'p;q'",
+      "SELECT m(1)",
+    ]);
+  });
+
+  it("keeps the engines that have a dialect of their own, and defaults to postgres", () => {
+    for (const e of ["mysql", "sqlite", "sqlserver", "postgres"] as const) expect(dialectFor(e)).toBe(e);
+    expect(dialectFor(undefined)).toBe("postgres");
   });
 });

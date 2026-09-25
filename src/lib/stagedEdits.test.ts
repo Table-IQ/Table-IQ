@@ -6,6 +6,7 @@ import {
   removePending,
   stageEdit,
   isNullLeftEmpty,
+  movedTints,
   type PendingMap,
 } from "./stagedEdits";
 
@@ -62,5 +63,34 @@ describe("isNullLeftEmpty", () => {
   it("still stages clearing a non-NULL cell to '' (that one IS a change)", () => {
     expect(isNullLeftEmpty("abc", "")).toBe(false);
     expect(isNullLeftEmpty("", "")).toBe(false);
+  });
+});
+
+describe("movedTints", () => {
+  // Rows 0 and 1 after a re-read: the row saved at index 0 (id 7) now sits at 1.
+  const page: Record<number, Record<string, string | null>> = {
+    0: { id: "3", name: "x" },
+    1: { id: "7", name: "y" },
+  };
+  const cell = (r: number, c: string) => page[r]?.[c];
+
+  it("keeps a tint whose row still holds the same key", () => {
+    const ids = new Map([["1:name", { id: "7" }]]);
+    expect(movedTints(ids, cell)).toEqual([]);
+  });
+
+  it("drops a tint whose row index now holds another row", () => {
+    const ids = new Map([["0:name", { id: "7" }]]);
+    expect(movedTints(ids, cell)).toEqual(["0:name"]);
+  });
+
+  it("waits while the row's page hasn't loaded", () => {
+    const ids = new Map([["5:name", { id: "7" }]]);
+    expect(movedTints(ids, cell)).toEqual([]);
+  });
+
+  it("compares every column of a composite key", () => {
+    const ids = new Map([["1:name", { id: "7", name: "z" }]]);
+    expect(movedTints(ids, cell)).toEqual(["1:name"]);
   });
 });

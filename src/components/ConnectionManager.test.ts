@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sortByRecency } from "./ConnectionManager";
+import { isFileEngine, sortByRecency } from "./ConnectionManager";
 import type { ConnConfig } from "../lib/commands";
 
 function conn(id: string, name: string, engine: ConnConfig["engine"] = "postgres"): ConnConfig {
@@ -35,5 +35,15 @@ describe("sortByRecency", () => {
     // Same timestamp -> alphabetical fallback puts Alpha (id=b) first.
     const out = sortByRecency(cs, () => 100).map((c) => c.id);
     expect(out).toEqual(["b", "a"]);
+  });
+});
+
+describe("isFileEngine", () => {
+  it("treats SQLite and DuckDB as file engines (a path, no host, no SSH, no password)", () => {
+    expect(isFileEngine("sqlite")).toBe(true);
+    expect(isFileEngine("duckdb")).toBe(true);
+    for (const e of ["postgres", "mysql", "sqlserver", "redis", "mongodb"] as const) {
+      expect(isFileEngine(e)).toBe(false);
+    }
   });
 });

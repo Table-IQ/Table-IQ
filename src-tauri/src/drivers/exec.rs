@@ -113,11 +113,43 @@ pub fn left_open(stmts: &[String]) -> bool {
 const RESULT_KEYWORDS: [&str; 8] =
     ["SELECT", "WITH", "TABLE", "VALUES", "SHOW", "EXPLAIN", "DESCRIBE", "PRAGMA"];
 
+/// `50000` → `50,000`.
+fn thousands(n: usize) -> String {
+    let s = n.to_string();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// A statement that only reads, so stopping it partway loses nothing. Stopping a writer
+/// would abort it — its changes rolled back — so `WITH` counts only when it names no DML
+/// keyword anywhere (a data-modifying CTE; a false alarm just means reading to the end).
+/// ponytail: a SELECT calling a function that writes is taken as read-only.
+fn read_only(stmt: &str) -> bool {
+    match first_keyword(stmt).as_str() {
+        "SELECT" | "TABLE" | "VALUES" | "SHOW" => true,
+        "WITH" => {
+            let u = stmt.to_uppercase();
+            !["INSERT", "UPDATE", "DELETE", "MERGE"].iter().any(|k| u.contains(k))
+        }
+        _ => false,
+    }
+}
+
 /// Run `stmts` one at a time over `conn`, each sent verbatim via the simple/text protocol.
 ///
-/// Collects up to `cap` rows per statement but **keeps draining and counting** the rest, because
-/// dropping a sqlx stream early leaves unread protocol messages that the next use has to drain —
-/// and an error during that drain hard-closes the connection.
+/// Collects up to `cap` rows per statement. The **last** statement, when [`read_only`], stops
+/// reading at the first row past the cap and reports `total_rows: None` — `SELECT * FROM` a
+/// trillion-row table must not read every row to count them — and asks for `reset`, since the
+/// connection is left mid-result: closing it ends the server's work too. Any other statement
+/// keeps draining and counting, because dropping a sqlx stream early leaves unread protocol
+/// messages that the next statement would have to drain anyway — and an error during that
+/// drain hard-closes the connection.
 ///
 /// `cell` extracts one cell as display text, `affected` reads the per-database rows-affected
 /// (there is no common trait for it), and `classify` turns a `sqlx::Error` into either a
@@ -144,8 +176,10 @@ where
 
     let mut outs: Vec<StmtOutput> = Vec::with_capacity(stmts.len());
     let mut reset = false;
-    for stmt in stmts {
+    for (si, stmt) in stmts.iter().enumerate() {
         reset |= touches_session(stmt);
+        let stop_at_cap = si + 1 == stmts.len() && read_only(stmt);
+        let mut stopped = false;
         let start = std::time::Instant::now();
         let (mut names, mut types): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
         let mut rows: Vec<Vec<Option<String>>> = Vec::new();
@@ -167,6 +201,10 @@ where
                                 types.push(c.type_info().name().to_string());
                             }
                             names = dedup_names(&names);
+                        }
+                        if stop_at_cap && rows.len() == cap {
+                            stopped = true;
+                            break;
                         }
                         // Past the cap we still consume the row — only the decode is skipped.
                         if rows.len() < cap && failed.is_none() {
@@ -194,6 +232,7 @@ where
             }
         }
         let exec_ms = start.elapsed().as_millis() as u64;
+        reset |= stopped;
         if let Some(e) = failed {
             let err = classify(e, stmt)?;
             reset = true;
@@ -223,17 +262,29 @@ where
             columns: names.into_iter().zip(types).collect(),
             batch,
             row_count: rows.len(),
-            total_rows: total,
-            truncated: total > rows.len() as u64,
+            total_rows: (!stopped).then_some(total),
+            truncated: stopped || total > rows.len() as u64,
             exec_ms,
             error: None,
-            notice: None,
+            // `read_only` trusts a SELECT, but one calling a function can write — and
+            // stopping cancels it, so those writes are rolled back.
+            notice: stopped.then(|| {
+                format!(
+                    "Stopped reading after {} rows; the statement was cancelled, so any writes it \
+                     made (e.g. via functions) were rolled back.",
+                    thousands(cap)
+                )
+            }),
         });
     }
     // An unterminated BEGIN dies with the connection (which `reset` closes), so say so.
     if left_open(&stmts[..outs.len()]) {
         if let Some(last) = outs.last_mut() {
-            last.notice = Some("Transaction was not committed and has been rolled back".into());
+            let tx = "Transaction was not committed and has been rolled back";
+            last.notice = Some(match last.notice.take() {
+                Some(n) => format!("{tx}. {n}"),
+                None => tx.into(),
+            });
         }
     }
     Ok((outs, reset))
@@ -302,6 +353,28 @@ mod tests {
         for s in ["SELECT 1", "INSERT INTO t VALUES (1)", "CREATE TABLE t (a int)"] {
             assert!(!touches_session(s), "{s} should not touch the session");
         }
+    }
+
+    #[test]
+    fn read_only_statements_can_stop_early_writers_cannot() {
+        for q in ["SELECT * FROM t", "-- c\nselect 1", "TABLE t", "VALUES (1)", "SHOW ALL",
+                  "WITH x AS (SELECT 1) SELECT * FROM x"] {
+            assert!(read_only(q), "{q}");
+        }
+        for q in ["INSERT INTO t SELECT 1 RETURNING *", "UPDATE t SET a = 1 RETURNING a",
+                  "DELETE FROM t RETURNING *", "WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x",
+                  "EXPLAIN ANALYZE DELETE FROM t", "CALL p()"] {
+            assert!(!read_only(q), "{q}");
+        }
+    }
+
+    #[test]
+    fn thousands_groups_digits() {
+        assert_eq!(thousands(0), "0");
+        assert_eq!(thousands(100), "100");
+        assert_eq!(thousands(1000), "1,000");
+        assert_eq!(thousands(50_000), "50,000");
+        assert_eq!(thousands(1_234_567), "1,234,567");
     }
 
     #[test]
