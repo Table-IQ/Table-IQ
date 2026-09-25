@@ -255,12 +255,13 @@ Lives in [src/components/ui/EngineIcon.tsx](src/components/ui/EngineIcon.tsx).
 TablePlus-style 2-letter monogram circle (not square tile, not avatar): flat
 engine colour fill + an inset 1px white-on-top / black-on-bottom highlight that
 reads as glass depth. Used everywhere a connection is identified (welcome list,
-⌘O picker). Sizes: sm 16 / md 22 / lg 32 / xl 44. Monograms: Pg, My, Sq, Re, Mo, Ms.
+⌘O picker). Sizes: sm 16 / md 22 / lg 32 / xl 44. Monograms: Pg, My, Sq, Dk, Re, Mo, Ms.
 
 ### Env tag derivation
 Without a dedicated `environment` field on `ConnConfig`, we derive the row's
 parenthetical tag from existing data: `(local)` for loopback host, `(ssh)` for
-SSH-tunneled, `(remote)` otherwise, `(file)` for SQLite. Coloured by tone:
+SSH-tunneled, `(remote)` otherwise, `(file)` for a SQLite or DuckDB file and
+`(in-memory)` for a DuckDB `:memory:` connection. Coloured by tone:
 green / amber / muted / muted. The user's `color` hex still renders as a small
 dot next to the tag for custom environments.
 
