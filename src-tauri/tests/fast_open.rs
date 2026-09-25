@@ -369,9 +369,11 @@ async fn pg_keyset_pages_equal_offset_pages() {
         return;
     };
     let drv = PgDriver::connect(&url).await.unwrap();
+    // CI seeds `wide` with 2,000 rows (see ci.yml), so every offset stays under that; the
+    // equality holds at any depth, and the deep-page timings live in the finalize report.
     let t = ("public", "wide");
-    keyset_equals_offset(&drv, t, &["id"], &[], &[], 50_000, 100).await;
-    keyset_equals_offset(&drv, t, &["id"], &[sort("id", true)], &[], 5_000, 100).await;
+    keyset_equals_offset(&drv, t, &["id"], &[], &[], 1_000, 100).await;
+    keyset_equals_offset(&drv, t, &["id"], &[sort("id", true)], &[], 1_000, 100).await;
     keyset_equals_offset(&drv, t, &["id"], &[], &ge("id", "1000"), 500, 100).await;
     let oi = ("public", "order_items");
     keyset_equals_offset(&drv, oi, &["order_id", "line_no"], &[], &[], 101, 50).await;
