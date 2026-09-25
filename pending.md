@@ -72,6 +72,24 @@ environment:
   (`release.yml`) both install via `pnpm/action-setup` + `pnpm install`; nothing
   referenced the npm lockfile except planning notes under `.context/plans/`.
 
+### 2d. Deferred from the `table-ux-and-duckdb` branch (0.3.0)
+
+Full account in `docs/finalize/2026-09-25-table-ux-and-duckdb.md`.
+
+| Item | Why |
+|---|---|
+| **Arrow upgrade (53 → 55+), then a current `duckdb` crate** | The newest `duckdb` crate that builds beside arrow 53 is 1.2.2, which has no `interrupt_handle` and builds each result fully in memory before the 50k cap applies. Upgrading arrow across the app unlocks DuckDB cancel, streaming results and newer `.duckdb` storage versions. The Stop button is still shown for DuckDB and reports "not implemented". |
+| **Staged edits vs. other refreshes** | Search, filter, sort, paging, page size and Refresh now refuse to run with unsaved edits. Insert row, Delete row, "Set value" from the row menu, closing Alter and an Inspector save still refetch and drop other staged edits. |
+| **First / Last page buttons** | The pager has Prev/Next only. "Last" would need a reversed keyset read (`ORDER BY pk DESC LIMIT n`, then flip). No "go to page N" exists either, so no slow deep-OFFSET jump is exposed. |
+| **Explicit NULL from the + Row draft** | Blank draft cells now leave the column to its DEFAULT (that fixed serial keys). There is no way to type NULL into a nullable column that has a DEFAULT; it needs a per-cell NULL toggle in the draft rail. |
+| **SQLite / SQL Server page cancel** | Both fall back to the plain, un-cancellable fetch (SQLite has no cancel API; SQL Server needs the pool work in 2a). Their filtered pages have no timeout. MariaDB ignores the `MAX_EXECUTION_TIME` hint. |
+| **Exact count after insert/delete** | A kept exact total can be off by one until "Count exactly" is pressed again. |
+| **60 fps scroll trace** | Not recorded. The design plan asked for a Chrome performance trace of grid scrolling; only the typing-a-search path was traced (0 long tasks). |
+| **DuckDB 1B-row scale test** | Not run; the DuckDB seed is 1k rows. The Postgres fixture (`docker/postgres/big.sql`, 20M rows faked to ~1T) covers the paging and estimate paths. |
+| **Reduced-motion toggle** | Implemented (one CSS media query + a `matchMedia` check for the canvas loop) but not exercised with the macOS setting switched on. |
+| **Desktop-app screenshots** | macOS denies this process Screen Recording, so all evidence was captured through the IPC bridge in a browser (same UI). The desktop app itself was launched on the final commit. |
+| **Query-result numbers left-aligned** | Pre-existing polish; the table grid right-aligns numbers, query results don't. |
+
 ---
 
 ## 3. Other pending work (pre-existing, not touched by this branch)

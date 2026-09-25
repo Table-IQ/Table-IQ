@@ -1,5 +1,76 @@
 # Changelog
 
+## 0.3.0 — 2026-09-26
+
+Tables open and page instantly at any size — a trillion-row Postgres table included —
+with a visible loader, a total row count, ⌘F search across every column, and smooth
+transitions for editing, saving and running queries. DuckDB is a new engine.
+
+### Added
+- **DuckDB engine.** Connect to a `.duckdb` file or `:memory:`; browse, sort, filter,
+  search, edit, insert, delete, Structure, ERD and the Query tab (including
+  `read_csv(...)`) all work. Unknown engine names now fail clearly instead of silently
+  opening as Postgres.
+- **⌘F search** (Ctrl+F elsewhere) searches every column of the table on the server.
+  Typing is debounced, Enter applies at once, Esc clears, the term shows as a chip and
+  matching cells are highlighted. A search that runs too long stops with
+  "Search timed out — add a column filter to narrow it".
+- **Total row count** in the pager, e.g. "1–300 of ~1T rows". The estimate appears
+  instantly from the catalog; a "Count exactly" button runs a cancellable exact count
+  with a live timer.
+- **Page size** selector (100 / 300 / 1000 / 5000) per tab; row numbers continue across
+  pages.
+- **Loading feedback**: a slim progress bar (after 150 ms, so fast pages never flash),
+  the previous page dimmed but still scrollable, and a spinning Refresh icon while a
+  page is in flight.
+- **Transitions** for the flows that lacked them: staged edits turn blue, pulse amber
+  while saving and fade from green once saved (errors stay red); the unsaved-changes,
+  filter and new-row rails slide in; "Saved n changes" confirms a commit; deleted rows
+  fade and inserted rows flash; the Query tab shows a busy bar with elapsed time, fades
+  results in and lets Stop replace Run; panels animate and Apply shows a pending state.
+  Everything switches off under "Reduce motion".
+- A Postgres scale fixture (`docker/postgres/big.sql`) that fakes ~1T rows for
+  performance checks.
+
+### Changed
+- **Paging never scans the table.** Pages seek from the last row's primary key instead
+  of skipping with OFFSET, so page 50,000 costs the same as page 1. Postgres tables with
+  no primary key page by physical row address from block 0. Seeking is only used for
+  key types that round-trip exactly; anything else falls back to OFFSET.
+- **Counting never blocks the grid.** Tables estimated above 10M rows skip `COUNT(*)`
+  on open; partitioned and never-analyzed Postgres tables get a proper estimate.
+- Every grid page fetch is bounded (15 s filtered, 30 s otherwise) and cancellable; a
+  newer page for the same tab cancels the one in flight, and cancels can no longer hit
+  an unrelated query on a reused connection. Page SQL is now identical across requests
+  so prepared statements are reused — one round trip per page query.
+- Per-table metadata is cached, and re-read on Refresh, after any script, or when a
+  page hits a stale column.
+- The Query tab stops reading a result at 50,000 rows and says "50,000+ rows
+  (truncated)" — `SELECT *` on a huge table returns immediately instead of draining it.
+  If that cut short a statement that also wrote, the Messages tab says so.
+- With unsaved edits, search, filters, sort, paging, page size and Refresh are refused
+  with "Commit or discard changes first" instead of silently dropping the edits.
+- MySQL `LIKE` filters keep the column's collation and can use its index again.
+- Elapsed timers and the search box own their own state, so a long count or query no
+  longer re-renders the whole view ten times a second.
+- SQLite and DuckDB no longer offer a database switcher — the file is the database.
+
+### Fixed
+- Foreign-key cells were painted almost invisibly (a CSS variable reached the canvas).
+- "+ Row" failed on tables with a serial/identity key because blank cells were sent as
+  NULL; blank cells now leave the column to its default, and an empty draft is refused.
+- A table could stick on "Opening…" when a stale fetch superseded the current one.
+- The Structure tab showed the old column name after an Alter from the same tab.
+- Alter could apply a stale preview, or run the same change twice.
+- The pager could step past the last page on fast clicks.
+- A failed cell edit could stay stuck on "saving".
+- A saved-row tint could land on the wrong row after the reload.
+- SQL Server: a `SELECT` followed by an `UPDATE`/`DELETE` in one batch is no longer
+  silently capped at 50,001 rows.
+- A filtered count that timed out reported the whole table's estimate.
+- The welcome screen showed the wrong version.
+- Screen readers no longer announce the count timer every tick.
+
 ## 0.2.0 — 2026-09-24
 
 Production-readiness pass: the Query tab, table browsing, Structure, and the ERD now do
