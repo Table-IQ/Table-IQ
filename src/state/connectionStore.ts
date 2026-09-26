@@ -1,16 +1,32 @@
 import { create } from "zustand";
 import {
+  connect,
   disconnect,
   foreignKeys,
+  listObjects,
   openTable,
   primaryKey,
+  switchDatabase,
   type ConnConfig,
   type ConnectedInfo,
   type ForeignKey,
   type SchemaModel,
 } from "../lib/commands";
+import { markConnected } from "../lib/lastConnected";
 import { logError } from "../lib/report";
+import { persistForConnection } from "../lib/tabsPersist";
 import { useTabs } from "./tabsStore";
+
+/** A connect (or switch-database) in flight — the id/name are whichever
+ *  connection it targets, `since` (a `performance.now()` stamp) feeds a single
+ *  shared `<Elapsed>` clock across stage transitions. Only one such operation
+ *  is ever tracked at a time. */
+export interface ConnectingState {
+  id: string;
+  name: string;
+  stage: "connect" | "schema" | "switch";
+  since: number;
+}
 
 /** Per-table facts that don't depend on the visible window. `count`/`exact` are
  *  the *unfiltered* totals — a filtered count is asked for directly. */
@@ -36,6 +52,9 @@ interface ConnectionState {
   schema: SchemaModel | null;
   /** True when an established session dropped mid-use — drives the reconnect banner. */
   disconnected: boolean;
+  /** A connect/switch-database in flight, or null when idle. Drives the busy UI
+   *  in ConnectionManager's row and MainShell's header strip. */
+  connecting: ConnectingState | null;
   /** The active table tab has staged (uncommitted) edits or is committing them. */
   editsPending: boolean;
   /** Lazy cache: connection id → every FK edge in the database. */
@@ -70,6 +89,7 @@ export const useConnections = create<ConnectionState>((set, get) => ({
   active: null,
   schema: null,
   disconnected: false,
+  connecting: null,
   editsPending: false,
   fks: {},
   tableMeta: {},
@@ -231,4 +251,105 @@ export function closeConnection(id: string): Promise<void> {
       clearMetaCaches(id);
       useConnections.getState().closeSession(id);
     });
+}
+
+// ── connect / switch-database with visible progress ────────────────────────
+// A remote DB behind SSH can take seconds to connect and introspect. Both flows
+// below track `connecting` through "connect"/"schema" (or "switch") stages so
+// ConnectionManager and MainShell can show a spinner + elapsed timer instead of
+// looking frozen, and support Cancel. The Rust connect itself can't be aborted
+// (CONNECT_TIMEOUT bounds it) — Cancel just stops the UI waiting on it; its late
+// result is handled by `discardIfStale` below.
+let gen = 0;
+
+/** A connect/switch-database attempt landed after the user moved on (cancelled,
+ *  or a newer attempt at a different id took over). Disconnect it — unless it's
+ *  already a live session (another path opened it) or a newer attempt at the
+ *  *same* id has since claimed `connecting` (that attempt must not be killed). */
+function discardIfStale(id: string): void {
+  const s = useConnections.getState();
+  if (s.open.some((o) => o.info.id === id)) return;
+  if (s.connecting?.id === id) return;
+  disconnect(id).catch((e) => logError("discard stale connection", e));
+}
+
+/** Connect to `cfg` and load its schema, tracking `connecting` throughout.
+ *  Resolves `true` on success, `false` when cancelled/superseded. A real
+ *  failure clears `connecting` and rethrows so the caller's existing error
+ *  handling (status line / connMsg) still fires. */
+export async function openConnection(cfg: ConnConfig): Promise<boolean> {
+  const my = ++gen;
+  const since = performance.now();
+  useConnections.setState({ connecting: { id: cfg.id, name: cfg.name, stage: "connect", since } });
+  try {
+    const info = await connect(cfg.id);
+    if (my !== gen) {
+      discardIfStale(cfg.id);
+      return false;
+    }
+    useConnections.setState({ connecting: { id: cfg.id, name: cfg.name, stage: "schema", since } });
+    const schema =
+      info.engine === "redis" || info.engine === "mongodb" ? null : await listObjects(cfg.id);
+    if (my !== gen) {
+      discardIfStale(cfg.id);
+      return false;
+    }
+    markConnected(cfg.id);
+    useConnections.getState().openSession(info, schema);
+    useConnections.setState({ connecting: null });
+    return true;
+  } catch (e) {
+    if (my === gen) useConnections.setState({ connecting: null });
+    throw e;
+  }
+}
+
+/** Cancel the connect/switch-database in flight. Bumps `gen` (so the in-flight
+ *  attempt's own result is now stale) and clears `connecting` immediately —
+ *  the UI stops waiting right away, before the backend call itself returns. */
+export function cancelConnecting(): void {
+  gen++;
+  useConnections.setState({ connecting: null });
+}
+
+/** Switch connection `id` to database `db`, tracking `connecting` (stage
+ *  "switch"). Lifted from MainShell's DatabasePicker onPick handler. Resolves
+ *  `true` on success, `false` when cancelled/superseded or when the session was
+ *  closed mid-switch (the rebuilt backend session is then an orphan — it gets
+ *  disconnected instead of resurrecting a session the user just closed). A real
+ *  failure clears `connecting` and rethrows. */
+export async function switchDatabaseFlow(id: string, db: string): Promise<boolean> {
+  const my = ++gen;
+  const since = performance.now();
+  const name = useConnections.getState().open.find((o) => o.info.id === id)?.info.name ?? id;
+  useConnections.setState({ connecting: { id, name, stage: "switch", since } });
+  try {
+    const info = await switchDatabase(id, db);
+    if (my !== gen) {
+      discardIfStale(id);
+      return false;
+    }
+    if (!useConnections.getState().open.some((o) => o.info.id === id)) {
+      await disconnect(id).catch(() => {});
+      useConnections.setState({ connecting: null });
+      return false;
+    }
+    const schema = await listObjects(id);
+    if (my !== gen) {
+      discardIfStale(id);
+      return false;
+    }
+    markConnected(id);
+    clearMetaCaches(id);
+    // The old database's tabs go — live if this connection is still in front,
+    // otherwise its persisted slice (so they never rebind to the new database).
+    if (useConnections.getState().active?.id === id) useTabs.getState().reset();
+    else persistForConnection(id, { tabs: [], activeKey: null, queryCount: 0 }, null);
+    useConnections.getState().updateSession(id, { info, schema });
+    useConnections.setState({ connecting: null });
+    return true;
+  } catch (e) {
+    if (my === gen) useConnections.setState({ connecting: null });
+    throw e;
+  }
 }

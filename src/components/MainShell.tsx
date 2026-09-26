@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ConnectionRail } from "./ConnectionRail";
 import { Wordmark } from "./Brand";
 import { ThemeToggle } from "./ThemeToggle";
@@ -42,9 +42,12 @@ import {
   IconStructure,
 } from "./ui/Icon";
 import {
+  cancelConnecting,
   canLeaveSession,
   clearMetaCaches,
   closeConnection,
+  openConnection,
+  switchDatabaseFlow,
   useConnections,
 } from "../state/connectionStore";
 import { useTabs } from "../state/tabsStore";
@@ -57,7 +60,6 @@ import {
   listDatabases,
   listObjects,
   setConnectionLostHandler,
-  switchDatabase,
   type ConnConfig,
   type Engine,
   type ExportFormat,
@@ -69,7 +71,7 @@ import {
   selectStarter,
   type ScriptColumn,
 } from "../lib/tableScript";
-import { markConnected } from "../lib/lastConnected";
+import { Elapsed } from "./ui/Elapsed";
 
 /** The schema a connection should open on. Every engine has a conventional
  *  "your stuff lives here" schema; alphabetical order picks `auth` over
@@ -93,13 +95,12 @@ export function MainShell() {
     schema,
     saved,
     open,
-    openSession,
     switchTo,
     updateSession,
     disconnected,
     setDisconnected,
+    connecting,
   } = useConnections();
-  const opening = useRef(new Set<string>());
   const [reconnecting, setReconnecting] = useState(false);
   const [refreshingSchema, setRefreshingSchema] = useState(false);
   // A dropped session (broken pipe, server shutdown, …) raises the reconnect
@@ -116,7 +117,7 @@ export function MainShell() {
   // Header color chip resolves from the saved ConnConfig (ConnectedInfo doesn't carry color).
   const activeColor = active ? saved.find((c) => c.id === active.id)?.color ?? null : null;
   const tabsState = useTabs();
-  const { tabs, activeKey, openTable, openQuery, openErd, close, setActive: setActiveTab, reset } =
+  const { tabs, activeKey, openTable, openQuery, openErd, close, setActive: setActiveTab } =
     tabsState;
   const [showStructure, setShowStructure] = useState(false);
   const [showImport, setShowImport] = useState(false);
@@ -270,11 +271,13 @@ export function MainShell() {
       } else if (meta && e.key === "]") {
         e.preventDefault();
         setShowInspector((v) => !v);
+      } else if (e.key === "Escape" && connecting) {
+        cancelConnecting();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [openQuery, close, activeKey, active?.id]);
+  }, [openQuery, close, activeKey, active?.id, connecting]);
 
   const commands = useMemo<Command[]>(() => {
     const list: Command[] = [];
@@ -366,26 +369,20 @@ export function MainShell() {
   };
 
   /** Open another saved connection alongside this one (TablePlus: the rail then
-   *  lists both). An already-open connection is just brought to the front. */
+   *  lists both). An already-open connection is just brought to the front.
+   *  Routes through the store's `openConnection` so the header shows progress
+   *  instead of looking frozen while the (possibly remote) DB connects. */
   const onSwapConnection = async (c: ConnConfig) => {
-    if (c.id === active.id || opening.current.has(c.id)) return;
+    if (c.id === active.id || connecting) return; // one connect in flight at a time
     if (!(await canLeaveSession())) return;
     setConnMsg(null);
     if (open.some((o) => o.info.id === c.id)) return switchTo(c.id);
-    // One connect per id at a time: a double pick would race two backend sessions.
-    opening.current.add(c.id);
     try {
-      const info = await connect(c.id);
-      const schemaModel =
-        info.engine === "redis" || info.engine === "mongodb" ? null : await listObjects(c.id);
-      markConnected(c.id);
-      openSession(info, schemaModel);
+      await openConnection(c);
     } catch (e) {
       // The current session is untouched, so just say what failed.
       console.error("connection open failed", e);
       setConnMsg(`Could not open '${c.name}': ${e}`);
-    } finally {
-      opening.current.delete(c.id);
     }
   };
 
@@ -675,6 +672,40 @@ export function MainShell() {
           Disconnect
         </button>
       </header>
+
+      {/* ── CONNECTING STRIP ──────────────────────────────────────────────── */}
+      {/* Opening another connection (rail/⌘O) or switching database (⌘D) can hit a
+          slow remote DB behind SSH; this makes the wait visible instead of the
+          workspace looking frozen. Cancel (or Esc) just stops the UI waiting —
+          the store discards the late result. */}
+      {connecting && (
+        <>
+          <div className="tiq-progress shrink-0" aria-hidden />
+          <div className="flex h-7 shrink-0 items-center justify-center gap-2 border-b border-border bg-surface px-3 text-[11px] text-muted">
+            <IconRefresh size={11} className="animate-spin text-primary" aria-hidden />
+            <span>
+              {connecting.stage === "connect"
+                ? "Connecting to "
+                : connecting.stage === "schema"
+                  ? "Loading schema for "
+                  : "Switching database on "}
+              <span className="font-medium text-text">{connecting.name}</span>…
+            </span>
+            <Elapsed
+              since={connecting.since}
+              minMs={1000}
+              className="tiq-delayed font-mono tabular-nums"
+            />
+            <button
+              onClick={cancelConnecting}
+              title="Cancel (Esc)"
+              className="ml-1 inline-flex h-5 items-center rounded-[var(--radius)] border border-border px-2 text-[11px] text-muted hover:bg-surface-2 hover:text-text"
+            >
+              Cancel
+            </button>
+          </div>
+        </>
+      )}
 
       {/* ── RECONNECT BANNER ──────────────────────────────────────────────── */}
       {/* TablePlus parity: an established session that drops shows a red, clickable
@@ -997,29 +1028,18 @@ export function MainShell() {
         <DatabasePicker
           databases={dbList.items}
           activeDatabase={active.database}
-          busy={dbList.loading}
+          busy={dbList.loading || connecting?.stage === "switch"}
           error={dbList.error}
           onPick={async (db) => {
+            if (connecting) return; // one connect/switch in flight at a time
             const id = active.id;
             try {
-              const info = await switchDatabase(id, db);
-              const st = useConnections.getState();
-              // Closed while switching: the backend just rebuilt an orphan session.
-              if (!st.open.some((o) => o.info.id === id)) {
-                await disconnect(id).catch(() => {});
-                return;
+              const ok = await switchDatabaseFlow(id, db);
+              if (ok) {
+                setShowDbPicker(false);
+                // Reset cache so the next open re-fetches against the new active session.
+                setDbList({ loading: false, items: [], error: null });
               }
-              const schemaModel = await listObjects(id);
-              markConnected(id);
-              clearMetaCaches(id);
-              // The old database's tabs go — live if this connection is still in
-              // front, otherwise its persisted slice (so they never rebind to db2).
-              if (useConnections.getState().active?.id === id) reset();
-              else persistForConnection(id, { tabs: [], activeKey: null, queryCount: 0 }, null);
-              updateSession(id, { info, schema: schemaModel });
-              setShowDbPicker(false);
-              // Reset cache so the next open re-fetches against the new active session.
-              setDbList({ loading: false, items: [], error: null });
             } catch (e) {
               setDbList({ loading: false, items: dbList.items, error: String(e) });
             }
