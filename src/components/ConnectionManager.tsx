@@ -102,7 +102,7 @@ function envTagOf(c: ConnConfig): { label: string; tone: "ok" | "warn" | "muted"
 }
 
 export function ConnectionManager() {
-  const { saved, setSaved, setActive, setSchema } = useConnections();
+  const { saved, setSaved, openSession } = useConnections();
   const [form, setForm] = useState<ConnConfig>(blankConfig);
   const [password, setPassword] = useState("");
   // SSH secrets are split so the form can show password + key passphrase the way
@@ -227,11 +227,10 @@ export function ConnectionManager() {
       if (pw !== undefined)
         await saveConnection(cfg, pw || undefined, effectiveSshSecret || undefined);
       const info = await connect(cfg.id);
-      if (info.engine !== "redis" && info.engine !== "mongodb") {
-        setSchema(await listObjects(cfg.id));
-      }
+      const schema =
+        info.engine === "redis" || info.engine === "mongodb" ? null : await listObjects(cfg.id);
       markConnected(cfg.id);
-      setActive(info);
+      openSession(info, schema);
     } catch (e) {
       setStatus({ kind: "err", msg: String(e) });
     }

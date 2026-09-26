@@ -163,6 +163,13 @@ export const IconDatabase = (p: P) => (
     <path d="M2.5 7c0 .9 2 1.6 4.5 1.6S11.5 7.9 11.5 7" />
   </svg>
 );
+export const IconSliders = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M2 4h10M2 10h10" />
+    <circle cx="5" cy="4" r="1.4" fill="var(--bg)" />
+    <circle cx="9" cy="10" r="1.4" fill="var(--bg)" />
+  </svg>
+);
 export const IconSidebarRight = (p: P) => (
   <svg {...base(p)}>
     <rect x="1.5" y="2.5" width="11" height="9" rx="1" />

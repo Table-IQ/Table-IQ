@@ -17,8 +17,17 @@ export interface TableMeta {
   pk: string[];
 }
 
+/** One open connection. `schema` is authoritative only while the session is in the
+ *  background — the active session's live schema is the top-level `schema`. */
+export interface OpenSession {
+  info: ConnectedInfo;
+  schema: SchemaModel | null;
+}
+
 interface ConnectionState {
   saved: ConnConfig[];
+  /** Every connected session, in open order — the connection rail. */
+  open: OpenSession[];
   active: ConnectedInfo | null;
   schema: SchemaModel | null;
   /** True when an established session dropped mid-use — drives the reconnect banner. */
@@ -28,21 +37,56 @@ interface ConnectionState {
   /** Lazy cache: `${connId}.${schema}.${table}` → its unfiltered meta. */
   tableMeta: Record<string, TableMeta>;
   setSaved: (saved: ConnConfig[]) => void;
-  setActive: (active: ConnectedInfo | null) => void;
+  /** Make a (new or re-opened) connection active; other open sessions stay open. */
+  openSession: (info: ConnectedInfo, schema: SchemaModel | null) => void;
+  /** Bring an already-open session to the front — no reconnect, no re-introspection. */
+  switchTo: (id: string) => void;
+  /** Forget a session (the caller disconnects it). Closing the active one falls
+   *  back to the last remaining session, or the welcome screen when none remain. */
+  closeSession: (id: string) => void;
   setSchema: (schema: SchemaModel | null) => void;
   setDisconnected: (disconnected: boolean) => void;
 }
 
+/** `open` with the active session's live schema written back into its entry. */
+const snapshot = (s: ConnectionState): OpenSession[] =>
+  s.active ? s.open.map((o) => (o.info.id === s.active!.id ? { ...o, schema: s.schema } : o)) : s.open;
+
 export const useConnections = create<ConnectionState>((set) => ({
   saved: [],
+  open: [],
   active: null,
   schema: null,
   disconnected: false,
   fks: {},
   tableMeta: {},
   setSaved: (saved) => set({ saved }),
-  // A fresh active connection is, by definition, no longer disconnected.
-  setActive: (active) => set({ active, disconnected: false }),
+  // A freshly active connection is, by definition, no longer disconnected.
+  openSession: (info, schema) =>
+    set((s) => {
+      const open = snapshot(s);
+      const entry = { info, schema };
+      const i = open.findIndex((o) => o.info.id === info.id);
+      return {
+        open: i < 0 ? [...open, entry] : open.map((o, j) => (j === i ? entry : o)),
+        active: info,
+        schema,
+        disconnected: false,
+      };
+    }),
+  switchTo: (id) =>
+    set((s) => {
+      const target = s.open.find((o) => o.info.id === id);
+      if (!target || s.active?.id === id) return s;
+      return { open: snapshot(s), active: target.info, schema: target.schema, disconnected: false };
+    }),
+  closeSession: (id) =>
+    set((s) => {
+      const open = s.open.filter((o) => o.info.id !== id);
+      if (s.active?.id !== id) return { open };
+      const next = open[open.length - 1] ?? null;
+      return { open, active: next?.info ?? null, schema: next?.schema ?? null, disconnected: false };
+    }),
   setSchema: (schema) => set({ schema }),
   setDisconnected: (disconnected) => set({ disconnected }),
 }));

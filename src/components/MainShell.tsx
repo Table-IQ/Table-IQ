@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { ConnectionRail } from "./ConnectionRail";
 import { Wordmark } from "./Brand";
 import { ThemeToggle } from "./ThemeToggle";
 import { ObjectTree } from "./ObjectTree";
@@ -82,8 +83,18 @@ function findObject(
 }
 
 export function MainShell() {
-  const { active, schema, saved, setActive, setSchema, disconnected, setDisconnected } =
-    useConnections();
+  const {
+    active,
+    schema,
+    saved,
+    open,
+    openSession,
+    switchTo,
+    closeSession,
+    setSchema,
+    disconnected,
+    setDisconnected,
+  } = useConnections();
   const [reconnecting, setReconnecting] = useState(false);
   const [refreshingSchema, setRefreshingSchema] = useState(false);
   // A dropped session (broken pipe, server shutdown, …) raises the reconnect
@@ -295,12 +306,11 @@ export function MainShell() {
       ? findObject(schema, activeTab.schema, activeTab.table)
       : null;
 
+  // Closes this connection only: another open session (if any) takes over.
   const onDisconnect = async () => {
     await disconnect(active.id);
-    reset();
     clearMetaCaches();
-    setSchema(null);
-    setActive(null);
+    closeSession(active.id);
   };
 
   /** Re-introspect the database. The button used to hand `setSchema` the very
@@ -319,7 +329,7 @@ export function MainShell() {
   };
 
   /** Re-open the dropped session in place. Reuses connect() (rebuilds the pool)
-      then refreshes the schema; setActive clears the disconnected flag on success. */
+      then refreshes the schema; openSession clears the disconnected flag on success. */
   const onReconnect = async () => {
     if (reconnecting) return;
     setReconnecting(true);
@@ -328,8 +338,7 @@ export function MainShell() {
       const info = await connect(active.id);
       const schemaModel = await listObjects(active.id);
       clearMetaCaches();
-      setActive(info);
-      setSchema(schemaModel);
+      openSession(info, schemaModel);
     } catch (e) {
       console.error("reconnect failed", e);
       setConnMsg(`Could not reconnect to '${active.database}': ${e}`);
@@ -338,28 +347,22 @@ export function MainShell() {
     }
   };
 
-  /** Swap to a different saved connection without leaving the workspace. */
+  /** Open another saved connection alongside this one (TablePlus: the rail then
+   *  lists both). An already-open connection is just brought to the front. */
   const onSwapConnection = async (c: ConnConfig) => {
     if (c.id === active.id) return;
     setConnMsg(null);
+    if (open.some((o) => o.info.id === c.id)) return switchTo(c.id);
     try {
-      // Disconnect the current session first so we don't pile up backend sessions.
-      await disconnect(active.id);
       const info = await connect(c.id);
-      const schemaModel = await listObjects(c.id);
+      const schemaModel =
+        info.engine === "redis" || info.engine === "mongodb" ? null : await listObjects(c.id);
       markConnected(c.id);
-      clearMetaCaches();
-      reset();
-      setActive(info);
-      setSchema(schemaModel);
+      openSession(info, schemaModel);
     } catch (e) {
-      // Dropping to `active: null` here rendered the connection list again with no
-      // hint that anything had gone wrong. Keep the workspace and say what failed:
-      // the old session was already disconnected above, so raise the reconnect
-      // banner too — tapping it re-opens the connection the user was on.
-      console.error("connection swap failed", e);
-      setConnMsg(`Could not switch to '${c.name}': ${e}`);
-      setDisconnected(true);
+      // The current session is untouched, so just say what failed.
+      console.error("connection open failed", e);
+      setConnMsg(`Could not open '${c.name}': ${e}`);
     }
   };
 
@@ -704,6 +707,7 @@ export function MainShell() {
 
       {/* ── BODY ─────────────────────────────────────────────────────────── */}
       <div className="flex min-h-0 flex-1">
+        <ConnectionRail />
         {showSidebar && (
           <aside
             className="tiq-vibrancy flex shrink-0 flex-col border-r border-border"
@@ -979,8 +983,7 @@ export function MainShell() {
               markConnected(active.id);
               clearMetaCaches();
               reset();
-              setActive(info);
-              setSchema(schemaModel);
+              openSession(info, schemaModel);
               setShowDbPicker(false);
               // Reset cache so the next open re-fetches against the new active session.
               setDbList({ loading: false, items: [], error: null });
