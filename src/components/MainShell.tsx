@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ConnectionRail } from "./ConnectionRail";
 import { Wordmark } from "./Brand";
 import { ThemeToggle } from "./ThemeToggle";
@@ -38,6 +38,7 @@ import {
   IconHelp,
   IconImport,
   IconLink,
+  IconOverview,
   IconPlay,
   IconPlus,
   IconRefresh,
@@ -84,6 +85,8 @@ import {
   type ScriptColumn,
 } from "../lib/tableScript";
 import { Elapsed } from "./ui/Elapsed";
+import { applyToolbar, loadToolbar } from "../lib/toolbarPrefs";
+import { DEFAULT_TOOLBAR_PREF, TOOLBAR_ITEMS } from "../lib/toolbarItems";
 
 /** The schema a connection should open on. Every engine has a conventional
  *  "your stuff lives here" schema; alphabetical order picks `auth` over
@@ -233,6 +236,17 @@ export function MainShell() {
   // Sidebar-foot "+" → new-object menu (TablePlus parity, Slice 31).
   const [sidebarMenu, setSidebarMenu] = useState<{ x: number; y: number } | null>(null);
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; tab: Tab } | null>(null);
+  // Right-click on the title bar → "Customize Toolbar…" (Task 7).
+  const [headerMenu, setHeaderMenu] = useState<{ x: number; y: number } | null>(null);
+  // Title-bar right icon group order/visibility (Task 7, Settings → Toolbar).
+  // Re-read on `tiq:toolbar`, dispatched by Settings after a save (same
+  // custom-event precedent as `tiq:sidebar` / `tiq:show-tour`).
+  const [toolbarPref, setToolbarPref] = useState(() => loadToolbar() ?? DEFAULT_TOOLBAR_PREF);
+  useEffect(() => {
+    const onToolbarEvent = () => setToolbarPref(loadToolbar() ?? DEFAULT_TOOLBAR_PREF);
+    window.addEventListener("tiq:toolbar", onToolbarEvent);
+    return () => window.removeEventListener("tiq:toolbar", onToolbarEvent);
+  }, []);
   // A failed export from the object context menu has nowhere else to land: the menu is gone
   // by the time the write fails, and the Table/Query status bars belong to a tab body that
   // may not even be open. One message, one strip — not a toast system.
@@ -450,6 +464,13 @@ export function MainShell() {
         icon: <IconSliders />,
         shortcut: "⌘,",
         run: () => useSettingsUi.getState().show(),
+      },
+      {
+        id: "act:customize-toolbar",
+        label: "Customize Toolbar",
+        group: "Commands",
+        icon: <IconOverview />,
+        run: () => useSettingsUi.getState().show("toolbar"),
       },
       {
         id: "act:query",
@@ -826,15 +847,59 @@ export function MainShell() {
     </div>
   );
 
+  // Data-driven right icon group (Task 7): `TOOLBAR_ITEMS` (shared with
+  // Settings' Toolbar section) supplies the id + label; this map supplies the
+  // per-id icon/onClick/`when` — that wiring is component-specific, so it
+  // stays here rather than in the shared `lib/toolbarItems.ts`. `when: false`
+  // hides an item outright (e.g. a file engine has no database to switch),
+  // independent of the user's order/hidden prefs. `render` is an escape hatch
+  // for items that are already their own stateful component (ThemeToggle).
+  const titlebarActions: Record<
+    string,
+    { icon?: ReactNode; onClick?: () => void; shortcut?: string; when?: boolean; render?: () => ReactNode }
+  > = {
+    "refresh-schema": {
+      icon: <IconRefresh size={16} className={refreshingSchema ? "animate-spin" : undefined} />,
+      onClick: () => void onRefreshSchema(),
+    },
+    "switch-database": {
+      icon: <IconDatabase size={16} />,
+      shortcut: "⌘D",
+      onClick: () => void openDbPicker(),
+      when: !fileEngine,
+    },
+    "command-palette": {
+      icon: <IconCommand size={16} />,
+      shortcut: "⌘K",
+      onClick: () => setShowPalette(true),
+    },
+    "theme-toggle": { render: () => <ThemeToggle /> },
+    help: { icon: <IconHelp size={16} />, onClick: () => setShowHelp((v) => !v) },
+    "workspace-overview": {
+      icon: <IconOverview size={16} />,
+      shortcut: "⌘⇧\\",
+      onClick: () => setShowWorkspaceOverview(true),
+    },
+  };
+  const visibleTitlebarIds = applyToolbar(
+    TOOLBAR_ITEMS.map((i) => i.id),
+    toolbarPref,
+  );
+
   return (
     <div className="flex h-full flex-col">
       {/* ── TITLE BAR ─────────────────────────────────────────────────────── */}
       <header
         className="tiq-titlebar-drag flex shrink-0 items-center gap-2 border-b border-border bg-surface pl-[78px] pr-2"
         style={{ height: "var(--header-h)" }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          setHeaderMenu({ x: e.clientX, y: e.clientY });
+        }}
       >
         {/* Left icon group — TablePlus groups toolbar icons into a rounded
-            container/card rather than free-floating icons (Slice 33). */}
+            container/card rather than free-floating icons (Slice 33). Fixed —
+            not part of the customizable right icon group. */}
         <IconGroup>
           <IconButton
             icon={<IconSidebar size={16} />}
@@ -850,33 +915,25 @@ export function MainShell() {
         {/* Centered TablePlus connection capsule */}
         <div className="mx-2 flex flex-1 items-center justify-center">{connCapsule}</div>
 
-        {/* Right icon groups — actions in one card, the inspector toggle in its own. */}
+        {/* Right icon group — data-driven (Task 7): order/visibility come from
+            `toolbarPref`, customizable via right-click → Customize Toolbar or
+            Settings → Toolbar. The inspector toggle + Disconnect stay fixed. */}
         <IconGroup>
-          <IconButton
-            icon={<IconRefresh size={16} className={refreshingSchema ? "animate-spin" : undefined} />}
-            label="Refresh schema"
-            onClick={() => void onRefreshSchema()}
-          />
-          {!fileEngine && (
-            <IconButton
-              icon={<IconDatabase size={16} />}
-              label="Switch database"
-              shortcut="⌘D"
-              onClick={() => void openDbPicker()}
-            />
-          )}
-          <IconButton
-            icon={<IconCommand size={16} />}
-            label="Command palette"
-            shortcut="⌘K"
-            onClick={() => setShowPalette(true)}
-          />
-          <ThemeToggle />
-          <IconButton
-            icon={<IconHelp size={16} />}
-            label="Help / Show tour"
-            onClick={() => setShowHelp((v) => !v)}
-          />
+          {visibleTitlebarIds.map((id) => {
+            const item = TOOLBAR_ITEMS.find((i) => i.id === id);
+            const action = titlebarActions[id];
+            if (!item || !action || action.when === false) return null;
+            if (action.render) return <span key={id}>{action.render()}</span>;
+            return (
+              <IconButton
+                key={id}
+                icon={action.icon}
+                label={item.label}
+                shortcut={action.shortcut}
+                onClick={action.onClick}
+              />
+            );
+          })}
         </IconGroup>
         <IconGroup>
           <IconButton
@@ -1472,6 +1529,20 @@ export function MainShell() {
             />
           );
         })()}
+      {headerMenu && (
+        <ContextMenu
+          x={headerMenu.x}
+          y={headerMenu.y}
+          items={[
+            {
+              id: "customize-toolbar",
+              label: "Customize Toolbar…",
+              onSelect: () => useSettingsUi.getState().show("toolbar"),
+            },
+          ]}
+          onClose={() => setHeaderMenu(null)}
+        />
+      )}
       {showHelp && <HelpMenu onTour={() => { setShowHelp(false); /* tour re-trigger handled by Onboarding */ window.dispatchEvent(new CustomEvent("tiq:show-tour")); }} onClose={() => setShowHelp(false)} />}
       <Onboarding />
     </div>

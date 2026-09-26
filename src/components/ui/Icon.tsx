@@ -242,3 +242,11 @@ export const IconPin = (p: P) => (
     <path d="M7 1.5v4M5 5.5h4l1.5 3h-7L5 5.5ZM7 8.5v4" />
   </svg>
 );
+export const IconOverview = (p: P) => (
+  <svg {...base(p)}>
+    <rect x="1.5" y="1.5" width="5" height="5" rx="0.8" />
+    <rect x="7.5" y="1.5" width="5" height="5" rx="0.8" />
+    <rect x="1.5" y="7.5" width="5" height="5" rx="0.8" />
+    <rect x="7.5" y="7.5" width="5" height="5" rx="0.8" />
+  </svg>
+);

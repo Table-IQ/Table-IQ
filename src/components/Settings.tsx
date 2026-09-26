@@ -12,6 +12,8 @@ import {
 import { useTheme } from "../theme/ThemeProvider";
 import type { ThemeChoice } from "../lib/theme";
 import { Panel } from "./ui/Panel";
+import { loadToolbar, saveToolbar, type ToolbarPref } from "../lib/toolbarPrefs";
+import { DEFAULT_TOOLBAR_PREF, TOOLBAR_ITEMS } from "../lib/toolbarItems";
 
 export type Section = "general" | "editor" | "ai" | "toolbar" | "backup" | "mcp";
 
@@ -176,8 +178,100 @@ function Placeholder({ text }: { text: string }) {
   return <div className="p-4 text-sm text-muted">{text}</div>;
 }
 
+/**
+ * Checkbox list (hide/show) + ↑/↓ reorder for the title-bar's right icon
+ * group (Task 7). No drag library — matches the brief. `TOOLBAR_ITEMS` is the
+ * id+label source shared with `MainShell`, which owns the icon/onClick
+ * wiring; this section only reads/writes the pref and lets `MainShell` know
+ * via the `tiq:toolbar` event (same custom-event precedent as `tiq:sidebar`).
+ */
 function ToolbarSection() {
-  return <Placeholder text="Toolbar settings are coming in a later release." />;
+  const [pref, setPref] = useState<ToolbarPref>(() => loadToolbar() ?? DEFAULT_TOOLBAR_PREF);
+
+  const persist = (next: ToolbarPref) => {
+    setPref(next);
+    saveToolbar(next);
+    window.dispatchEvent(new Event("tiq:toolbar"));
+  };
+
+  // Full order — visible *and* hidden — so a hidden item still has a row to
+  // re-enable from. Same "known ids from pref.order, then anything new
+  // appended" rule `applyToolbar` uses for the visible list, just without
+  // dropping the hidden ones.
+  const allIds = TOOLBAR_ITEMS.map((i) => i.id);
+  const known = new Set(allIds);
+  const ordered = pref.order.filter((id) => known.has(id));
+  const seen = new Set(ordered);
+  const fullOrder = [...ordered, ...allIds.filter((id) => !seen.has(id))];
+
+  const move = (id: string, dir: -1 | 1) => {
+    const i = fullOrder.indexOf(id);
+    const j = i + dir;
+    if (j < 0 || j >= fullOrder.length) return;
+    const next = [...fullOrder];
+    [next[i], next[j]] = [next[j], next[i]];
+    persist({ ...pref, order: next });
+  };
+
+  const toggleHidden = (id: string) => {
+    const hidden = pref.hidden.includes(id)
+      ? pref.hidden.filter((h) => h !== id)
+      : [...pref.hidden, id];
+    persist({ ...pref, hidden });
+  };
+
+  return (
+    <div className="space-y-3 p-4">
+      <div className="space-y-0.5">
+        {fullOrder.map((id, i) => {
+          const item = TOOLBAR_ITEMS.find((t) => t.id === id);
+          if (!item) return null;
+          return (
+            <div
+              key={id}
+              className="flex items-center justify-between gap-2 rounded-md px-2 py-1 hover:bg-surface-2"
+            >
+              <label className="flex items-center gap-2 text-sm text-text">
+                <input
+                  type="checkbox"
+                  checked={!pref.hidden.includes(id)}
+                  onChange={() => toggleHidden(id)}
+                />
+                {item.label}
+              </label>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  aria-label={`Move ${item.label} up`}
+                  disabled={i === 0}
+                  onClick={() => move(id, -1)}
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted transition-colors hover:bg-surface-2 hover:text-text disabled:opacity-30"
+                >
+                  ↑
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Move ${item.label} down`}
+                  disabled={i === fullOrder.length - 1}
+                  onClick={() => move(id, 1)}
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted transition-colors hover:bg-surface-2 hover:text-text disabled:opacity-30"
+                >
+                  ↓
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <button
+        type="button"
+        onClick={() => persist(DEFAULT_TOOLBAR_PREF)}
+        className="text-xs text-muted underline underline-offset-2 hover:text-text"
+      >
+        Reset to default
+      </button>
+    </div>
+  );
 }
 
 function BackupSection() {
