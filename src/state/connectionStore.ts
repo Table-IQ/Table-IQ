@@ -186,15 +186,8 @@ export function invalidateTableMeta(connId: string, schema: string, table: strin
   });
 }
 
-/** Drop cached facts — one connection's (disconnect), or all of them when no id
- *  is given (sidebar Refresh, database switch). */
-export function clearMetaCaches(connId?: string): void {
-  if (connId === undefined) {
-    inflightFks.clear();
-    inflightMeta.clear();
-    useConnections.setState({ fks: {}, tableMeta: {} });
-    return;
-  }
+/** Drop one connection's cached facts — sidebar Refresh, database switch, close. */
+export function clearMetaCaches(connId: string): void {
   const mine = (k: string) => k.startsWith(`${connId}.`);
   inflightFks.delete(connId);
   for (const k of [...inflightMeta.keys()]) if (mine(k)) inflightMeta.delete(k);

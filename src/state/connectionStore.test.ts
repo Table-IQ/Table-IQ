@@ -190,3 +190,99 @@ describe("clearMetaCaches(connId)", () => {
     expect(Object.keys(s.tableMeta)).toEqual(["b.public.t"]);
   });
 });
+
+// Ship audit: the remaining branches of the session actions.
+describe("connectionStore sessions — edge branches", () => {
+  beforeEach(() => {
+    useConnections.setState({ active: null, schema: null, open: [], disconnected: false });
+    useTabs.getState().reset();
+  });
+
+  it("switchTo the already-active session is a no-op that keeps its tabs", () => {
+    const st = useConnections.getState;
+    st().openSession(info("a"), schema("A"));
+    useTabs.getState().openQuery("SELECT 1;");
+    st().setSchema(schema("A-live"));
+    st().switchTo("a");
+    expect(useTabs.getState().tabs).toHaveLength(1);
+    expect(st().schema).toEqual(schema("A-live"));
+  });
+
+  it("opening, switching to, or falling back to a session clears the reconnect banner", () => {
+    const st = useConnections.getState;
+    st().setDisconnected(true);
+    st().openSession(info("a"), schema("A"));
+    expect(st().disconnected).toBe(false);
+    st().openSession(info("b"), schema("B"));
+    st().setDisconnected(true);
+    st().switchTo("a");
+    expect(st().disconnected).toBe(false);
+    st().setDisconnected(true);
+    st().closeSession("a");
+    expect(st().active?.id).toBe("b");
+    expect(st().disconnected).toBe(false);
+  });
+
+  it("closing an unknown id changes nothing", () => {
+    const st = useConnections.getState;
+    st().openSession(info("a"), schema("A"));
+    useTabs.getState().openQuery("SELECT 1;");
+    st().closeSession("zzz");
+    expect(st().active?.id).toBe("a");
+    expect(st().open.map((o) => o.info.id)).toEqual(["a"]);
+    expect(useTabs.getState().tabs).toHaveLength(1);
+  });
+
+  it("closing the active session writes nothing stale back: the fallback gets its own schema", () => {
+    const st = useConnections.getState;
+    st().openSession(info("a"), schema("A"));
+    st().openSession(info("b"), schema("B"));
+    st().setSchema(schema("B-live"));
+    st().closeSession("b");
+    expect(st().schema).toEqual(schema("A"));
+  });
+
+  it("updateSession on the active session with only `info` keeps the live schema", () => {
+    const st = useConnections.getState;
+    st().openSession(info("a"), schema("A"));
+    st().setSchema(schema("A-live"));
+    st().updateSession("a", { info: { ...info("a"), database: "d2" } });
+    expect(st().active?.database).toBe("d2");
+    expect(st().schema).toEqual(schema("A-live"));
+  });
+
+  it("updateSession on the active session with only `schema` keeps the live info", () => {
+    const st = useConnections.getState;
+    const a = info("a");
+    st().openSession(a, schema("A"));
+    st().updateSession("a", { schema: null });
+    expect(st().schema).toBeNull();
+    expect(st().active).toBe(a);
+  });
+
+  it("updateSession on a background session does not touch the active info", () => {
+    const st = useConnections.getState;
+    st().openSession(info("a"), schema("A"));
+    st().openSession(info("b"), schema("B"));
+    st().updateSession("a", { info: { ...info("a"), database: "a2" } });
+    expect(st().active?.id).toBe("b");
+    st().switchTo("a");
+    expect(st().active?.database).toBe("a2");
+  });
+});
+
+describe("clearMetaCaches — scoping", () => {
+  it("does not treat a connection whose id merely starts with another's as the same one", () => {
+    useConnections.setState({
+      fks: { a: [], ab: [] },
+      tableMeta: {
+        "a.public.t": { count: 1, exact: true, pk: [] },
+        "ab.public.t": { count: 2, exact: true, pk: [] },
+      },
+    });
+    clearMetaCaches("a");
+    const s = useConnections.getState();
+    expect(Object.keys(s.fks)).toEqual(["ab"]);
+    expect(Object.keys(s.tableMeta)).toEqual(["ab.public.t"]);
+  });
+});
