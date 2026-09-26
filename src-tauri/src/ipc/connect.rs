@@ -1056,11 +1056,16 @@ pub struct Rows {
 /// takes the first — callers here are single trailing SELECTs, so last-with-a-batch is the
 /// one they mean). No history, no `ResultStore` entry: [`run_query`] is for callers that
 /// want either.
-pub async fn rows_of(drv: &dyn SqlDriver, stmts: &[String], cap: usize) -> Result<Rows, String> {
-    let outs = drv
-        .run_statements(stmts, cap, &CancelToken::new())
-        .await
-        .map_err(|e| e.to_string())?;
+pub async fn rows_of(
+    drv: &dyn SqlDriver,
+    stmts: &[String],
+    cap: usize,
+    token: &CancelToken,
+) -> Result<Rows, String> {
+    let outs = drv.run_statements(stmts, cap, token).await.map_err(|e| match e {
+        DriverError::Cancelled => "Query cancelled".to_string(),
+        other => other.to_string(),
+    })?;
     if let Some(e) = outs.iter().find_map(|o| o.error.as_ref()) {
         return Err(e.message.clone());
     }
@@ -1075,24 +1080,51 @@ pub async fn rows_of(drv: &dyn SqlDriver, stmts: &[String], cap: usize) -> Resul
     }
 }
 
-/// Run `sql` as a single statement and return its rows, capped at `max_rows` (never above
-/// 1000 regardless of what the caller asks for). No history recording, no `ResultStore`
-/// insert — for internal/periodic reads (the Users list, metrics widgets, MCP) that must
-/// not pollute the user's query history or hold a result-window handle.
+/// Run `sql` and return its rows, capped at `max_rows` (never above 1000 regardless of what
+/// the caller asks for). No history recording, no `ResultStore` insert — for
+/// internal/periodic reads (the Users list, metrics widgets, MCP) that must not pollute the
+/// user's query history or hold a result-window handle.
 ///
-/// `sql` is run as ONE statement, not re-split: every current caller (`listUsersSql` and
-/// friends) sends a single SELECT. A multi-statement script belongs to `run_script` /
-/// `run_query`, which already split on the frontend (`src/lib/sqlSplit.ts`) before calling in.
+/// `sql` is handed to the driver as one string, not re-split here — but that is not a
+/// one-statement guarantee: Postgres and MySQL run every statement in it (sqlx `raw_sql`),
+/// and SQL Server runs it as one batch. Callers that must stay read-only check the text
+/// first (`metrics.ts`'s `isReadOnlyWidgetSql`); `rows_of` returns the last result set.
+///
+/// With a `query_id`, the run is registered under `ckey(id, query_id)` like [`run_query`],
+/// so `cancel_query` and ⌘. (`cancel_all`) can stop it.
 #[tauri::command]
 pub async fn query_rows(
     state: State<'_, ConnState>,
     id: String,
     sql: String,
     max_rows: Option<usize>,
+    query_id: Option<String>,
 ) -> Result<Rows, String> {
     let drv = state.session(&id)?;
     let cap = max_rows.unwrap_or(1000).min(1000);
-    rows_of(drv.as_ref(), &[sql], cap).await
+    let key = query_id.map(|q| ckey(&id, &q));
+    registered_rows(&state.cancels, drv.as_ref(), key.as_deref(), &[sql], cap).await
+}
+
+/// The body of [`query_rows`], outside Tauri so it can be tested: [`rows_of`] with a cancel
+/// token registered under `key` (inserted before, removed after, as in [`run_query`]).
+/// `None` runs unregistered.
+pub async fn registered_rows(
+    cancels: &Mutex<HashMap<String, CancelToken>>,
+    drv: &dyn SqlDriver,
+    key: Option<&str>,
+    stmts: &[String],
+    cap: usize,
+) -> Result<Rows, String> {
+    let token = CancelToken::new();
+    if let Some(k) = key {
+        lk(cancels).insert(k.to_string(), token.clone());
+    }
+    let res = rows_of(drv, stmts, cap, &token).await;
+    if let Some(k) = key {
+        lk(cancels).remove(k);
+    }
+    res
 }
 
 #[tauri::command]
@@ -2004,13 +2036,54 @@ mod tests {
             .expect("seed");
 
         let stmt = vec!["SELECT n FROM t ORDER BY n".to_string()];
-        let capped = rows_of(&drv, &stmt, 3).await.expect("capped read");
+        let capped = rows_of(&drv, &stmt, 3, &CancelToken::new()).await.expect("capped read");
         assert_eq!(capped.columns, vec!["n".to_string()]);
         assert_eq!(capped.rows.len(), 3, "reading stops at the cap");
         assert!(capped.truncated, "5 rows read at cap 3 must report truncated");
 
-        let all = rows_of(&drv, &stmt, 10).await.expect("uncapped read");
+        let all = rows_of(&drv, &stmt, 10, &CancelToken::new()).await.expect("uncapped read");
         assert_eq!(all.rows.len(), 5, "under the cap, every row comes back");
         assert!(!all.truncated);
+    }
+
+    /// A `query_rows` call with a `query_id` (a metrics widget's fetch, the Users list) is
+    /// registered under the connection's namespace while it runs — so `cancel_query` and ⌘.
+    /// (`cancel_all`, via `keys_for`) reach it — and unregistered once it's done.
+    #[tokio::test]
+    async fn registered_rows_is_cancellable_while_running() {
+        let tmp = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        let drv = Arc::new(SqliteDriver::connect(&path).await.expect("connect"));
+        let cancels = Arc::new(Mutex::new(HashMap::new()));
+        let slow = vec![
+            "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 2000000) \
+             SELECT count(*) FROM c"
+                .to_string(),
+        ];
+
+        let run = {
+            let (cancels, drv) = (cancels.clone(), drv.clone());
+            tokio::spawn(async move {
+                registered_rows(&cancels, drv.as_ref(), Some(&ckey("conn1", "w1")), &slow, 10).await
+            })
+        };
+        let mut seen = false;
+        for _ in 0..10_000 {
+            if !keys_for(&lk(&cancels), "conn1").is_empty() {
+                seen = true;
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(seen, "the running query's token must be registered under conn1");
+
+        let rows = run.await.expect("join").expect("query");
+        assert_eq!(rows.rows[0][0].as_deref(), Some("2000000"));
+        assert!(keys_for(&lk(&cancels), "conn1").is_empty(), "unregistered once done");
+
+        // No query_id: nothing is registered (the old behaviour, for callers without one).
+        let stmt = vec!["SELECT 1".to_string()];
+        registered_rows(&cancels, drv.as_ref(), None, &stmt, 10).await.expect("unregistered read");
+        assert!(lk(&cancels).is_empty());
     }
 }

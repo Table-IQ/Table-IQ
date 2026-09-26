@@ -54,7 +54,8 @@ export function UsersView({
   const load = useCallback(async () => {
     setStatus({ kind: "busy", msg: "Loading…" });
     try {
-      const r = await queryRows(connId, listUsersSql(engine));
+      // A query id so ⌘. (`cancelAll`) can stop a slow listing too.
+      const r = await queryRows(connId, listUsersSql(engine), undefined, crypto.randomUUID());
       setRows(r);
       setStatus({ kind: "idle", msg: "" });
     } catch (e) {

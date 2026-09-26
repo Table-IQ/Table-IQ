@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { queryRows, type Engine, type Rows } from "../lib/commands";
+import { cancelQuery, queryRows, type Engine, type Rows } from "../lib/commands";
 import {
   isReadOnlyWidgetSql,
   loadBoard,
@@ -145,18 +145,20 @@ function WidgetCard({
       return;
     }
     let stopped = false;
-    // In-flight flag is a LOCAL closure var, not a ref shared across effect
-    // re-runs — a widget edit tears down this effect (a new one starts with
-    // its own `inFlight`), so a stale generation's `finally` can never clear
-    // the flag a fresh generation is relying on to skip an overlapping tick.
-    let inFlight = false;
+    // The in-flight fetch's query id (null when idle) is a LOCAL closure var,
+    // not a ref shared across effect re-runs — a widget edit tears down this
+    // effect (a new one starts with its own `inFlight`), so a stale
+    // generation's `finally` can never clear the flag a fresh generation is
+    // relying on to skip an overlapping tick.
+    let inFlight: string | null = null;
     const gen = ++genRef.current;
     const tick = async () => {
       if (stopped || document.hidden || inFlight) return;
-      inFlight = true;
+      const queryId = crypto.randomUUID();
+      inFlight = queryId;
       setLoading(true);
       try {
-        const r = await queryRows(connId, widget.sql, 1000);
+        const r = await queryRows(connId, widget.sql, 1000, queryId);
         if (shouldApply(gen, genRef.current) && !stopped) {
           setRows(r);
           setError(null);
@@ -166,7 +168,7 @@ function WidgetCard({
           setError(String(e));
         }
       } finally {
-        inFlight = false;
+        inFlight = null;
         if (shouldApply(gen, genRef.current) && !stopped) setLoading(false);
       }
     };
@@ -177,6 +179,10 @@ function WidgetCard({
       stopped = true;
       genRef.current++;
       window.clearInterval(id);
+      // Unmount, edit or connection change: stop the fetch still running server-side, so
+      // a slow widget can't hold a pooled connection. Its result is dropped by `gen`
+      // anyway; an engine without cancel support just lets it finish.
+      if (inFlight) void cancelQuery(connId, inFlight).catch(() => {});
     };
   }, [connId, widget.sql, widget.kind, widget.refreshSec, dialect]);
 

@@ -738,11 +738,17 @@ export interface Rows {
   truncated: boolean;
 }
 
-/** Run `sql` (one statement) and return its rows, capped at `maxRows` (never above 1000). */
-export async function queryRows(id: string, sql: string, maxRows?: number): Promise<Rows> {
+/** Run `sql` and return its rows, capped at `maxRows` (never above 1000). With a `queryId`,
+ *  `cancelQuery(id, queryId)` — and ⌘. (`cancelAll`) — can stop it while it runs. */
+export async function queryRows(
+  id: string,
+  sql: string,
+  maxRows?: number,
+  queryId?: string,
+): Promise<Rows> {
   if (!inTauri())
     return { columns: ["label", "value"], rows: [["a", "3"], ["b", "5"]], truncated: false };
-  return invoke<Rows>("query_rows", { id, sql, maxRows: maxRows ?? null });
+  return invoke<Rows>("query_rows", { id, sql, maxRows: maxRows ?? null, queryId: queryId ?? null });
 }
 
 // ── WASM plugins (Extism) ──────────────────────────────────────────────────
