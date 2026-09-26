@@ -38,6 +38,23 @@ export const useSettingsUi = create<SettingsUiState>()((set) => ({
   close: () => set({ open: false }),
 }));
 
+/**
+ * Close Settings on the next microtask instead of synchronously. Used by
+ * App.tsx's window `keydown` handler for Escape: ConnectionManager and
+ * MainShell each guard their own Escape handling on
+ * `useSettingsUi.getState().open` too (an in-flight connection shouldn't
+ * cancel, and the new-connection sheet shouldn't close, just because Settings
+ * also closed on the same keypress). `window` keydown listeners fire in
+ * registration order, which isn't guaranteed across components — closing
+ * synchronously here could flip `open` to false *before* one of those other
+ * handlers, still running on the same call stack, has even checked it.
+ * Deferring past this event's synchronous dispatch keeps `open` stable for
+ * every listener reacting to this one keypress, regardless of order.
+ */
+export function closeSettingsDeferred(): void {
+  queueMicrotask(() => useSettingsUi.getState().close());
+}
+
 const selectField =
   "rounded-md border border-border bg-bg px-2 py-1 text-sm text-text focus:border-primary focus:outline-none";
 

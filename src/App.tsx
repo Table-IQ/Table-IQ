@@ -3,7 +3,7 @@ import { ConnectionManager } from "./components/ConnectionManager";
 import { MainShell } from "./components/MainShell";
 import { KvShell } from "./components/KvShell";
 import { DocShell } from "./components/DocShell";
-import { Settings, useSettingsUi } from "./components/Settings";
+import { closeSettingsDeferred, Settings, useSettingsUi } from "./components/Settings";
 import { ThemeProvider } from "./theme/ThemeProvider";
 import { useConnections } from "./state/connectionStore";
 
@@ -34,7 +34,7 @@ export default function App() {
         e.preventDefault();
         useSettingsUi.getState().show();
       } else if (e.key === "Escape" && useSettingsUi.getState().open) {
-        useSettingsUi.getState().close();
+        closeSettingsDeferred();
       }
     };
     window.addEventListener("keydown", onKey);

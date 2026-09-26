@@ -16,6 +16,7 @@ import { ConnectionPicker } from "./ConnectionPicker";
 import { DatabasePicker } from "./DatabasePicker";
 import { isFileEngine } from "./ConnectionManager";
 import { Onboarding } from "./Onboarding";
+import { useSettingsUi } from "./Settings";
 import { Inspector } from "./Inspector";
 import { ContextMenu, type ContextMenuItem } from "./ui/ContextMenu";
 import { ResizeHandle, clampWidth } from "./ui/ResizeHandle";
@@ -286,6 +287,12 @@ export function MainShell() {
       // and calls preventDefault when the SQL editor is focused — the workspace
       // shortcuts must not fire on top of it.
       if (e.defaultPrevented) return;
+      // Settings (⌘,) owns the keyboard while it's open — its own Escape
+      // handler (App.tsx) closes it; without this guard the same Escape
+      // keypress also cancelled an in-flight connection here. App.tsx defers
+      // the actual close by a tick, so `open` reads true here for this whole
+      // keypress no matter which window listener runs first.
+      if (useSettingsUi.getState().open) return;
       const meta = e.metaKey || e.ctrlKey;
       if (meta && e.key.toLowerCase() === "k") {
         e.preventDefault();

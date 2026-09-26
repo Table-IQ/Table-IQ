@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { BrandMark } from "./Brand";
 import { ThemeToggle } from "./ThemeToggle";
+import { useSettingsUi } from "./Settings";
 import { Onboarding } from "./Onboarding";
 import { EngineIcon } from "./ui/EngineIcon";
 import { Elapsed } from "./ui/Elapsed";
@@ -168,6 +169,13 @@ export function ConnectionManager() {
   // there's an active connection, so the two don't clash.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Settings (⌘,) owns the keyboard while it's open — its own Escape
+      // handler (App.tsx) closes it; without this guard the same Escape
+      // keypress also dropped the new-connection sheet / cancelled an
+      // in-flight connection. App.tsx defers the actual close by a tick, so
+      // `open` reads true here for this whole keypress no matter which
+      // window listener runs first.
+      if (useSettingsUi.getState().open) return;
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "n") {
         e.preventDefault();
         openSheetForNew();
