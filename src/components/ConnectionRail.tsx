@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { disconnect } from "../lib/commands";
 import { logError } from "../lib/report";
 import { useConnections } from "../state/connectionStore";
@@ -79,25 +80,29 @@ export function ConnectionRail() {
       >
         <IconSliders size={14} />
       </button>
-      {menu && (
-        <ContextMenu
-          x={menu.x}
-          y={menu.y}
-          onClose={() => setMenu(null)}
-          items={[
-            {
-              id: "rail-db",
-              label: `${label === "database" ? "✓ " : "   "}Show database name`,
-              onSelect: () => pickLabel("database"),
-            },
-            {
-              id: "rail-conn",
-              label: `${label === "connection" ? "✓ " : "   "}Show connection name`,
-              onSelect: () => pickLabel("connection"),
-            },
-          ]}
-        />
-      )}
+      {/* Portalled: the rail's backdrop-filter would otherwise be the containing block
+          for this fixed menu, offsetting it and trapping it under the sidebar. */}
+      {menu &&
+        createPortal(
+          <ContextMenu
+            x={menu.x}
+            y={menu.y}
+            onClose={() => setMenu(null)}
+            items={[
+              {
+                id: "rail-db",
+                label: `${label === "database" ? "✓ " : "   "}Show database name`,
+                onSelect: () => pickLabel("database"),
+              },
+              {
+                id: "rail-conn",
+                label: `${label === "connection" ? "✓ " : "   "}Show connection name`,
+                onSelect: () => pickLabel("connection"),
+              },
+            ]}
+          />,
+          document.body,
+        )}
     </nav>
   );
 }
