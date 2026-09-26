@@ -29,9 +29,11 @@ fn open_log(dir: &Path) -> std::io::Result<File> {
     OpenOptions::new().create(true).append(true).open(path)
 }
 
-/// Open the log file and install the panic hook. Idempotent; call it from every entry point.
+/// Open the log file, install the panic hook and the SQL log's sqlx capture
+/// (`sql_log::init_tracing`). Idempotent; call it from every entry point.
 pub fn init() {
     INIT.call_once(|| {
+        crate::sql_log::init_tracing();
         match open_log(&crate::appdir::app_dir().join("logs")) {
             Ok(f) => {
                 let _ = LOG.set(Mutex::new(f));

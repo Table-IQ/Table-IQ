@@ -9,6 +9,7 @@ pub mod ipc;
 pub mod library;
 pub mod plugins;
 pub mod query;
+pub mod sql_log;
 pub mod ssh;
 
 /// Lock a mutex, recovering from poisoning instead of panicking. A panic while one lock is
@@ -28,8 +29,8 @@ use ipc::connect::{
     list_connections, list_databases, list_objects, list_plugins, list_saved_queries,
     local_llm_available, log_client_error, open_table, parse_import, parse_parquet_preview, primary_key,
     profile_column, query_history, read_onboarding_state, run_plugin_on_result, run_query,
-    run_script, save_ai_config, save_connection, save_query, delete_saved_query, switch_database,
-    test_connection, write_onboarding_state, write_text_file, ConnState,
+    run_script, save_ai_config, save_connection, save_query, delete_saved_query, sql_log,
+    clear_sql_log, switch_database, test_connection, write_onboarding_state, write_text_file, ConnState,
 };
 
 /// Every IPC command. Generic over the runtime so the QA bridge (`examples/ipc_bridge.rs`)
@@ -97,6 +98,8 @@ pub fn invoke_handler<R: tauri::Runtime>(
         read_onboarding_state,
         write_onboarding_state,
         write_text_file,
+        sql_log,
+        clear_sql_log,
     ]
 }
 

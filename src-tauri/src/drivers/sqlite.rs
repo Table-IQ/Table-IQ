@@ -10,6 +10,8 @@ use async_trait::async_trait;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteQueryResult, SqliteRow};
 use sqlx::{Pool, Row, Sqlite};
 
+use crate::sql_log::note;
+
 use super::{
     build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
     ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec, ForeignKey, IndexInfo,
@@ -43,6 +45,14 @@ fn sqlite_stmt_err(e: sqlx::Error, _stmt: &str) -> Result<QueryError, DriverErro
         .as_database_error()
         .map_or_else(|| e.to_string(), |d| d.message().to_string());
     Ok(QueryError { message, line: None, position: None })
+}
+
+/// `sqlx::query`, noting `sql` in the SQL log first. sqlx-sqlite runs — and logs — each
+/// statement on its own worker thread, where the caller's task-local log is out of scope, so
+/// this driver can't rely on `sql_log`'s sqlx capture and notes its SQL itself.
+fn query(sql: &str) -> sqlx::query::Query<'_, Sqlite, <Sqlite as sqlx::Database>::Arguments<'_>> {
+    note(sql);
+    sqlx::query(sql)
 }
 
 fn quote_ident(name: &str) -> String {
@@ -94,7 +104,7 @@ impl SqliteDriver {
     }
 
     async fn columns_of(&self, table: &str) -> DResult<Vec<ColumnInfo>> {
-        let rows = sqlx::query(&format!("PRAGMA table_info({})", quote_ident(table)))
+        let rows = query(&format!("PRAGMA table_info({})", quote_ident(table)))
             .fetch_all(&self.pool)
             .await
             .map_err(db)?;
@@ -183,7 +193,7 @@ impl SqlDriver for SqliteDriver {
     /// One query for the whole catalog: `sqlite_master` joined to the table-valued
     /// `pragma_table_info`, instead of a PRAGMA round trip per object.
     async fn introspect(&self) -> DResult<SchemaModel> {
-        let rows = sqlx::query(
+        let rows = query(
             "SELECT m.name AS object_name, m.type AS object_type, p.name AS column_name, \
                     p.type AS column_type, p.\"notnull\" AS \"notnull\", p.pk AS pk \
              FROM sqlite_master m JOIN pragma_table_info(m.name) p \
@@ -247,6 +257,7 @@ impl SqlDriver for SqliteDriver {
             quote_ident(table),
             if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },
         );
+        note(&q);
         let mut qy = sqlx::query_scalar::<_, i64>(&q);
         for b in &binds {
             qy = qy.bind(b.clone());
@@ -299,7 +310,7 @@ impl SqlDriver for SqliteDriver {
             quote_ident(table),
             if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },
         );
-        let mut qy = sqlx::query(&q);
+        let mut qy = query(&q);
         for b in &binds {
             qy = qy.bind(b.clone());
         }
@@ -309,7 +320,7 @@ impl SqlDriver for SqliteDriver {
     }
 
     async fn primary_key(&self, _schema: &str, table: &str) -> DResult<Vec<String>> {
-        let rows = sqlx::query(&format!("PRAGMA table_info({})", quote_ident(table)))
+        let rows = query(&format!("PRAGMA table_info({})", quote_ident(table)))
             .fetch_all(&self.pool)
             .await
             .map_err(db)?;
@@ -347,7 +358,7 @@ impl SqlDriver for SqliteDriver {
             quote_ident(&edit.column),
             wheres.join(" AND ")
         );
-        let mut q = sqlx::query(&sql).bind(edit.new_value.clone());
+        let mut q = query(&sql).bind(edit.new_value.clone());
         for (_, v) in &edit.pk {
             q = q.bind(v.clone());
         }
@@ -380,7 +391,7 @@ impl SqlDriver for SqliteDriver {
             quote_ident(table),
             wheres.join(" AND ")
         );
-        let mut q = sqlx::query(&sql);
+        let mut q = query(&sql);
         for (_, v) in pk {
             q = q.bind(v.clone());
         }
@@ -388,6 +399,7 @@ impl SqlDriver for SqliteDriver {
     }
 
     async fn run_script(&self, sql: &str) -> DResult<u64> {
+        note(sql);
         Ok(sqlx::raw_sql(sql).execute(&self.pool).await.map_err(db)?.rows_affected())
     }
 
@@ -399,7 +411,7 @@ impl SqlDriver for SqliteDriver {
     ) -> DResult<u64> {
         let (sql, binds) =
             build_insert_sql(_schema, table, values, &quote_ident, &sqlite_placeholder, false);
-        let mut q = sqlx::query(&sql);
+        let mut q = query(&sql);
         for b in &binds {
             q = q.bind(b.clone());
         }
@@ -413,7 +425,7 @@ impl SqlDriver for SqliteDriver {
         // `REFERENCES parent` with no column list leaves `to` NULL: it means "the
         // parent's primary key", matched positionally — pragma_table_info.pk is the
         // 1-based position within that key, so `seq + 1` is this column's target.
-        let rows = sqlx::query(
+        let rows = query(
             "SELECT m.name AS from_table, f.id AS fk_id, f.\"from\" AS from_column, \
                     f.\"table\" AS to_table, \
                     COALESCE(f.\"to\", \
@@ -456,7 +468,7 @@ impl SqlDriver for SqliteDriver {
     /// Structure tab via the table-valued PRAGMA functions. `schema` is ignored: SQLite has
     /// one schema per file and the browser always reports it as `main`.
     async fn describe_table(&self, _schema: &str, table: &str) -> DResult<TableStructure> {
-        let cols = sqlx::query(
+        let cols = query(
             "SELECT name, type AS data_type, \"notnull\", dflt_value, pk \
              FROM pragma_table_info(?) ORDER BY cid",
         )
@@ -466,7 +478,7 @@ impl SqlDriver for SqliteDriver {
         .map_err(db)?;
         // One row per index column part. `origin = 'pk'` is the implicit index SQLite
         // builds for a (non-rowid) PRIMARY KEY. `sql` is NULL for those, hence the LEFT JOIN.
-        let idx = sqlx::query(
+        let idx = query(
             "SELECT l.name AS name, l.\"unique\" AS is_unique, l.origin AS origin, \
                     i.name AS column_name, m.sql AS definition \
              FROM pragma_index_list(?) l \
@@ -478,7 +490,7 @@ impl SqlDriver for SqliteDriver {
         .fetch_all(&self.pool)
         .await
         .map_err(db)?;
-        let trg = sqlx::query(
+        let trg = query(
             "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ? \
              ORDER BY name",
         )

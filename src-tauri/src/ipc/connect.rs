@@ -14,11 +14,12 @@ use arrow::record_batch::RecordBatch;
 use crate::connections::{self, ConnConfig, ConnStore};
 use crate::lk;
 use crate::drivers::{
-    doc_mongo::MongoDriver, duckdb::DuckDriver, kv_redis::RedisDriver, mysql::MySqlDriver,
+    doc_mongo::MongoDriver, duckdb::DuckDriver, kv_redis::RedisDriver, logged::Logged, mysql::MySqlDriver,
     postgres::PgDriver, sqlite::SqliteDriver, sqlserver::SqlServerDriver, CancelToken,
     ColumnFilter, DocumentDriver, DriverError, EditSpec, KeyInfo, KvDriver, KvValue, SchemaModel,
     SortKey, SqlDriver,
 };
+use crate::sql_log::SqlLog;
 use crate::ssh::tunnel::{RemoteTarget, Tunnel};
 use crate::ssh::SshAuth;
 
@@ -81,6 +82,9 @@ pub struct ConnState {
     cancels: Mutex<HashMap<String, CancelToken>>,
     /// Saved queries + searchable run history (persisted JSON).
     library: Mutex<crate::library::QueryLibrary>,
+    /// Per-connection SQL logs (the bottom panel). Keyed by conn id, not by session, so a
+    /// log outlives ⌘D's session swap; disconnect drops it.
+    sql_logs: Mutex<HashMap<String, Arc<SqlLog>>>,
 }
 
 /// If `cfg` has SSH enabled, open a tunnel to the bastion forwarding to the remote DB and return
@@ -167,10 +171,16 @@ impl ConnState {
             tunnels: Mutex::new(HashMap::new()),
             cancels: Mutex::new(HashMap::new()),
             library: Mutex::new(crate::library::QueryLibrary::load()),
+            sql_logs: Mutex::new(HashMap::new()),
         }
     }
 
-    fn session(&self, id: &str) -> Result<Arc<dyn SqlDriver>, String> {
+    /// The connection's SQL log, created on first use.
+    pub(crate) fn sql_log_for(&self, id: &str) -> Arc<SqlLog> {
+        lk(&self.sql_logs).entry(id.to_string()).or_default().clone()
+    }
+
+    pub(crate) fn session(&self, id: &str) -> Result<Arc<dyn SqlDriver>, String> {
         lk(&self.sessions)
             .get(id)
             .cloned()
@@ -267,6 +277,7 @@ pub fn delete_connection(state: State<ConnState>, id: String) -> Result<(), Stri
     lk(&state.doc_sessions).remove(&id);
     lk(&state.tunnels).remove(&id);
     lk(&state.results).purge(&id);
+    lk(&state.sql_logs).remove(&id);
     // Remove both the DB password and any SSH secret for this connection.
     let _ = connections::delete_password(&connections::ssh_secret_account(&id));
     connections::delete_password(&id)
@@ -288,6 +299,12 @@ pub async fn test_connection(cfg: ConnConfig, password: String) -> Result<(), St
 
 #[tauri::command]
 pub async fn connect(state: State<'_, ConnState>, id: String) -> Result<ConnectedInfo, String> {
+    connect_inner(&state, &id).await
+}
+
+/// `connect`'s body, callable without a tauri `State` (the MCP server reuses it).
+pub(crate) async fn connect_inner(state: &ConnState, id: &str) -> Result<ConnectedInfo, String> {
+    let id = id.to_string();
     let cfg = {
         let store = lk(&state.store);
         store
@@ -321,6 +338,7 @@ pub async fn connect(state: State<'_, ConnState>, id: String) -> Result<Connecte
             lk(&state.doc_sessions).insert(id.clone(), Arc::new(drv));
         } else {
             let drv = open_driver(&eff, &password).await?;
+            let drv = Arc::new(Logged { inner: drv, log: state.sql_log_for(&id) });
             lk(&state.sessions).insert(id.clone(), drv);
         }
         Ok(())
@@ -352,6 +370,21 @@ pub fn disconnect(state: State<ConnState>, id: String) {
     // Dropping the Tunnel aborts its listener task and disconnects the SSH session.
     lk(&state.tunnels).remove(&id);
     lk(&state.results).purge(&id);
+    lk(&state.sql_logs).remove(&id);
+}
+
+/// The connection's SQL log entries after `after_seq` (0 = all), oldest first — the bottom
+/// panel polls with the last seq it has.
+#[tauri::command]
+pub fn sql_log(state: State<ConnState>, id: String, after_seq: u64) -> Vec<crate::sql_log::Entry> {
+    lk(&state.sql_logs).get(&id).map(|l| l.since(after_seq)).unwrap_or_default()
+}
+
+#[tauri::command]
+pub fn clear_sql_log(state: State<ConnState>, id: String) {
+    if let Some(l) = lk(&state.sql_logs).get(&id) {
+        l.clear();
+    }
 }
 
 /// Enumerate the databases reachable from the active session for `id`. Routes
@@ -448,7 +481,8 @@ pub async fn switch_database(
                 .map_err(|e| e.to_string())?,
         ))
     } else {
-        NewSession::Sql(open_driver(&eff, &password).await?)
+        let drv = open_driver(&eff, &password).await?;
+        NewSession::Sql(Arc::new(Logged { inner: drv, log: state.sql_log_for(&id) }))
     };
 
     // Swap: drop whatever the old session was, then install the new one.

@@ -17,6 +17,8 @@ use ::duckdb::Connection;
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 
+use crate::sql_log::{note, CURRENT};
+
 use super::{
     build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken,
     ColumnDetail, ColumnFilter, ColumnInfo, ColsPk, DResult, DriverError, EditSpec, ForeignKey,
@@ -72,6 +74,7 @@ struct TextResult {
 /// streams when handed the result schema up front, so the result is materialised in
 /// DuckDB before we page through it. Upgrade path: a newer crate + `stream_arrow`.
 fn run_text(conn: &Connection, sql: &str, binds: &[Option<String>], cap: usize) -> ::duckdb::Result<TextResult> {
+    note(sql);
     let mut st = conn.prepare(sql)?;
     let changed = st.execute(::duckdb::params_from_iter(binds.iter()))?;
     let schema = st.schema();
@@ -202,21 +205,28 @@ impl DuckDriver {
         Ok(Self { conn, meta: Default::default() })
     }
 
-    /// Run `f` on a fresh connection to the shared instance, off the async runtime.
+    /// Run `f` on a fresh connection to the shared instance, off the async runtime. The SQL
+    /// log in scope goes along — a task-local doesn't cross into `spawn_blocking` by itself —
+    /// so the `note`s inside `f` land in it.
     async fn with<T, F>(&self, f: F) -> DResult<T>
     where
         T: Send + 'static,
         F: FnOnce(&Connection) -> DResult<T> + Send + 'static,
     {
         let conn = crate::lk(&self.conn).try_clone().map_err(db)?;
-        tokio::task::spawn_blocking(move || f(&conn))
-            .await
-            .map_err(|e| DriverError::Db(e.to_string()))?
+        let log = CURRENT.try_with(Arc::clone).ok();
+        tokio::task::spawn_blocking(move || match log {
+            Some(log) => CURRENT.sync_scope(log, || f(&conn)),
+            None => f(&conn),
+        })
+        .await
+        .map_err(|e| DriverError::Db(e.to_string()))?
     }
 
     /// Execute one parameterised statement, returning rows changed.
     async fn exec(&self, sql: String, binds: Vec<Option<String>>) -> DResult<u64> {
         self.with(move |c| {
+            note(&sql);
             let mut st = c.prepare(&sql).map_err(db)?;
             Ok(st.execute(::duckdb::params_from_iter(binds.iter())).map_err(db)? as u64)
         })
@@ -281,6 +291,7 @@ impl SqlDriver for DuckDriver {
                 }
             }
             if exec::left_open(&stmts[..outs.len()]) {
+                note("ROLLBACK");
                 let _ = c.execute_batch("ROLLBACK");
                 if let Some(last) = outs.last_mut() {
                     last.notice = Some("Transaction was not committed and has been rolled back".into());
@@ -467,7 +478,11 @@ impl SqlDriver for DuckDriver {
         let sql = sql.to_string();
         // `execute_batch` reports no count; a script dying midway leaves its transaction on
         // this clone, which rolls back when the clone closes.
-        self.with(move |c| c.execute_batch(&sql).map(|_| 0).map_err(db)).await
+        self.with(move |c| {
+            note(&sql);
+            c.execute_batch(&sql).map(|_| 0).map_err(db)
+        })
+        .await
     }
 
     async fn insert_row(&self, schema: &str, table: &str, values: &[(String, Option<String>)]) -> DResult<u64> {
