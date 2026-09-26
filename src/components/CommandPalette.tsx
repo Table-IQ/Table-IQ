@@ -53,6 +53,12 @@ export function CommandPalette({
     setSel((s) => Math.min(s, Math.max(0, rows.length - 1)));
   }, [rows.length]);
 
+  // Typing re-ranks (or re-groups) the list — keep the top entry selected
+  // rather than an old index that now points at a different command.
+  useEffect(() => {
+    setSel(0);
+  }, [query]);
+
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") onClose();
     else if (e.key === "ArrowDown") {
