@@ -1,10 +1,10 @@
 import { useId } from "react";
 
 /**
- * Inline TableIQ mark: a "T" built from three table cells + a stem, topped by an
- * **AI sparkle** (4-point star) at the upper-right. The T uses currentColor so it
- * adapts to theme; the spark carries the indigo→violet AI gradient (per DESIGN.md's
- * "violet/gradient reserved for AI"). Slice 30: the old flat dot became this spark.
+ * Inline TableIQ mark: a 2×2 table whose top-right cell *is* the **AI sparkle**
+ * (4-point star). The three cells use currentColor so they adapt to theme; the spark
+ * carries the indigo→violet AI gradient (per DESIGN.md's "violet/gradient reserved
+ * for AI"). Same geometry as src/assets/brand/glyph.svg and the app tile.
  */
 export function BrandMark({ size = 24, className = "" }: { size?: number; className?: string }) {
   // Per-instance gradient id so multiple marks on one page never share a DOM id.
@@ -19,18 +19,17 @@ export function BrandMark({ size = 24, className = "" }: { size?: number; classN
       aria-hidden="true"
     >
       <defs>
-        <linearGradient id={gid} x1="68" y1="6" x2="92" y2="30" gradientUnits="userSpaceOnUse">
+        <linearGradient id={gid} x1="51" y1="25.6" x2="74.4" y2="49" gradientUnits="userSpaceOnUse">
           <stop stopColor="#6366F1" />
           <stop offset="1" stopColor="#A855F7" />
         </linearGradient>
       </defs>
-      <rect x="20" y="26" width="16" height="13" rx="2.5" fill="currentColor" />
-      <rect x="42" y="26" width="16" height="13" rx="2.5" fill="currentColor" />
-      <rect x="64" y="26" width="16" height="13" rx="2.5" fill="currentColor" />
-      <rect x="42" y="39" width="16" height="38" rx="3" fill="currentColor" />
-      {/* 4-point AI sparkle (sharp concave star) where the old dot sat. */}
+      <rect x="26.6" y="26.6" width="21.5" height="21.5" rx="4.3" fill="currentColor" />
+      <rect x="26.6" y="52" width="21.5" height="21.5" rx="4.3" fill="currentColor" />
+      <rect x="52" y="52" width="21.5" height="21.5" rx="4.3" fill="currentColor" />
+      {/* The fourth cell: a 4-point AI sparkle, slightly larger so it breaks out of the grid. */}
       <path
-        d="M80 6 L82.5 15.5 L92 18 L82.5 20.5 L80 30 L77.5 20.5 L68 18 L77.5 15.5 Z"
+        d="M62.7 25.6 L65.6 34.4 L74.4 37.3 L65.6 40.2 L62.7 49 L59.8 40.2 L51 37.3 L59.8 34.4 Z"
         fill={`url(#${gid})`}
       />
     </svg>
