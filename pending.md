@@ -90,6 +90,22 @@ Full account in `docs/finalize/2026-09-25-table-ux-and-duckdb.md`.
 | **Desktop-app screenshots** | macOS denies this process Screen Recording, so all evidence was captured through the IPC bridge in a browser (same UI). The desktop app itself was launched on the final commit. |
 | **Query-result numbers left-aligned** | Pre-existing polish; the table grid right-aligns numbers, query results don't. |
 
+### 2e. Deferred from the `connection-tabs-readability` branch (0.4.0)
+
+Full account in `docs/finalize/2026-09-26-connection-tabs-readability.md`.
+
+| Item | Why |
+|---|---|
+| **Per-session "disconnected" state** | One global flag. A background connection that drops is not flagged until its next request after you switch back to it; switching away and back clears a dead connection's banner until the next failure. Needs `disconnected` on each open session. |
+| **⌘O in the Redis / MongoDB shells** | Only the SQL shell has the Open Connection picker, so a lone Redis or Mongo session can't open a second connection alongside it. Lift the picker out of MainShell. |
+| **Keep background shells mounted** | Switching remounts the shell: query results, undo history, the page cache and a running "Count exactly" are dropped, and the table page refetches. Tabs and SQL persist. Mounting one hidden shell per open connection would make switching instant. |
+| **Unsaved editor text when a background ⌘O finishes** | Typing still focused in an editor within 300 ms of a slow ⌘O resolving can be lost (the blur flush covers clicks, not a remount you didn't trigger). |
+| **Orphan session on a failed ⌘O / welcome connect** | If `connect` succeeds but loading the schema fails, the backend session stays open with no UI. |
+| **Closing a connection with a query running** | The query finishes and its result sits in the result store until evicted; the result-diff picker lists results from every connection. |
+| **Keyword contrast** | Light-theme keyword blue `#6499D3` (TablePlus's) is ≈3:1 on white, below WCAG AA. One token (`--syn-keyword`) if AA matters more than parity. |
+| **Grid headers left-aligned** | TablePlus centres them; glide has no header-alignment key (needs a custom header draw). |
+| **`--text-mono-cell` token** | The 12.5px data size is a literal in the sidebar lists and `theme.ts`, not a CSS variable. |
+
 ---
 
 ## 3. Other pending work (pre-existing, not touched by this branch)
