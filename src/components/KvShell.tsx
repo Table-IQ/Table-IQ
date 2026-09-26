@@ -103,7 +103,7 @@ export function KvShell() {
                   <button
                     key={k.key}
                     onClick={() => open(k.key)}
-                    className={`flex h-[var(--row-h)] w-full items-center gap-2 rounded-md px-2 text-left text-xs ${
+                    className={`flex h-[var(--row-h)] w-full items-center gap-2 rounded-md px-2 text-left font-mono text-[12.5px] ${
                       selected === k.key
                         ? "bg-selection-bg text-text"
                         : "text-text hover:bg-surface-2"

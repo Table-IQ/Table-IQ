@@ -92,7 +92,7 @@ export function DocShell() {
                 <button
                   key={c}
                   onClick={() => open(c)}
-                  className={`flex h-[var(--row-h)] w-full items-center gap-2 rounded-md px-2 text-left text-xs ${
+                  className={`flex h-[var(--row-h)] w-full items-center gap-2 rounded-md px-2 text-left font-mono text-[12.5px] ${
                     selected === c
                       ? "bg-selection-bg text-text"
                       : "text-text hover:bg-surface-2"

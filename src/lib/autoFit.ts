@@ -5,14 +5,14 @@
  * values (`created_at`, `blob_text`, …). TablePlus sizes each column to its
  * content. These helpers compute a fitted pixel width from the header text plus
  * a sample of loaded cell values, using a character-width heuristic tuned to the
- * grid's 11.5px cell font. Deterministic + unit-tested; the React grid calls
+ * grid's 12.5px mono cell font. Deterministic + unit-tested; the React grid calls
  * {@link autoFitWidths} once per loaded page for columns the user hasn't resized.
  */
 
 import { MIN_COL_WIDTH } from "./colWidths";
 
 export interface FitOpts {
-  /** Approx px per character at the cell font (11.5px proportional). */
+  /** Approx px per character at the cell font (12.5px mono). */
   charPx?: number;
   /** Horizontal breathing room: cellHorizontalPadding * 2 + a hair. */
   padding?: number;
@@ -24,10 +24,9 @@ export interface FitOpts {
   max?: number;
 }
 
-// Approx px per character at the grid's 11.5px cell font (see gridTheme's
-// `baseFontStyle` in theme.ts / `--text-mono-cell` in DESIGN.md). If that font
-// size changes, revisit CHAR_PX.
-const CHAR_PX = 7;
+// Px per character at the grid's 12.5px mono cell font: SF Mono advances 0.6em
+// (see gridTheme's `baseFontStyle` in theme.ts). If that font changes, revisit.
+const CHAR_PX = 7.5;
 const PADDING = 24;
 const HEADER_EXTRA = 16;
 // Intentionally smaller than colWidths.ts MAX_COL_WIDTH (1200): auto-fit caps a

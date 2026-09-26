@@ -34,7 +34,7 @@
 
   /* Density — TablePlus eye-feel. Slice 32 raised the status bar + title bar so
      chrome reads as substantial, not cramped. */
-  --row-h: 22px;
+  --row-h: 20px; /* TablePlus sidebar pitch (measured) */
   --rail-w: 72px;
   --toolbar-h: 30px;
   --tabbar-h: 28px;

@@ -42,9 +42,11 @@ Three principles, in order:
 
 ## Type scale
 
-Base sized down from 13 → 12px so we read like TablePlus. Grid cells render at
-11.5px via the glide-data-grid theme so they feel tighter than the surrounding
-chrome.
+Base sized down from 13 → 12px so we read like TablePlus. **Data surfaces** (grid
+cells, sidebar tree, SQL editor) are **monospace**, larger than the chrome, in
+tight rows with pure-black text — measured off TablePlus screenshots (2026-09-26):
+SF Mono ≈12.5px, 24px grid rows, 20px tree rows. Small sans text floating in tall
+rows was the readability gap.
 
 | Token | Size / line | Usage |
 |---|---|---|
@@ -53,7 +55,7 @@ chrome.
 | `--text-base` | 12 / 17 | Body, form inputs, breadcrumb |
 | `--text-md` | 13 / 18 | Panel titles, modal headings |
 | `--text-lg` | 16 / 22 | Welcome / hero (connection manager) |
-| `--text-mono-cell` | 11.5 / 15 | Grid cells |
+| `--text-mono-cell` | 12.5 / 24 | Grid cells + sidebar tree rows (mono) |
 
 Weights: 400 default, 500 on labels + emphasis, 600 on hero + panel titles only.
 **Never 700 in chrome.**
@@ -66,7 +68,7 @@ Fonts:
 
 | Token | Old | New |
 |---|---|---|
-| `--row-h` | 26 | 22 |
+| `--row-h` | 22 | 20 |
 | `--toolbar-h` | 36 | 28 |
 | `--tabbar-h` | 30 | 26 |
 | `--statusbar-h` | 24 | 22 |
@@ -78,8 +80,7 @@ Fonts:
 | `--radius` | 6 | 5 |
 | `--radius-sm` | 4 | 3 |
 
-`--rail-w` removed — the left-edge connection rail is gone; switching happens
-through the `⌘O` Open Connection palette and the breadcrumb.
+`--rail-w: 72px` — the connection rail (below), shown only while 2+ connections are open.
 
 ## Color tokens
 
@@ -284,7 +285,7 @@ floats recently-used connections to the top of the list without any UI grouping
 | Welcome / first-launch | Hero treatment, larger wordmark, glass action chips |
 | Connection manager (Slice 22) | List-first; form slides out as side sheet on edit/new |
 | Workspace titlebar | Tighter (32px), 1.5-stroke icons, breadcrumb redesign |
-| Connection rail (left edge) | **Removed**. Replaced by `⌘O` Open Connection palette |
+| Connection rail (left edge) | Removed in Slice 22; **back** (2026-09-26) as the TablePlus open-connections rail, see below |
 | Tab strip | Subtler active state, smaller |
 | Status bar | New layout: object info L · row-window nav C · Data/Structure + Row + Filters/Columns + editable chip R |
 | Sidebar | Density tightened; section labels in `text-xs uppercase tracking-widest text-muted` |
@@ -299,7 +300,7 @@ floats recently-used connections to the top of the list without any UI grouping
 | Surface | Change |
 |---|---|
 | Grid columns | **Auto-fit to content** on first load (`lib/autoFit.ts`: `fitColumnWidth`/`autoFitWidths`), clamped to `MAX_AUTO_FIT` 420px. Fixes the old fixed-160px clipping. A persisted drag (`lib/colWidths.ts`) always wins over auto-fit. |
-| Grid rows | **Zebra stripe** on odd rows + neutral **hover** highlight (`gridRowTints` in `theme.ts` → glide `getRowThemeOverride`). Row 29px / header 30px (tighter than glide's 34px). |
+| Grid rows | **Zebra stripe** on odd rows + neutral **hover** highlight (`gridRowTints` in `theme.ts` → glide `getRowThemeOverride`). Row 24px / header 28px; cells SF Mono 12.5px `#000`, header sans 500 12.5px `#000` on white. |
 | Grid cells | Numeric columns **right-align** (`isNumericType`). FK cells stay left (`→ value`). |
 | Connection capsule | Centered TablePlus pill in the titlebar: `conn \| ENGINE : database ▾ : schema.table`. Name → ⌘O, database → ⌘D. Replaces the plain breadcrumb + left chip. |
 | Bottom bar | Active Data/Structure segment uses the primary accent (TablePlus blue tab). **Single** bottom bar — the workspace fallback is suppressed when a Table/Query tab owns one (was stacked two-deep). |
@@ -319,6 +320,32 @@ floats recently-used connections to the top of the list without any UI grouping
 | FK cell text | `#4f46e5` | `#6366f1` | `gridTheme().accentColor` |
 
 A save-state tint (staged / saving / saved / error) wins over a search hit on the same cell.
+
+## Connection rail — TablePlus parity
+
+Several connections stay open at once (the backend already keeps one session per
+id). `⌘O` opens another alongside the current one; the rail (`ConnectionRail.tsx`,
+`--rail-w` 72px, `tiq-vibrancy`) appears at the far left of the body once **two or
+more** are open. Each item: database cylinder (tinted by the connection's colour
+tag) over an 11px label; the active one is a raised `bg-bg` card; hover shows ×
+to close that session. A footer ⚙ menu toggles the label between database and
+connection name (`tiq:rail:label`). Switching does not reconnect — the shell
+remounts on the stored session and re-hydrates that connection's tabs. Disconnect
+closes only the active connection; the last one remaining takes over.
+
+## SQL editor syntax colours
+
+Xcode-style, sampled from TablePlus: keywords recede in a soft blue while
+identifiers stay full-contrast, so the query's *names* carry the eye.
+
+| Token | Light | Dark |
+|---|---|---|
+| keyword / type | `#6499D3` | `#6CB6FF` |
+| string | `#CF5478` | `#FF7FA3` |
+| comment | `#449940` | `#6BC46D` |
+| number / bool / null | `#1A01F5` | `#A5A3FF` |
+| identifier / function / operator | `--text` (`#000` light) | `--text` |
+| gutter numbers | `#7E7E7E` on `--bg` | `#6E7681` on `--bg` |
 
 ## Do / Don't
 

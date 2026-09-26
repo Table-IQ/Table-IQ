@@ -23,13 +23,13 @@ describe("isNumericType", () => {
 
 describe("fitColumnWidth", () => {
   it("sizes to the longest cell value when it exceeds the header", () => {
-    // header "id" (2) → 2*7+24+16 = 54; cells max len 3 → 3*7+24 = 45 → 54
-    expect(fitColumnWidth("id", ["0", "1", "123"])).toBe(54);
+    // header "id" (2) → 2*7.5+24+16 = 55; cells max len 3 → 3*7.5+24 = 46.5 → 55
+    expect(fitColumnWidth("id", ["0", "1", "123"])).toBe(55);
   });
 
   it("lets a long header drive the width when cells are short", () => {
-    // header len 23 → 23*7+24+16 = 201; cell "x" → 31 → 201
-    expect(fitColumnWidth("a_very_long_header_name", ["x"])).toBe(201);
+    // header len 23 → 23*7.5+24+16 = 212.5 → 213; cell "x" → 31.5
+    expect(fitColumnWidth("a_very_long_header_name", ["x"])).toBe(213);
   });
 
   it("clamps very long content to the max", () => {
@@ -41,10 +41,10 @@ describe("fitColumnWidth", () => {
   });
 
   it("ignores null / undefined / empty samples when measuring", () => {
-    // longest real value "bbbb" (4) → 4*7+24 = 52 wins over header "c" (47)
+    // longest real value "bbbb" (4) → 4*7.5+24 = 54 wins over header "c" (47.5)
     expect(
       fitColumnWidth("c", ["aa", null as unknown as string, undefined as unknown as string, "bbbb"]),
-    ).toBe(52);
+    ).toBe(54);
   });
 });
 
@@ -55,15 +55,15 @@ describe("autoFitWidths", () => {
   ];
 
   it("computes a fitted width for every column from sampled rows", () => {
-    // id → header 54 vs "22" (38) → 54 ; name → header 68 vs "Linus" (59) → 68
-    expect(autoFitWidths(["id", "name"], rows, {})).toEqual({ id: 54, name: 68 });
+    // id → header 55 vs "22" (39) → 55 ; name → header 70 vs "Linus" (61.5) → 70
+    expect(autoFitWidths(["id", "name"], rows, {})).toEqual({ id: 55, name: 70 });
   });
 
   it("skips columns that already have a persisted width", () => {
-    expect(autoFitWidths(["id", "name"], rows, { name: 200 })).toEqual({ id: 54 });
+    expect(autoFitWidths(["id", "name"], rows, { name: 200 })).toEqual({ id: 55 });
   });
 
   it("falls back to a header-only width when no rows are loaded", () => {
-    expect(autoFitWidths(["id"], [], {})).toEqual({ id: 54 });
+    expect(autoFitWidths(["id"], [], {})).toEqual({ id: 55 });
   });
 });
