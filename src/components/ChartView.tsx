@@ -1,10 +1,9 @@
 import { useEffect, useState } from "react";
 import { fetchResultWindow } from "../lib/commands";
 import { decodeWindow } from "../lib/arrowWindow";
-import { buildSeries, niceMax, type Point } from "../lib/chart";
+import { buildSeries, niceMax, MAX_BARS, type Point } from "../lib/chart";
 
 const SAMPLE = 200; // rows pulled for the chart
-const MAX_BARS = 50;
 
 /**
  * The bar/line SVG itself (Task 11: extracted so `MetricsBoard`'s widget
@@ -16,17 +15,19 @@ export function ChartSvg({
   kind,
   width = 760,
   height = 280,
+  padB = 48,
 }: {
   points: Point[];
   kind: "bar" | "line";
   width?: number;
   height?: number;
+  /** Space under the plot; a small widget card needs less than the full chart. */
+  padB?: number;
 }) {
   const max = niceMax(points.map((p) => p.value));
   const W = width;
   const H = height;
   const padL = 48;
-  const padB = 48;
   const padT = 12;
   const plotW = W - padL - 12;
   const plotH = H - padB - padT;

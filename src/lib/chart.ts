@@ -1,5 +1,8 @@
 /** Chart data prep for the quick-chart view. */
 
+/** Most points a bar/line chart draws (the Results chart and metrics widgets alike). */
+export const MAX_BARS = 50;
+
 export interface Point {
   label: string;
   value: number;

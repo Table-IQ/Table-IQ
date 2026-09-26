@@ -64,7 +64,7 @@ import {
   switchDatabaseFlow,
   useConnections,
 } from "../state/connectionStore";
-import { useTabs } from "../state/tabsStore";
+import { useTabs, viewGlyph } from "../state/tabsStore";
 import type { Tab } from "../state/tabsStore";
 import {
   cancelAll,
@@ -931,7 +931,15 @@ export function MainShell() {
   // for items that are already their own stateful component (ThemeToggle).
   const titlebarActions: Record<
     string,
-    { icon?: ReactNode; onClick?: () => void; shortcut?: string; when?: boolean; render?: () => ReactNode }
+    {
+      icon?: ReactNode;
+      onClick?: () => void;
+      shortcut?: string;
+      when?: boolean;
+      /** Pressed state, for items that toggle a panel. */
+      active?: boolean;
+      render?: () => ReactNode;
+    }
   > = {
     "refresh-schema": {
       icon: <IconRefresh size={16} className={refreshingSchema ? "animate-spin" : undefined} />,
@@ -958,6 +966,7 @@ export function MainShell() {
     "sql-log": {
       icon: <IconSqlLog size={16} />,
       shortcut: "⌘⇧C",
+      active: showSqlLog,
       onClick: () => setShowSqlLog((v) => !v),
     },
     metrics: {
@@ -1015,6 +1024,7 @@ export function MainShell() {
                 icon={action.icon}
                 label={item.label}
                 shortcut={action.shortcut}
+                active={action.active}
                 onClick={action.onClick}
               />
             );
@@ -1324,9 +1334,7 @@ export function MainShell() {
                 >
                   <button onClick={() => setActiveTab(t.key)} className="font-mono">
                     {t.kind === "query" ? <span className="text-primary">◇ </span> : null}
-                    {t.kind === "erd" ? <span className="text-accent">◫ </span> : null}
-                    {t.kind === "users" ? <span className="text-accent">▤ </span> : null}
-                    {t.kind === "metrics" ? <span className="text-accent">▦ </span> : null}
+                    {viewGlyph(t.kind) ? <span className="text-accent">{viewGlyph(t.kind)} </span> : null}
                     {t.title}
                   </button>
                   <button
@@ -1603,13 +1611,14 @@ export function MainShell() {
             {
               id: "duplicate",
               label: "Duplicate",
+              // View tabs (ERD, Users, Metrics…) are singletons — "duplicating" one would
+              // only re-activate it, so the item is off rather than silently doing nothing.
+              disabled: tabMenu.tab.kind !== "table" && tabMenu.tab.kind !== "query",
               onSelect: () => {
                 if (tabMenu.tab.kind === "table" && tabMenu.tab.schema && tabMenu.tab.table) {
                   openTable(tabMenu.tab.schema, tabMenu.tab.table);
                 } else if (tabMenu.tab.kind === "query") {
                   openQuery(tabMenu.tab.sql);
-                } else if (tabMenu.tab.kind === "erd") {
-                  openErd();
                 }
               },
             },

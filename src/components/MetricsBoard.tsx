@@ -225,7 +225,13 @@ function WidgetCard({
           value.points.length === 0 ? (
             <div className="w-full self-center text-center text-[11px] text-muted">No numeric data.</div>
           ) : (
-            <ChartSvg points={value.points} kind={widget.kind === "line" ? "line" : "bar"} width={240} height={100} />
+            <ChartSvg
+              points={value.points}
+              kind={widget.kind === "line" ? "line" : "bar"}
+              width={240}
+              height={100}
+              padB={24}
+            />
           )
         ) : (
           <TableValue columns={value.columns} rows={value.rows} />

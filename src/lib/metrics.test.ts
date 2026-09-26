@@ -140,6 +140,19 @@ describe("MIN_REFRESH_SEC", () => {
   });
 });
 
+describe("widgetValue point cap", () => {
+  it("bar/line keep at most 50 points, like ChartView's MAX_BARS", () => {
+    const rows: Rows = {
+      columns: ["k", "v"],
+      rows: Array.from({ length: 80 }, (_, i) => [`k${i}`, String(i)]),
+      truncated: false,
+    };
+    const v = widgetValue(rows, "bar");
+    expect(v.kind === "series" && v.points.length).toBe(50);
+    expect(v.kind === "series" && v.points[49]).toEqual({ label: "k49", value: 49 });
+  });
+});
+
 describe("isReadOnlyWidgetSql", () => {
   it("accepts a plain select", () => {
     expect(isReadOnlyWidgetSql("select 1")).toBe(true);

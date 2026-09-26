@@ -4,6 +4,13 @@ import { create } from "zustand";
  *  connection switch, so "per connection" falls out of that reset for free). */
 export type ViewKind = "erd" | "users" | "metrics" | "mcp";
 
+/** The glyph before a view tab's title — shared by the tab strip and Workspace Overview. */
+const VIEW_GLYPHS: Partial<Record<ViewKind, string>> = { erd: "◫", users: "▤", metrics: "▦" };
+
+export function viewGlyph(kind: Tab["kind"]): string | undefined {
+  return VIEW_GLYPHS[kind as ViewKind];
+}
+
 export interface Tab {
   key: string;
   kind: "table" | "query" | ViewKind;

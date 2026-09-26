@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTabs } from "./tabsStore";
+import { useTabs, viewGlyph } from "./tabsStore";
 
 describe("tabsStore", () => {
   beforeEach(() => {
@@ -102,5 +102,15 @@ describe("tabsStore", () => {
     useTabs.getState().close(key1);
     expect(useTabs.getState().tabs).toHaveLength(1);
     expect(useTabs.getState().activeKey).toBe("table:public.users");
+  });
+});
+
+describe("viewGlyph", () => {
+  it("gives every drawn view kind a glyph and table/query tabs none", () => {
+    expect(viewGlyph("erd")).toBe("◫");
+    expect(viewGlyph("users")).toBe("▤");
+    expect(viewGlyph("metrics")).toBe("▦");
+    expect(viewGlyph("table")).toBeUndefined();
+    expect(viewGlyph("query")).toBeUndefined();
   });
 });

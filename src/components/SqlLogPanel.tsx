@@ -188,11 +188,10 @@ export function SqlLogPanel({ connId }: { connId: string }) {
     // Bump the generation and reset local state synchronously, *before*
     // kicking off `clearSqlLog` — any poll already in flight resolves after
     // this and its generation check now fails, so it can't reapply the
-    // pre-clear entries or push `lastSeq` back up; any poll tick that fires
-    // after this point (even before `clearSqlLog` itself resolves) starts
-    // over from `afterSeq = 0`.
+    // pre-clear entries. `lastSeq` is kept, not reset: seq is globally
+    // monotonic, so a poll tick that fires before `clearSqlLog` lands still
+    // asks only for entries newer than the ones just cleared.
     genRef.current += 1;
-    lastSeqRef.current = 0;
     stickyBottomRef.current = true;
     setEntries([]);
     void clearSqlLog(connId).catch((e) => logError("sql log: clear", e));

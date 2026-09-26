@@ -9,7 +9,7 @@
  * unit tests can pass an in-memory map.
  */
 import type { Rows } from "./commands";
-import { buildSeries, type Point } from "./chart";
+import { buildSeries, MAX_BARS, type Point } from "./chart";
 import { codeOnly, splitStatements, type SqlDialect } from "./sqlSplit";
 
 export const STORAGE_PREFIX = "tiq:metrics:";
@@ -99,7 +99,8 @@ export type WidgetValue =
 
 /** Shape a `query_rows` result for display, per widget kind:
  *  - number: the first cell of the first row, or "—" when there's no row or it's null.
- *  - bar/line: col0 as the label, col1 as the numeric value (non-numeric rows dropped).
+ *  - bar/line: col0 as the label, col1 as the numeric value (non-numeric rows dropped),
+ *    at most `MAX_BARS` points.
  *  - table: the first 20 rows, columns as returned. */
 export function widgetValue(rows: Rows, kind: WidgetKind): WidgetValue {
   if (kind === "number") {
@@ -109,7 +110,7 @@ export function widgetValue(rows: Rows, kind: WidgetKind): WidgetValue {
   if (kind === "bar" || kind === "line") {
     const labels = rows.rows.map((r) => r[0] ?? "");
     const values = rows.rows.map((r) => r[1] ?? "");
-    return { kind: "series", points: buildSeries(labels, values) };
+    return { kind: "series", points: buildSeries(labels, values).slice(0, MAX_BARS) };
   }
   return { kind: "table", columns: rows.columns, rows: rows.rows.slice(0, 20) };
 }
