@@ -20,8 +20,9 @@ export interface TableMeta {
   pk: string[];
 }
 
-/** One open connection. `schema` is authoritative only while the session is in the
- *  background — the active session's live schema is the top-level `schema`. */
+/** One open connection. The active one's info/schema are mirrored at top level
+ *  (`active`, `schema`); every write goes through the actions below, which keep
+ *  both in step. */
 export interface OpenSession {
   info: ConnectedInfo;
   schema: SchemaModel | null;
@@ -50,13 +51,9 @@ interface ConnectionState {
   /** Refresh one session's info/schema (reconnect, ⌘D, schema refresh) without
    *  bringing it to the front — the user may have switched away while it loaded. */
   updateSession: (id: string, patch: Partial<OpenSession>) => void;
-  setSchema: (schema: SchemaModel | null) => void;
   setDisconnected: (disconnected: boolean) => void;
 }
 
-/** `open` with the active session's live schema written back into its entry. */
-const snapshot = (s: ConnectionState): OpenSession[] =>
-  s.active ? s.open.map((o) => (o.info.id === s.active!.id ? { ...o, schema: s.schema } : o)) : s.open;
 
 // The tab list is global and each shell re-hydrates its connection's slice on
 // mount; clearing it whenever the active connection changes keeps the next shell
@@ -78,7 +75,7 @@ export const useConnections = create<ConnectionState>((set, get) => ({
   openSession: (info, schema) => {
     leaving(get().active, info.id);
     set((s) => {
-      const open = snapshot(s);
+      const open = s.open;
       const entry = { info, schema };
       const i = open.findIndex((o) => o.info.id === info.id);
       return {
@@ -94,7 +91,7 @@ export const useConnections = create<ConnectionState>((set, get) => ({
     const target = s.open.find((o) => o.info.id === id);
     if (!target || s.active?.id === id) return;
     leaving(s.active, id);
-    set({ open: snapshot(s), active: target.info, schema: target.schema, disconnected: false });
+    set({ active: target.info, schema: target.schema, disconnected: false });
   },
   closeSession: (id) => {
     const s = get();
@@ -115,7 +112,6 @@ export const useConnections = create<ConnectionState>((set, get) => ({
         schema: patch.schema !== undefined ? patch.schema : s.schema,
       };
     }),
-  setSchema: (schema) => set({ schema }),
   setDisconnected: (disconnected) => set({ disconnected }),
 }));
 

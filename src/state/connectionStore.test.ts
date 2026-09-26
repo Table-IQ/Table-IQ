@@ -42,7 +42,7 @@ describe("connectionStore sessions", () => {
   it("switchTo restores the target's schema, including a refresh made while it was active", () => {
     const st = useConnections.getState;
     st().openSession(info("a"), schema("A"));
-    st().setSchema(schema("A-refreshed"));
+    st().updateSession("a", { schema: schema("A-refreshed") });
     st().openSession(info("b"), schema("B"));
     st().switchTo("a");
     expect(st().active?.id).toBe("a");
@@ -202,7 +202,7 @@ describe("connectionStore sessions — edge branches", () => {
     const st = useConnections.getState;
     st().openSession(info("a"), schema("A"));
     useTabs.getState().openQuery("SELECT 1;");
-    st().setSchema(schema("A-live"));
+    st().updateSession("a", { schema: schema("A-live") });
     st().switchTo("a");
     expect(useTabs.getState().tabs).toHaveLength(1);
     expect(st().schema).toEqual(schema("A-live"));
@@ -237,7 +237,7 @@ describe("connectionStore sessions — edge branches", () => {
     const st = useConnections.getState;
     st().openSession(info("a"), schema("A"));
     st().openSession(info("b"), schema("B"));
-    st().setSchema(schema("B-live"));
+    st().updateSession("b", { schema: schema("B-live") });
     st().closeSession("b");
     expect(st().schema).toEqual(schema("A"));
   });
@@ -245,7 +245,7 @@ describe("connectionStore sessions — edge branches", () => {
   it("updateSession on the active session with only `info` keeps the live schema", () => {
     const st = useConnections.getState;
     st().openSession(info("a"), schema("A"));
-    st().setSchema(schema("A-live"));
+    st().updateSession("a", { schema: schema("A-live") });
     st().updateSession("a", { info: { ...info("a"), database: "d2" } });
     expect(st().active?.database).toBe("d2");
     expect(st().schema).toEqual(schema("A-live"));
