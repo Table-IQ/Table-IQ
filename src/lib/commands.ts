@@ -654,6 +654,20 @@ export async function cancelAll(id: string): Promise<number> {
   return invoke<number>("cancel_all", { id });
 }
 
+/** One statement the app ran on a connection. `seq` rises across every connection. */
+export type SqlLogEntry = { seq: number; ts_us: number; sql: string };
+
+/** Connection `id`'s SQL log after `afterSeq` (0 = all of it), oldest first. */
+export async function sqlLog(id: string, afterSeq: number): Promise<SqlLogEntry[]> {
+  if (!inTauri()) return []; // mock: no statements run
+  return invoke<SqlLogEntry[]>("sql_log", { id, afterSeq });
+}
+
+export async function clearSqlLog(id: string): Promise<void> {
+  if (!inTauri()) return;
+  await invoke("clear_sql_log", { id });
+}
+
 export async function fetchResultWindow(
   resultId: string,
   offset: number,
