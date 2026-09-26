@@ -13,6 +13,11 @@ get the full relational experience: connect, browse (a paged, sortable, filterab
 multi-statement scripts, and NULL-safe inline edits), Structure (real columns/indexes/
 triggers per engine), and an ERD with FK-accurate connectors.
 
+Several connections can stay open at once: ⌘O opens another alongside the current one, and
+once two or more are open a rail at the far left switches between them without reconnecting,
+each keeping its own tabs and SQL. Data reads like TablePlus: monospaced 12.5px cells in tight
+rows, and TablePlus's SQL syntax colours in light mode (dark mode has its own palette).
+
 MongoDB and Redis get a lighter document/key-value shell (`DocShell` / `KvShell`) rather
 than the SQL grid and ERD.
 
