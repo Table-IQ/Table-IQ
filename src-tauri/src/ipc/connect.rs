@@ -861,6 +861,15 @@ pub async fn cancel_all(state: State<'_, ConnState>, id: String) -> Result<usize
     let drv = state.session(&id)?;
     let had_running = !keys_for(&lk(&state.cancels), &id).is_empty();
     let n = cancel_all_for(&state.cancels, drv.as_ref(), &id).await;
+    cancel_all_outcome(n, had_running)
+}
+
+/// The body of [`cancel_all`]'s result decision, outside Tauri so it's unit-testable without
+/// a live command dispatch: `0` stopped with something registered means every token belonged
+/// to an engine with no cancel support at all (e.g. SQL Server, or any driver that hasn't
+/// overridden the default `cancel` → `DriverError::NotImplemented`) — turn that into a clear
+/// error instead of the ambiguous "stopped 0 queries".
+fn cancel_all_outcome(n: usize, had_running: bool) -> Result<usize, String> {
     if n == 0 && had_running {
         return Err("Cancellation is not supported for this engine.".to_string());
     }
@@ -1865,5 +1874,29 @@ mod tests {
 
         assert!(keys_for(&map, "conn2").len() == 1);
         assert!(keys_for(&map, "unknown").is_empty());
+    }
+
+    /// `cancel_all`'s `n == 0 && had_running` branch: an engine whose driver hasn't overridden
+    /// the default `cancel` (→ `DriverError::NotImplemented`, e.g. SQL Server) stops nothing,
+    /// but "0 stopped" must not be reported as "nothing was running". No live DB or Tauri
+    /// `State` needed — `cancel_all`'s own logic is exercised via its two extracted,
+    /// Tauri-free pieces (`keys_for`, `cancel_all_for`) plus the outcome decision itself.
+    #[tokio::test]
+    async fn cancel_all_reports_unsupported_when_the_engine_cant_cancel() {
+        let tmp = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        let drv = SqliteDriver::connect(&path).await.expect("connect"); // default cancel() is NotImplemented
+
+        let mut map = HashMap::new();
+        map.insert(ckey("conn1", "table:public.users"), CancelToken::new());
+        let cancels = Mutex::new(map);
+
+        let had_running = !keys_for(&lk(&cancels), "conn1").is_empty();
+        assert!(had_running);
+        let n = cancel_all_for(&cancels, &drv, "conn1").await;
+        assert_eq!(n, 0, "the sqlite driver can't cancel, so nothing counts as stopped");
+
+        let outcome = cancel_all_outcome(n, had_running);
+        assert_eq!(outcome, Err("Cancellation is not supported for this engine.".to_string()));
     }
 }
