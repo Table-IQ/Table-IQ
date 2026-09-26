@@ -34,7 +34,9 @@ const LIFECYCLE_CMDS = new Set(["connect", "test_connection", "disconnect"]);
 
 let connectionLostHandler: ((connId?: string) => void) | null = null;
 /** MainShell registers a callback fired when a live session drops, with that
- *  session's id when the command carried one (`{ id }`). */
+ *  session's id when the command carried one. Convention: session-bound commands
+ *  pass the connection as `{ id }` — an id-less command reports `undefined`, which
+ *  the active shell treats as its own. */
 export function setConnectionLostHandler(fn: ((connId?: string) => void) | null): void {
   connectionLostHandler = fn;
 }

@@ -64,7 +64,7 @@ export function gridTheme(mode: ResolvedTheme) {
     textLight: "#7e7e7e",
     textHeader: "#000000",
     // Light-mode vertical border darkened so cell boundaries land clearly at
-    // 11.5px text — was #e4e4e7 (barely visible against #ffffff cells).
+    // small data text — was #e4e4e7 (barely visible against #ffffff cells).
     borderColor: "#d4d4d8",
     horizontalBorderColor: "#eeeef0",
     accentColor: "#4f46e5",

@@ -55,7 +55,8 @@ rows was the readability gap.
 | `--text-base` | 12 / 17 | Body, form inputs, breadcrumb |
 | `--text-md` | 13 / 18 | Panel titles, modal headings |
 | `--text-lg` | 16 / 22 | Welcome / hero (connection manager) |
-| `--text-mono-cell` | 12.5 / 24 | Grid cells + sidebar tree rows (mono) |
+| `--text-mono-cell` | 12.5 / 24 | Grid cells (mono) |
+| — | 12.5 / 20 (`--row-h`) | Sidebar tree rows (mono) |
 
 Weights: 400 default, 500 on labels + emphasis, 600 on hero + panel titles only.
 **Never 700 in chrome.**
@@ -68,7 +69,7 @@ Fonts:
 
 | Token | Old | New |
 |---|---|---|
-| `--row-h` | 22 | 20 |
+| `--row-h` | 26 → 22 | 20 |
 | `--toolbar-h` | 36 | 28 |
 | `--tabbar-h` | 30 | 26 |
 | `--statusbar-h` | 24 | 22 |
