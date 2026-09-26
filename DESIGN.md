@@ -26,10 +26,16 @@ Three principles, in order:
 
 - **Name:** TableIQ (one word, capital T and IQ). Never "Table-IQ" or "Tableiq".
 - **Wordmark:** `Table` in `--text`, `IQ` in `--primary`. Component: [`<Wordmark>`](src/components/Brand.tsx).
-- **Inline glyph:** tile-less "T" of three table cells + stem in `currentColor`,
-  topped by a 4-point **AI sparkle** (indigo→violet gradient) at the upper-right
-  ([`<BrandMark>`](src/components/Brand.tsx)). Slice 30 replaced the old flat dot
-  with the sparkle — the spark *is* the "IQ", so it carries the AI gradient.
+- **Mark:** a 2×2 table whose top-right cell *is* the 4-point **AI sparkle** —
+  the grid is "Table", the spark is "IQ". App tile: white cells on the
+  indigo→violet gradient, spark in `#C4B5FD` with a white core
+  ([icon-tile.svg](src/assets/brand/icon-tile.svg), regenerate the OS icon set
+  with `node scripts/render-brand-icon.mjs && pnpm tauri icon src/assets/brand/icon-1024.png`).
+  Inline glyph: tile-less, three cells in `currentColor`, spark in the
+  indigo→violet gradient ([`<BrandMark>`](src/components/Brand.tsx),
+  [glyph.svg](src/assets/brand/glyph.svg)). Replaced the "cells-T + spark" of
+  slices 30–31 (2026-09-26): the T read as a hammer at small sizes and the spark
+  floated outside the letterform; the grid still reads at 16 px.
 - Reserve the **violet `--accent`** and the primary→accent gradient for AI
   features (NL→SQL, chat, explain) — including the brand spark. Never for
   ordinary chrome.

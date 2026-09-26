@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1 — 2026-09-26
+
+### Changed
+- **New logo.** The mark is now a 2×2 table whose top-right cell is the AI spark —
+  the grid is "Table", the spark is "IQ". Same indigo→violet palette. Applied to the
+  app icon on every platform, the favicon and the in-app wordmark.
+
 ## 0.3.0 — 2026-09-26
 
 Tables open and page instantly at any size — a trillion-row Postgres table included —
