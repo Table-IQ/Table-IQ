@@ -26,6 +26,12 @@ describe("sqlHighlight (TablePlus palette via CSS vars)", () => {
     expect(c["-- note"]).toBe("var(--syn-comment)");
   });
 
+  it("keeps quoted identifiers at the body text colour, unlike string literals", () => {
+    const c = colours(`SELECT "Users".id FROM "Users" WHERE name = 'x'`);
+    expect(c['"Users"']).toBe("var(--syn-text)");
+    expect(c["'x'"]).toBe("var(--syn-string)");
+  });
+
   it("leaves plain identifiers at the body text colour (no class)", () => {
     expect(colours("SELECT foo FROM bar")["foo"]).toBeUndefined();
   });

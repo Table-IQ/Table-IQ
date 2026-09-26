@@ -9,7 +9,10 @@ import { tags as t } from "@lezer/highlight";
  */
 export const sqlHighlight = HighlightStyle.define([
   { tag: [t.keyword, t.typeName, t.operatorKeyword], color: "var(--syn-keyword)" },
-  { tag: [t.string, t.special(t.string)], color: "var(--syn-string)" },
+  { tag: t.string, color: "var(--syn-string)" },
+  // lang-sql tags quoted identifiers ("Users", `order`) as special(string) — a
+  // sub-tag of string — so pin them back to body contrast: names carry the eye.
+  { tag: t.special(t.string), color: "var(--syn-text)" },
   { tag: [t.lineComment, t.blockComment], color: "var(--syn-comment)" },
   { tag: [t.number, t.bool, t.null], color: "var(--syn-number)" },
 ]);
