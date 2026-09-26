@@ -26,11 +26,19 @@ describe("gridTheme", () => {
     expect(gridTheme("light").accentColor).toBe("#4f46e5");
     expect(gridTheme("dark").accentColor).toBe("#6366f1");
   });
-  it("sizes mono cells smaller than the surrounding chrome", () => {
-    // 11.5px cells read tighter than the 12px chrome — gives the grid a denser feel
-    // (TablePlus parity, see DESIGN.md "Type scale").
-    expect(gridTheme("light").baseFontStyle).toBe("11.5px");
-    expect(gridTheme("dark").baseFontStyle).toBe("11.5px");
+  it("draws cells in the mono face at 12.5px, like TablePlus", () => {
+    for (const mode of ["light", "dark"] as const) {
+      expect(gridTheme(mode).baseFontStyle).toBe("12.5px");
+      expect(gridTheme(mode).fontFamily).toMatch(/^"SF Mono"/);
+    }
+  });
+  it("keeps the header in the sans face — its style leads with the sans stack", () => {
+    // glide composes the header font as `${headerFontStyle} ${fontFamily}`.
+    expect(gridTheme("light").headerFontStyle).toMatch(/^500 12\.5px -apple-system/);
+  });
+  it("paints light-mode data and headers pure black on a white header", () => {
+    const t = gridTheme("light");
+    expect([t.textDark, t.textHeader, t.bgHeader]).toEqual(["#000000", "#000000", "#ffffff"]);
   });
 });
 
@@ -38,7 +46,7 @@ describe("gridRowTints", () => {
   it("zebra tint sits between bgCell and the chrome surface in each mode", () => {
     // Subtle alternate-row stripe (TablePlus parity). Light is just off-white;
     // dark is just above the cell black — never as strong as `--surface`.
-    expect(gridRowTints("light").zebra).toBe("#f6f6f7");
+    expect(gridRowTints("light").zebra).toBe("#f5f5f5");
     expect(gridRowTints("dark").zebra).toBe("#13151a");
   });
   it("hover tint is a neutral, distinct from the zebra stripe", () => {

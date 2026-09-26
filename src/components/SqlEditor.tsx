@@ -3,6 +3,8 @@ import { EditorView, basicSetup } from "codemirror";
 import { Compartment, Prec } from "@codemirror/state";
 import { sql, PostgreSQL, MySQL, MSSQL, SQLite, type SQLDialect } from "@codemirror/lang-sql";
 import { keymap, placeholder } from "@codemirror/view";
+import { syntaxHighlighting } from "@codemirror/language";
+import { sqlHighlight } from "../lib/sqlHighlight";
 import type { Engine } from "../lib/commands";
 
 export interface SqlEditorHandle {
@@ -21,6 +23,8 @@ interface Props {
   onRun: () => void;
   /** ⇧⌘↵ — run every statement in the document. */
   onRunAll?: () => void;
+  /** Focus left the editor (e.g. a click on the connection rail). */
+  onBlur?: () => void;
   /**
    * Schema for autocomplete. Maps `tableName` (and `schema.tableName`) to its
    * columns, the shape `@codemirror/lang-sql` expects. Reconfigured in place
@@ -49,7 +53,7 @@ function cmDialectFor(engine: Engine | undefined): SQLDialect {
 
 /** CodeMirror 6 SQL editor. Theme uses CSS vars so it adapts to light/dark. */
 export const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(
-  { initial, onChange, onRun, onRunAll, schema, dialect },
+  { initial, onChange, onRun, onRunAll, onBlur, schema, dialect },
   ref,
 ) {
   const host = useRef<HTMLDivElement>(null);
@@ -60,6 +64,8 @@ export const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(
   onRunRef.current = onRun;
   onChangeRef.current = onChange;
   onRunAllRef.current = onRunAll;
+  const onBlurRef = useRef(onBlur);
+  onBlurRef.current = onBlur;
 
   // Mirrored into refs so the mount-only effect below can read the values current
   // at creation time without depending on them (they're re-applied immediately
@@ -101,6 +107,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(
       parent: host.current,
       extensions: [
         basicSetup,
+        syntaxHighlighting(sqlHighlight),
         sqlCompartment.of(
           sql({ dialect: cmDialectFor(dialectRef.current), schema: schemaRef.current }),
         ),
@@ -127,13 +134,14 @@ export const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(
           ]),
         ),
         placeholder("Write SQL…  ⌘↵ run statement · ⇧⌘↵ run all"),
+        EditorView.domEventHandlers({ blur: () => void onBlurRef.current?.() }),
         EditorView.updateListener.of((u) => {
           if (u.docChanged) onChangeRef.current(u.state.doc.toString());
         }),
         EditorView.theme({
-          "&": { height: "100%", backgroundColor: "var(--bg)", color: "var(--text)" },
+          "&": { height: "100%", backgroundColor: "var(--bg)", color: "var(--syn-text)" },
           ".cm-scroller": { fontFamily: "var(--font-mono)", fontSize: "13px" },
-          ".cm-gutters": { backgroundColor: "var(--surface)", color: "var(--muted)", border: "none" },
+          ".cm-gutters": { backgroundColor: "var(--bg)", color: "var(--syn-gutter)", border: "none" },
           ".cm-activeLine": { backgroundColor: "color-mix(in srgb, var(--primary) 6%, transparent)" },
           ".cm-activeLineGutter": { backgroundColor: "transparent" },
           ".cm-content": { caretColor: "var(--text)" },

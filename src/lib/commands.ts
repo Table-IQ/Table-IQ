@@ -30,11 +30,16 @@ export function isConnectionLostError(msg: string): boolean {
 
 // Commands that legitimately fail when a DB is *initially* unreachable — their
 // errors are surfaced by the connection form, not the banner.
-const LIFECYCLE_CMDS = new Set(["connect", "test_connection", "disconnect"]);
+// `diff_schemas` opens its own connections to two (possibly background) sessions:
+// its failure is shown by the diff view, never the active session's banner.
+const LIFECYCLE_CMDS = new Set(["connect", "test_connection", "disconnect", "diff_schemas"]);
 
-let connectionLostHandler: (() => void) | null = null;
-/** MainShell registers a callback fired when a live session drops. */
-export function setConnectionLostHandler(fn: (() => void) | null): void {
+let connectionLostHandler: ((connId?: string) => void) | null = null;
+/** MainShell registers a callback fired when a live session drops, with that
+ *  session's id when the command carried one. Convention: session-bound commands
+ *  pass the connection as `{ id }` — an id-less command reports `undefined`, which
+ *  the active shell treats as its own. */
+export function setConnectionLostHandler(fn: ((connId?: string) => void) | null): void {
   connectionLostHandler = fn;
 }
 
@@ -69,7 +74,7 @@ function invoke<T>(cmd: string, ...rest: unknown[]): Promise<T> {
   return call.catch(
     (e: unknown) => {
       if (!LIFECYCLE_CMDS.has(cmd) && isConnectionLostError(String((e as { message?: string })?.message ?? e))) {
-        connectionLostHandler?.();
+        connectionLostHandler?.((rest[0] as { id?: unknown } | undefined)?.id as string | undefined);
       }
       throw e;
     },

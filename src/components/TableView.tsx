@@ -178,6 +178,12 @@ export function TableView({ connId, schema, object, view }: Props) {
   const locked = !error && (committing || pendingCount > 0);
   const lockedRef = useRef(locked);
   lockedRef.current = locked;
+  // Published so leaving this connection (rail, ⌘O, Disconnect) can ask first.
+  const setEditsPending = useConnections((s) => s.setEditsPending);
+  useEffect(() => {
+    setEditsPending(locked);
+    return () => setEditsPending(false);
+  }, [locked, setEditsPending]);
   const [lockHint, setLockHint] = useState(false);
   useEffect(() => {
     if (!locked) setLockHint(false);

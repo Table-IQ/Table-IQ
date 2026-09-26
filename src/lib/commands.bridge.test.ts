@@ -118,3 +118,45 @@ describe("fast table open commands", () => {
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toMatchObject({ after: null });
   });
 });
+
+// The connection rail keeps several sessions open, so the lost-connection callback
+// carries the failing command's `id` — MainShell only raises its banner for its own.
+describe("connection-lost handler", () => {
+  const LOST = JSON.stringify("server closed the connection unexpectedly");
+
+  it("passes the failing command's connection id", async () => {
+    const lost = vi.fn();
+    cmds.setConnectionLostHandler(lost);
+    reply(LOST, 400, "application/json");
+    await expect(cmds.listObjects("c2")).rejects.toBeDefined();
+    expect(lost).toHaveBeenCalledExactlyOnceWith("c2");
+  });
+
+  it("passes undefined when the command carries no id", async () => {
+    const lost = vi.fn();
+    cmds.setConnectionLostHandler(lost);
+    reply(LOST, 400, "application/json");
+    await expect(cmds.listConnections()).rejects.toBeDefined();
+    expect(lost).toHaveBeenCalledExactlyOnceWith(undefined);
+  });
+
+  // Regression: a schema diff against an unreachable *other* connection raised the
+  // reconnect banner on the healthy active one.
+  it("stays silent for a schema diff, whose failure belongs to another connection", async () => {
+    const lost = vi.fn();
+    cmds.setConnectionLostHandler(lost);
+    reply(LOST, 400, "application/json");
+    await expect(cmds.diffSchemas("c1", "c2")).rejects.toBeDefined();
+    expect(lost).not.toHaveBeenCalled();
+  });
+
+  it("stays silent for lifecycle commands and for ordinary SQL errors", async () => {
+    const lost = vi.fn();
+    cmds.setConnectionLostHandler(lost);
+    reply(LOST, 400, "application/json");
+    await expect(cmds.disconnect("c2")).rejects.toBeDefined();
+    reply(JSON.stringify('relation "nope" does not exist'), 400, "application/json");
+    await expect(cmds.listObjects("c2")).rejects.toBeDefined();
+    expect(lost).not.toHaveBeenCalled();
+  });
+});

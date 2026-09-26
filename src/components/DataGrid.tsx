@@ -46,8 +46,8 @@ function sameNames(a: string[], b: string[]): boolean {
 const PAGE = 200; // default rows per fetched window (a source may override)
 const MAX_PAGES = 12; // LRU bound → JS heap stays bounded regardless of total rows
 const AUTO_FIT_SAMPLE = 60; // rows sampled from the first page to size columns to content
-const ROW_HEIGHT = 32; // comfortable TablePlus-like rows (Slice 32 raised from 29)
-const HEADER_HEIGHT = 38; // taller column header — TablePlus's header is notably taller
+const ROW_HEIGHT = 24; // TablePlus: 12.5px mono in a 24px row (measured)
+const HEADER_HEIGHT = 28;
 // Tint motion (DESIGN.md → Motion). The canvas can't use CSS transitions, so a
 // fade is a per-frame blend toward the row's own background.
 const SAVED_HOLD = 800; // green holds this long, then fades over TINT_FADE

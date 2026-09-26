@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.4.0 — 2026-09-26
+
+Keep several databases open at once and switch between them from a TablePlus-style
+rail. Tables, the sidebar and the SQL editor now read like TablePlus: monospaced data
+in tighter rows, black text, and TablePlus's syntax colours.
+
+### Added
+- **Several connections open at once.** ⌘O now opens a connection *alongside* the
+  current one instead of replacing it. Once two or more are open, a rail at the far
+  left lists them (database icon in the connection's colour, database or file name
+  underneath). Click one to switch: no reconnect, and each connection keeps its own
+  tabs and SQL. × closes one connection; Disconnect closes the one in front and the
+  most recently opened remaining connection takes over. The ⚙ at the bottom switches labels between database and
+  connection name.
+- Leaving a connection that has unsaved cell edits (or a commit in progress) now asks
+  first instead of discarding them.
+
+### Changed
+- **Data reads like TablePlus.** Grid cells and the sidebar tree use SF Mono at
+  12.5px; grid rows are 24px (were 32px) with a white header and black text; sidebar
+  rows are 20px. Column auto-fit follows the new font.
+- **SQL colours match TablePlus** in light mode: soft-blue keywords, rose strings,
+  green comments, blue numbers, black identifiers (quoted identifiers included), on a
+  white gutter. Dark mode gets its own palette; it used to reuse the light colours.
+
+### Fixed
+- The rail's options menu no longer hides under the sidebar.
+- A slow table-metadata or foreign-key load no longer overwrites fresh data after a
+  refresh, database switch or closed connection.
+- A schema refresh, reconnect or ⌘D database switch that finishes after you switched
+  connections now updates its own connection, not the one in front; one that finishes
+  after its connection was closed no longer leaves an orphaned database session.
+- A failing schema diff no longer shows "disconnected" for the connection in front.
+
 ## 0.3.1 — 2026-09-26
 
 ### Changed

@@ -64,7 +64,7 @@ export function ObjectTree({ schema, activeKey, pinned = [], onlySchema, onOpen,
         key={key}
         onClick={() => onOpen(sName, o)}
         onContextMenu={(e) => onContext?.(e, sName, o)}
-        className={`group flex h-[var(--row-h)] w-full items-center gap-2 rounded-md px-2 text-left text-xs transition-colors ${
+        className={`group flex h-[var(--row-h)] w-full items-center gap-2 rounded-md px-2 text-left font-mono text-[12.5px] transition-colors ${
           active ? "bg-selection-bg text-text" : "text-text hover:bg-surface-2"
         }`}
         title={`${o.kind} · ${o.columns.length} cols`}

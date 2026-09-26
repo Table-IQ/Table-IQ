@@ -1,82 +1,114 @@
-import { useEffect, useState } from "react";
-import { listConnections, type ConnConfig } from "../lib/commands";
-import { logError } from "../lib/report";
-import { useConnections } from "../state/connectionStore";
-import { IconChevronLeft, IconPlus } from "./ui/Icon";
+import { useState } from "react";
+import { createPortal } from "react-dom";
+import type { Engine } from "../lib/commands";
+import { canLeaveSession, closeConnection, useConnections } from "../state/connectionStore";
+import { isFileEngine } from "./ConnectionManager";
+import { ContextMenu } from "./ui/ContextMenu";
+import { IconClose, IconDatabase, IconSliders } from "./ui/Icon";
+
+const LABEL_KEY = "tiq:rail:label";
+type Label = "database" | "connection";
 
 /**
- * Far-left mini-rail of saved connections (TablePlus parity).
- * Two letters per chip; the connection's color tag is the dot on the corner.
- * Clicking switches via a fresh connect — handled in ConnectionManager.
+ * Far-left rail of the *open* connections (TablePlus parity). Only shown once two
+ * or more are open; clicking one brings it to the front without reconnecting.
  */
-export function ConnectionRail({ onAdd, onCollapse }: { onAdd?: () => void; onCollapse?: () => void }) {
-  const { saved, active, setSaved } = useConnections();
-  const [hover, setHover] = useState<string | null>(null);
+export function ConnectionRail() {
+  const { open, active, saved, switchTo } = useConnections();
+  const [label, setLabel] = useState<Label>(() =>
+    localStorage.getItem(LABEL_KEY) === "connection" ? "connection" : "database",
+  );
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
 
-  useEffect(() => {
-    listConnections().then(setSaved).catch((e) => logError("connection rail: list", e));
-  }, [setSaved]);
+  if (open.length < 2) return null;
 
-  const initials = (c: ConnConfig) =>
-    (c.name || c.database || c.engine).slice(0, 2).toUpperCase();
+  const pickLabel = (l: Label) => {
+    localStorage.setItem(LABEL_KEY, l);
+    setLabel(l);
+  };
 
   return (
-    <aside
-      className="flex shrink-0 flex-col items-center border-r border-border bg-surface py-2"
+    <nav
+      aria-label="Open connections"
+      className="tiq-vibrancy flex shrink-0 flex-col border-r border-border"
       style={{ width: "var(--rail-w)" }}
     >
-      <div className="flex flex-1 flex-col items-center gap-1.5 overflow-y-auto px-2">
-        {saved.map((c) => {
-          const isActive = active?.id === c.id;
+      <div className="flex flex-1 flex-col gap-1 overflow-y-auto px-1.5 py-2">
+        {open.map(({ info }) => {
+          const isActive = active?.id === info.id;
+          const color = saved.find((c) => c.id === info.id)?.color;
+          // A file engine's "database" is its full path: show just the file name.
+          const db = isFileEngine(info.engine as Engine)
+            ? info.database.split(/[\\/]/).pop()
+            : info.database;
+          const text = label === "database" ? db || info.name : info.name;
           return (
-            <button
-              key={c.id}
-              onMouseEnter={() => setHover(c.id)}
-              onMouseLeave={() => setHover((v) => (v === c.id ? null : v))}
-              className={`relative flex h-10 w-10 flex-col items-center justify-center rounded-md border text-[10px] font-semibold transition-colors ${
-                isActive
-                  ? "border-primary bg-primary/10 text-primary"
-                  : "border-border bg-bg text-text hover:bg-surface-2"
-              }`}
-              title={`${c.name} · ${c.engine}`}
-            >
-              {c.color && (
-                <span
-                  className="absolute -right-0.5 -top-0.5 inline-block h-2 w-2 rounded-full ring-1 ring-bg"
-                  style={{ background: c.color }}
-                />
-              )}
-              {initials(c)}
-              <span className="text-[8px] font-normal text-muted">{c.engine.slice(0, 4)}</span>
-              {hover === c.id && (
-                <span className="pointer-events-none absolute left-full top-1/2 z-50 ml-2 -translate-y-1/2 whitespace-nowrap rounded-md border border-border bg-bg px-2 py-1 text-[11px] text-text shadow-[var(--shadow-soft)]">
-                  {c.name}
-                  <span className="ml-1 text-muted">· {c.engine}</span>
-                </span>
-              )}
-            </button>
+            <div key={info.id} className="group relative">
+              <button
+                onClick={async () => {
+                  if (!isActive && (await canLeaveSession())) switchTo(info.id);
+                }}
+                aria-current={isActive ? "true" : undefined}
+                title={`${info.name} · ${info.engine} · ${info.database}`}
+                className={`flex w-full flex-col items-center gap-1 rounded-[var(--radius)] px-1 py-2 transition-colors ${
+                  isActive
+                    ? "bg-bg text-text shadow-[var(--shadow-soft)]"
+                    : "text-muted hover:bg-surface-2 hover:text-text"
+                }`}
+              >
+                <IconDatabase size={20} style={color ? { color } : undefined} />
+                <span className="w-full truncate text-center text-[11px] leading-tight">{text}</span>
+              </button>
+              <button
+                onClick={async () => {
+                  if (!isActive || (await canLeaveSession())) void closeConnection(info.id);
+                }}
+                aria-label={`Close ${info.name}`}
+                title="Close connection"
+                className="absolute right-0.5 top-0.5 hidden h-4 w-4 items-center justify-center rounded-full bg-surface-2 text-muted hover:text-text group-focus-within:flex group-hover:flex"
+              >
+                <IconClose size={9} />
+              </button>
+            </div>
           );
         })}
-        {saved.length === 0 && (
-          <div className="px-1 text-center text-[10px] text-muted">
-            No saved connections yet.
-          </div>
-        )}
-        <button
-          onClick={onAdd}
-          className="mt-1 flex h-10 w-10 items-center justify-center rounded-md border border-dashed border-border text-muted hover:border-primary hover:text-primary"
-          title="Add connection (Disconnect to access)"
-        >
-          <IconPlus />
-        </button>
       </div>
       <button
-        onClick={onCollapse}
-        className="mt-2 flex h-6 w-6 items-center justify-center rounded text-muted hover:bg-surface-2 hover:text-text"
-        title="Collapse rail"
+        onClick={(e) => {
+          const r = e.currentTarget.getBoundingClientRect();
+          setMenu({ x: r.left, y: r.top - 4 });
+        }}
+        aria-label="Rail options"
+        title="Rail options"
+        className="mx-auto mb-2 flex h-6 w-6 items-center justify-center rounded text-muted hover:bg-surface-2 hover:text-text"
       >
-        <IconChevronLeft size={12} />
+        <IconSliders size={14} />
       </button>
-    </aside>
+      {/* Portalled: the rail's backdrop-filter would otherwise be the containing block
+          for this fixed menu, offsetting it and trapping it under the sidebar. */}
+      {menu &&
+        createPortal(
+          <ContextMenu
+            x={menu.x}
+            y={menu.y}
+            onClose={() => setMenu(null)}
+            items={[
+              {
+                id: "rail-db",
+                label: "Show database name",
+                checked: label === "database",
+                onSelect: () => pickLabel("database"),
+              },
+              {
+                id: "rail-conn",
+                label: "Show connection name",
+                checked: label === "connection",
+                onSelect: () => pickLabel("connection"),
+              },
+            ]}
+          />,
+          document.body,
+        )}
+    </nav>
   );
 }

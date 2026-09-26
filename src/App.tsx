@@ -7,14 +7,16 @@ import { useConnections } from "./state/connectionStore";
 
 function Root() {
   const active = useConnections((s) => s.active);
+  // Keyed by connection so switching sessions (connection rail) remounts the shell
+  // cleanly; its tabs re-hydrate from the per-connection persisted slice.
   const shell = !active ? (
     <ConnectionManager />
   ) : active.engine === "redis" ? (
-    <KvShell />
+    <KvShell key={active.id} />
   ) : active.engine === "mongodb" ? (
-    <DocShell />
+    <DocShell key={active.id} />
   ) : (
-    <MainShell />
+    <MainShell key={active.id} />
   );
   return <div className="h-screen w-screen bg-bg text-text">{shell}</div>;
 }

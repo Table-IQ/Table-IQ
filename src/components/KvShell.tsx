@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
+import { ConnectionRail } from "./ConnectionRail";
 import { Wordmark } from "./Brand";
 import { ThemeToggle } from "./ThemeToggle";
-import { disconnect, kvGet, kvScan, type KeyInfo, type KvValue } from "../lib/commands";
-import { useConnections } from "../state/connectionStore";
+import { kvGet, kvScan, type KeyInfo, type KvValue } from "../lib/commands";
+import { closeConnection, useConnections } from "../state/connectionStore";
 import { StatusBar, StatusDot } from "./ui/StatusBar";
 import { ColorDot } from "./ui/Chip";
 import { Section } from "./ui/Section";
@@ -14,7 +15,7 @@ import { IconRefresh, IconSearch } from "./ui/Icon";
  * native titlebar overlay region, wordmark + breadcrumb chip, status bar.
  */
 export function KvShell() {
-  const { active, saved, setActive } = useConnections();
+  const { active, saved } = useConnections();
   const activeColor = active ? saved.find((c) => c.id === active.id)?.color ?? null : null;
   const [pattern, setPattern] = useState("*");
   const [keys, setKeys] = useState<KeyInfo[]>([]);
@@ -67,8 +68,7 @@ export function KvShell() {
           <ThemeToggle />
           <button
             onClick={async () => {
-              await disconnect(active.id);
-              setActive(null);
+              await closeConnection(active.id);
             }}
             className="rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-text"
           >
@@ -78,6 +78,7 @@ export function KvShell() {
       </header>
 
       <div className="flex min-h-0 flex-1">
+        <ConnectionRail />
         <aside
           className="flex shrink-0 flex-col border-r border-border bg-surface"
           style={{ width: "var(--sidebar-w)" }}
@@ -101,7 +102,7 @@ export function KvShell() {
                   <button
                     key={k.key}
                     onClick={() => open(k.key)}
-                    className={`flex h-[var(--row-h)] w-full items-center gap-2 rounded-md px-2 text-left text-xs ${
+                    className={`flex h-[var(--row-h)] w-full items-center gap-2 rounded-md px-2 text-left font-mono text-[12.5px] ${
                       selected === k.key
                         ? "bg-selection-bg text-text"
                         : "text-text hover:bg-surface-2"

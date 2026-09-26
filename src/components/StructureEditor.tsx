@@ -26,7 +26,7 @@ export function StructureEditor({
   schema: SchemaModel;
   onClose: () => void;
 }) {
-  const { setSchema } = useConnections();
+  const { updateSession } = useConnections();
   const schemaNames = schema.schemas.map((s) => s.name);
   const [spec, setSpec] = useState(() => emptyTableSpec(schemaNames[0] ?? null));
   const [sql, setSql] = useState<string | null>(null);
@@ -57,7 +57,7 @@ export function StructureEditor({
     setStatus({ kind: "busy", msg: "Applying…" });
     try {
       await runScript(connId, sql);
-      setSchema(await listObjects(connId).catch(() => schema));
+      updateSession(connId, { schema: await listObjects(connId).catch(() => schema) });
       setStatus({ kind: "ok", msg: "Table created" });
     } catch (e) {
       setStatus({ kind: "err", msg: String(e) });
