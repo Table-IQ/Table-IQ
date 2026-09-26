@@ -144,7 +144,10 @@ saturated than our previous indigo-tinted dark.
 - macOS traffic-lights reserve (left ~80px)
 - `<Wordmark>` + active-connection dot + name (left)
 - Breadcrumb: `connection · database · schema · table` (center, font-mono)
-- Right icon strip: refresh, theme, command palette, help, inspector toggle, disconnect
+- Right icon strip: refresh schema, switch database, command palette, theme, help, Workspace
+  Overview (hidden by default), inspector toggle, disconnect. User-reorderable and hideable
+  (Settings → Toolbar, or right-click the title bar) except the fixed inspector-toggle/disconnect
+  pair.
 
 ### Tab strip (26px)
 - `<` `>` history navigation
