@@ -30,7 +30,9 @@ export function isConnectionLostError(msg: string): boolean {
 
 // Commands that legitimately fail when a DB is *initially* unreachable — their
 // errors are surfaced by the connection form, not the banner.
-const LIFECYCLE_CMDS = new Set(["connect", "test_connection", "disconnect"]);
+// `diff_schemas` opens its own connections to two (possibly background) sessions:
+// its failure is shown by the diff view, never the active session's banner.
+const LIFECYCLE_CMDS = new Set(["connect", "test_connection", "disconnect", "diff_schemas"]);
 
 let connectionLostHandler: ((connId?: string) => void) | null = null;
 /** MainShell registers a callback fired when a live session drops, with that

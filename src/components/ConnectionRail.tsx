@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { createPortal } from "react-dom";
 import type { Engine } from "../lib/commands";
-import { closeConnection, useConnections } from "../state/connectionStore";
+import { canLeaveSession, closeConnection, useConnections } from "../state/connectionStore";
 import { isFileEngine } from "./ConnectionManager";
 import { ContextMenu } from "./ui/ContextMenu";
 import { IconClose, IconDatabase, IconSliders } from "./ui/Icon";
@@ -45,7 +45,9 @@ export function ConnectionRail() {
           return (
             <div key={info.id} className="group relative">
               <button
-                onClick={() => switchTo(info.id)}
+                onClick={async () => {
+                  if (!isActive && (await canLeaveSession())) switchTo(info.id);
+                }}
                 aria-current={isActive ? "true" : undefined}
                 title={`${info.name} · ${info.engine} · ${info.database}`}
                 className={`flex w-full flex-col items-center gap-1 rounded-[var(--radius)] px-1 py-2 transition-colors ${
@@ -58,7 +60,9 @@ export function ConnectionRail() {
                 <span className="w-full truncate text-center text-[11px] leading-tight">{text}</span>
               </button>
               <button
-                onClick={() => void closeConnection(info.id)}
+                onClick={async () => {
+                  if (!isActive || (await canLeaveSession())) void closeConnection(info.id);
+                }}
                 aria-label={`Close ${info.name}`}
                 title="Close connection"
                 className="absolute right-0.5 top-0.5 hidden h-4 w-4 items-center justify-center rounded-full bg-surface-2 text-muted hover:text-text group-focus-within:flex group-hover:flex"

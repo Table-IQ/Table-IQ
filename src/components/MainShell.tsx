@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ConnectionRail } from "./ConnectionRail";
 import { Wordmark } from "./Brand";
 import { ThemeToggle } from "./ThemeToggle";
@@ -41,7 +41,12 @@ import {
   IconSidebarRight,
   IconStructure,
 } from "./ui/Icon";
-import { clearMetaCaches, closeConnection, useConnections } from "../state/connectionStore";
+import {
+  canLeaveSession,
+  clearMetaCaches,
+  closeConnection,
+  useConnections,
+} from "../state/connectionStore";
 import { useTabs } from "../state/tabsStore";
 import type { Tab } from "../state/tabsStore";
 import {
@@ -94,6 +99,7 @@ export function MainShell() {
     disconnected,
     setDisconnected,
   } = useConnections();
+  const opening = useRef(new Set<string>());
   const [reconnecting, setReconnecting] = useState(false);
   const [refreshingSchema, setRefreshingSchema] = useState(false);
   // A dropped session (broken pipe, server shutdown, …) raises the reconnect
@@ -313,7 +319,9 @@ export function MainShell() {
       : null;
 
   // Closes this connection only: another open session (if any) takes over.
-  const onDisconnect = () => closeConnection(active.id);
+  const onDisconnect = async () => {
+    if (await canLeaveSession()) await closeConnection(active.id);
+  };
 
   /** Re-introspect the database. The button used to hand `setSchema` the very
    *  object it already held, so a table created from a Query tab never showed up. */
@@ -360,9 +368,12 @@ export function MainShell() {
   /** Open another saved connection alongside this one (TablePlus: the rail then
    *  lists both). An already-open connection is just brought to the front. */
   const onSwapConnection = async (c: ConnConfig) => {
-    if (c.id === active.id) return;
+    if (c.id === active.id || opening.current.has(c.id)) return;
+    if (!(await canLeaveSession())) return;
     setConnMsg(null);
     if (open.some((o) => o.info.id === c.id)) return switchTo(c.id);
+    // One connect per id at a time: a double pick would race two backend sessions.
+    opening.current.add(c.id);
     try {
       const info = await connect(c.id);
       const schemaModel =
@@ -373,6 +384,8 @@ export function MainShell() {
       // The current session is untouched, so just say what failed.
       console.error("connection open failed", e);
       setConnMsg(`Could not open '${c.name}': ${e}`);
+    } finally {
+      opening.current.delete(c.id);
     }
   };
 
@@ -990,11 +1003,19 @@ export function MainShell() {
             const id = active.id;
             try {
               const info = await switchDatabase(id, db);
+              const st = useConnections.getState();
+              // Closed while switching: the backend just rebuilt an orphan session.
+              if (!st.open.some((o) => o.info.id === id)) {
+                await disconnect(id).catch(() => {});
+                return;
+              }
               const schemaModel = await listObjects(id);
               markConnected(id);
               clearMetaCaches(id);
-              // Only the tabs of *this* connection belong to the old database.
+              // The old database's tabs go — live if this connection is still in
+              // front, otherwise its persisted slice (so they never rebind to db2).
               if (useConnections.getState().active?.id === id) reset();
+              else persistForConnection(id, { tabs: [], activeKey: null, queryCount: 0 }, null);
               updateSession(id, { info, schema: schemaModel });
               setShowDbPicker(false);
               // Reset cache so the next open re-fetches against the new active session.

@@ -36,6 +36,8 @@ interface ConnectionState {
   schema: SchemaModel | null;
   /** True when an established session dropped mid-use — drives the reconnect banner. */
   disconnected: boolean;
+  /** The active table tab has staged (uncommitted) edits or is committing them. */
+  editsPending: boolean;
   /** Lazy cache: connection id → every FK edge in the database. */
   fks: Record<string, ForeignKey[]>;
   /** Lazy cache: `${connId}.${schema}.${table}` → its unfiltered meta. */
@@ -52,6 +54,7 @@ interface ConnectionState {
    *  bringing it to the front — the user may have switched away while it loaded. */
   updateSession: (id: string, patch: Partial<OpenSession>) => void;
   setDisconnected: (disconnected: boolean) => void;
+  setEditsPending: (editsPending: boolean) => void;
 }
 
 // The tab list is global and each shell re-hydrates its connection's slice on
@@ -67,6 +70,7 @@ export const useConnections = create<ConnectionState>((set, get) => ({
   active: null,
   schema: null,
   disconnected: false,
+  editsPending: false,
   fks: {},
   tableMeta: {},
   setSaved: (saved) => set({ saved }),
@@ -112,7 +116,21 @@ export const useConnections = create<ConnectionState>((set, get) => ({
       };
     }),
   setDisconnected: (disconnected) => set({ disconnected }),
+  setEditsPending: (editsPending) => set({ editsPending }),
 }));
+
+/** Leaving the active session remounts its shell, which throws staged grid edits
+ *  away (and would cut a running commit off). Ask first; no dialog → stay. */
+export async function canLeaveSession(): Promise<boolean> {
+  if (!useConnections.getState().editsPending) return true;
+  const message = "This connection has unsaved changes. Discard them and leave?";
+  try {
+    const { confirm } = await import("@tauri-apps/plugin-dialog");
+    return await confirm(message, { title: "Unsaved changes", kind: "warning" });
+  } catch {
+    return typeof window !== "undefined" ? window.confirm(message) : false;
+  }
+}
 
 // ── lazy metadata caches ────────────────────────────────────────────────────
 // TableView and the Inspector open on the same table at the same moment and used

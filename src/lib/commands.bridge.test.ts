@@ -140,6 +140,16 @@ describe("connection-lost handler", () => {
     expect(lost).toHaveBeenCalledExactlyOnceWith(undefined);
   });
 
+  // Regression: a schema diff against an unreachable *other* connection raised the
+  // reconnect banner on the healthy active one.
+  it("stays silent for a schema diff, whose failure belongs to another connection", async () => {
+    const lost = vi.fn();
+    cmds.setConnectionLostHandler(lost);
+    reply(LOST, 400, "application/json");
+    await expect(cmds.diffSchemas("c1", "c2")).rejects.toBeDefined();
+    expect(lost).not.toHaveBeenCalled();
+  });
+
   it("stays silent for lifecycle commands and for ordinary SQL errors", async () => {
     const lost = vi.fn();
     cmds.setConnectionLostHandler(lost);

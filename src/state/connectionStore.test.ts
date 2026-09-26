@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { ConnectedInfo, SchemaModel } from "../lib/commands";
-import { clearMetaCaches, useConnections } from "./connectionStore";
+import { canLeaveSession, clearMetaCaches, useConnections } from "./connectionStore";
 import { useTabs } from "./tabsStore";
 
 const info = (id: string): ConnectedInfo => ({ id, name: id, database: `${id}_db`, engine: "postgres" });
@@ -284,5 +284,20 @@ describe("clearMetaCaches — scoping", () => {
     const s = useConnections.getState();
     expect(Object.keys(s.fks)).toEqual(["ab"]);
     expect(Object.keys(s.tableMeta)).toEqual(["ab.public.t"]);
+  });
+});
+
+// Regression: a rail click / ⌘O / Disconnect silently threw away staged grid edits
+// (and could cut a commit off halfway) because the shell remounts.
+describe("canLeaveSession", () => {
+  it("lets you leave when nothing is staged or committing", async () => {
+    useConnections.getState().setEditsPending(false);
+    await expect(canLeaveSession()).resolves.toBe(true);
+  });
+
+  it("does not leave staged edits behind without a confirmation (none possible here → stay)", async () => {
+    useConnections.getState().setEditsPending(true);
+    await expect(canLeaveSession()).resolves.toBe(false);
+    useConnections.getState().setEditsPending(false);
   });
 });
