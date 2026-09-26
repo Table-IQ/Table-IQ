@@ -64,12 +64,25 @@ export function SidebarLibrary({ mode, connId }: Props) {
     if (mode === "queries") refreshSaved();
   }, [mode, refreshSaved]);
 
-  useEffect(() => {
-    if (mode !== "history") return;
+  const refreshHistory = useCallback(() => {
     queryHistory(search)
       .then(setHistory)
       .catch((e) => logError("sidebar library: history", e));
-  }, [mode, search]);
+  }, [search]);
+
+  useEffect(() => {
+    if (mode !== "history") return;
+    refreshHistory();
+  }, [mode, refreshHistory]);
+
+  // A query run while History is open otherwise doesn't show up until the tab
+  // is revisited — QueryView fires this after every run (success or failure;
+  // `run_query` records history either way).
+  useEffect(() => {
+    if (mode !== "history") return;
+    window.addEventListener("tiq:history", refreshHistory);
+    return () => window.removeEventListener("tiq:history", refreshHistory);
+  }, [mode, refreshHistory]);
 
   const visibleSaved = useMemo(() => {
     const mine = savedQueriesForConn(saved, connId);
@@ -204,7 +217,7 @@ export function SidebarLibrary({ mode, connId }: Props) {
                 <button
                   onClick={() => remove(q)}
                   aria-label={`Delete ${q.name}`}
-                  className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted opacity-0 hover:text-danger group-hover:opacity-100"
+                  className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted opacity-0 hover:text-danger group-hover:opacity-100 focus-visible:opacity-100"
                 >
                   <IconClose size={10} />
                 </button>

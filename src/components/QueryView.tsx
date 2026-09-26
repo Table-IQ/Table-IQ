@@ -219,6 +219,9 @@ export function QueryView({
         setError(String(e));
         setRun(null);
       } finally {
+        // `run_query` records history whether the run succeeded or failed —
+        // let a mounted History tab (SidebarLibrary) know to refetch.
+        window.dispatchEvent(new Event("tiq:history"));
         if (seq === runSeq.current) {
           runningRef.current = false;
           setRunning(false);
