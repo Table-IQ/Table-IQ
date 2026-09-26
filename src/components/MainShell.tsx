@@ -22,6 +22,7 @@ import { Inspector } from "./Inspector";
 import { ContextMenu, type ContextMenuItem } from "./ui/ContextMenu";
 import { ResizeHandle, clampWidth } from "./ui/ResizeHandle";
 import { logError } from "../lib/report";
+import { shouldSwitchDatabase } from "../lib/databasePicker";
 import { hydrateForConnection, persistForConnection } from "../lib/tabsPersist";
 import { ToolbarButton, Toolbar, ToolbarDivider, ToolbarSpacer } from "./ui/Toolbar";
 import { StatusBar, StatusDot } from "./ui/StatusBar";
@@ -336,9 +337,10 @@ export function MainShell() {
   // callers close their own picker UI before invoking this so the header's connecting
   // strip is visible underneath. Shared by the ⌘D DatabasePicker and the palette's
   // Databases entries.
-  const pickDatabase = (db: string) => {
+  const pickDatabase = async (db: string) => {
     if (!active || useConnections.getState().connecting) return; // one connect/switch in flight at a time
-    if (db === active.database) return; // already there — switching would wipe every open tab for nothing
+    if (!shouldSwitchDatabase(db, active.database)) return;
+    if (!(await canLeaveSession())) return; // switching resets every open tab — ask first
     const id = active.id;
     setShowDbPicker(false);
     setConnMsg(null);
@@ -536,7 +538,7 @@ export function MainShell() {
           hint: db === active.database ? "current" : undefined,
           group: "Databases",
           icon: <IconDatabase />,
-          run: () => pickDatabase(db),
+          run: () => void pickDatabase(db),
         });
       }
     }
