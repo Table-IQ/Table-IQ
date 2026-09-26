@@ -39,7 +39,7 @@ export const useSettingsUi = create<SettingsUiState>()((set) => ({
 }));
 
 /**
- * Close Settings on the next microtask instead of synchronously. Used by
+ * Close Settings on the next macrotask instead of synchronously. Used by
  * App.tsx's window `keydown` handler for Escape: ConnectionManager and
  * MainShell each guard their own Escape handling on
  * `useSettingsUi.getState().open` too (an in-flight connection shouldn't
@@ -48,11 +48,18 @@ export const useSettingsUi = create<SettingsUiState>()((set) => ({
  * registration order, which isn't guaranteed across components — closing
  * synchronously here could flip `open` to false *before* one of those other
  * handlers, still running on the same call stack, has even checked it.
- * Deferring past this event's synchronous dispatch keeps `open` stable for
- * every listener reacting to this one keypress, regardless of order.
+ *
+ * `queueMicrotask` is NOT safe for this: for a native, user-triggered event
+ * the browser runs a microtask checkpoint after *each* listener callback
+ * returns (the JS stack is empty between listeners), so a microtask-deferred
+ * close would already have run by the time the next window listener for this
+ * same keypress executes — reproducing the exact race this is meant to fix.
+ * `setTimeout(…, 0)` schedules a macrotask, which only runs once every
+ * listener for this event has finished, so `open` stays true for the whole
+ * dispatch regardless of registration order.
  */
 export function closeSettingsDeferred(): void {
-  queueMicrotask(() => useSettingsUi.getState().close());
+  setTimeout(() => useSettingsUi.getState().close(), 0);
 }
 
 const selectField =

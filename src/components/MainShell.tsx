@@ -290,8 +290,10 @@ export function MainShell() {
       // Settings (⌘,) owns the keyboard while it's open — its own Escape
       // handler (App.tsx) closes it; without this guard the same Escape
       // keypress also cancelled an in-flight connection here. App.tsx defers
-      // the actual close by a tick, so `open` reads true here for this whole
-      // keypress no matter which window listener runs first.
+      // the actual close to a macrotask (setTimeout, not queueMicrotask —
+      // see closeSettingsDeferred in Settings.tsx for why), so `open` reads
+      // true here for this whole keypress no matter which window listener
+      // runs first.
       if (useSettingsUi.getState().open) return;
       const meta = e.metaKey || e.ctrlKey;
       if (meta && e.key.toLowerCase() === "k") {
