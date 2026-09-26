@@ -46,6 +46,7 @@ import { useTabs } from "../state/tabsStore";
 import type { Tab } from "../state/tabsStore";
 import {
   connect,
+  disconnect,
   downloadText,
   exportTable,
   listDatabases,
@@ -339,6 +340,11 @@ export function MainShell() {
     const id = active.id;
     try {
       const info = await connect(id);
+      // Closed while reconnecting: the backend session we just rebuilt is an orphan.
+      if (!useConnections.getState().open.some((o) => o.info.id === id)) {
+        await disconnect(id).catch(() => {});
+        return;
+      }
       const schemaModel = await listObjects(id);
       clearMetaCaches(id);
       updateSession(id, { info, schema: schemaModel });
