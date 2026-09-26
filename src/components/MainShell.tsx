@@ -965,7 +965,7 @@ export function MainShell() {
       {/* ── CONNECTING STRIP ──────────────────────────────────────────────── */}
       {/* Opening another connection (rail/⌘O) or switching database (⌘D) can hit a
           slow remote DB behind SSH; this makes the wait visible instead of the
-          workspace looking frozen. Cancel (or Esc) stops the UI waiting on a
+          workspace looking frozen. Cancel stops the UI waiting on a
           connect — the store discards its late result. A database switch has
           no Cancel: Rust has already swapped the live session by the time its
           result lands, so there is nothing safe to cancel. */}
@@ -990,7 +990,7 @@ export function MainShell() {
             {connecting.stage !== "switch" && (
               <button
                 onClick={cancelConnecting}
-                title="Cancel (Esc)"
+                title="Cancel"
                 className="ml-1 inline-flex h-5 items-center rounded-[var(--radius)] border border-border px-2 text-[11px] text-muted hover:bg-surface-2 hover:text-text"
               >
                 Cancel
