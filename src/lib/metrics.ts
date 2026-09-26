@@ -10,7 +10,7 @@
  */
 import type { Rows } from "./commands";
 import { buildSeries, MAX_BARS, type Point } from "./chart";
-import { codeOnly, splitStatements, type SqlDialect } from "./sqlSplit";
+import { splitStatements, type SqlDialect } from "./sqlSplit";
 
 export const STORAGE_PREFIX = "tiq:metrics:";
 
@@ -149,29 +149,25 @@ const READ_ONLY_FIRST_KEYWORDS = new Set([
   "DESC",
 ]);
 
-/** First keywords whose statement body needs no write-keyword scan below — a plain
- *  SHOW/DESCRIBE/DESC/VALUES/TABLE statement has no clause that could embed a write.
- *  Everything else allowed by `READ_ONLY_FIRST_KEYWORDS` (SELECT, WITH, EXPLAIN) DOES
- *  need it: a CTE can smuggle one (`WITH d AS (DELETE ...) SELECT ...`), `EXPLAIN
- *  ANALYZE` actually executes its statement on Postgres (`EXPLAIN ANALYZE DELETE ...`
- *  really deletes), and `SELECT` itself has `... INTO <table>` (PG/MSSQL: creates a
- *  table) / `... INTO OUTFILE` (MySQL: writes a file). */
-const NO_SCAN_NEEDED = new Set(["SHOW", "DESCRIBE", "DESC", "VALUES", "TABLE"]);
-
-/** Rejected if any of these appear as a whole keyword anywhere in a scanned
- *  statement's code (see `NO_SCAN_NEEDED`). T-SQL needs no `;` between statements, so
- *  `SELECT 1 DROP TABLE t` is ONE statement to the splitter — every DDL/DCL/exec verb
- *  is listed, not just the DML ones; INTO covers `SELECT ... INTO`/`INTO OUTFILE`.
- *  Matched on `codeOnly` text (literals, quoted identifiers and comments blanked), so
- *  `op = 'UPDATE'` and `-- DROP` don't count, and word-boundary, so an identifier
- *  merely containing one (`update_count`) doesn't either. */
+/** Rejected if any of these appear as a whole word anywhere in the widget's SQL. T-SQL
+ *  needs no `;` between statements, so `SELECT 1 DROP TABLE t` is ONE statement to the
+ *  splitter — every DDL/DCL/exec verb is listed, not just the DML ones; INTO covers
+ *  `SELECT ... INTO`/`INTO OUTFILE`. A CTE can smuggle a write (`WITH d AS (DELETE ...)`),
+ *  and Postgres `EXPLAIN ANALYZE` executes its statement.
+ *
+ *  Fail-closed: matched on the RAW upper-cased text, every statement kind, not on a
+ *  literal/comment-stripped copy. A tokenizer that strips those first can be fooled into
+ *  blanking a real keyword (PG `a$x$` isn't a dollar quote, MySQL `--1` isn't a comment,
+ *  SQLite has `[…]` identifiers the splitter doesn't know). The accepted cost: a keyword
+ *  inside a literal or comment (`WHERE op = 'UPDATE'`, `SHOW CREATE TABLE`) rejects too.
+ *  Word-boundary, so an identifier merely containing one (`update_count`) is fine. */
 const WRITE_KEYWORDS = [
   "INSERT", "UPDATE", "DELETE", "MERGE", "INTO",
   "DROP", "TRUNCATE", "ALTER", "CREATE", "GRANT", "REVOKE", "DENY",
   "EXEC", "EXECUTE", "CALL", "COPY", "LOCK", "KILL",
   "BACKUP", "RESTORE", "DBCC", "BULK", "SHUTDOWN",
 ];
-const WRITE_KEYWORD_RE = new RegExp(`\\b(${WRITE_KEYWORDS.join("|")})\\b`, "i");
+const WRITE_KEYWORD_RE = new RegExp(`\\b(${WRITE_KEYWORDS.join("|")})\\b`);
 
 /**
  * True when `sql` is exactly one statement whose first keyword is read-only —
@@ -182,19 +178,15 @@ const WRITE_KEYWORD_RE = new RegExp(`\\b(${WRITE_KEYWORDS.join("|")})\\b`, "i");
  * localStorage, or saved by an older build, can't silently run one either).
  *
  * Statement splitting reuses `sqlSplit.ts`'s quote/comment-aware
- * `splitStatements` — a `;` inside a string literal or comment is not a
- * statement boundary (`select ';' as x` is one statement), and a lone
- * trailing `;` produces no second (empty) statement.
+ * `splitStatements`, for the one-statement check only — a `;` inside a string
+ * literal or comment is not a statement boundary (`select ';' as x` is one
+ * statement), and a lone trailing `;` produces no second (empty) statement.
  */
 export function isReadOnlyWidgetSql(sql: string, dialect: SqlDialect = "postgres"): boolean {
-  // MySQL runs the body of a `/*! … */` comment as code; every other scan here treats it
-  // as a comment, so refuse it outright.
-  if (sql.includes("/*!")) return false;
+  // MySQL `/*! … */` and MariaDB `/*M! … */` run their body as code; refuse them outright.
+  if (/\/\*M?!/.test(sql)) return false;
+  if (WRITE_KEYWORD_RE.test(sql.toUpperCase())) return false;
   const stmts = splitStatements(sql, dialect);
   if (stmts.length !== 1) return false;
-  const text = stmts[0].text;
-  const kw = firstKeyword(text);
-  if (!READ_ONLY_FIRST_KEYWORDS.has(kw)) return false;
-  if (!NO_SCAN_NEEDED.has(kw) && WRITE_KEYWORD_RE.test(codeOnly(text, dialect))) return false;
-  return true;
+  return READ_ONLY_FIRST_KEYWORDS.has(firstKeyword(stmts[0].text));
 }

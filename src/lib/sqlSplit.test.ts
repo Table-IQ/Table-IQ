@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { codeOnly, dialectFor, lineColAt, splitStatements, statementAt } from "./sqlSplit";
+import { dialectFor, lineColAt, splitStatements, statementAt } from "./sqlSplit";
 
 describe("splitStatements", () => {
   it("splits simple statements on ; and trims whitespace", () => {
@@ -268,24 +268,5 @@ describe("dialectFor", () => {
   it("keeps the engines that have a dialect of their own, and defaults to postgres", () => {
     for (const e of ["mysql", "sqlite", "sqlserver", "postgres"] as const) expect(dialectFor(e)).toBe(e);
     expect(dialectFor(undefined)).toBe("postgres");
-  });
-});
-
-describe("codeOnly", () => {
-  it("blanks literals, quoted identifiers and comments to spaces, keeping length", () => {
-    const doc = `SELECT 'a;b', "c" -- d\nFROM t /* e */`;
-    const out = codeOnly(doc, "postgres");
-    expect(out).toHaveLength(doc.length);
-    expect(out.replace(/\s+/g, " ").trim()).toBe("SELECT , FROM t");
-  });
-
-  it("follows each dialect's quoting", () => {
-    expect(codeOnly("SELECT `x` # y", "mysql").trim()).toBe("SELECT");
-    expect(codeOnly("SELECT [x]", "sqlserver").trim()).toBe("SELECT");
-    expect(codeOnly("SELECT $t$x$t$", "postgres").trim()).toBe("SELECT");
-  });
-
-  it("blanks an unterminated literal to the end", () => {
-    expect(codeOnly("SELECT 'DROP", "postgres").trim()).toBe("SELECT");
   });
 });

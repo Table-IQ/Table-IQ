@@ -254,15 +254,29 @@ describe("isReadOnlyWidgetSql", () => {
     expect(isReadOnlyWidgetSql("TRUNCATE t")).toBe(false);
   });
 
-  it("ignores keywords inside string literals, quoted identifiers and comments", () => {
-    expect(isReadOnlyWidgetSql("SELECT * FROM t WHERE op = 'UPDATE'")).toBe(true);
-    expect(isReadOnlyWidgetSql("SELECT 1 -- DROP")).toBe(true);
-    expect(isReadOnlyWidgetSql("SELECT 1 /* DELETE */")).toBe(true);
-    expect(isReadOnlyWidgetSql('SELECT "drop" FROM t')).toBe(true);
-    expect(isReadOnlyWidgetSql("SELECT [delete] FROM t", "sqlserver")).toBe(true);
-    expect(isReadOnlyWidgetSql("SELECT `insert` FROM t", "mysql")).toBe(true);
-    expect(isReadOnlyWidgetSql("SELECT $$DROP$$")).toBe(true);
+  // Fail-closed trade-off (controller ruling): the keyword scan runs on the RAW text, so a
+  // keyword inside a literal, quoted identifier or comment rejects too. A tokenizer that
+  // strips those first can be fooled into blanking a real keyword (see the next test).
+  it("rejects a write keyword even inside a literal, quoted identifier or comment", () => {
+    expect(isReadOnlyWidgetSql("SELECT * FROM t WHERE op = 'UPDATE'")).toBe(false);
+    expect(isReadOnlyWidgetSql("SELECT 1 -- DROP")).toBe(false);
+    expect(isReadOnlyWidgetSql("SELECT 1 /* DELETE */")).toBe(false);
+    expect(isReadOnlyWidgetSql('SELECT "drop" FROM t')).toBe(false);
+    expect(isReadOnlyWidgetSql("SELECT $$DROP$$")).toBe(false);
     expect(isReadOnlyWidgetSql("SELECT update_count FROM t")).toBe(true);
+  });
+
+  it("rejects writes the splitter's tokenizer mistakes for a literal or comment", () => {
+    for (const [sql, dialect] of [
+      ["SELECT 1 AS a$x$; DELETE FROM t; SELECT 1 AS b$x$", "postgres"],
+      ["WITH a$x$ AS (DELETE FROM t RETURNING 1) SELECT 1 AS b$x$", "postgres"],
+      ["SELECT 1 --1; DROP TABLE t", "mysql"],
+      ["SELECT 1 AS [a']; DELETE FROM t; SELECT 1 AS [']", "sqlite"],
+      ["SELECT 1 /*M! INTO OUTFILE '/tmp/x' */", "mysql"],
+      ["TABLE a$x$; DELETE FROM t; SELECT 1 AS b$x$", "postgres"],
+    ] as const) {
+      expect(isReadOnlyWidgetSql(sql, dialect), sql).toBe(false);
+    }
   });
 
   it("still scans code that follows a closed literal", () => {
