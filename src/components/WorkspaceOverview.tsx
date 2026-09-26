@@ -38,6 +38,20 @@ export function WorkspaceOverview({ onClose }: { onClose: () => void }) {
     containerRef.current?.focus();
   }, []);
 
+  // Escape must close the overlay even if focus isn't actually inside it —
+  // e.g. it was opened by clicking a palette row, and the click already
+  // moved focus elsewhere (or nowhere) before this mounted. Relying on the
+  // container's own onKeyDown only fires when focus is a descendant of it,
+  // which is not guaranteed; a window-level listener works regardless of
+  // focus and is cleaned up on unmount so it can't leak to the next overlay.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   const cards: Card[] = [];
   for (const o of open) {
     const connColor = saved.find((c) => c.id === o.info.id)?.color ?? null;
@@ -82,10 +96,8 @@ export function WorkspaceOverview({ onClose }: { onClose: () => void }) {
         aria-label="Workspace Overview"
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => {
-          if (e.key === "Escape") {
-            onClose();
-            return;
-          }
+          // Escape is handled by the window-level listener above (works
+          // regardless of focus); this local handler only needs arrow nav.
           const forward = e.key === "ArrowRight" || e.key === "ArrowDown";
           const backward = e.key === "ArrowLeft" || e.key === "ArrowUp";
           if (!forward && !backward) return;
