@@ -86,7 +86,7 @@ import {
 } from "../lib/tableScript";
 import { Elapsed } from "./ui/Elapsed";
 import { applyToolbar, loadToolbar } from "../lib/toolbarPrefs";
-import { DEFAULT_TOOLBAR_PREF, TOOLBAR_ITEMS } from "../lib/toolbarItems";
+import { DEFAULT_HIDDEN_TOOLBAR_IDS, DEFAULT_TOOLBAR_PREF, TOOLBAR_ITEMS } from "../lib/toolbarItems";
 
 /** The schema a connection should open on. Every engine has a conventional
  *  "your stuff lives here" schema; alphabetical order picks `auth` over
@@ -884,6 +884,7 @@ export function MainShell() {
   const visibleTitlebarIds = applyToolbar(
     TOOLBAR_ITEMS.map((i) => i.id),
     toolbarPref,
+    DEFAULT_HIDDEN_TOOLBAR_IDS,
   );
 
   return (

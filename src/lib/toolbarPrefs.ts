@@ -52,17 +52,41 @@ export function saveToolbar(pref: ToolbarPref, storage?: StorageLike | null): vo
 }
 
 /**
- * Order + filter `allIds` per `pref`: ids in `pref.order` come first (in that
- * order, dropping any that no longer exist in `allIds`), then any remaining
- * ids not mentioned in `pref.order` are appended in their original order
- * (so a newly-added title-bar item shows up automatically), and finally
- * anything in `pref.hidden` is removed.
+ * Order `allIds` per `order`: ids in `order` come first (in that order,
+ * dropping any that no longer exist in `allIds`), then any remaining ids not
+ * mentioned in `order` are appended in their original `allIds` order (so a
+ * newly-added title-bar item shows up automatically). Exported so both
+ * `applyToolbar` below and Settings' full (visible + hidden) list share one
+ * implementation instead of two copies of the same rule.
  */
-export function applyToolbar(allIds: string[], pref: ToolbarPref): string[] {
+export function orderedIds(allIds: string[], order: string[]): string[] {
   const known = new Set(allIds);
-  const ordered = pref.order.filter((id) => known.has(id));
+  const ordered = order.filter((id) => known.has(id));
   const seen = new Set(ordered);
   const appended = allIds.filter((id) => !seen.has(id));
+  return [...ordered, ...appended];
+}
+
+/**
+ * Order + filter `allIds` per `pref` (via `orderedIds`), then drop hidden
+ * ones. An id already present in `pref.order` is "known" — its visibility is
+ * governed by `pref.hidden` alone, even if that means overriding
+ * `defaultHidden` (the user may have explicitly un-hidden a default-hidden
+ * item). An id that is *not* in `pref.order` is genuinely new — a saved pref
+ * predates it — so instead of always showing up visible, it falls back to
+ * `defaultHidden` (e.g. a future title-bar item shipped hidden-by-default
+ * must stay hidden for existing users, not suddenly appear because their old
+ * pref never mentioned it).
+ */
+export function applyToolbar(
+  allIds: string[],
+  pref: ToolbarPref,
+  defaultHidden: string[] = [],
+): string[] {
+  const known = new Set(pref.order);
   const hidden = new Set(pref.hidden);
-  return [...ordered, ...appended].filter((id) => !hidden.has(id));
+  const defaultHiddenSet = new Set(defaultHidden);
+  return orderedIds(allIds, pref.order).filter((id) =>
+    known.has(id) ? !hidden.has(id) : !defaultHiddenSet.has(id),
+  );
 }

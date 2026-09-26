@@ -12,8 +12,8 @@ import {
 import { useTheme } from "../theme/ThemeProvider";
 import type { ThemeChoice } from "../lib/theme";
 import { Panel } from "./ui/Panel";
-import { loadToolbar, saveToolbar, type ToolbarPref } from "../lib/toolbarPrefs";
-import { DEFAULT_TOOLBAR_PREF, TOOLBAR_ITEMS } from "../lib/toolbarItems";
+import { loadToolbar, orderedIds, saveToolbar, type ToolbarPref } from "../lib/toolbarPrefs";
+import { DEFAULT_HIDDEN_TOOLBAR_IDS, DEFAULT_TOOLBAR_PREF, TOOLBAR_ITEMS } from "../lib/toolbarItems";
 
 export type Section = "general" | "editor" | "ai" | "toolbar" | "backup" | "mcp";
 
@@ -195,14 +195,26 @@ function ToolbarSection() {
   };
 
   // Full order — visible *and* hidden — so a hidden item still has a row to
-  // re-enable from. Same "known ids from pref.order, then anything new
-  // appended" rule `applyToolbar` uses for the visible list, just without
-  // dropping the hidden ones.
+  // re-enable from. Shares `orderedIds` with `applyToolbar` (toolbarPrefs.ts)
+  // instead of re-implementing the same "known pref.order ids first, then
+  // append anything new" rule here.
   const allIds = TOOLBAR_ITEMS.map((i) => i.id);
-  const known = new Set(allIds);
-  const ordered = pref.order.filter((id) => known.has(id));
-  const seen = new Set(ordered);
-  const fullOrder = [...ordered, ...allIds.filter((id) => !seen.has(id))];
+  const fullOrder = orderedIds(allIds, pref.order);
+
+  // An id missing from `pref.order` is genuinely new — this pref predates
+  // it — so its visibility falls back to `DEFAULT_HIDDEN_TOOLBAR_IDS` rather
+  // than always showing up checked (same rule `applyToolbar` uses). Once an
+  // id is known (in `pref.order`), `pref.hidden` alone governs.
+  const knownIds = new Set(pref.order);
+  const isHidden = (id: string) =>
+    knownIds.has(id) ? pref.hidden.includes(id) : DEFAULT_HIDDEN_TOOLBAR_IDS.includes(id);
+
+  // Any persist from here promotes every id to "known" (order becomes the
+  // full list) — so `hidden` must be materialized from `isHidden` first,
+  // otherwise a default-hidden-but-not-yet-known id would silently flip to
+  // visible the moment it's promoted (its absence from the old `pref.hidden`
+  // would no longer fall back to the default).
+  const materializedHidden = fullOrder.filter(isHidden);
 
   const move = (id: string, dir: -1 | 1) => {
     const i = fullOrder.indexOf(id);
@@ -210,14 +222,14 @@ function ToolbarSection() {
     if (j < 0 || j >= fullOrder.length) return;
     const next = [...fullOrder];
     [next[i], next[j]] = [next[j], next[i]];
-    persist({ ...pref, order: next });
+    persist({ order: next, hidden: materializedHidden });
   };
 
   const toggleHidden = (id: string) => {
-    const hidden = pref.hidden.includes(id)
-      ? pref.hidden.filter((h) => h !== id)
-      : [...pref.hidden, id];
-    persist({ ...pref, hidden });
+    const hidden = isHidden(id)
+      ? materializedHidden.filter((h) => h !== id)
+      : [...materializedHidden, id];
+    persist({ order: fullOrder, hidden });
   };
 
   return (
@@ -234,7 +246,7 @@ function ToolbarSection() {
               <label className="flex items-center gap-2 text-sm text-text">
                 <input
                   type="checkbox"
-                  checked={!pref.hidden.includes(id)}
+                  checked={!isHidden(id)}
                   onChange={() => toggleHidden(id)}
                 />
                 {item.label}
