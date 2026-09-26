@@ -135,41 +135,39 @@ pub fn init_tracing() {
     let _ = tracing::subscriber::set_global_default(subscriber);
 }
 
-/// Mask password literals: `PASSWORD [=] [N]'…'` (Postgres, SQL Server — `OLD_PASSWORD` too
-/// — and MySQL's `SET PASSWORD [FOR u] = '…'`) and MySQL's `IDENTIFIED [WITH plugin] BY|AS '…'`.
-/// A scan, not a parse: literals and quoted identifiers are skipped, so `'password'` or
-/// `"password"` never trigger it, and a `password` column only does when a literal follows.
+/// Mask secrets: the literal after `PASSWORD` or `*_PASSWORD` (`[FOR account] [=] …`), after
+/// `SECRET` or `*_SECRET` (`[=] …`), and after MySQL's `IDENTIFIED [WITH plugin] BY|AS …`
+/// (plus its `REPLACE …`). A literal is `'…'`, a prefixed `N'…'`/`E'…'`/`X'…'`, `$tag$…$tag$`,
+/// or the first argument of a call such as `PASSWORD('…')`.
+///
+/// Keyword-anchored and fail-closed: nothing before a keyword is parsed, so no comment,
+/// string or odd escape earlier in the text can hide a password. A keyword that sits inside
+/// a string or comment may mask the next literal it meets — over-masking a log line is the
+/// safe direction.
 pub fn redact(sql: &str) -> Cow<'_, str> {
     let b = sql.as_bytes();
     let mut masks: Vec<(usize, usize)> = Vec::new(); // literal bodies, quotes excluded
     let mut i = 0;
     while i < b.len() {
-        match b[i] {
-            b'\'' => i = lit_end(b, i) + 1,
-            q @ (b'"' | b'`') => {
-                i = b[i + 1..].iter().position(|&c| c == q).map_or(b.len(), |p| i + p + 2);
-            }
-            c if is_word(c) => {
-                let start = i;
-                while i < b.len() && is_word(b[i]) {
-                    i += 1;
-                }
-                let w = &b[start..i];
-                let lit = if w.eq_ignore_ascii_case(b"password")
-                    || (w.len() > 9 && w[w.len() - 9..].eq_ignore_ascii_case(b"_password"))
-                {
-                    password_literal(b, i)
-                } else if w.eq_ignore_ascii_case(b"identified") {
-                    identified_literal(b, i)
-                } else {
-                    None
-                };
-                if let Some((s, e)) = lit {
-                    masks.push((s, e));
-                    i = e + 1;
-                }
-            }
-            _ => i += 1,
+        if !is_word(b[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < b.len() && is_word(b[i]) {
+            i += 1;
+        }
+        let w = &b[start..i];
+        let before = masks.len();
+        if is_kw(w, b"password") {
+            masks.extend(value_after(b, i, true));
+        } else if is_kw(w, b"secret") {
+            masks.extend(value_after(b, i, false));
+        } else if w.eq_ignore_ascii_case(b"identified") {
+            identified(b, i, &mut masks);
+        }
+        if masks.len() > before {
+            i = masks[masks.len() - 1].1 + 1;
         }
     }
     if masks.is_empty() {
@@ -187,7 +185,15 @@ pub fn redact(sql: &str) -> Cow<'_, str> {
 }
 
 fn is_word(c: u8) -> bool {
-    c.is_ascii_alphanumeric() || c == b'_' || c == b'$' || c >= 0x80
+    c.is_ascii_alphanumeric() || c == b'_' || c >= 0x80
+}
+
+/// `w` is `kw` or ends in `_kw` (`OLD_PASSWORD`, `CLIENT_SECRET`), case-insensitively.
+fn is_kw(w: &[u8], kw: &[u8]) -> bool {
+    w.eq_ignore_ascii_case(kw)
+        || (w.len() > kw.len()
+            && w[w.len() - kw.len() - 1] == b'_'
+            && w[w.len() - kw.len()..].eq_ignore_ascii_case(kw))
 }
 
 fn skip_ws(b: &[u8], mut i: usize) -> usize {
@@ -204,7 +210,7 @@ fn word_at(b: &[u8], i: usize, word: &[u8]) -> bool {
 }
 
 /// Index of the quote closing the literal opened at `open` (`b.len()` if unterminated).
-/// Both escapes count: a doubled `''` and MySQL's backslash.
+/// `''` and a backslash both escape — the backslash only ever makes the mask longer.
 fn lit_end(b: &[u8], open: usize) -> usize {
     let mut j = open + 1;
     while j < b.len() {
@@ -218,37 +224,62 @@ fn lit_end(b: &[u8], open: usize) -> usize {
     b.len()
 }
 
-/// The body of a `'…'` or `N'…'` literal starting at `i`.
-fn literal_at(b: &[u8], mut i: usize) -> Option<(usize, usize)> {
-    if matches!(b.get(i), Some(b'N' | b'n')) && b.get(i + 1) == Some(&b'\'') {
-        i += 1;
+/// The body of the literal starting at `i`: `'…'`, one with a prefix glued on (`N`, `E`,
+/// `X`, `_utf8mb4`, …), or `$tag$…$tag$`.
+fn literal_at(b: &[u8], i: usize) -> Option<(usize, usize)> {
+    let mut q = i;
+    while q < b.len() && (b[q].is_ascii_alphanumeric() || b[q] == b'_' || b[q] == b'&') {
+        q += 1;
     }
-    (b.get(i) == Some(&b'\'')).then(|| (i + 1, lit_end(b, i)))
+    if b.get(q) == Some(&b'\'') {
+        return Some((q + 1, lit_end(b, q)));
+    }
+    if b.get(i) != Some(&b'$') {
+        return None;
+    }
+    let mut k = i + 1;
+    while k < b.len() && (b[k].is_ascii_alphanumeric() || b[k] == b'_') {
+        k += 1;
+    }
+    if b.get(k) != Some(&b'$') {
+        return None; // `$1` is a placeholder, not a dollar quote
+    }
+    let tag = &b[i..=k];
+    let end = b[k + 1..].windows(tag.len()).position(|w| w == tag).map_or(b.len(), |p| k + 1 + p);
+    Some((k + 1, end))
 }
 
-/// After `PASSWORD`: `[FOR account] [=] '…'`.
-fn password_literal(b: &[u8], i: usize) -> Option<(usize, usize)> {
+/// The literal at `i`, or the first argument of a call there (`PASSWORD('…')`).
+fn value_at(b: &[u8], i: usize) -> Option<(usize, usize)> {
+    if let Some(m) = literal_at(b, i) {
+        return Some(m);
+    }
+    let mut k = i;
+    while k < b.len() && is_word(b[k]) {
+        k += 1;
+    }
+    let k = skip_ws(b, k);
+    (b.get(k) == Some(&b'(')).then(|| literal_at(b, skip_ws(b, k + 1))).flatten()
+}
+
+/// After a keyword: `[FOR account] [=] value` (`FOR` only after `PASSWORD`).
+fn value_after(b: &[u8], i: usize, allow_for: bool) -> Option<(usize, usize)> {
     let mut j = skip_ws(b, i);
-    if word_at(b, j, b"for") {
-        // The account is itself quoted (`'u'@'h'`), so walk to the `=` past its literals.
+    if allow_for && word_at(b, j, b"for") {
+        // MySQL `SET PASSWORD FOR 'u'@'h' = …`: straight to the `=`, parsing nothing.
         j += 3;
-        loop {
-            match b.get(j) {
-                Some(b'\'') => j = lit_end(b, j) + 1,
-                Some(b'=') => break,
-                Some(b';') | None => return None,
-                _ => j += 1,
-            }
+        while b.get(j).is_some_and(|&c| c != b'=' && c != b';') {
+            j += 1;
         }
     }
     if b.get(j) == Some(&b'=') {
         j = skip_ws(b, j + 1);
     }
-    literal_at(b, j)
+    value_at(b, j)
 }
 
-/// After `IDENTIFIED`: `[WITH plugin] BY|AS '…'`.
-fn identified_literal(b: &[u8], i: usize) -> Option<(usize, usize)> {
+/// After `IDENTIFIED`: `[WITH plugin] BY|AS value [REPLACE value]`.
+fn identified(b: &[u8], i: usize, masks: &mut Vec<(usize, usize)>) {
     let mut j = skip_ws(b, i);
     if word_at(b, j, b"with") {
         j = skip_ws(b, j + 4);
@@ -262,9 +293,14 @@ fn identified_literal(b: &[u8], i: usize) -> Option<(usize, usize)> {
         j = skip_ws(b, j);
     }
     if !(word_at(b, j, b"by") || word_at(b, j, b"as")) {
-        return None;
+        return;
     }
-    literal_at(b, skip_ws(b, j + 2))
+    let Some(m) = value_at(b, skip_ws(b, j + 2)) else { return };
+    masks.push(m);
+    let k = skip_ws(b, m.1 + 1);
+    if word_at(b, k, b"replace") {
+        masks.extend(value_at(b, skip_ws(b, k + 7)));
+    }
 }
 
 #[cfg(test)]
@@ -347,14 +383,75 @@ mod tests {
     }
 
     #[test]
-    fn leaves_other_literals_and_password_columns_alone() {
+    fn earlier_comments_and_strings_cannot_derail_it() {
+        for (sql, want) in [
+            (
+                "-- don't forget\nALTER ROLE x PASSWORD 'secret1'",
+                "-- don't forget\nALTER ROLE x PASSWORD '***'",
+            ),
+            (
+                "/* it's */ CREATE LOGIN a WITH PASSWORD = N'secret7'",
+                "/* it's */ CREATE LOGIN a WITH PASSWORD = N'***'",
+            ),
+            (
+                r"SELECT 'C:\' AS p; ALTER ROLE x PASSWORD 'secret2'",
+                r"SELECT 'C:\' AS p; ALTER ROLE x PASSWORD '***'",
+            ),
+        ] {
+            assert_eq!(redact(sql), want);
+        }
+    }
+
+    #[test]
+    fn masks_every_literal_form() {
+        assert_eq!(redact("ALTER ROLE x PASSWORD E'secret3'"), "ALTER ROLE x PASSWORD E'***'");
+        assert_eq!(redact("ALTER ROLE x PASSWORD $$secret$$"), "ALTER ROLE x PASSWORD $$***$$");
+        assert_eq!(redact("ALTER ROLE x PASSWORD $pw$se'c$pw$;"), "ALTER ROLE x PASSWORD $pw$***$pw$;");
+        assert_eq!(redact("SET PASSWORD = PASSWORD('secret5')"), "SET PASSWORD = PASSWORD('***')");
+        assert_eq!(
+            redact("CREATE CREDENTIAL c WITH IDENTITY = 'u', SECRET = 'sk'"),
+            "CREATE CREDENTIAL c WITH IDENTITY = 'u', SECRET = '***'"
+        );
+        assert_eq!(
+            redact("ALTER USER u IDENTIFIED BY 'new' REPLACE 'old'"),
+            "ALTER USER u IDENTIFIED BY '***' REPLACE '***'"
+        );
+        // Unterminated: fail closed, masking to the end.
+        assert_eq!(redact("ALTER ROLE x PASSWORD 'sec"), "ALTER ROLE x PASSWORD '***");
+    }
+
+    #[test]
+    fn leaves_statements_without_a_password_literal_alone() {
         for sql in [
-            "SELECT 'password' FROM t WHERE name = 'x'",
+            "SELECT a, b FROM t WHERE name = 'x' -- it's fine",
             "SELECT password, password_hash FROM users",
-            "SELECT 'PASSWORD ''x''' AS s",
             r#"SELECT "password" FROM t WHERE a = 'b'"#,
+            "SELECT CAST(`password` AS CHAR) FROM t WHERE password = $1",
+            "",
         ] {
             assert!(matches!(redact(sql), Cow::Borrowed(_)), "{sql} must be untouched");
         }
+    }
+
+    /// Every truncation of awkward input — unterminated quotes, a lone `$`, a keyword at the
+    /// very end, multi-byte text — must come back without a panic.
+    #[test]
+    fn never_panics_on_a_truncated_statement() {
+        let sql = "SET PASSWORD FOR 'u'@'h' = PASSWORD($pw$sé'c$pw$) IDENTIFIED WITH `p` BY N'x\\' \
+                   REPLACE E'o''ld' SECRET = $1 client_secret=";
+        for (i, _) in sql.char_indices() {
+            let _ = redact(&sql[..i]);
+        }
+        assert!(!redact(sql).contains("sé'c"));
+    }
+
+    /// Fail-closed by design: text before a keyword isn't parsed, so a keyword inside a string
+    /// masks the next literal it meets. Over-masking a log line is the safe direction.
+    #[test]
+    fn a_keyword_inside_a_string_over_masks() {
+        assert_eq!(
+            redact("SELECT 'password' FROM t WHERE name = 'x'"),
+            "SELECT 'password'***'x'"
+        );
     }
 }

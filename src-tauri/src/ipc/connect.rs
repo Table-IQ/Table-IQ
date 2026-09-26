@@ -377,12 +377,16 @@ pub fn disconnect(state: State<ConnState>, id: String) {
 /// panel polls with the last seq it has.
 #[tauri::command]
 pub fn sql_log(state: State<ConnState>, id: String, after_seq: u64) -> Vec<crate::sql_log::Entry> {
-    lk(&state.sql_logs).get(&id).map(|l| l.since(after_seq)).unwrap_or_default()
+    // Clone the log out first: copying up to 2000 entries must not hold the map lock that
+    // every connect, disconnect and ⌘D takes.
+    let log = lk(&state.sql_logs).get(&id).cloned();
+    log.map(|l| l.since(after_seq)).unwrap_or_default()
 }
 
 #[tauri::command]
 pub fn clear_sql_log(state: State<ConnState>, id: String) {
-    if let Some(l) = lk(&state.sql_logs).get(&id) {
+    let log = lk(&state.sql_logs).get(&id).cloned();
+    if let Some(l) = log {
         l.clear();
     }
 }

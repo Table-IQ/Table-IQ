@@ -51,13 +51,14 @@ async fn walk(d: &Logged, log: &SqlLog, schema: &str, t: &str, catalog: &str) {
     d.count_rows(schema, t, &[], Some(&CancelToken::new())).await.expect("count");
     run(d, &[&format!("SELECT * FROM {t} WHERE password = 'hunter2'")]).await;
 
-    assert_any(log, "user statement", |s| s == "SELECT 42");
+    let all = logged_sql(log);
+    let once = all.iter().filter(|s| *s == "SELECT 42").count();
+    assert_eq!(once, 1, "the user statement is logged exactly once:\n{}", all.join("\n"));
     assert_any(log, "catalog query", |s| s.contains(catalog));
     // Every engine's page is `… LIMIT n` or SQL Server's `… FETCH NEXT n ROWS ONLY`.
     assert_any(log, "page read", |s| s.contains(t) && (s.contains("LIMIT") || s.contains("FETCH NEXT")));
     assert_any(log, "count", |s| s.contains(t) && s.to_uppercase().contains("COUNT"));
     assert_any(log, "masked password", |s| s.contains("password = '***'"));
-    let all = logged_sql(log);
     assert!(!all.iter().any(|s| s.contains("hunter2")), "the password leaked:\n{}", all.join("\n"));
     let seqs: Vec<u64> = log.since(0).iter().map(|e| e.seq).collect();
     assert!(seqs.windows(2).all(|w| w[0] < w[1]), "entries arrive in order");
