@@ -17,6 +17,7 @@ import { DatabasePicker } from "./DatabasePicker";
 import { isFileEngine } from "./ConnectionManager";
 import { Onboarding } from "./Onboarding";
 import { WorkspaceOverview } from "./WorkspaceOverview";
+import { SqlLogPanel } from "./SqlLogPanel";
 import { useSettingsUi } from "./Settings";
 import { Inspector } from "./Inspector";
 import { ContextMenu, type ContextMenuItem } from "./ui/ContextMenu";
@@ -46,6 +47,7 @@ import {
   IconSidebar,
   IconSidebarRight,
   IconSliders,
+  IconSqlLog,
   IconStop,
   IconStructure,
   IconTable,
@@ -145,6 +147,22 @@ export function MainShell() {
   // ⌘K palette's Queries group — lazily fetched on open, same list SidebarLibrary
   // uses, filtered through `savedQueriesForConn` below.
   const [paletteSaved, setPaletteSaved] = useState<SavedQuery[]>([]);
+  // ⌘⇧C SQL log panel (Task 9, TablePlus parity) — open state persists like
+  // the sidebar tab below, so a relaunch keeps the panel where the user left it.
+  const [showSqlLog, setShowSqlLog] = useState(() => {
+    try {
+      return window.localStorage.getItem("tiq:sqllog:open") === "1";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("tiq:sqllog:open", showSqlLog ? "1" : "0");
+    } catch {
+      // quota / private mode — ignore, it's just a UI pref
+    }
+  }, [showSqlLog]);
   // ⌘O Open Connection palette (TablePlus-style switcher; replaces the left-edge rail).
   const [showConnPicker, setShowConnPicker] = useState(false);
   // ⌘D Switch Database — opens the per-server database picker (TablePlus parity).
@@ -426,6 +444,13 @@ export function MainShell() {
         // physical-key fallback so this still fires on other layouts.
         e.preventDefault();
         setShowWorkspaceOverview((v) => !v);
+      } else if (meta && e.shiftKey && e.key.toLowerCase() === "c") {
+        // ⌘⇧C SQL log (TablePlus parity). Doesn't collide with any binding in
+        // this app's own keymap or CodeMirror's (grepped both); a browser
+        // devtools inspector shortcut on the same combo only exists with
+        // devtools enabled, which the shipped app doesn't expose.
+        e.preventDefault();
+        setShowSqlLog((v) => !v);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -463,6 +488,14 @@ export function MainShell() {
         group: "Commands",
         shortcut: "⌘⇧\\",
         run: () => setShowWorkspaceOverview(true),
+      },
+      {
+        id: "act:sql-log",
+        label: "Toggle SQL Log",
+        group: "Commands",
+        icon: <IconSqlLog />,
+        shortcut: "⌘⇧C",
+        run: () => setShowSqlLog((v) => !v),
       },
       {
         id: "act:settings",
@@ -888,6 +921,11 @@ export function MainShell() {
       shortcut: "⌘⇧\\",
       onClick: () => setShowWorkspaceOverview(true),
     },
+    "sql-log": {
+      icon: <IconSqlLog size={16} />,
+      shortcut: "⌘⇧C",
+      onClick: () => setShowSqlLog((v) => !v),
+    },
   };
   const visibleTitlebarIds = applyToolbar(
     TOOLBAR_ITEMS.map((i) => i.id),
@@ -1270,6 +1308,10 @@ export function MainShell() {
           </div>
 
           <div className="min-h-0 flex-1">{renderActive()}</div>
+
+          {/* ⌘⇧C SQL log (Task 9, TablePlus parity) — docked between the tab
+              body and the status bar, only while toggled open. */}
+          {showSqlLog && <SqlLogPanel connId={active.id} />}
 
           {/* Bottom status bar (workspace-level fallback). Table + Query tabs render
               their own content-rich status bar, so this generic one only shows on

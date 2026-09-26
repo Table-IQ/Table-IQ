@@ -21,6 +21,7 @@ export const TOOLBAR_ITEMS: ToolbarItemInfo[] = [
   { id: "theme-toggle", label: "Theme" },
   { id: "help", label: "Help / Show tour" },
   { id: "workspace-overview", label: "Workspace Overview" },
+  { id: "sql-log", label: "SQL log" },
 ];
 
 /** Items hidden until the user opts in from Settings → Toolbar. */

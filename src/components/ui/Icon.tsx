@@ -250,3 +250,16 @@ export const IconOverview = (p: P) => (
     <rect x="7.5" y="7.5" width="5" height="5" rx="0.8" />
   </svg>
 );
+// TablePlus's title-bar bottom-panel/console icon: a window with a docked
+// strip along the bottom edge (the SQL log lives there).
+export const IconSqlLog = (p: P) => (
+  <svg {...base(p)}>
+    <rect x="1.5" y="1.5" width="11" height="11" rx="1" />
+    <path d="M1.5 8.5h11M4.5 8.5v4" />
+  </svg>
+);
+export const IconTrash = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M2.5 3.5h9M5.5 3.5v-1a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v1M5 3.5l.5 8a1 1 0 0 0 1 1h1a1 1 0 0 0 1-1l.5-8" />
+  </svg>
+);
