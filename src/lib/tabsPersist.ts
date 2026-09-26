@@ -68,6 +68,27 @@ export function hydrateForConnection(
   }
 }
 
+/**
+ * Move `activeKey` to `key` in `slice`. An unknown key is a no-op — returns the
+ * SAME slice reference so callers can skip a redundant persist. Pure.
+ */
+export function focusTabIn(slice: PersistedTabs, key: string): PersistedTabs {
+  if (!slice.tabs.some((t) => t.key === key)) return slice;
+  return { ...slice, activeKey: key };
+}
+
+/**
+ * Remove the tab keyed `key` from `slice`. Closing the active tab moves
+ * `activeKey` to the last remaining tab, or `null` when none are left.
+ * Closing an unknown key is a no-op. Pure — mirrors `useTabs`' `close`.
+ */
+export function closeTabIn(slice: PersistedTabs, key: string): PersistedTabs {
+  const tabs = slice.tabs.filter((t) => t.key !== key);
+  const activeKey =
+    slice.activeKey === key ? (tabs.length ? tabs[tabs.length - 1].key : null) : slice.activeKey;
+  return { ...slice, tabs, activeKey };
+}
+
 /** Write the persisted slice for `connId`. Best-effort (silently ignores quota errors). */
 export function persistForConnection(
   connId: string,

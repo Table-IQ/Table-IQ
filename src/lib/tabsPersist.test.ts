@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  closeTabIn,
   filterStaleTabs,
+  focusTabIn,
   hydrateForConnection,
   persistForConnection,
   storageKey,
@@ -106,5 +108,70 @@ describe("tabsPersist", () => {
 
   it("storage key is namespaced by conn id", () => {
     expect(storageKey("local-pg")).toBe("tiq:tabs:local-pg");
+  });
+});
+
+describe("focusTabIn", () => {
+  const slice: PersistedTabs = {
+    tabs: [
+      { key: "table:public.users", kind: "table", title: "users", schema: "public", table: "users" },
+      { key: "query:1", kind: "query", title: "Query 1" },
+    ],
+    activeKey: "table:public.users",
+    queryCount: 1,
+  };
+
+  it("moves activeKey to the given tab", () => {
+    const out = focusTabIn(slice, "query:1");
+    expect(out.activeKey).toBe("query:1");
+    expect(out.tabs).toEqual(slice.tabs);
+  });
+
+  it("leaves the slice unchanged for an unknown key", () => {
+    const out = focusTabIn(slice, "nope");
+    expect(out).toBe(slice);
+  });
+});
+
+describe("closeTabIn", () => {
+  const base: PersistedTabs = {
+    tabs: [
+      { key: "table:public.users", kind: "table", title: "users", schema: "public", table: "users" },
+      { key: "query:1", kind: "query", title: "Query 1" },
+      { key: "query:2", kind: "query", title: "Query 2" },
+    ],
+    activeKey: "query:1",
+    queryCount: 2,
+  };
+
+  it("removes the closed tab", () => {
+    const out = closeTabIn(base, "query:1");
+    expect(out.tabs.map((t) => t.key)).toEqual(["table:public.users", "query:2"]);
+  });
+
+  it("moves activeKey to the last remaining tab when the active tab closes", () => {
+    const out = closeTabIn(base, "query:1");
+    expect(out.activeKey).toBe("query:2");
+  });
+
+  it("leaves activeKey alone when closing a non-active tab", () => {
+    const out = closeTabIn(base, "query:2");
+    expect(out.activeKey).toBe("query:1");
+  });
+
+  it("activeKey falls back to null when the last tab closes", () => {
+    const one: PersistedTabs = {
+      tabs: [{ key: "query:1", kind: "query", title: "Query 1" }],
+      activeKey: "query:1",
+      queryCount: 1,
+    };
+    const out = closeTabIn(one, "query:1");
+    expect(out).toEqual({ tabs: [], activeKey: null, queryCount: 1 });
+  });
+
+  it("is a no-op for an unknown key", () => {
+    const out = closeTabIn(base, "nope");
+    expect(out.tabs).toEqual(base.tabs);
+    expect(out.activeKey).toBe(base.activeKey);
   });
 });

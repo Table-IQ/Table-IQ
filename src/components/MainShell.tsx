@@ -16,6 +16,7 @@ import { ConnectionPicker } from "./ConnectionPicker";
 import { DatabasePicker } from "./DatabasePicker";
 import { isFileEngine } from "./ConnectionManager";
 import { Onboarding } from "./Onboarding";
+import { WorkspaceOverview } from "./WorkspaceOverview";
 import { useSettingsUi } from "./Settings";
 import { Inspector } from "./Inspector";
 import { ContextMenu, type ContextMenuItem } from "./ui/ContextMenu";
@@ -134,6 +135,9 @@ export function MainShell() {
   const [showImport, setShowImport] = useState(false);
   const [showDiff, setShowDiff] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
+  // ⌘⇧\ Workspace Overview (TablePlus parity) — a grid of every open tab
+  // across every open connection.
+  const [showWorkspaceOverview, setShowWorkspaceOverview] = useState(false);
   // ⌘K palette's Queries group — lazily fetched on open, same list SidebarLibrary
   // uses, filtered through `savedQueriesForConn` below.
   const [paletteSaved, setPaletteSaved] = useState<SavedQuery[]>([]);
@@ -396,6 +400,15 @@ export function MainShell() {
       } else if (meta && e.key === ".") {
         e.preventDefault();
         void cancelAllQueries();
+      } else if (
+        meta &&
+        e.shiftKey &&
+        (e.key === "\\" || e.key === "|" || e.code === "Backslash")
+      ) {
+        // Shift usually remaps `key` to "|" on a US layout — `code` is the
+        // physical-key fallback so this still fires on other layouts.
+        e.preventDefault();
+        setShowWorkspaceOverview((v) => !v);
       } else if (e.key === "Escape" && connecting) {
         cancelConnecting();
       }
@@ -422,6 +435,13 @@ export function MainShell() {
         icon: <IconDatabase />,
         shortcut: "⌘D",
         run: () => void openDbPicker(),
+      },
+      {
+        id: "act:workspace-overview",
+        label: "Workspace Overview",
+        group: "Commands",
+        shortcut: "⌘⇧\\",
+        run: () => setShowWorkspaceOverview(true),
       },
       {
         id: "act:settings",
@@ -1250,6 +1270,10 @@ export function MainShell() {
         <DiffView connId={active.id} connName={active.name} onClose={() => setShowDiff(false)} />
       )}
       {showPalette && <CommandPalette commands={commands} onClose={() => setShowPalette(false)} />}
+
+      {showWorkspaceOverview && (
+        <WorkspaceOverview onClose={() => setShowWorkspaceOverview(false)} />
+      )}
 
       {showConnPicker && (
         <ConnectionPicker
