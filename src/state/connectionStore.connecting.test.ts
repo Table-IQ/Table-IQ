@@ -17,6 +17,7 @@ vi.mock("../lib/commands", async (importOriginal) => ({
 
 const { cancelConnecting, openConnection, switchDatabaseFlow, useConnections } =
   await import("./connectionStore");
+const { useTabs } = await import("./tabsStore");
 
 const cfg = (id: string, name = id): ConnConfig => ({
   id,
@@ -152,6 +153,19 @@ describe("openConnection", () => {
     expect(disconnect).toHaveBeenCalledWith("a");
     expect(useConnections.getState().connecting).toBeNull();
   });
+
+  // Redis/Mongo have no relational schema to introspect — `openConnection`
+  // must skip `listObjects` entirely rather than call it and get back
+  // nothing useful (or fail).
+  it("skips listObjects for redis/mongodb engines and leaves schema null", async () => {
+    connect.mockResolvedValueOnce({ ...info("a"), engine: "redis" });
+    const ok = await openConnection(cfg("a", "Alpha"));
+    expect(ok).toBe(true);
+    expect(listObjects).not.toHaveBeenCalled();
+    const s = useConnections.getState();
+    expect(s.active?.id).toBe("a");
+    expect(s.schema).toBeNull();
+  });
 });
 
 describe("switchDatabaseFlow", () => {
@@ -162,6 +176,33 @@ describe("switchDatabaseFlow", () => {
     switchDatabase.mockReset();
     useConnections.setState({ active: null, schema: null, open: [], connecting: null });
     useConnections.getState().openSession(info("a"), schema("public"));
+    useTabs.getState().reset();
+  });
+
+  // The old database's open tabs point at tables that may not exist in the new
+  // one — the active connection's tab strip must not carry them over.
+  it("resets the tab strip when switching the active connection's database", async () => {
+    useTabs.getState().openQuery("SELECT 1;");
+    expect(useTabs.getState().tabs.length).toBe(1);
+    switchDatabase.mockResolvedValueOnce({ ...info("a"), database: "db2" });
+    listObjects.mockResolvedValueOnce(schema("db2"));
+    await switchDatabaseFlow("a", "db2");
+    expect(useTabs.getState().tabs).toEqual([]);
+    expect(useTabs.getState().activeKey).toBeNull();
+  });
+
+  // Switching a *background* connection's database must not disturb whatever
+  // is on screen for the connection actually in front.
+  it("does not touch the active connection's tab strip when switching a background connection", async () => {
+    useConnections.getState().openSession(info("b"), schema("public")); // "b" is now active, "a" is background
+    useTabs.getState().reset();
+    useTabs.getState().openQuery("SELECT 1;"); // belongs to "b", the active connection
+    switchDatabase.mockResolvedValueOnce({ ...info("a"), database: "db2" });
+    listObjects.mockResolvedValueOnce(schema("db2"));
+    const ok = await switchDatabaseFlow("a", "db2");
+    expect(ok).toBe(true);
+    expect(useConnections.getState().active?.id).toBe("b");
+    expect(useTabs.getState().tabs.length).toBe(1);
   });
 
   it("tracks the switch stage and updates the session on success", async () => {
