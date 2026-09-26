@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { createPortal } from "react-dom";
+import type { Engine } from "../lib/commands";
 import { closeConnection, useConnections } from "../state/connectionStore";
+import { isFileEngine } from "./ConnectionManager";
 import { ContextMenu } from "./ui/ContextMenu";
 import { IconClose, IconDatabase, IconSliders } from "./ui/Icon";
 
@@ -35,7 +37,11 @@ export function ConnectionRail() {
         {open.map(({ info }) => {
           const isActive = active?.id === info.id;
           const color = saved.find((c) => c.id === info.id)?.color;
-          const text = label === "database" ? info.database || info.name : info.name;
+          // A file engine's "database" is its full path: show just the file name.
+          const db = isFileEngine(info.engine as Engine)
+            ? info.database.split(/[\\/]/).pop()
+            : info.database;
+          const text = label === "database" ? db || info.name : info.name;
           return (
             <div key={info.id} className="group relative">
               <button
@@ -85,12 +91,14 @@ export function ConnectionRail() {
             items={[
               {
                 id: "rail-db",
-                label: `${label === "database" ? "✓ " : "   "}Show database name`,
+                label: "Show database name",
+                checked: label === "database",
                 onSelect: () => pickLabel("database"),
               },
               {
                 id: "rail-conn",
-                label: `${label === "connection" ? "✓ " : "   "}Show connection name`,
+                label: "Show connection name",
+                checked: label === "connection",
                 onSelect: () => pickLabel("connection"),
               },
             ]}
