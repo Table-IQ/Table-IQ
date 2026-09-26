@@ -36,12 +36,16 @@ import {
   IconErd,
   IconHelp,
   IconImport,
+  IconLink,
   IconPlay,
   IconPlus,
   IconRefresh,
   IconSidebar,
   IconSidebarRight,
+  IconSliders,
   IconStructure,
+  IconTable,
+  IconView,
 } from "./ui/Icon";
 import {
   cancelConnecting,
@@ -61,12 +65,15 @@ import {
   exportTable,
   listDatabases,
   listObjects,
+  listSavedQueries,
   setConnectionLostHandler,
   type ConnConfig,
   type Engine,
   type ExportFormat,
   type ObjectInfo,
+  type SavedQuery,
 } from "../lib/commands";
+import { savedQueriesForConn } from "../lib/history";
 import {
   buildTableScript,
   quoteIdent,
@@ -125,6 +132,9 @@ export function MainShell() {
   const [showImport, setShowImport] = useState(false);
   const [showDiff, setShowDiff] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
+  // ⌘K palette's Queries group — lazily fetched on open, same list SidebarLibrary
+  // uses, filtered through `savedQueriesForConn` below.
+  const [paletteSaved, setPaletteSaved] = useState<SavedQuery[]>([]);
   // ⌘O Open Connection palette (TablePlus-style switcher; replaces the left-edge rail).
   const [showConnPicker, setShowConnPicker] = useState(false);
   // ⌘D Switch Database — opens the per-server database picker (TablePlus parity).
@@ -264,13 +274,11 @@ export function MainShell() {
     );
   }, [active, tabs, activeKey, tabsState.queryCount, hydrated]);
 
-  // Load the list of databases visible from this connection and open the picker.
-  // Idempotent — repeated triggers reuse the cached items unless the user closes
-  // the picker, which resets state so the next open re-fetches.
-  const openDbPicker = async () => {
-    // A SQLite/DuckDB connection *is* its file — there is no other database to switch to.
-    if (!active || isFileEngine(active.engine as Engine)) return;
-    setShowDbPicker(true);
+  // Load the list of databases visible from this connection. Idempotent — shows
+  // the cached items instantly (no loading flash) while refetching underneath.
+  // Shared by the ⌘D picker and the palette's lazily-loaded Databases group.
+  const loadDbList = async () => {
+    if (!active) return;
     setDbList((s) => (s.items.length > 0 ? s : { loading: true, items: [], error: null }));
     try {
       const items = await listDatabases(active.id);
@@ -279,6 +287,47 @@ export function MainShell() {
       setDbList({ loading: false, items: [], error: String(e) });
     }
   };
+
+  const openDbPicker = async () => {
+    // A SQLite/DuckDB connection *is* its file — there is no other database to switch to.
+    if (!active || isFileEngine(active.engine as Engine)) return;
+    setShowDbPicker(true);
+    await loadDbList();
+  };
+
+  // Switch to `db` on the active connection. Not cancellable (see switchDatabaseFlow) —
+  // callers close their own picker UI before invoking this so the header's connecting
+  // strip is visible underneath. Shared by the ⌘D DatabasePicker and the palette's
+  // Databases entries.
+  const pickDatabase = (db: string) => {
+    if (!active || connecting) return; // one connect/switch in flight at a time
+    const id = active.id;
+    setShowDbPicker(false);
+    setConnMsg(null);
+    void switchDatabaseFlow(id, db)
+      .then(() => {
+        // Reset cache so the next open re-fetches against the new active session.
+        setDbList({ loading: false, items: [], error: null });
+      })
+      .catch((e) => {
+        console.error("database switch failed", e);
+        setConnMsg(`Could not switch to '${db}': ${e}`);
+      });
+  };
+
+  // Palette's Databases and Queries groups are lazy: fetched only once ⌘K is open,
+  // reusing the same list/cache the ⌘D picker and sidebar Queries tab already use.
+  useEffect(() => {
+    if (!showPalette || !active || isFileEngine(active.engine as Engine)) return;
+    void loadDbList();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showPalette, active?.id]);
+  useEffect(() => {
+    if (!showPalette) return;
+    listSavedQueries()
+      .then(setPaletteSaved)
+      .catch((e) => logError("command palette: saved queries", e));
+  }, [showPalette]);
 
   // Keyboard shortcuts. ⌘O is new — Open Connection picker (TablePlus parity).
   useEffect(() => {
@@ -298,7 +347,15 @@ export function MainShell() {
       const meta = e.metaKey || e.ctrlKey;
       if (meta && e.key.toLowerCase() === "k") {
         e.preventDefault();
-        setShowPalette((v) => !v);
+        if (e.shiftKey) {
+          // ⌘⇧K alias for Open Connection. CodeMirror's own keymap owns plain
+          // ⌘⇧K as deleteLine when the editor has focus — it calls
+          // preventDefault first, so the `e.defaultPrevented` guard above
+          // means this alias only fires when the editor doesn't consume it.
+          setShowConnPicker((v) => !v);
+        } else {
+          setShowPalette((v) => !v);
+        }
       } else if (meta && e.key.toLowerCase() === "o") {
         e.preventDefault();
         setShowConnPicker((v) => !v);
@@ -326,35 +383,105 @@ export function MainShell() {
   }, [openQuery, close, activeKey, active?.id, connecting]);
 
   const commands = useMemo<Command[]>(() => {
-    const list: Command[] = [];
+    const list: Command[] = [
+      { id: "act:erd", label: "Diagram", group: "Commands", icon: <IconErd />, run: openErd },
+      {
+        id: "act:open-conn",
+        label: "Open Connection",
+        group: "Commands",
+        icon: <IconLink />,
+        shortcut: "⌘O",
+        run: () => setShowConnPicker(true),
+      },
+      {
+        id: "act:open-db",
+        label: "Open Database",
+        group: "Commands",
+        icon: <IconDatabase />,
+        shortcut: "⌘D",
+        run: () => void openDbPicker(),
+      },
+      {
+        id: "act:settings",
+        label: "Settings",
+        group: "Commands",
+        icon: <IconSliders />,
+        shortcut: "⌘,",
+        run: () => useSettingsUi.getState().show(),
+      },
+      {
+        id: "act:query",
+        label: "New Query",
+        group: "Commands",
+        icon: <IconPlus />,
+        shortcut: "⌘T",
+        run: () => openQuery(),
+      },
+      {
+        id: "act:table",
+        label: "New Table…",
+        group: "Commands",
+        icon: <IconStructure />,
+        run: () => setShowStructure(true),
+      },
+      {
+        id: "act:import",
+        label: "Import CSV / JSON…",
+        group: "Commands",
+        icon: <IconImport />,
+        run: () => setShowImport(true),
+      },
+      {
+        id: "act:diff",
+        label: "Diff with another connection…",
+        group: "Commands",
+        icon: <IconDiff />,
+        run: () => setShowDiff(true),
+      },
+    ];
     for (const s of schema?.schemas ?? []) {
       for (const o of s.objects) {
         list.push({
           id: `tbl:${s.name}.${o.name}`,
           label: `${s.name}.${o.name}`,
           hint: o.kind,
+          group: "Tables",
+          icon: o.kind === "View" ? <IconView /> : <IconTable />,
           run: () => openTable(s.name, o.name),
         });
       }
     }
-    list.push(
-      { id: "act:query", label: "New Query", hint: "⌘T", run: () => openQuery() },
-      { id: "act:erd", label: "Open Schema Diagram (ERD)", hint: "action", run: openErd },
-      { id: "act:table", label: "New Table…", hint: "action", run: () => setShowStructure(true) },
-      { id: "act:import", label: "Import CSV / JSON…", hint: "action", run: () => setShowImport(true) },
-      { id: "act:diff", label: "Diff with another connection…", hint: "action", run: () => setShowDiff(true) },
-      {
-        id: "act:switch-db",
-        label: "Switch Database…",
-        hint: "⌘D",
-        run: () => void openDbPicker(),
-      },
-    );
+    // File engines (sqlite/duckdb) are their own database — nothing to list or switch to.
+    if (active && !isFileEngine(active.engine as Engine)) {
+      for (const db of dbList.items) {
+        list.push({
+          id: `db:${db}`,
+          label: db,
+          group: "Databases",
+          icon: <IconDatabase />,
+          run: () => pickDatabase(db),
+        });
+      }
+    }
+    if (active) {
+      for (const q of savedQueriesForConn(paletteSaved, active.id)) {
+        list.push({
+          id: `q:${q.id}`,
+          label: q.name,
+          group: "Queries",
+          icon: <IconPlay />,
+          run: () => openQuery(q.sql, q.name),
+        });
+      }
+    }
     return list;
-    // openDbPicker is intentionally not a dep — recomputing the command list on
-    // every keystroke (active changes) would churn the palette unnecessarily.
+    // `active`, `openDbPicker` and `pickDatabase` are intentionally not deps — they
+    // close over `active` fresh every render, and `schema`/`dbList.items` already
+    // change whenever a connection or database switch would make them stale.
+    // Recomputing on every unrelated render (e.g. a keystroke) would churn the
+    // palette unnecessarily.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [schema, openTable, openQuery, openErd]);
+  }, [schema, openTable, openQuery, openErd, dbList.items, paletteSaved]);
 
   // Until this connection's tabs are hydrated the tab store may still hold the
   // previous connection's — never render (or persist) those under this one.
@@ -1093,25 +1220,7 @@ export function MainShell() {
           activeDatabase={active.database}
           busy={dbList.loading}
           error={dbList.error}
-          onPick={(db) => {
-            if (connecting) return; // one connect/switch in flight at a time
-            const id = active.id;
-            // Close immediately (like onSwapConnection does for the connection
-            // picker) so the header's connecting strip is visible — the
-            // picker's own full-screen overlay would otherwise hide it, and a
-            // switch isn't cancellable anyway (see switchDatabaseFlow).
-            setShowDbPicker(false);
-            setConnMsg(null);
-            void switchDatabaseFlow(id, db)
-              .then(() => {
-                // Reset cache so the next open re-fetches against the new active session.
-                setDbList({ loading: false, items: [], error: null });
-              })
-              .catch((e) => {
-                console.error("database switch failed", e);
-                setConnMsg(`Could not switch to '${db}': ${e}`);
-              });
-          }}
+          onPick={pickDatabase}
           onClose={() => setShowDbPicker(false)}
         />
       )}
