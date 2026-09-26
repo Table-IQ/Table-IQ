@@ -81,6 +81,19 @@ describe("clearMetaCaches(connId) and in-flight loads", () => {
     expect(foreignKeys).toHaveBeenCalledTimes(2);
     release(stale);
     await first;
+    // Regression: the stale load used to write itself over the fresh result.
+    expect(useConnections.getState().fks.a).toBe(fresh);
+  });
+
+  it("an FK load in flight during closeConnection does not resurrect the closed connection's cache", async () => {
+    let release!: (v: ForeignKey[]) => void;
+    foreignKeys.mockReturnValueOnce(new Promise((r) => (release = r)));
+    disconnect.mockResolvedValue(undefined);
+    const p = loadForeignKeys("b");
+    await closeConnection("b");
+    release([]);
+    await p;
+    expect(useConnections.getState().fks).not.toHaveProperty("b");
   });
 
   it("keeps another connection's in-flight FK load shared", async () => {

@@ -123,7 +123,9 @@ export const useConnections = create<ConnectionState>((set, get) => ({
 // TableView and the Inspector open on the same table at the same moment and used
 // to each fire their own `open_table` / `primary_key` / `foreign_keys`. These
 // loaders serve the store cache, and de-duplicate concurrent misses through an
-// in-flight map so the pair costs one round trip, not two.
+// in-flight map so the pair costs one round trip, not two. A load only writes
+// back while it is still the in-flight one for its key: once a cache clear (or a
+// connection close) forgets it, its late result is dropped, not resurrected.
 
 const inflightFks = new Map<string, Promise<ForeignKey[]>>();
 const inflightMeta = new Map<string, Promise<TableMeta>>();
@@ -137,12 +139,15 @@ export function loadForeignKeys(connId: string): Promise<ForeignKey[]> {
   if (cached) return Promise.resolve(cached);
   const pending = inflightFks.get(connId);
   if (pending) return pending;
-  const p = foreignKeys(connId)
+  const p: Promise<ForeignKey[]> = foreignKeys(connId)
     .then((all) => {
-      useConnections.setState((s) => ({ fks: { ...s.fks, [connId]: all } }));
+      if (inflightFks.get(connId) === p)
+        useConnections.setState((s) => ({ fks: { ...s.fks, [connId]: all } }));
       return all;
     })
-    .finally(() => inflightFks.delete(connId));
+    .finally(() => {
+      if (inflightFks.get(connId) === p) inflightFks.delete(connId);
+    });
   inflightFks.set(connId, p);
   return p;
 }
@@ -158,7 +163,7 @@ export function loadTableMeta(
   if (cached) return Promise.resolve(cached);
   const pending = inflightMeta.get(key);
   if (pending) return pending;
-  const p = Promise.all([
+  const p: Promise<TableMeta> = Promise.all([
     openTable(connId, schema, table),
     // A view (or an engine that can't answer) has no primary key — that is a
     // read-only table, not a failure to open it.
@@ -166,10 +171,13 @@ export function loadTableMeta(
   ])
     .then(([{ count, exact }, pk]) => {
       const meta: TableMeta = { count, exact, pk };
-      useConnections.setState((s) => ({ tableMeta: { ...s.tableMeta, [key]: meta } }));
+      if (inflightMeta.get(key) === p)
+        useConnections.setState((s) => ({ tableMeta: { ...s.tableMeta, [key]: meta } }));
       return meta;
     })
-    .finally(() => inflightMeta.delete(key));
+    .finally(() => {
+      if (inflightMeta.get(key) === p) inflightMeta.delete(key);
+    });
   inflightMeta.set(key, p);
   return p;
 }
