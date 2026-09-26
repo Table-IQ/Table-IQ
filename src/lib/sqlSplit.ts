@@ -35,6 +35,20 @@ type State =
 const WS = /\s/;
 
 export function splitStatements(doc: string, dialect: SqlDialect): SqlStatement[] {
+  return scan(doc, dialect).stmts;
+}
+
+/**
+ * `doc` with every string literal, quoted identifier, dollar-quoted body and comment
+ * (delimiters included) blanked to spaces — same length, so offsets still line up. What's
+ * left is the code a keyword scan should look at (`metrics.ts`'s read-only widget guard).
+ * Same state machine, and so the same per-dialect quoting, as `splitStatements`.
+ */
+export function codeOnly(doc: string, dialect: SqlDialect): string {
+  return scan(doc, dialect).code;
+}
+
+function scan(doc: string, dialect: SqlDialect): { stmts: SqlStatement[]; code: string } {
   const n = doc.length;
   const result: SqlStatement[] = [];
 
@@ -56,6 +70,21 @@ export function splitStatements(doc: string, dialect: SqlDialect): SqlStatement[
   let dollarTag = "";
   // Whether the currently-open '/"" string honors backslash escapes.
   let backslashOn = false;
+
+  // Chunks of `code`: each step's consumed chars, kept as-is when the step started and
+  // ended in "default" (plain code), else blanked.
+  const code: string[] = [];
+  let stepFrom = 0;
+  let stepState: State = "default";
+  const flushStep = (to: number) => {
+    const end = Math.min(to, n);
+    if (end <= stepFrom) return;
+    code.push(
+      stepState === "default" && state === "default"
+        ? doc.slice(stepFrom, end)
+        : " ".repeat(end - stepFrom),
+    );
+  };
 
   function endSegment(endRaw: number, newStart: number): void {
     if (hasCode) {
@@ -79,6 +108,9 @@ export function splitStatements(doc: string, dialect: SqlDialect): SqlStatement[
 
   let i = 0;
   while (i < n) {
+    flushStep(i);
+    stepFrom = i;
+    stepState = state;
     const c = doc[i];
 
     if (c === "\n") {
@@ -229,10 +261,11 @@ export function splitStatements(doc: string, dialect: SqlDialect): SqlStatement[
     }
   }
 
+  flushStep(n);
   if (state === "default") maybeGoLine(lineStart, n);
   endSegment(n, n);
 
-  return result;
+  return { stmts: result, code: code.join("") };
 }
 
 /**

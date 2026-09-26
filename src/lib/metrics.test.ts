@@ -219,4 +219,41 @@ describe("isReadOnlyWidgetSql", () => {
     expect(isReadOnlyWidgetSql("")).toBe(false);
     expect(isReadOnlyWidgetSql("   ")).toBe(false);
   });
+
+  it("rejects a second T-SQL statement that needs no semicolon", () => {
+    expect(isReadOnlyWidgetSql("SELECT 1 DROP TABLE t", "sqlserver")).toBe(false);
+  });
+
+  it("rejects a MySQL executable comment", () => {
+    expect(isReadOnlyWidgetSql("/*!50000 DROP TABLE t */ SELECT 1", "mysql")).toBe(false);
+    expect(isReadOnlyWidgetSql("SELECT 1 /*! , (DELETE) */")).toBe(false);
+  });
+
+  it("rejects every write/DDL/exec keyword anywhere in a scanned statement", () => {
+    for (const kw of [
+      "DROP", "TRUNCATE", "ALTER", "CREATE", "GRANT", "REVOKE", "DENY", "EXEC", "EXECUTE",
+      "CALL", "COPY", "LOCK", "KILL", "BACKUP", "RESTORE", "DBCC", "BULK", "SHUTDOWN",
+      "INSERT", "UPDATE", "DELETE", "MERGE", "INTO",
+    ]) {
+      expect(isReadOnlyWidgetSql(`SELECT 1 ${kw} x`, "sqlserver")).toBe(false);
+    }
+    expect(isReadOnlyWidgetSql("EXEC sp_who", "sqlserver")).toBe(false);
+    expect(isReadOnlyWidgetSql("TRUNCATE t")).toBe(false);
+  });
+
+  it("ignores keywords inside string literals, quoted identifiers and comments", () => {
+    expect(isReadOnlyWidgetSql("SELECT * FROM t WHERE op = 'UPDATE'")).toBe(true);
+    expect(isReadOnlyWidgetSql("SELECT 1 -- DROP")).toBe(true);
+    expect(isReadOnlyWidgetSql("SELECT 1 /* DELETE */")).toBe(true);
+    expect(isReadOnlyWidgetSql('SELECT "drop" FROM t')).toBe(true);
+    expect(isReadOnlyWidgetSql("SELECT [delete] FROM t", "sqlserver")).toBe(true);
+    expect(isReadOnlyWidgetSql("SELECT `insert` FROM t", "mysql")).toBe(true);
+    expect(isReadOnlyWidgetSql("SELECT $$DROP$$")).toBe(true);
+    expect(isReadOnlyWidgetSql("SELECT update_count FROM t")).toBe(true);
+  });
+
+  it("still scans code that follows a closed literal", () => {
+    expect(isReadOnlyWidgetSql("SELECT 'x' DROP TABLE t", "sqlserver")).toBe(false);
+    expect(isReadOnlyWidgetSql("SELECT 1 /* c */ EXEC sp_who", "sqlserver")).toBe(false);
+  });
 });

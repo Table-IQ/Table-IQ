@@ -10,7 +10,7 @@
  */
 import type { Rows } from "./commands";
 import { buildSeries, type Point } from "./chart";
-import { splitStatements, type SqlDialect } from "./sqlSplit";
+import { codeOnly, splitStatements, type SqlDialect } from "./sqlSplit";
 
 export const STORAGE_PREFIX = "tiq:metrics:";
 
@@ -158,12 +158,19 @@ const READ_ONLY_FIRST_KEYWORDS = new Set([
 const NO_SCAN_NEEDED = new Set(["SHOW", "DESCRIBE", "DESC", "VALUES", "TABLE"]);
 
 /** Rejected if any of these appear as a whole keyword anywhere in a scanned
- *  statement (see `NO_SCAN_NEEDED`) — INSERT/UPDATE/DELETE/MERGE cover a smuggled
- *  write, INTO covers `SELECT ... INTO`/`INTO OUTFILE`. Word-boundary, same as the
- *  rest of this scan — not quote-aware, so it can't be fooled by a keyword split
- *  across an identifier (`into_date`, `update_count`) but also isn't blind to one
- *  sitting inside a string literal; that trade-off is intentional (see report). */
-const WRITE_KEYWORDS = ["INSERT", "UPDATE", "DELETE", "MERGE", "INTO"];
+ *  statement's code (see `NO_SCAN_NEEDED`). T-SQL needs no `;` between statements, so
+ *  `SELECT 1 DROP TABLE t` is ONE statement to the splitter — every DDL/DCL/exec verb
+ *  is listed, not just the DML ones; INTO covers `SELECT ... INTO`/`INTO OUTFILE`.
+ *  Matched on `codeOnly` text (literals, quoted identifiers and comments blanked), so
+ *  `op = 'UPDATE'` and `-- DROP` don't count, and word-boundary, so an identifier
+ *  merely containing one (`update_count`) doesn't either. */
+const WRITE_KEYWORDS = [
+  "INSERT", "UPDATE", "DELETE", "MERGE", "INTO",
+  "DROP", "TRUNCATE", "ALTER", "CREATE", "GRANT", "REVOKE", "DENY",
+  "EXEC", "EXECUTE", "CALL", "COPY", "LOCK", "KILL",
+  "BACKUP", "RESTORE", "DBCC", "BULK", "SHUTDOWN",
+];
+const WRITE_KEYWORD_RE = new RegExp(`\\b(${WRITE_KEYWORDS.join("|")})\\b`, "i");
 
 /**
  * True when `sql` is exactly one statement whose first keyword is read-only —
@@ -179,14 +186,14 @@ const WRITE_KEYWORDS = ["INSERT", "UPDATE", "DELETE", "MERGE", "INTO"];
  * trailing `;` produces no second (empty) statement.
  */
 export function isReadOnlyWidgetSql(sql: string, dialect: SqlDialect = "postgres"): boolean {
+  // MySQL runs the body of a `/*! … */` comment as code; every other scan here treats it
+  // as a comment, so refuse it outright.
+  if (sql.includes("/*!")) return false;
   const stmts = splitStatements(sql, dialect);
   if (stmts.length !== 1) return false;
   const text = stmts[0].text;
   const kw = firstKeyword(text);
   if (!READ_ONLY_FIRST_KEYWORDS.has(kw)) return false;
-  if (!NO_SCAN_NEEDED.has(kw)) {
-    const upper = text.toUpperCase();
-    if (WRITE_KEYWORDS.some((w) => new RegExp(`\\b${w}\\b`).test(upper))) return false;
-  }
+  if (!NO_SCAN_NEEDED.has(kw) && WRITE_KEYWORD_RE.test(codeOnly(text, dialect))) return false;
   return true;
 }
