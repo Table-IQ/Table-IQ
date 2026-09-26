@@ -40,6 +40,7 @@ import {
   IconHelp,
   IconImport,
   IconLink,
+  IconMetrics,
   IconOverview,
   IconPlay,
   IconPlus,
@@ -90,6 +91,7 @@ import {
 } from "../lib/tableScript";
 import { supportsUserMgmt } from "../lib/userMgmt";
 import { UsersView } from "./UsersView";
+import { MetricsBoard } from "./MetricsBoard";
 import { Elapsed } from "./ui/Elapsed";
 import { applyToolbar, loadToolbar } from "../lib/toolbarPrefs";
 import { DEFAULT_HIDDEN_TOOLBAR_IDS, DEFAULT_TOOLBAR_PREF, TOOLBAR_ITEMS } from "../lib/toolbarItems";
@@ -476,6 +478,13 @@ export function MainShell() {
           ]
         : []) as Command[]),
       {
+        id: "act:metrics",
+        label: "Metrics Board",
+        group: "Commands",
+        icon: <IconMetrics />,
+        run: () => openView("metrics", "Metrics Board"),
+      },
+      {
         id: "act:open-conn",
         label: "Open Connection",
         group: "Commands",
@@ -835,6 +844,11 @@ export function MainShell() {
           <UsersView connId={active.id} engine={active.engine as Engine} database={active.database} />
         </ErrorBoundary>
       )}
+      {activeTab?.kind === "metrics" && (
+        <ErrorBoundary key={activeTab.key} label={`metrics tab ${activeTab.key}`}>
+          <MetricsBoard connId={active.id} />
+        </ErrorBoundary>
+      )}
       {activeTab?.kind === "table" &&
         (activeObj ? (
           <ErrorBoundary key={activeTab.key} label={`table tab ${activeTab.key}`}>
@@ -945,6 +959,10 @@ export function MainShell() {
       icon: <IconSqlLog size={16} />,
       shortcut: "⌘⇧C",
       onClick: () => setShowSqlLog((v) => !v),
+    },
+    metrics: {
+      icon: <IconMetrics size={16} />,
+      onClick: () => openView("metrics", "Metrics Board"),
     },
   };
   const visibleTitlebarIds = applyToolbar(
@@ -1308,6 +1326,7 @@ export function MainShell() {
                     {t.kind === "query" ? <span className="text-primary">◇ </span> : null}
                     {t.kind === "erd" ? <span className="text-accent">◫ </span> : null}
                     {t.kind === "users" ? <span className="text-accent">▤ </span> : null}
+                    {t.kind === "metrics" ? <span className="text-accent">▦ </span> : null}
                     {t.title}
                   </button>
                   <button
@@ -1338,7 +1357,10 @@ export function MainShell() {
               their own content-rich status bar, so this generic one only shows on
               the welcome state and the ERD tab — never stacked two-deep (TablePlus
               has a single bottom bar). */}
-          {(!activeTab || activeTab.kind === "erd" || activeTab.kind === "users") && (
+          {(!activeTab ||
+            activeTab.kind === "erd" ||
+            activeTab.kind === "users" ||
+            activeTab.kind === "metrics") && (
             <StatusBar
               left={
                 <>

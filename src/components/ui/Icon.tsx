@@ -270,3 +270,11 @@ export const IconUsers = (p: P) => (
     <path d="M9.5 3.2a2 2 0 0 1 0 3.8M12.5 12v-1a3 3 0 0 0-2.3-2.9" />
   </svg>
 );
+export const IconMetrics = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M1.5 12.5h11" />
+    <rect x="2.5" y="8" width="2.2" height="4.5" />
+    <rect x="5.9" y="4.5" width="2.2" height="8" />
+    <rect x="9.3" y="6.5" width="2.2" height="6" />
+  </svg>
+);
