@@ -428,7 +428,9 @@ export type FilterOp =
   | "IsNull"
   | "IsNotNull"
   /** All-column "contains" search; `column` is "*" and `value` is the raw term. */
-  | "Search";
+  | "Search"
+  /** A raw SQL WHERE expression; `column` is "*" and `value` is the SQL. */
+  | "Raw";
 
 export interface ColumnFilter {
   column: string;
@@ -646,6 +648,12 @@ export async function runQuery(
 export async function cancelQuery(id: string, queryId: string): Promise<void> {
   if (!inTauri()) return;
   await invoke("cancel_query", { id, queryId });
+}
+
+/** Cancel every in-flight query on connection `id` (⌘.). Returns how many were stopped. */
+export async function cancelAll(id: string): Promise<number> {
+  if (!inTauri()) return 0;
+  return invoke<number>("cancel_all", { id });
 }
 
 export async function fetchResultWindow(

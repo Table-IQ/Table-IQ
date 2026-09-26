@@ -43,6 +43,7 @@ import {
   IconSidebar,
   IconSidebarRight,
   IconSliders,
+  IconStop,
   IconStructure,
   IconTable,
   IconView,
@@ -59,6 +60,7 @@ import {
 import { useTabs } from "../state/tabsStore";
 import type { Tab } from "../state/tabsStore";
 import {
+  cancelAll,
   connect,
   disconnect,
   downloadText,
@@ -295,6 +297,18 @@ export function MainShell() {
     await loadDbList();
   };
 
+  /** ⌘. / the palette's "Cancel Running Queries": stop everything this connection has in
+   *  flight — table pages, the exact-count probe, the SQL editor's Run. */
+  const cancelAllQueries = async () => {
+    if (!active) return;
+    try {
+      const n = await cancelAll(active.id);
+      setConnMsg(n > 0 ? `Cancelled ${n} quer${n === 1 ? "y" : "ies"}` : "No running queries");
+    } catch (e) {
+      setConnMsg(String(e));
+    }
+  };
+
   // Switch to `db` on the active connection. Not cancellable (see switchDatabaseFlow) —
   // callers close their own picker UI before invoking this so the header's connecting
   // strip is visible underneath. Shared by the ⌘D DatabasePicker and the palette's
@@ -374,6 +388,9 @@ export function MainShell() {
       } else if (meta && e.key === "]") {
         e.preventDefault();
         setShowInspector((v) => !v);
+      } else if (meta && e.key === ".") {
+        e.preventDefault();
+        void cancelAllQueries();
       } else if (e.key === "Escape" && connecting) {
         cancelConnecting();
       }
@@ -437,6 +454,14 @@ export function MainShell() {
         group: "Commands",
         icon: <IconDiff />,
         run: () => setShowDiff(true),
+      },
+      {
+        id: "act:cancel-all",
+        label: "Cancel Running Queries",
+        group: "Commands",
+        icon: <IconStop />,
+        shortcut: "⌘.",
+        run: () => void cancelAllQueries(),
       },
     ];
     for (const s of schema?.schemas ?? []) {

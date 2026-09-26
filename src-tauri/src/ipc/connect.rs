@@ -17,7 +17,7 @@ use crate::drivers::{
     doc_mongo::MongoDriver, duckdb::DuckDriver, kv_redis::RedisDriver, mysql::MySqlDriver,
     postgres::PgDriver, sqlite::SqliteDriver, sqlserver::SqlServerDriver, CancelToken,
     ColumnFilter, DocumentDriver, DriverError, EditSpec, KeyInfo, KvDriver, KvValue, SchemaModel,
-    SortKey, SqlDriver,
+    SortKey, SqlDriver, validate_filters,
 };
 use crate::ssh::tunnel::{RemoteTarget, Tunnel};
 use crate::ssh::SshAuth;
@@ -529,6 +529,7 @@ pub async fn open_table(
 ) -> Result<OpenTableInfo, String> {
     let drv = state.session(&id)?;
     let f = filters.unwrap_or_default();
+    validate_filters(&f)?;
     let c = drv.count_rows(&schema, &table, &f, None).await.map_err(|e| e.to_string())?;
     Ok(OpenTableInfo { count: c.count, exact: c.exact })
 }
@@ -558,7 +559,15 @@ pub async fn count_rows_exact(
     token_id: String,
 ) -> Result<OpenTableInfo, String> {
     let drv = state.session(&id)?;
-    exact_count(&state.cancels, drv.as_ref(), &schema, &table, &filters.unwrap_or_default(), &token_id).await
+    exact_count(
+        &state.cancels,
+        drv.as_ref(),
+        &schema,
+        &table,
+        &filters.unwrap_or_default(),
+        &ckey(&id, &token_id),
+    )
+    .await
 }
 
 /// The body of [`count_rows_exact`], outside Tauri so it can be tested.
@@ -570,6 +579,7 @@ pub async fn exact_count(
     filters: &[ColumnFilter],
     token_id: &str,
 ) -> Result<OpenTableInfo, String> {
+    validate_filters(filters)?;
     let token = CancelToken::new();
     lk(cancels).insert(token_id.to_string(), token.clone());
     let res = drv.count_rows(schema, table, filters, Some(&token)).await;
@@ -598,6 +608,9 @@ pub async fn get_table_window(
     let drv = state.session(&id)?;
     let f = filters.unwrap_or_default();
     let o = order.unwrap_or_default();
+    // Namespaced by connection: two connections browsing the same `schema.table` must not
+    // share a `request_key` entry.
+    let key = request_key.map(|k| ckey(&id, &k));
     // `after` (the previous page's last-row key) lets the driver seek instead of OFFSET.
     let batch = table_window(
         &state.cancels,
@@ -609,7 +622,7 @@ pub async fn get_table_window(
         &f,
         &o,
         after.as_deref(),
-        request_key.as_deref(),
+        key.as_deref(),
     )
     .await?;
     let bytes = crate::query::window::encode_ipc(&batch).map_err(|e| e.to_string())?;
@@ -633,6 +646,7 @@ pub async fn table_window(
     after: Option<&[Option<String>]>,
     request_key: Option<&str>,
 ) -> Result<RecordBatch, String> {
+    validate_filters(filters)?;
     let token = CancelToken::new();
     if let Some(key) = request_key {
         let prev = lk(cancels).insert(key.to_string(), token.clone());
@@ -727,11 +741,14 @@ pub async fn run_query(
 ) -> Result<Vec<StatementResultMeta>, String> {
     let drv = state.session(&id)?;
     // Register a cancel token before the (possibly long) run so `cancel_query` can find it.
+    // Namespaced by connection so an empty/duplicate client `query_id` can't collide with
+    // another connection's, and so `cancel_all` can find every token for this connection.
     let token = CancelToken::new();
     let query_id = query_id.unwrap_or_default();
-    lk(&state.cancels).insert(query_id.clone(), token.clone());
+    let key = ckey(&id, &query_id);
+    lk(&state.cancels).insert(key.clone(), token.clone());
     let res = drv.run_statements(&statements, QUERY_CAP, &token).await;
-    lk(&state.cancels).remove(&query_id);
+    lk(&state.cancels).remove(&key);
     // User SQL may have been DDL; don't page a table with a stale column list.
     drv.forget_meta();
 
@@ -792,11 +809,65 @@ pub async fn cancel_query(
     id: String,
     query_id: String,
 ) -> Result<(), String> {
-    if !lk(&state.cancels).contains_key(&query_id) {
+    let key = ckey(&id, &query_id);
+    if !lk(&state.cancels).contains_key(&key) {
         return Ok(()); // already completed/removed
     }
     let drv = state.session(&id)?;
-    cancel_registered(&state.cancels, drv.as_ref(), &query_id).await
+    cancel_registered(&state.cancels, drv.as_ref(), &key).await
+}
+
+/// Prefix a cancel-registry key with its connection id. Two connections can otherwise pick
+/// the same `token_id` / `request_key` (or both default an absent `query_id` to `""`) and
+/// clobber each other's entry; namespacing by connection also gives [`cancel_all_for`] a
+/// prefix to search for "every token that belongs to this connection".
+fn ckey(id: &str, k: &str) -> String {
+    format!("{id}\u{1f}{k}")
+}
+
+/// Every token currently registered under `id`'s namespace — a snapshot, cloned out from
+/// under the lock. Pure so it's unit-testable without a driver or a live query.
+fn keys_for(map: &HashMap<String, CancelToken>, id: &str) -> Vec<CancelToken> {
+    let prefix = ckey(id, "");
+    map.iter().filter(|(k, _)| k.starts_with(&prefix)).map(|(_, t)| t.clone()).collect()
+}
+
+/// Cancel every in-flight query registered for connection `id` — the body of [`cancel_all`],
+/// outside Tauri so it can be tested. Marks each token cancelled (same flag
+/// [`cancel_registered`] sets, so a stopped query is told apart from its own timeout) then
+/// asks the driver to interrupt it server-side. An engine without cancellation support
+/// (`DriverError::NotImplemented`, e.g. SQL Server) — or any other cancel failure — doesn't
+/// count towards the total; [`cancel_all`] turns "found running queries but couldn't stop
+/// any" into a clear error.
+pub async fn cancel_all_for(
+    cancels: &Mutex<HashMap<String, CancelToken>>,
+    drv: &dyn SqlDriver,
+    id: &str,
+) -> usize {
+    let tokens = keys_for(&lk(cancels), id);
+    let mut cancelled = 0;
+    for t in &tokens {
+        t.mark_cancelled();
+        if drv.cancel(t).await.is_ok() {
+            cancelled += 1;
+        }
+    }
+    cancelled
+}
+
+/// Cancel every query running on connection `id` (⌘. / the palette's "Cancel Running
+/// Queries") — table pages, the exact-count probe, and the SQL editor's Run, whatever is in
+/// flight. Returns how many were stopped; `0` with nothing registered means nothing was
+/// running. `0` with something registered means the engine has no cancel support at all.
+#[tauri::command]
+pub async fn cancel_all(state: State<'_, ConnState>, id: String) -> Result<usize, String> {
+    let drv = state.session(&id)?;
+    let had_running = !keys_for(&lk(&state.cancels), &id).is_empty();
+    let n = cancel_all_for(&state.cancels, drv.as_ref(), &id).await;
+    if n == 0 && had_running {
+        return Err("Cancellation is not supported for this engine.".to_string());
+    }
+    Ok(n)
 }
 
 /// The body of [`cancel_query`], outside Tauri so it can be tested.
@@ -895,6 +966,7 @@ pub async fn table_export(
     filters: &[ColumnFilter],
     order: &[SortKey],
 ) -> Result<String, String> {
+    validate_filters(filters)?;
     // Export up to the same cap as queries (bounded), through the same filtered+ordered
     // window the grid shows.
     let mut batch = drv
@@ -1780,5 +1852,22 @@ mod tests {
         ] {
             assert!(check_export_path(p).is_err(), "{p} must be refused");
         }
+    }
+
+    /// `keys_for` must pick only this connection's namespace — a `token_id`/`request_key`
+    /// another connection happened to reuse must not come back as "ours".
+    #[test]
+    fn keys_for_picks_only_this_connections_keys() {
+        let mut map = HashMap::new();
+        map.insert(ckey("conn1", "table:public.users"), CancelToken::new());
+        map.insert(ckey("conn1", ""), CancelToken::new()); // an empty query_id default
+        map.insert(ckey("conn2", "table:public.users"), CancelToken::new()); // same raw key, other conn
+        map.insert("conn1-legacy".to_string(), CancelToken::new()); // no separator: not conn1's
+
+        let found = keys_for(&map, "conn1");
+        assert_eq!(found.len(), 2, "expected only conn1's two entries");
+
+        assert!(keys_for(&map, "conn2").len() == 1);
+        assert!(keys_for(&map, "unknown").is_empty());
     }
 }
