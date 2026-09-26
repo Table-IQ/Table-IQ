@@ -354,6 +354,18 @@ mod tests {
         );
     }
 
+    /// Task 10 (Database User Management): user-management statements land in the SQL log
+    /// like any other statement, so the exact string `userMgmt.ts`'s `createUserSql` builds
+    /// for Postgres — `CREATE ROLE "name" LOGIN PASSWORD '…'` — must have its password
+    /// redacted too.
+    #[test]
+    fn redacts_the_generated_pg_create_user_statement() {
+        assert_eq!(
+            redact(r#"CREATE ROLE "bob" LOGIN PASSWORD 'hunter2';"#),
+            r#"CREATE ROLE "bob" LOGIN PASSWORD '***';"#
+        );
+    }
+
     #[test]
     fn redacts_sql_server_passwords() {
         assert_eq!(

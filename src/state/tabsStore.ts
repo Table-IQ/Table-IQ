@@ -1,8 +1,12 @@
 import { create } from "zustand";
 
+/** A singleton tab kind opened via `openView` — one per kind per connection (tabs reset on
+ *  connection switch, so "per connection" falls out of that reset for free). */
+export type ViewKind = "erd" | "users" | "metrics" | "mcp";
+
 export interface Tab {
   key: string;
-  kind: "table" | "query" | "erd";
+  kind: "table" | "query" | ViewKind;
   title: string;
   schema?: string;
   table?: string;
@@ -19,13 +23,17 @@ interface TabsState {
   openTable: (schema: string, table: string, view?: Tab["view"]) => void;
   openQuery: (sql?: string, title?: string) => void;
   setTabSql: (key: string, sql: string) => void;
+  /** Open (or activate, if already open) the singleton tab for `kind`. The key IS the kind,
+   *  so there is at most one tab of each kind at a time. */
+  openView: (kind: ViewKind, title: string) => void;
+  /** @deprecated Kept for existing callers — same as `openView("erd", "Schema diagram")`. */
   openErd: () => void;
   close: (key: string) => void;
   setActive: (key: string) => void;
   reset: () => void;
 }
 
-export const useTabs = create<TabsState>((set) => ({
+export const useTabs = create<TabsState>((set, get) => ({
   tabs: [],
   activeKey: null,
   queryCount: 0,
@@ -63,12 +71,13 @@ export const useTabs = create<TabsState>((set) => ({
     set((s) => ({
       tabs: s.tabs.map((t) => (t.key === key ? { ...t, sql } : t)),
     })),
-  openErd: () =>
+  openView: (kind, title) =>
     set((s) => {
-      const key = "erd";
+      const key: string = kind;
       if (s.tabs.some((t) => t.key === key)) return { activeKey: key };
-      return { tabs: [...s.tabs, { key, kind: "erd", title: "Schema diagram" }], activeKey: key };
+      return { tabs: [...s.tabs, { key, kind, title }], activeKey: key };
     }),
+  openErd: () => get().openView("erd", "Schema diagram"),
   close: (key) =>
     set((s) => {
       const tabs = s.tabs.filter((t) => t.key !== key);

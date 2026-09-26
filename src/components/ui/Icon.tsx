@@ -263,3 +263,10 @@ export const IconTrash = (p: P) => (
     <path d="M2.5 3.5h9M5.5 3.5v-1a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v1M5 3.5l.5 8a1 1 0 0 0 1 1h1a1 1 0 0 0 1-1l.5-8" />
   </svg>
 );
+export const IconUsers = (p: P) => (
+  <svg {...base(p)}>
+    <circle cx="5" cy="4.5" r="2" />
+    <path d="M1.5 12v-1a3 3 0 0 1 3-3h1a3 3 0 0 1 3 3v1" />
+    <path d="M9.5 3.2a2 2 0 0 1 0 3.8M12.5 12v-1a3 3 0 0 0-2.3-2.9" />
+  </svg>
+);

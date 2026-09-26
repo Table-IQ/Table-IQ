@@ -71,6 +71,30 @@ describe("tabsStore", () => {
     expect(useTabs.getState().tabs[0].view).toBe("structure");
   });
 
+  it("openView opens a singleton tab keyed by kind", () => {
+    useTabs.getState().openView("users", "Users");
+    const { tabs, activeKey } = useTabs.getState();
+    expect(tabs).toEqual([{ key: "users", kind: "users", title: "Users" }]);
+    expect(activeKey).toBe("users");
+  });
+
+  it("openView on an already-open kind activates it instead of duplicating", () => {
+    useTabs.getState().openView("users", "Users");
+    useTabs.getState().openQuery("SELECT 1;"); // something else becomes active
+    useTabs.getState().openView("users", "Users");
+    const { tabs, activeKey } = useTabs.getState();
+    expect(tabs.filter((t) => t.kind === "users")).toHaveLength(1);
+    expect(activeKey).toBe("users");
+  });
+
+  it("openErd is an alias for openView(\"erd\", …)", () => {
+    useTabs.getState().openErd();
+    expect(useTabs.getState().tabs).toEqual([
+      { key: "erd", kind: "erd", title: "Schema diagram" },
+    ]);
+    expect(useTabs.getState().activeKey).toBe("erd");
+  });
+
   it("close and setActive still work alongside the new fields", () => {
     useTabs.getState().openQuery("SELECT 1;");
     useTabs.getState().openTable("public", "users");

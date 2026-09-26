@@ -51,6 +51,7 @@ import {
   IconStop,
   IconStructure,
   IconTable,
+  IconUsers,
   IconView,
 } from "./ui/Icon";
 import {
@@ -87,6 +88,8 @@ import {
   selectStarter,
   type ScriptColumn,
 } from "../lib/tableScript";
+import { supportsUserMgmt } from "../lib/userMgmt";
+import { UsersView } from "./UsersView";
 import { Elapsed } from "./ui/Elapsed";
 import { applyToolbar, loadToolbar } from "../lib/toolbarPrefs";
 import { DEFAULT_HIDDEN_TOOLBAR_IDS, DEFAULT_TOOLBAR_PREF, TOOLBAR_ITEMS } from "../lib/toolbarItems";
@@ -135,7 +138,7 @@ export function MainShell() {
   // Header color chip resolves from the saved ConnConfig (ConnectedInfo doesn't carry color).
   const activeColor = active ? saved.find((c) => c.id === active.id)?.color ?? null : null;
   const tabsState = useTabs();
-  const { tabs, activeKey, openTable, openQuery, openErd, close, setActive: setActiveTab } =
+  const { tabs, activeKey, openTable, openQuery, openErd, openView, close, setActive: setActiveTab } =
     tabsState;
   const [showStructure, setShowStructure] = useState(false);
   const [showImport, setShowImport] = useState(false);
@@ -460,6 +463,18 @@ export function MainShell() {
   const commands = useMemo<Command[]>(() => {
     const list: Command[] = [
       { id: "act:erd", label: "Diagram", group: "Commands", icon: <IconErd />, run: openErd },
+      // Hidden for engines with no user-management SQL (sqlite/duckdb/mongodb/redis).
+      ...((active && supportsUserMgmt(active.engine as Engine)
+        ? [
+            {
+              id: "act:users",
+              label: "Database User Management",
+              group: "Commands",
+              icon: <IconUsers />,
+              run: () => openView("users", "Users"),
+            },
+          ]
+        : []) as Command[]),
       {
         id: "act:open-conn",
         label: "Open Connection",
@@ -593,7 +608,7 @@ export function MainShell() {
     // Recomputing on every unrelated render (e.g. a keystroke) would churn the
     // palette unnecessarily.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [schema, openTable, openQuery, openErd, dbList.items, paletteSaved]);
+  }, [schema, openTable, openQuery, openErd, openView, dbList.items, paletteSaved]);
 
   // Until this connection's tabs are hydrated the tab store may still hold the
   // previous connection's — never render (or persist) those under this one.
@@ -813,6 +828,11 @@ export function MainShell() {
       {activeTab?.kind === "erd" && (
         <ErrorBoundary key={activeTab.key} label={`erd tab ${activeTab.key}`}>
           <ErdView connId={active.id} schema={schema} focusTable={erdFocus} />
+        </ErrorBoundary>
+      )}
+      {activeTab?.kind === "users" && (
+        <ErrorBoundary key={activeTab.key} label={`users tab ${activeTab.key}`}>
+          <UsersView connId={active.id} engine={active.engine as Engine} database={active.database} />
         </ErrorBoundary>
       )}
       {activeTab?.kind === "table" &&
@@ -1287,6 +1307,7 @@ export function MainShell() {
                   <button onClick={() => setActiveTab(t.key)} className="font-mono">
                     {t.kind === "query" ? <span className="text-primary">◇ </span> : null}
                     {t.kind === "erd" ? <span className="text-accent">◫ </span> : null}
+                    {t.kind === "users" ? <span className="text-accent">▤ </span> : null}
                     {t.title}
                   </button>
                   <button
@@ -1317,7 +1338,7 @@ export function MainShell() {
               their own content-rich status bar, so this generic one only shows on
               the welcome state and the ERD tab — never stacked two-deep (TablePlus
               has a single bottom bar). */}
-          {(!activeTab || activeTab.kind === "erd") && (
+          {(!activeTab || activeTab.kind === "erd" || activeTab.kind === "users") && (
             <StatusBar
               left={
                 <>

@@ -1041,6 +1041,60 @@ pub async fn run_script(
     Ok(ScriptResult { rows_affected: res.map_err(|e| e.to_string())? })
 }
 
+/// Plain rows for an internal caller that must not touch history or the `ResultStore` —
+/// the Users list (Task 10), periodic metrics widgets (Task 11) and the MCP server (Task
+/// 14). Capped, no side effects.
+#[derive(Serialize)]
+pub struct Rows {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<Option<String>>>,
+    pub truncated: bool,
+}
+
+/// Run `stmts` on `drv`, capped at `cap` rows, and return the LAST statement that produced a
+/// result set as plain string rows (mirrors [`SqlDriver::run_query`]'s default impl, which
+/// takes the first — callers here are single trailing SELECTs, so last-with-a-batch is the
+/// one they mean). No history, no `ResultStore` entry: [`run_query`] is for callers that
+/// want either.
+pub async fn rows_of(drv: &dyn SqlDriver, stmts: &[String], cap: usize) -> Result<Rows, String> {
+    let outs = drv
+        .run_statements(stmts, cap, &CancelToken::new())
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Some(e) = outs.iter().find_map(|o| o.error.as_ref()) {
+        return Err(e.message.clone());
+    }
+    match outs.into_iter().rev().find(|o| o.batch.is_some()) {
+        Some(o) => {
+            let batch = o.batch.expect("filtered on is_some");
+            let columns = batch.schema().fields().iter().map(|f| f.name().clone()).collect();
+            Ok(Rows { columns, rows: batch_to_rows(&batch), truncated: o.truncated })
+        }
+        // Every statement was DML/DDL with no result set.
+        None => Ok(Rows { columns: vec![], rows: vec![], truncated: false }),
+    }
+}
+
+/// Run `sql` as a single statement and return its rows, capped at `max_rows` (never above
+/// 1000 regardless of what the caller asks for). No history recording, no `ResultStore`
+/// insert — for internal/periodic reads (the Users list, metrics widgets, MCP) that must
+/// not pollute the user's query history or hold a result-window handle.
+///
+/// `sql` is run as ONE statement, not re-split: every current caller (`listUsersSql` and
+/// friends) sends a single SELECT. A multi-statement script belongs to `run_script` /
+/// `run_query`, which already split on the frontend (`src/lib/sqlSplit.ts`) before calling in.
+#[tauri::command]
+pub async fn query_rows(
+    state: State<'_, ConnState>,
+    id: String,
+    sql: String,
+    max_rows: Option<usize>,
+) -> Result<Rows, String> {
+    let drv = state.session(&id)?;
+    let cap = max_rows.unwrap_or(1000).min(1000);
+    rows_of(drv.as_ref(), &[sql], cap).await
+}
+
 #[tauri::command]
 pub async fn foreign_keys(
     state: State<'_, ConnState>,
@@ -1936,5 +1990,27 @@ mod tests {
 
         let outcome = cancel_all_outcome(n, had_running);
         assert_eq!(outcome, Err("Cancellation is not supported for this engine.".to_string()));
+    }
+
+    /// `rows_of` caps at `cap` and reports `truncated` exactly when the statement had more
+    /// rows than the cap — the two things `query_rows` promises its callers (Task 10/11/14).
+    #[tokio::test]
+    async fn rows_of_caps_and_flags_truncation() {
+        let tmp = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        let drv = SqliteDriver::connect(&path).await.expect("connect");
+        drv.run_script("CREATE TABLE t (n INTEGER); INSERT INTO t VALUES (1),(2),(3),(4),(5)")
+            .await
+            .expect("seed");
+
+        let stmt = vec!["SELECT n FROM t ORDER BY n".to_string()];
+        let capped = rows_of(&drv, &stmt, 3).await.expect("capped read");
+        assert_eq!(capped.columns, vec!["n".to_string()]);
+        assert_eq!(capped.rows.len(), 3, "reading stops at the cap");
+        assert!(capped.truncated, "5 rows read at cap 3 must report truncated");
+
+        let all = rows_of(&drv, &stmt, 10).await.expect("uncapped read");
+        assert_eq!(all.rows.len(), 5, "under the cap, every row comes back");
+        assert!(!all.truncated);
     }
 }

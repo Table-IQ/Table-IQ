@@ -730,6 +730,21 @@ export async function runScript(id: string, sql: string): Promise<{ rowsAffected
   return { rowsAffected: r.rows_affected };
 }
 
+/** Plain rows from `query_rows` (Task 10 Users list, Task 11 metrics, Task 14 MCP) — capped
+ *  at 1000, no history, no `ResultStore` entry. */
+export interface Rows {
+  columns: string[];
+  rows: (string | null)[][];
+  truncated: boolean;
+}
+
+/** Run `sql` (one statement) and return its rows, capped at `maxRows` (never above 1000). */
+export async function queryRows(id: string, sql: string, maxRows?: number): Promise<Rows> {
+  if (!inTauri())
+    return { columns: ["label", "value"], rows: [["a", "3"], ["b", "5"]], truncated: false };
+  return invoke<Rows>("query_rows", { id, sql, maxRows: maxRows ?? null });
+}
+
 // ── WASM plugins (Extism) ──────────────────────────────────────────────────
 export interface PluginInfo {
   id: string;
