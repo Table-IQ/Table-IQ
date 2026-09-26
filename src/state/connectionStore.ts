@@ -54,7 +54,6 @@ interface ConnectionState {
   setDisconnected: (disconnected: boolean) => void;
 }
 
-
 // The tab list is global and each shell re-hydrates its connection's slice on
 // mount; clearing it whenever the active connection changes keeps the next shell
 // from ever rendering (or persisting over) the previous connection's tabs.
