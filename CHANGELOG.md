@@ -12,7 +12,7 @@ in tighter rows, black text, and TablePlus's syntax colours.
   left lists them (database icon in the connection's colour, database or file name
   underneath). Click one to switch: no reconnect, and each connection keeps its own
   tabs and SQL. × closes one connection; Disconnect closes the one in front and the
-  next open one takes over. The ⚙ at the bottom switches labels between database and
+  most recently opened remaining connection takes over. The ⚙ at the bottom switches labels between database and
   connection name.
 - Leaving a connection that has unsaved cell edits (or a commit in progress) now asks
   first instead of discarding them.
