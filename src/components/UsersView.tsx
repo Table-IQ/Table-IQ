@@ -23,7 +23,7 @@ type Status = { kind: "idle" | "busy" | "err"; msg: string };
 type Modal =
   | { kind: "create" }
   | { kind: "password"; name: string; host: string }
-  | { kind: "grant"; mode: "grant" | "revoke"; name: string }
+  | { kind: "grant"; mode: "grant" | "revoke"; name: string; host: string }
   | { kind: "drop"; name: string; host: string };
 
 /**
@@ -119,13 +119,13 @@ export function UsersView({
                         </button>
                         <button
                           className="text-primary hover:underline"
-                          onClick={() => setModal({ kind: "grant", mode: "grant", name })}
+                          onClick={() => setModal({ kind: "grant", mode: "grant", name, host })}
                         >
                           Grant
                         </button>
                         <button
                           className="text-primary hover:underline"
-                          onClick={() => setModal({ kind: "grant", mode: "revoke", name })}
+                          onClick={() => setModal({ kind: "grant", mode: "revoke", name, host })}
                         >
                           Revoke
                         </button>
@@ -164,6 +164,7 @@ export function UsersView({
           engine={engine}
           mode={modal.mode}
           name={modal.name}
+          host={modal.host}
           database={database}
           onClose={() => setModal(null)}
           onDone={onDone}
@@ -347,6 +348,7 @@ function GrantModal({
   engine,
   mode,
   name,
+  host,
   database,
   onClose,
   onDone,
@@ -355,6 +357,10 @@ function GrantModal({
   engine: Engine;
   mode: "grant" | "revoke";
   name: string;
+  /** The row's own host (MySQL only) — grants/revokes must target the SAME account the row
+   *  was listed under, never a hardcoded default, or this silently changes privileges on a
+   *  different 'name'@'other-host' account. */
+  host: string;
   database: string;
   onClose: () => void;
   onDone: () => void;
@@ -364,7 +370,7 @@ function GrantModal({
   const [status, setStatus] = useState<Status>({ kind: "idle", msg: "" });
 
   const build = mode === "grant" ? grantSql : revokeSql;
-  const preview = build(engine, preset, name, database, schema);
+  const preview = build(engine, preset, name, database, schema, host);
   const verb = mode === "grant" ? "Grant" : "Revoke";
 
   const run = async () => {

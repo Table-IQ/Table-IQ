@@ -82,7 +82,7 @@ describe("createUserSql", () => {
     );
   });
 
-  it("mysql: a backtick in the user name is escaped by doubling (it's a literal, not an ident, but names may still carry one)", () => {
+  it("mysql: a backtick in the user name needs no escaping — it's a literal, not an identifier", () => {
     // MySQL user/host are string literals (quoteLiteral), so a backtick needs no special
     // handling — only `'` and `\` are meaningful inside a MySQL string literal.
     expect(createUserSql("mysql", { name: "bo`b", password: "x" })).toBe(
@@ -195,18 +195,50 @@ describe("grantSql / revokeSql symmetry", () => {
     );
   });
 
-  it("sqlserver read/readwrite/all map to db_datareader/db_datawriter/db_owner membership", () => {
+  it("mysql: grant/revoke target the row's host, not always '%'", () => {
+    expect(grantSql("mysql", "read", "bob", "app", "public", "localhost")).toBe(
+      "GRANT SELECT ON `app`.* TO 'bob'@'localhost';",
+    );
+    expect(revokeSql("mysql", "read", "bob", "app", "public", "localhost")).toBe(
+      "REVOKE SELECT ON `app`.* FROM 'bob'@'localhost';",
+    );
+  });
+
+  it("mysql: a host containing ' or \\ is escaped as a literal, same as the password", () => {
+    expect(grantSql("mysql", "read", "bob", "app", "public", `a\\'b`)).toBe(
+      "GRANT SELECT ON `app`.* TO 'bob'@'a\\\\''b';",
+    );
+    expect(revokeSql("mysql", "read", "bob", "app", "public", `a\\'b`)).toBe(
+      "REVOKE SELECT ON `app`.* FROM 'bob'@'a\\\\''b';",
+    );
+  });
+
+  it("sqlserver read/all map to a single fixed-role membership", () => {
     expect(grantSql("sqlserver", "read", "bob", "app", "public")).toBe(
       "ALTER ROLE db_datareader ADD MEMBER [bob];",
-    );
-    expect(grantSql("sqlserver", "readwrite", "bob", "app", "public")).toBe(
-      "ALTER ROLE db_datawriter ADD MEMBER [bob];",
     );
     expect(grantSql("sqlserver", "all", "bob", "app", "public")).toBe(
       "ALTER ROLE db_owner ADD MEMBER [bob];",
     );
     expect(revokeSql("sqlserver", "read", "bob", "app", "public")).toBe(
       "ALTER ROLE db_datareader DROP MEMBER [bob];",
+    );
+    expect(revokeSql("sqlserver", "all", "bob", "app", "public")).toBe(
+      "ALTER ROLE db_owner DROP MEMBER [bob];",
+    );
+  });
+
+  it("sqlserver readwrite grants AND revokes BOTH db_datareader and db_datawriter membership", () => {
+    expect(grantSql("sqlserver", "readwrite", "bob", "app", "public")).toBe(
+      ["ALTER ROLE db_datareader ADD MEMBER [bob];", "ALTER ROLE db_datawriter ADD MEMBER [bob];"].join(
+        "\n",
+      ),
+    );
+    expect(revokeSql("sqlserver", "readwrite", "bob", "app", "public")).toBe(
+      [
+        "ALTER ROLE db_datareader DROP MEMBER [bob];",
+        "ALTER ROLE db_datawriter DROP MEMBER [bob];",
+      ].join("\n"),
     );
   });
 });

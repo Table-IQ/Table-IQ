@@ -119,11 +119,13 @@ const MYSQL_PRIVS: Record<GrantPreset, string> = {
   readwrite: "SELECT, INSERT, UPDATE, DELETE",
   all: "ALL PRIVILEGES",
 };
-/** SQL Server fixed database role per preset. */
-const MSSQL_ROLES: Record<GrantPreset, string> = {
-  read: "db_datareader",
-  readwrite: "db_datawriter",
-  all: "db_owner",
+/** SQL Server fixed database role(s) per preset. `readwrite` is deliberately BOTH roles —
+ *  `db_datawriter` alone can write but not read, so "read/write" needs `db_datareader` too
+ *  (unlike PG/MySQL, where a single privilege list already covers both). */
+const MSSQL_ROLES: Record<GrantPreset, string[]> = {
+  read: ["db_datareader"],
+  readwrite: ["db_datareader", "db_datawriter"],
+  all: ["db_owner"],
 };
 
 export function grantSql(
@@ -132,6 +134,7 @@ export function grantSql(
   user: string,
   database: string,
   schema: string,
+  host: string = DEFAULT_HOST,
 ): string {
   switch (engine) {
     case "postgres": {
@@ -144,13 +147,15 @@ export function grantSql(
       ].join("\n");
     }
     case "mysql":
-      // MySQL grants target `user@host`; there's no host parameter here, so this always
-      // grants to the same `%` host `createUserSql` defaults to.
-      return `GRANT ${MYSQL_PRIVS[preset]} ON ${quoteIdent(database, "mysql")}.* TO ${quoteLiteral(user, "mysql")}@${quoteLiteral(DEFAULT_HOST, "mysql")};`;
+      // MySQL grants target `user@host` specifically — the caller must pass the SAME host
+      // the row was listed under, or this silently changes privileges on a different account.
+      return `GRANT ${MYSQL_PRIVS[preset]} ON ${quoteIdent(database, "mysql")}.* TO ${quoteLiteral(user, "mysql")}@${quoteLiteral(host, "mysql")};`;
     case "sqlserver":
       // Fixed database roles are scoped to the database the connection is already in —
       // `database`/`schema` don't appear in the statement itself.
-      return `ALTER ROLE ${MSSQL_ROLES[preset]} ADD MEMBER ${quoteIdent(user, "sqlserver")};`;
+      return MSSQL_ROLES[preset]
+        .map((role) => `ALTER ROLE ${role} ADD MEMBER ${quoteIdent(user, "sqlserver")};`)
+        .join("\n");
     default:
       return unsupported(engine);
   }
@@ -162,6 +167,7 @@ export function revokeSql(
   user: string,
   database: string,
   schema: string,
+  host: string = DEFAULT_HOST,
 ): string {
   switch (engine) {
     case "postgres": {
@@ -174,9 +180,11 @@ export function revokeSql(
       ].join("\n");
     }
     case "mysql":
-      return `REVOKE ${MYSQL_PRIVS[preset]} ON ${quoteIdent(database, "mysql")}.* FROM ${quoteLiteral(user, "mysql")}@${quoteLiteral(DEFAULT_HOST, "mysql")};`;
+      return `REVOKE ${MYSQL_PRIVS[preset]} ON ${quoteIdent(database, "mysql")}.* FROM ${quoteLiteral(user, "mysql")}@${quoteLiteral(host, "mysql")};`;
     case "sqlserver":
-      return `ALTER ROLE ${MSSQL_ROLES[preset]} DROP MEMBER ${quoteIdent(user, "sqlserver")};`;
+      return MSSQL_ROLES[preset]
+        .map((role) => `ALTER ROLE ${role} DROP MEMBER ${quoteIdent(user, "sqlserver")};`)
+        .join("\n");
     default:
       return unsupported(engine);
   }
