@@ -5,6 +5,7 @@ import {
   createUserSql,
   dropUserSql,
   grantSql,
+  grantTarget,
   listUsersSql,
   revokeSql,
   type GrantPreset,
@@ -23,8 +24,8 @@ type Status = { kind: "idle" | "busy" | "err"; msg: string };
 type Modal =
   | { kind: "create" }
   | { kind: "password"; name: string; host: string }
-  | { kind: "grant"; mode: "grant" | "revoke"; name: string; host: string }
-  | { kind: "drop"; name: string; host: string };
+  | { kind: "grant"; mode: "grant" | "revoke"; name: string; host: string; dbUser: string | null }
+  | { kind: "drop"; name: string; host: string; dbUser: string | null };
 
 /**
  * Database User Management (Task 10, tab kind "users"): lists users/roles through
@@ -34,7 +35,8 @@ type Modal =
  *
  * `listUsersSql` puts the login/user name in column 0 for every engine, by construction —
  * this view leans on that instead of matching a column name that differs per engine
- * (`rolname` / `User` / `name`).
+ * (`rolname` / `User` / `name`). SQL Server's column 3 is `database_user`: the login's user
+ * in the current database (null when it has none), which drop/grant/revoke must name.
  */
 export function UsersView({
   connId,
@@ -102,6 +104,7 @@ export function UsersView({
               {rows.rows.map((r, i) => {
                 const name = r[0] ?? "";
                 const host = engine === "mysql" ? r[1] ?? DEFAULT_HOST : DEFAULT_HOST;
+                const dbUser = engine === "sqlserver" ? r[3] ?? null : null;
                 return (
                   <tr key={i} className="hover:bg-surface-2">
                     {r.map((v, j) => (
@@ -119,19 +122,19 @@ export function UsersView({
                         </button>
                         <button
                           className="text-primary hover:underline"
-                          onClick={() => setModal({ kind: "grant", mode: "grant", name, host })}
+                          onClick={() => setModal({ kind: "grant", mode: "grant", name, host, dbUser })}
                         >
                           Grant
                         </button>
                         <button
                           className="text-primary hover:underline"
-                          onClick={() => setModal({ kind: "grant", mode: "revoke", name, host })}
+                          onClick={() => setModal({ kind: "grant", mode: "revoke", name, host, dbUser })}
                         >
                           Revoke
                         </button>
                         <button
                           className="text-danger hover:underline"
-                          onClick={() => setModal({ kind: "drop", name, host })}
+                          onClick={() => setModal({ kind: "drop", name, host, dbUser })}
                         >
                           Drop
                         </button>
@@ -165,6 +168,7 @@ export function UsersView({
           mode={modal.mode}
           name={modal.name}
           host={modal.host}
+          dbUser={modal.dbUser}
           database={database}
           onClose={() => setModal(null)}
           onDone={onDone}
@@ -176,6 +180,7 @@ export function UsersView({
           engine={engine}
           name={modal.name}
           host={modal.host}
+          dbUser={modal.dbUser}
           onClose={() => setModal(null)}
           onDone={onDone}
         />
@@ -349,6 +354,7 @@ function GrantModal({
   mode,
   name,
   host,
+  dbUser,
   database,
   onClose,
   onDone,
@@ -361,6 +367,8 @@ function GrantModal({
    *  was listed under, never a hardcoded default, or this silently changes privileges on a
    *  different 'name'@'other-host' account. */
   host: string;
+  /** SQL Server: the login's user in this database, which the role membership names. */
+  dbUser: string | null;
   database: string;
   onClose: () => void;
   onDone: () => void;
@@ -370,10 +378,13 @@ function GrantModal({
   const [status, setStatus] = useState<Status>({ kind: "idle", msg: "" });
 
   const build = mode === "grant" ? grantSql : revokeSql;
-  const preview = build(engine, preset, name, database, schema, host);
+  // Null only for a SQL Server login with no user in this database: nothing to run.
+  const target = grantTarget(engine, name, dbUser);
+  const preview = target === null ? "" : build(engine, preset, target, database, schema, host);
   const verb = mode === "grant" ? "Grant" : "Revoke";
 
   const run = async () => {
+    if (!preview) return;
     setStatus({ kind: "busy", msg: `${verb}ing…` });
     try {
       await runScript(connId, preview);
@@ -392,7 +403,7 @@ function GrantModal({
         <>
           <button
             onClick={() => void run()}
-            disabled={status.kind === "busy"}
+            disabled={!preview || status.kind === "busy"}
             className="rounded-md bg-primary px-3 py-1 text-xs font-medium text-white hover:bg-primary-hover disabled:opacity-50"
           >
             {verb}
@@ -420,7 +431,15 @@ function GrantModal({
             <input className={`${field} w-full`} value={schema} onChange={(e) => setSchema(e.target.value)} />
           </label>
         )}
-        <PreviewSql sql={preview} />
+        {preview ? (
+          <PreviewSql sql={preview} />
+        ) : (
+          <p className="text-xs text-danger">
+            <span className="font-mono">{name}</span> has no user in database {database}, so there
+            is nothing to {mode}. Create one first with{" "}
+            <span className="font-mono">CREATE USER … FOR LOGIN …</span>.
+          </p>
+        )}
       </div>
     </Panel>
   );
@@ -431,6 +450,7 @@ function DropUserModal({
   engine,
   name,
   host,
+  dbUser,
   onClose,
   onDone,
 }: {
@@ -438,11 +458,12 @@ function DropUserModal({
   engine: Engine;
   name: string;
   host: string;
+  dbUser: string | null;
   onClose: () => void;
   onDone: () => void;
 }) {
   const [status, setStatus] = useState<Status>({ kind: "idle", msg: "" });
-  const preview = dropUserSql(engine, { name, host });
+  const preview = dropUserSql(engine, { name, host, dbUser });
 
   // This modal IS the confirm: dropping needs a second, explicit click after seeing the
   // exact statement — nothing runs on the row button alone.

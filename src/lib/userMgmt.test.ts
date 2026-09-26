@@ -4,6 +4,7 @@ import {
   createUserSql,
   dropUserSql,
   grantSql,
+  grantTarget,
   listUsersSql,
   revokeSql,
   supportsUserMgmt,
@@ -122,8 +123,31 @@ describe("dropUserSql", () => {
     );
   });
 
-  it("sqlserver drops the user before the login", () => {
-    expect(dropUserSql("sqlserver", { name: "bob" })).toBe(`DROP USER [bob]; DROP LOGIN [bob];`);
+  it("sqlserver drops the user (only if it exists) before the login, falling back to the login name", () => {
+    expect(dropUserSql("sqlserver", { name: "bob" })).toBe(
+      `IF USER_ID(N'bob') IS NOT NULL DROP USER [bob]; DROP LOGIN [bob];`,
+    );
+    expect(dropUserSql("sqlserver", { name: "bob", dbUser: null })).toBe(
+      `IF USER_ID(N'bob') IS NOT NULL DROP USER [bob]; DROP LOGIN [bob];`,
+    );
+  });
+
+  it("sqlserver drops the listed database user, which can differ from the login", () => {
+    expect(dropUserSql("sqlserver", { name: "bob_login", dbUser: "bob's user" })).toBe(
+      `IF USER_ID(N'bob''s user') IS NOT NULL DROP USER [bob's user]; DROP LOGIN [bob_login];`,
+    );
+  });
+});
+
+describe("grantTarget", () => {
+  it("sqlserver targets the database user, or nothing when the login has none here", () => {
+    expect(grantTarget("sqlserver", "bob_login", "bob_user")).toBe("bob_user");
+    expect(grantTarget("sqlserver", "bob_login", null)).toBeNull();
+  });
+
+  it("other engines target the listed name", () => {
+    expect(grantTarget("postgres", "bob", null)).toBe("bob");
+    expect(grantTarget("mysql", "bob", null)).toBe("bob");
   });
 });
 

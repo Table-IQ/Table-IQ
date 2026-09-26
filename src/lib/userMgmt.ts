@@ -23,6 +23,9 @@ export interface UserSpec {
 export interface DropUserSpec {
   name: string;
   host?: string;
+  /** SQL Server: the login's user in the current database (the listing's `database_user`).
+   *  Null/absent falls back to the login name. */
+  dbUser?: string | null;
 }
 
 const DEFAULT_HOST = "%";
@@ -75,16 +78,21 @@ export function createUserSql(engine: Engine, { name, password, host = DEFAULT_H
   }
 }
 
-export function dropUserSql(engine: Engine, { name, host = DEFAULT_HOST }: DropUserSpec): string {
+export function dropUserSql(
+  engine: Engine,
+  { name, host = DEFAULT_HOST, dbUser }: DropUserSpec,
+): string {
   switch (engine) {
     case "postgres":
       return `DROP ROLE ${quoteIdent(name)};`;
     case "mysql":
       return `DROP USER ${quoteLiteral(name, "mysql")}@${quoteLiteral(host, "mysql")};`;
     case "sqlserver": {
-      const id = quoteIdent(name, "sqlserver");
-      // The user (in the current database) must go before the login it depends on.
-      return `DROP USER ${id}; DROP LOGIN ${id};`;
+      // The user (in the current database) must go before the login it depends on. A login
+      // can have no user here; an unguarded DROP USER would fail AFTER the batch went on to
+      // drop the login, reporting failure for a drop that happened.
+      const user = dbUser ?? name;
+      return `IF USER_ID(${nLiteral(user)}) IS NOT NULL DROP USER ${quoteIdent(user, "sqlserver")}; DROP LOGIN ${quoteIdent(name, "sqlserver")};`;
     }
     default:
       return unsupported(engine);
@@ -127,6 +135,13 @@ const MSSQL_ROLES: Record<GrantPreset, string[]> = {
   readwrite: ["db_datareader", "db_datawriter"],
   all: ["db_owner"],
 };
+
+/** The principal a grant/revoke names. SQL Server's fixed database roles take the login's
+ *  database user (the listing's `database_user`), so a login with no user in this database
+ *  has nothing to grant to — `null`, for the caller to say so. Elsewhere, the listed name. */
+export function grantTarget(engine: Engine, name: string, dbUser: string | null): string | null {
+  return engine === "sqlserver" ? dbUser : name;
+}
 
 export function grantSql(
   engine: Engine,
