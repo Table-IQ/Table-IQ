@@ -13,6 +13,10 @@ pub struct SavedQuery {
     pub id: String,
     pub name: String,
     pub sql: String,
+    /// Owning connection; `None` means the query is global (shows for every connection).
+    /// `#[serde(default)]` so queries saved before this field existed still deserialize.
+    #[serde(default)]
+    pub conn_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -145,8 +149,18 @@ mod tests {
     #[test]
     fn upsert_saved_replaces_by_id() {
         let mut lib = QueryLibrary::default();
-        lib.upsert_saved(SavedQuery { id: "1".into(), name: "A".into(), sql: "select 1".into() });
-        lib.upsert_saved(SavedQuery { id: "1".into(), name: "B".into(), sql: "select 2".into() });
+        lib.upsert_saved(SavedQuery {
+            id: "1".into(),
+            name: "A".into(),
+            sql: "select 1".into(),
+            conn_id: None,
+        });
+        lib.upsert_saved(SavedQuery {
+            id: "1".into(),
+            name: "B".into(),
+            sql: "select 2".into(),
+            conn_id: None,
+        });
         assert_eq!(lib.saved.len(), 1);
         assert_eq!(lib.saved[0].name, "B");
     }
@@ -154,9 +168,23 @@ mod tests {
     #[test]
     fn remove_saved_drops_by_id() {
         let mut lib = QueryLibrary::default();
-        lib.upsert_saved(SavedQuery { id: "1".into(), name: "A".into(), sql: "x".into() });
+        lib.upsert_saved(SavedQuery {
+            id: "1".into(),
+            name: "A".into(),
+            sql: "x".into(),
+            conn_id: None,
+        });
         lib.remove_saved("1");
         assert!(lib.saved.is_empty());
+    }
+
+    /// A `query_library.json` written before `conn_id` existed must still deserialize —
+    /// old saved queries become global (`conn_id: None`) rather than failing to load.
+    #[test]
+    fn saved_query_without_conn_id_deserializes() {
+        let json = r#"{"id":"1","name":"A","sql":"select 1"}"#;
+        let q: SavedQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(q.conn_id, None);
     }
 
     #[test]

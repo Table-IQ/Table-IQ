@@ -930,6 +930,8 @@ export interface SavedQuery {
   id: string;
   name: string;
   sql: string;
+  /** Owning connection; absent/null means the query is global (shows for every connection). */
+  conn_id?: string | null;
 }
 
 export interface HistoryEntry {
@@ -944,9 +946,14 @@ export async function listSavedQueries(): Promise<SavedQuery[]> {
   return invoke<SavedQuery[]>("list_saved_queries");
 }
 
-export async function saveQuery(name: string, sql: string, id?: string): Promise<SavedQuery> {
-  if (!inTauri()) return { id: id ?? "m", name, sql };
-  return invoke<SavedQuery>("save_query", { id: id ?? null, name, sql });
+export async function saveQuery(
+  name: string,
+  sql: string,
+  id?: string,
+  connId?: string | null,
+): Promise<SavedQuery> {
+  if (!inTauri()) return { id: id ?? "m", name, sql, conn_id: connId ?? null };
+  return invoke<SavedQuery>("save_query", { id: id ?? null, name, sql, connId: connId ?? null });
 }
 
 export async function deleteSavedQuery(id: string): Promise<void> {

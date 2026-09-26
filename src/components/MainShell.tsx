@@ -3,6 +3,7 @@ import { ConnectionRail } from "./ConnectionRail";
 import { Wordmark } from "./Brand";
 import { ThemeToggle } from "./ThemeToggle";
 import { ObjectTree } from "./ObjectTree";
+import { SidebarLibrary } from "./SidebarLibrary";
 import { TableView } from "./TableView";
 import { QueryView } from "./QueryView";
 import { ErdView } from "./ErdView";
@@ -163,6 +164,42 @@ export function MainShell() {
   useEffect(() => {
     window.localStorage.setItem("tiq:layout:inspectorW", String(inspectorW));
   }, [inspectorW]);
+
+  // Sidebar tab (Items / Queries / History), persisted like the other layout prefs.
+  const SIDEBAR_TABS = ["items", "queries", "history"] as const;
+  type SidebarTab = (typeof SIDEBAR_TABS)[number];
+  const isSidebarTab = (v: unknown): v is SidebarTab =>
+    typeof v === "string" && (SIDEBAR_TABS as readonly string[]).includes(v);
+  const [sidebarTab, setSidebarTabState] = useState<SidebarTab>(() => {
+    try {
+      const raw = window.localStorage.getItem("tiq:sidebar:tab");
+      return isSidebarTab(raw) ? raw : "items";
+    } catch {
+      return "items";
+    }
+  });
+  const setSidebarTab = (t: SidebarTab) => {
+    setSidebarTabState(t);
+    try {
+      window.localStorage.setItem("tiq:sidebar:tab", t);
+    } catch {
+      /* private mode etc. — tab still switches, just doesn't persist */
+    }
+  };
+  // QueryView's "Library" button dispatches this instead of opening its old drawer
+  // (same pattern as `tiq:show-tour`), so the sidebar becomes the one library UI.
+  useEffect(() => {
+    const onSidebarEvent = (e: Event) => {
+      const detail = (e as CustomEvent<string>).detail;
+      if (isSidebarTab(detail)) {
+        setShowSidebar(true);
+        setSidebarTab(detail);
+      }
+    };
+    window.addEventListener("tiq:sidebar", onSidebarEvent);
+    return () => window.removeEventListener("tiq:sidebar", onSidebarEvent);
+  }, []);
+
   const [showHelp, setShowHelp] = useState(false);
   const [pinned, setPinned] = useState<string[]>([]);
   const [erdFocus, setErdFocus] = useState<string | undefined>(undefined);
@@ -775,71 +812,84 @@ export function MainShell() {
             {/* Items / Queries / History — subtler than the prior version; active uses
                 a soft background instead of the bottom-edge primary line. */}
             <div className="flex h-[26px] shrink-0 items-center gap-px border-b border-border px-1">
-              {(["Items", "Queries", "History"] as const).map((t, i) => (
+              {(
+                [
+                  ["items", "Items"],
+                  ["queries", "Queries"],
+                  ["history", "History"],
+                ] as const
+              ).map(([value, label]) => (
                 <button
-                  key={t}
+                  key={value}
+                  onClick={() => setSidebarTab(value)}
                   className={`flex-1 rounded-[var(--radius-sm)] py-[3px] text-[11px] transition-colors ${
-                    i === 0 ? "bg-surface-2 text-text" : "text-muted hover:text-text"
+                    sidebarTab === value ? "bg-surface-2 text-text" : "text-muted hover:text-text"
                   }`}
-                  title={t}
+                  title={label}
                 >
-                  {t}
+                  {label}
                 </button>
               ))}
             </div>
             <div className="min-h-0 flex-1">
-              <ObjectTree
-                schema={schema}
-                activeKey={activeKey}
-                pinned={pinned}
-                onlySchema={activeSchema}
-                onOpen={(schemaName, obj) => openTable(schemaName, obj.name)}
-                onContext={(e, schemaName, obj) => {
-                  e.preventDefault();
-                  setObjMenu({ x: e.clientX, y: e.clientY, schema: schemaName, obj });
-                }}
-                onPinToggle={togglePin}
-              />
-            </div>
-            <div
-              className="flex shrink-0 items-center gap-1 border-t border-border px-2 text-[10px] text-muted"
-              style={{ height: "var(--statusbar-h)" }}
-            >
-              <button
-                onClick={(e) => {
-                  const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                  setSidebarMenu({ x: r.left, y: r.top - 4 });
-                }}
-                title="New table, view, function, schema…"
-                aria-label="New object"
-                className="inline-flex h-[18px] w-[18px] items-center justify-center rounded text-muted transition-colors hover:bg-surface-2 hover:text-text"
-              >
-                <IconPlus size={12} />
-              </button>
-              {schema.schemas.length > 1 ? (
-                <select
-                  value={activeSchema ?? ""}
-                  onChange={(e) => setActiveSchema(e.target.value)}
-                  title="Active schema"
-                  className="-ml-0.5 max-w-[120px] cursor-pointer truncate rounded-[var(--radius-sm)] bg-transparent font-mono text-[10px] text-muted hover:text-text focus:outline-none"
-                >
-                  {schema.schemas.map((s) => (
-                    <option key={s.name} value={s.name}>
-                      {s.name}
-                    </option>
-                  ))}
-                </select>
+              {sidebarTab === "items" ? (
+                <ObjectTree
+                  schema={schema}
+                  activeKey={activeKey}
+                  pinned={pinned}
+                  onlySchema={activeSchema}
+                  onOpen={(schemaName, obj) => openTable(schemaName, obj.name)}
+                  onContext={(e, schemaName, obj) => {
+                    e.preventDefault();
+                    setObjMenu({ x: e.clientX, y: e.clientY, schema: schemaName, obj });
+                  }}
+                  onPinToggle={togglePin}
+                />
               ) : (
-                <span className="font-mono">{activeSchema ?? "public"}</span>
+                <SidebarLibrary mode={sidebarTab} connId={active.id} />
               )}
-              <span className="ml-auto">
-                {(
-                  schema.schemas.find((s) => s.name === activeSchema)?.objects.length ??
-                  schema.schemas.reduce((n, s) => n + s.objects.length, 0)
-                )}{" "}
-                objects
-              </span>
             </div>
+            {sidebarTab === "items" && (
+              <div
+                className="flex shrink-0 items-center gap-1 border-t border-border px-2 text-[10px] text-muted"
+                style={{ height: "var(--statusbar-h)" }}
+              >
+                <button
+                  onClick={(e) => {
+                    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                    setSidebarMenu({ x: r.left, y: r.top - 4 });
+                  }}
+                  title="New table, view, function, schema…"
+                  aria-label="New object"
+                  className="inline-flex h-[18px] w-[18px] items-center justify-center rounded text-muted transition-colors hover:bg-surface-2 hover:text-text"
+                >
+                  <IconPlus size={12} />
+                </button>
+                {schema.schemas.length > 1 ? (
+                  <select
+                    value={activeSchema ?? ""}
+                    onChange={(e) => setActiveSchema(e.target.value)}
+                    title="Active schema"
+                    className="-ml-0.5 max-w-[120px] cursor-pointer truncate rounded-[var(--radius-sm)] bg-transparent font-mono text-[10px] text-muted hover:text-text focus:outline-none"
+                  >
+                    {schema.schemas.map((s) => (
+                      <option key={s.name} value={s.name}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className="font-mono">{activeSchema ?? "public"}</span>
+                )}
+                <span className="ml-auto">
+                  {(
+                    schema.schemas.find((s) => s.name === activeSchema)?.objects.length ??
+                    schema.schemas.reduce((n, s) => n + s.objects.length, 0)
+                  )}{" "}
+                  objects
+                </span>
+              </div>
+            )}
           </aside>
         )}
         {showSidebar && (

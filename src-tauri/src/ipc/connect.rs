@@ -1345,18 +1345,21 @@ pub fn list_saved_queries(state: State<ConnState>) -> Vec<SavedQuery> {
     lk(&state.library).saved.clone()
 }
 
-/// Save (or update) a named query. Empty `id` mints a new one.
+/// Save (or update) a named query. Empty `id` mints a new one. `conn_id` of `None`
+/// makes the query global (visible for every connection); `Some` scopes it to one.
 #[tauri::command(async)]
 pub fn save_query(
     state: State<ConnState>,
     id: Option<String>,
     name: String,
     sql: String,
+    conn_id: Option<String>,
 ) -> Result<SavedQuery, String> {
     let q = SavedQuery {
         id: id.filter(|s| !s.is_empty()).unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
         name,
         sql,
+        conn_id,
     };
     let mut lib = lk(&state.library);
     lib.upsert_saved(q.clone());
