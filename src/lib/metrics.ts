@@ -148,9 +148,22 @@ const READ_ONLY_FIRST_KEYWORDS = new Set([
   "DESC",
 ]);
 
-/** A `WITH` is rejected if any of these appear as a whole keyword anywhere in it —
- *  a CTE can smuggle a write past the first-keyword check (`WITH d AS (DELETE ...)`). */
-const WRITE_KEYWORDS = ["INSERT", "UPDATE", "DELETE", "MERGE"];
+/** First keywords whose statement body needs no write-keyword scan below — a plain
+ *  SHOW/DESCRIBE/DESC/VALUES/TABLE statement has no clause that could embed a write.
+ *  Everything else allowed by `READ_ONLY_FIRST_KEYWORDS` (SELECT, WITH, EXPLAIN) DOES
+ *  need it: a CTE can smuggle one (`WITH d AS (DELETE ...) SELECT ...`), `EXPLAIN
+ *  ANALYZE` actually executes its statement on Postgres (`EXPLAIN ANALYZE DELETE ...`
+ *  really deletes), and `SELECT` itself has `... INTO <table>` (PG/MSSQL: creates a
+ *  table) / `... INTO OUTFILE` (MySQL: writes a file). */
+const NO_SCAN_NEEDED = new Set(["SHOW", "DESCRIBE", "DESC", "VALUES", "TABLE"]);
+
+/** Rejected if any of these appear as a whole keyword anywhere in a scanned
+ *  statement (see `NO_SCAN_NEEDED`) — INSERT/UPDATE/DELETE/MERGE cover a smuggled
+ *  write, INTO covers `SELECT ... INTO`/`INTO OUTFILE`. Word-boundary, same as the
+ *  rest of this scan — not quote-aware, so it can't be fooled by a keyword split
+ *  across an identifier (`into_date`, `update_count`) but also isn't blind to one
+ *  sitting inside a string literal; that trade-off is intentional (see report). */
+const WRITE_KEYWORDS = ["INSERT", "UPDATE", "DELETE", "MERGE", "INTO"];
 
 /**
  * True when `sql` is exactly one statement whose first keyword is read-only —
@@ -171,7 +184,7 @@ export function isReadOnlyWidgetSql(sql: string, dialect: SqlDialect = "postgres
   const text = stmts[0].text;
   const kw = firstKeyword(text);
   if (!READ_ONLY_FIRST_KEYWORDS.has(kw)) return false;
-  if (kw === "WITH") {
+  if (!NO_SCAN_NEEDED.has(kw)) {
     const upper = text.toUpperCase();
     if (WRITE_KEYWORDS.some((w) => new RegExp(`\\b${w}\\b`).test(upper))) return false;
   }

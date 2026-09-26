@@ -177,6 +177,26 @@ describe("isReadOnlyWidgetSql", () => {
     }
   });
 
+  it("rejects EXPLAIN ANALYZE of a write (Postgres EXPLAIN ANALYZE executes it)", () => {
+    expect(isReadOnlyWidgetSql("EXPLAIN ANALYZE DELETE FROM t")).toBe(false);
+  });
+
+  it("accepts a plain EXPLAIN of a read", () => {
+    expect(isReadOnlyWidgetSql("EXPLAIN SELECT 1")).toBe(true);
+  });
+
+  it("rejects SELECT ... INTO (creates a table on PG/MSSQL)", () => {
+    expect(isReadOnlyWidgetSql("SELECT * INTO t2 FROM t")).toBe(false);
+  });
+
+  it("rejects SELECT ... INTO OUTFILE (MySQL: writes a file)", () => {
+    expect(isReadOnlyWidgetSql("SELECT 1 INTO OUTFILE '/tmp/x'")).toBe(false);
+  });
+
+  it("accepts INTO/UPDATE-looking identifiers, not the keywords themselves", () => {
+    expect(isReadOnlyWidgetSql("SELECT update_count, into_date FROM t")).toBe(true);
+  });
+
   it("rejects writer statements outright", () => {
     for (const sql of [
       "UPDATE t SET a = 1",
