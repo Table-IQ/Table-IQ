@@ -676,8 +676,10 @@ export function MainShell() {
       {/* ── CONNECTING STRIP ──────────────────────────────────────────────── */}
       {/* Opening another connection (rail/⌘O) or switching database (⌘D) can hit a
           slow remote DB behind SSH; this makes the wait visible instead of the
-          workspace looking frozen. Cancel (or Esc) just stops the UI waiting —
-          the store discards the late result. */}
+          workspace looking frozen. Cancel (or Esc) stops the UI waiting on a
+          connect — the store discards its late result. A database switch has
+          no Cancel: Rust has already swapped the live session by the time its
+          result lands, so there is nothing safe to cancel. */}
       {connecting && (
         <>
           <div className="tiq-progress shrink-0" aria-hidden />
@@ -688,7 +690,7 @@ export function MainShell() {
                 ? "Connecting to "
                 : connecting.stage === "schema"
                   ? "Loading schema for "
-                  : "Switching database on "}
+                  : "Switching to "}
               <span className="font-medium text-text">{connecting.name}</span>…
             </span>
             <Elapsed
@@ -696,13 +698,15 @@ export function MainShell() {
               minMs={1000}
               className="tiq-delayed font-mono tabular-nums"
             />
-            <button
-              onClick={cancelConnecting}
-              title="Cancel (Esc)"
-              className="ml-1 inline-flex h-5 items-center rounded-[var(--radius)] border border-border px-2 text-[11px] text-muted hover:bg-surface-2 hover:text-text"
-            >
-              Cancel
-            </button>
+            {connecting.stage !== "switch" && (
+              <button
+                onClick={cancelConnecting}
+                title="Cancel (Esc)"
+                className="ml-1 inline-flex h-5 items-center rounded-[var(--radius)] border border-border px-2 text-[11px] text-muted hover:bg-surface-2 hover:text-text"
+              >
+                Cancel
+              </button>
+            )}
           </div>
         </>
       )}
@@ -1028,21 +1032,26 @@ export function MainShell() {
         <DatabasePicker
           databases={dbList.items}
           activeDatabase={active.database}
-          busy={dbList.loading || connecting?.stage === "switch"}
+          busy={dbList.loading}
           error={dbList.error}
-          onPick={async (db) => {
+          onPick={(db) => {
             if (connecting) return; // one connect/switch in flight at a time
             const id = active.id;
-            try {
-              const ok = await switchDatabaseFlow(id, db);
-              if (ok) {
-                setShowDbPicker(false);
+            // Close immediately (like onSwapConnection does for the connection
+            // picker) so the header's connecting strip is visible — the
+            // picker's own full-screen overlay would otherwise hide it, and a
+            // switch isn't cancellable anyway (see switchDatabaseFlow).
+            setShowDbPicker(false);
+            setConnMsg(null);
+            void switchDatabaseFlow(id, db)
+              .then(() => {
                 // Reset cache so the next open re-fetches against the new active session.
                 setDbList({ loading: false, items: [], error: null });
-              }
-            } catch (e) {
-              setDbList({ loading: false, items: dbList.items, error: String(e) });
-            }
+              })
+              .catch((e) => {
+                console.error("database switch failed", e);
+                setConnMsg(`Could not switch to '${db}': ${e}`);
+              });
           }}
           onClose={() => setShowDbPicker(false)}
         />

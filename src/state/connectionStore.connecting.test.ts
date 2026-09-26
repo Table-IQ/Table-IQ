@@ -150,6 +150,24 @@ describe("switchDatabaseFlow", () => {
     expect(s.connecting).toBeNull();
   });
 
+  it("a database switch is not cancellable: cancelConnecting mid-switch is a no-op and the result is still applied", async () => {
+    const p = pending<ConnectedInfo>();
+    switchDatabase.mockReturnValueOnce(p.promise);
+    listObjects.mockResolvedValueOnce(schema("db2"));
+    const attempt = switchDatabaseFlow("a", "db2");
+    expect(useConnections.getState().connecting?.stage).toBe("switch");
+    cancelConnecting();
+    // Unlike a plain connect, cancelConnecting must not touch a switch in flight.
+    expect(useConnections.getState().connecting?.stage).toBe("switch");
+    p.resolve({ ...info("a"), database: "db2" });
+    const ok = await attempt;
+    expect(ok).toBe(true);
+    const s = useConnections.getState();
+    expect(s.active?.database).toBe("db2"); // the backend already moved — applied regardless
+    expect(s.connecting).toBeNull();
+    expect(disconnect).not.toHaveBeenCalled();
+  });
+
   it("disconnects and skips the update when the session was closed mid-switch", async () => {
     switchDatabase.mockImplementation(async (id, db) => {
       useConnections.getState().closeSession("a");
