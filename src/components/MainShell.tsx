@@ -337,7 +337,8 @@ export function MainShell() {
   // strip is visible underneath. Shared by the ⌘D DatabasePicker and the palette's
   // Databases entries.
   const pickDatabase = (db: string) => {
-    if (!active || connecting) return; // one connect/switch in flight at a time
+    if (!active || useConnections.getState().connecting) return; // one connect/switch in flight at a time
+    if (db === active.database) return; // already there — switching would wipe every open tab for nothing
     const id = active.id;
     setShowDbPicker(false);
     setConnMsg(null);
@@ -423,13 +424,11 @@ export function MainShell() {
         // physical-key fallback so this still fires on other layouts.
         e.preventDefault();
         setShowWorkspaceOverview((v) => !v);
-      } else if (e.key === "Escape" && connecting) {
-        cancelConnecting();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [openQuery, close, activeKey, active?.id, connecting]);
+  }, [openQuery, close, activeKey, active?.id]);
 
   const commands = useMemo<Command[]>(() => {
     const list: Command[] = [
@@ -442,14 +441,20 @@ export function MainShell() {
         shortcut: "⌘O",
         run: () => setShowConnPicker(true),
       },
-      {
-        id: "act:open-db",
-        label: "Open Database",
-        group: "Commands",
-        icon: <IconDatabase />,
-        shortcut: "⌘D",
-        run: () => void openDbPicker(),
-      },
+      // A file engine (sqlite/duckdb) has no other database to switch to — same
+      // condition that hides the Databases group below and no-ops openDbPicker.
+      ...((!active || !isFileEngine(active.engine as Engine)
+        ? [
+            {
+              id: "act:open-db",
+              label: "Open Database",
+              group: "Commands",
+              icon: <IconDatabase />,
+              shortcut: "⌘D",
+              run: () => void openDbPicker(),
+            },
+          ]
+        : []) as Command[]),
       {
         id: "act:workspace-overview",
         label: "Workspace Overview",
@@ -528,6 +533,7 @@ export function MainShell() {
         list.push({
           id: `db:${db}`,
           label: db,
+          hint: db === active.database ? "current" : undefined,
           group: "Databases",
           icon: <IconDatabase />,
           run: () => pickDatabase(db),
