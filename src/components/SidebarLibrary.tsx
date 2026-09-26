@@ -186,8 +186,17 @@ export function SidebarLibrary({ mode, connId }: Props) {
                   <button
                     onClick={() => openSaved(q)}
                     onDoubleClick={() => startRename(q)}
+                    onKeyDown={(e) => {
+                      // Enter/Space already open the query (native button
+                      // behavior), so rename gets its own key — F2, Finder-style —
+                      // rather than fighting over Enter.
+                      if (e.key === "F2") {
+                        e.preventDefault();
+                        startRename(q);
+                      }
+                    }}
                     className="min-w-0 flex-1 truncate rounded text-left text-[12.5px] text-text hover:bg-surface-2"
-                    title={oneLine(q.sql, 100)}
+                    title={`${oneLine(q.sql, 100)} — Double-click or F2 to rename`}
                   >
                     {q.name}
                   </button>
