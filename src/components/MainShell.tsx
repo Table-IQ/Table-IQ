@@ -236,6 +236,9 @@ export function MainShell() {
   /** A connection switch (or an in-place reconnect) that failed. Same reasoning
    *  as `exportMsg`: the picker is gone by the time the error lands. */
   const [connMsg, setConnMsg] = useState<string | null>(null);
+  /** ⌘. / "Cancel Running Queries" outcome — "Cancelled N queries" or "No running
+   *  queries". Neutral, not `connMsg`: it's not an error, so it must not read as one. */
+  const [cancelMsg, setCancelMsg] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState<string | null>(null);
 
   // Keep the sidebar schema selection valid across connection/database switches.
@@ -303,8 +306,10 @@ export function MainShell() {
     if (!active) return;
     try {
       const n = await cancelAll(active.id);
-      setConnMsg(n > 0 ? `Cancelled ${n} quer${n === 1 ? "y" : "ies"}` : "No running queries");
+      setCancelMsg(n > 0 ? `Cancelled ${n} quer${n === 1 ? "y" : "ies"}` : "No running queries");
     } catch (e) {
+      // A real failure (e.g. "Cancellation is not supported for this engine") — this one
+      // does belong in the danger-styled strip.
       setConnMsg(String(e));
     }
   };
@@ -940,6 +945,22 @@ export function MainShell() {
           </span>
           <button
             onClick={() => setConnMsg(null)}
+            className="shrink-0 underline underline-offset-2 hover:opacity-80"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {/* Neutral, not danger — "Cancelled N queries" / "No running queries" are outcomes,
+          not errors. A real cancel-all failure goes through `connMsg` above instead. */}
+      {cancelMsg && (
+        <div className="flex h-7 shrink-0 items-center gap-2 border-b border-border bg-surface-2 px-3 text-[11px] text-muted">
+          <span className="min-w-0 flex-1 truncate" title={cancelMsg}>
+            {cancelMsg}
+          </span>
+          <button
+            onClick={() => setCancelMsg(null)}
             className="shrink-0 underline underline-offset-2 hover:opacity-80"
           >
             Dismiss

@@ -17,7 +17,7 @@ use crate::drivers::{
     doc_mongo::MongoDriver, duckdb::DuckDriver, kv_redis::RedisDriver, mysql::MySqlDriver,
     postgres::PgDriver, sqlite::SqliteDriver, sqlserver::SqlServerDriver, CancelToken,
     ColumnFilter, DocumentDriver, DriverError, EditSpec, KeyInfo, KvDriver, KvValue, SchemaModel,
-    SortKey, SqlDriver, validate_filters,
+    SortKey, SqlDriver,
 };
 use crate::ssh::tunnel::{RemoteTarget, Tunnel};
 use crate::ssh::SshAuth;
@@ -529,7 +529,6 @@ pub async fn open_table(
 ) -> Result<OpenTableInfo, String> {
     let drv = state.session(&id)?;
     let f = filters.unwrap_or_default();
-    validate_filters(&f)?;
     let c = drv.count_rows(&schema, &table, &f, None).await.map_err(|e| e.to_string())?;
     Ok(OpenTableInfo { count: c.count, exact: c.exact })
 }
@@ -579,7 +578,6 @@ pub async fn exact_count(
     filters: &[ColumnFilter],
     token_id: &str,
 ) -> Result<OpenTableInfo, String> {
-    validate_filters(filters)?;
     let token = CancelToken::new();
     lk(cancels).insert(token_id.to_string(), token.clone());
     let res = drv.count_rows(schema, table, filters, Some(&token)).await;
@@ -646,7 +644,6 @@ pub async fn table_window(
     after: Option<&[Option<String>]>,
     request_key: Option<&str>,
 ) -> Result<RecordBatch, String> {
-    validate_filters(filters)?;
     let token = CancelToken::new();
     if let Some(key) = request_key {
         let prev = lk(cancels).insert(key.to_string(), token.clone());
@@ -966,7 +963,6 @@ pub async fn table_export(
     filters: &[ColumnFilter],
     order: &[SortKey],
 ) -> Result<String, String> {
-    validate_filters(filters)?;
     // Export up to the same cap as queries (bounded), through the same filtered+ordered
     // window the grid shows.
     let mut batch = drv
