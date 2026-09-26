@@ -10,6 +10,7 @@
  */
 import type { Rows } from "./commands";
 import { buildSeries, type Point } from "./chart";
+import { splitStatements, type SqlDialect } from "./sqlSplit";
 
 export const STORAGE_PREFIX = "tiq:metrics:";
 
@@ -111,4 +112,68 @@ export function widgetValue(rows: Rows, kind: WidgetKind): WidgetValue {
     return { kind: "series", points: buildSeries(labels, values) };
   }
   return { kind: "table", columns: rows.columns, rows: rows.rows.slice(0, 20) };
+}
+
+/** First SQL keyword of `stmt`, skipping leading `--` line comments and block
+ *  comments — mirrors Rust's `exec::first_keyword` (src-tauri/src/drivers/exec.rs). */
+function firstKeyword(stmt: string): string {
+  let s = stmt;
+  for (;;) {
+    s = s.replace(/^\s+/, "");
+    if (s.startsWith("--")) {
+      const nl = s.indexOf("\n");
+      s = nl === -1 ? "" : s.slice(nl + 1);
+      continue;
+    }
+    if (s.startsWith("/*")) {
+      const end = s.indexOf("*/");
+      s = end === -1 ? "" : s.slice(end + 2);
+      continue;
+    }
+    break;
+  }
+  const m = /^[A-Za-z0-9_]+/.exec(s);
+  return m ? m[0].toUpperCase() : "";
+}
+
+/** First keywords a widget's SQL may start with (controller ruling, fix round 1). */
+const READ_ONLY_FIRST_KEYWORDS = new Set([
+  "SELECT",
+  "WITH",
+  "SHOW",
+  "EXPLAIN",
+  "VALUES",
+  "TABLE",
+  "DESCRIBE",
+  "DESC",
+]);
+
+/** A `WITH` is rejected if any of these appear as a whole keyword anywhere in it —
+ *  a CTE can smuggle a write past the first-keyword check (`WITH d AS (DELETE ...)`). */
+const WRITE_KEYWORDS = ["INSERT", "UPDATE", "DELETE", "MERGE"];
+
+/**
+ * True when `sql` is exactly one statement whose first keyword is read-only —
+ * a widget re-runs its SQL unattended every refresh interval, so a write
+ * statement (or a second statement smuggled in after a `;`) must never reach
+ * `query_rows`. Checked both when the add/edit modal validates (so a user
+ * can't save a writer) and again at refresh time (so a board hand-edited in
+ * localStorage, or saved by an older build, can't silently run one either).
+ *
+ * Statement splitting reuses `sqlSplit.ts`'s quote/comment-aware
+ * `splitStatements` — a `;` inside a string literal or comment is not a
+ * statement boundary (`select ';' as x` is one statement), and a lone
+ * trailing `;` produces no second (empty) statement.
+ */
+export function isReadOnlyWidgetSql(sql: string, dialect: SqlDialect = "postgres"): boolean {
+  const stmts = splitStatements(sql, dialect);
+  if (stmts.length !== 1) return false;
+  const text = stmts[0].text;
+  const kw = firstKeyword(text);
+  if (!READ_ONLY_FIRST_KEYWORDS.has(kw)) return false;
+  if (kw === "WITH") {
+    const upper = text.toUpperCase();
+    if (WRITE_KEYWORDS.some((w) => new RegExp(`\\b${w}\\b`).test(upper))) return false;
+  }
+  return true;
 }

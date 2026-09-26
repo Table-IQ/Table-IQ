@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { queryRows, type Rows } from "../lib/commands";
+import { queryRows, type Engine, type Rows } from "../lib/commands";
 import {
+  isReadOnlyWidgetSql,
   loadBoard,
   saveBoard,
   widgetValue,
@@ -11,26 +12,15 @@ import {
 } from "../lib/metrics";
 import { shouldApply } from "../lib/sqlLog";
 import { toNumber } from "../lib/chart";
+import { dialectFor, type SqlDialect } from "../lib/sqlSplit";
 import { ChartSvg } from "./ChartView";
 import { Panel } from "./ui/Panel";
 import { Toolbar, ToolbarButton, ToolbarSpacer } from "./ui/Toolbar";
 import { IconPlus, IconRefresh, IconSliders, IconTrash } from "./ui/Icon";
+import { confirmDialog } from "../lib/confirmDialog";
 
 const field =
   "rounded-md border border-border bg-bg px-2 py-1 text-xs text-text placeholder:text-muted focus:border-primary focus:outline-none";
-
-/** Native confirm via the Tauri dialog plugin (desktop), falling back to the
- *  browser dialog when running outside the webview — same pattern as
- *  `TableView.tsx`'s `confirmDestructive` (not shared, to avoid a cross-view
- *  import for four lines). */
-async function confirmDelete(message: string): Promise<boolean> {
-  try {
-    const { confirm } = await import("@tauri-apps/plugin-dialog");
-    return await confirm(message, { title: "Delete widget", kind: "warning" });
-  } catch {
-    return typeof window !== "undefined" ? window.confirm(message) : false;
-  }
-}
 
 type ModalState = { mode: "add" } | { mode: "edit"; widget: Widget };
 
@@ -39,9 +29,10 @@ type ModalState = { mode: "add" } | { mode: "edit"; widget: Widget };
  * SQL-backed widgets, TablePlus parity. Board persistence is `src/lib/metrics.ts`
  * (`tiq:metrics:<connId>`); each `WidgetCard` owns its own fetch/refresh loop.
  */
-export function MetricsBoard({ connId }: { connId: string }) {
+export function MetricsBoard({ connId, engine }: { connId: string; engine: Engine }) {
   const [board, setBoard] = useState<Board>(() => loadBoard(connId));
   const [modal, setModal] = useState<ModalState | null>(null);
+  const dialect = dialectFor(engine);
 
   // The board is keyed by connId — a different connId (rare: this component
   // remounts on tab switch, per the singleton-tab pattern) should re-read.
@@ -65,7 +56,10 @@ export function MetricsBoard({ connId }: { connId: string }) {
   };
 
   const deleteWidget = async (widget: Widget) => {
-    const ok = await confirmDelete(`Delete widget "${widget.title}"? This can't be undone.`);
+    const ok = await confirmDialog(
+      `Delete widget "${widget.title}"? This can't be undone.`,
+      "Delete widget",
+    );
     if (!ok) return;
     persist({ widgets: board.widgets.filter((x) => x.id !== widget.id) });
   };
@@ -88,6 +82,7 @@ export function MetricsBoard({ connId }: { connId: string }) {
                 key={w.id}
                 connId={connId}
                 widget={w}
+                dialect={dialect}
                 onEdit={() => setModal({ mode: "edit", widget: w })}
                 onDelete={() => void deleteWidget(w)}
               />
@@ -96,11 +91,12 @@ export function MetricsBoard({ connId }: { connId: string }) {
         )}
       </div>
       {modal?.mode === "add" && (
-        <WidgetModal onClose={() => setModal(null)} onSave={addWidget} />
+        <WidgetModal dialect={dialect} onClose={() => setModal(null)} onSave={addWidget} />
       )}
       {modal?.mode === "edit" && (
         <WidgetModal
           initial={modal.widget}
+          dialect={dialect}
           onClose={() => setModal(null)}
           onSave={(w) => editWidget(modal.widget.id, w)}
         />
@@ -122,11 +118,13 @@ export function MetricsBoard({ connId }: { connId: string }) {
 function WidgetCard({
   connId,
   widget,
+  dialect,
   onEdit,
   onDelete,
 }: {
   connId: string;
   widget: Widget;
+  dialect: SqlDialect;
   onEdit: () => void;
   onDelete: () => void;
 }) {
@@ -136,6 +134,16 @@ function WidgetCard({
   const genRef = useRef(0);
 
   useEffect(() => {
+    // Re-checked here, not just in the add/edit modal, so a board loaded from
+    // localStorage (hand-edited, or saved by an older build before this guard
+    // existed) can't silently repeat a write every refresh interval either.
+    if (!isReadOnlyWidgetSql(widget.sql, dialect)) {
+      setRows(null);
+      setError(
+        "Widget SQL must be a single read-only statement (SELECT/WITH/SHOW/EXPLAIN/VALUES/TABLE/DESCRIBE/DESC) — refusing to run it.",
+      );
+      return;
+    }
     let stopped = false;
     // In-flight flag is a LOCAL closure var, not a ref shared across effect
     // re-runs — a widget edit tears down this effect (a new one starts with
@@ -170,7 +178,7 @@ function WidgetCard({
       genRef.current++;
       window.clearInterval(id);
     };
-  }, [connId, widget.sql, widget.kind, widget.refreshSec]);
+  }, [connId, widget.sql, widget.kind, widget.refreshSec, dialect]);
 
   const value = rows ? widgetValue(rows, widget.kind) : null;
 
@@ -260,10 +268,12 @@ function TableValue({ columns, rows }: { columns: string[]; rows: (string | null
 
 function WidgetModal({
   initial,
+  dialect,
   onClose,
   onSave,
 }: {
   initial?: Widget;
+  dialect: SqlDialect;
   onClose: () => void;
   onSave: (w: Omit<Widget, "id">) => void;
 }) {
@@ -273,9 +283,10 @@ function WidgetModal({
   const [refreshSec, setRefreshSec] = useState(initial?.refreshSec ?? 10);
 
   const titleValid = title.trim().length > 0;
-  const sqlValid = sql.trim().length > 0;
+  const sqlPresent = sql.trim().length > 0;
+  const sqlReadOnly = !sqlPresent || isReadOnlyWidgetSql(sql, dialect);
   const refreshValid = Number.isFinite(refreshSec) && refreshSec >= MIN_REFRESH_SEC;
-  const valid = titleValid && sqlValid && refreshValid;
+  const valid = titleValid && sqlPresent && sqlReadOnly && refreshValid;
 
   const save = () => {
     if (!valid) return;
@@ -315,6 +326,12 @@ function WidgetModal({
             value={sql}
             onChange={(e) => setSql(e.target.value)}
           />
+          {sqlPresent && !sqlReadOnly && (
+            <span className="mt-1 block text-[11px] text-danger">
+              Must be a single read-only statement (SELECT, WITH, SHOW, EXPLAIN, VALUES,
+              TABLE, DESCRIBE or DESC) — no writes, no multiple statements.
+            </span>
+          )}
         </label>
         <div className="flex gap-3">
           <label className="block flex-1 text-xs">

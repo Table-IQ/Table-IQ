@@ -846,7 +846,7 @@ export function MainShell() {
       )}
       {activeTab?.kind === "metrics" && (
         <ErrorBoundary key={activeTab.key} label={`metrics tab ${activeTab.key}`}>
-          <MetricsBoard connId={active.id} />
+          <MetricsBoard connId={active.id} engine={active.engine as Engine} />
         </ErrorBoundary>
       )}
       {activeTab?.kind === "table" &&

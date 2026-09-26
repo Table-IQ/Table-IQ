@@ -1,5 +1,13 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { loadBoard, MIN_REFRESH_SEC, saveBoard, widgetValue, type Board, type Widget } from "./metrics";
+import {
+  isReadOnlyWidgetSql,
+  loadBoard,
+  MIN_REFRESH_SEC,
+  saveBoard,
+  widgetValue,
+  type Board,
+  type Widget,
+} from "./metrics";
 import type { Rows } from "./commands";
 
 function memStorage(): Pick<Storage, "getItem" | "setItem" | "removeItem"> {
@@ -129,5 +137,66 @@ describe("widgetValue", () => {
 describe("MIN_REFRESH_SEC", () => {
   it("is 5", () => {
     expect(MIN_REFRESH_SEC).toBe(5);
+  });
+});
+
+describe("isReadOnlyWidgetSql", () => {
+  it("accepts a plain select", () => {
+    expect(isReadOnlyWidgetSql("select 1")).toBe(true);
+  });
+
+  it("accepts a semicolon inside a string literal", () => {
+    expect(isReadOnlyWidgetSql("select ';' as x")).toBe(true);
+  });
+
+  it("rejects two statements separated by a top-level semicolon", () => {
+    expect(isReadOnlyWidgetSql("SELECT 1; DROP TABLE t")).toBe(false);
+  });
+
+  it("rejects a WITH whose CTE body writes", () => {
+    expect(
+      isReadOnlyWidgetSql("WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d"),
+    ).toBe(false);
+  });
+
+  it("accepts a leading line comment before the statement", () => {
+    expect(isReadOnlyWidgetSql("-- comment\nSELECT 1")).toBe(true);
+  });
+
+  it("accepts the other read-only first keywords", () => {
+    for (const sql of [
+      "SHOW TABLES",
+      "EXPLAIN SELECT 1",
+      "VALUES (1)",
+      "TABLE t",
+      "DESCRIBE t",
+      "DESC t",
+      "WITH x AS (SELECT 1) SELECT * FROM x",
+    ]) {
+      expect(isReadOnlyWidgetSql(sql)).toBe(true);
+    }
+  });
+
+  it("rejects writer statements outright", () => {
+    for (const sql of [
+      "UPDATE t SET a = 1",
+      "INSERT INTO t VALUES (1)",
+      "DELETE FROM t",
+      "DROP TABLE t",
+      "CREATE TABLE t (a int)",
+    ]) {
+      expect(isReadOnlyWidgetSql(sql)).toBe(false);
+    }
+  });
+
+  it("rejects a trailing statement after a real semicolon, but not a trailing lone semicolon", () => {
+    expect(isReadOnlyWidgetSql("SELECT 1;")).toBe(true);
+    expect(isReadOnlyWidgetSql("SELECT 1; ")).toBe(true);
+    expect(isReadOnlyWidgetSql("SELECT 1;SELECT 2")).toBe(false);
+  });
+
+  it("rejects blank SQL", () => {
+    expect(isReadOnlyWidgetSql("")).toBe(false);
+    expect(isReadOnlyWidgetSql("   ")).toBe(false);
   });
 });
