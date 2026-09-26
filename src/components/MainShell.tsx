@@ -41,12 +41,11 @@ import {
   IconSidebarRight,
   IconStructure,
 } from "./ui/Icon";
-import { clearMetaCaches, useConnections } from "../state/connectionStore";
+import { clearMetaCaches, closeConnection, useConnections } from "../state/connectionStore";
 import { useTabs } from "../state/tabsStore";
 import type { Tab } from "../state/tabsStore";
 import {
   connect,
-  disconnect,
   downloadText,
   exportTable,
   listDatabases,
@@ -90,8 +89,7 @@ export function MainShell() {
     open,
     openSession,
     switchTo,
-    closeSession,
-    setSchema,
+    updateSession,
     disconnected,
     setDisconnected,
   } = useConnections();
@@ -99,10 +97,15 @@ export function MainShell() {
   const [refreshingSchema, setRefreshingSchema] = useState(false);
   // A dropped session (broken pipe, server shutdown, …) raises the reconnect
   // banner. commands.ts fires this from any live-session invoke that errors.
+  // A background session's failure must not flag this one (the shell is keyed by
+  // connection, so `active` here is fixed for the shell's lifetime).
+  const activeId = active?.id;
   useEffect(() => {
-    setConnectionLostHandler(() => setDisconnected(true));
+    setConnectionLostHandler((id) => {
+      if (!id || id === activeId) setDisconnected(true);
+    });
     return () => setConnectionLostHandler(null);
-  }, [setDisconnected]);
+  }, [setDisconnected, activeId]);
   // Header color chip resolves from the saved ConnConfig (ConnectedInfo doesn't carry color).
   const activeColor = active ? saved.find((c) => c.id === active.id)?.color ?? null : null;
   const tabsState = useTabs();
@@ -297,7 +300,9 @@ export function MainShell() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [schema, openTable, openQuery, openErd]);
 
-  if (!active || !schema) return null;
+  // Until this connection's tabs are hydrated the tab store may still hold the
+  // previous connection's — never render (or persist) those under this one.
+  if (!active || !schema || hydrated !== active.id) return null;
   const fileEngine = isFileEngine(active.engine as Engine);
 
   const activeTab = tabs.find((t) => t.key === activeKey) ?? null;
@@ -307,20 +312,17 @@ export function MainShell() {
       : null;
 
   // Closes this connection only: another open session (if any) takes over.
-  const onDisconnect = async () => {
-    await disconnect(active.id);
-    clearMetaCaches();
-    closeSession(active.id);
-  };
+  const onDisconnect = () => closeConnection(active.id);
 
   /** Re-introspect the database. The button used to hand `setSchema` the very
    *  object it already held, so a table created from a Query tab never showed up. */
   const onRefreshSchema = async () => {
     if (refreshingSchema) return;
     setRefreshingSchema(true);
+    const id = active.id;
     try {
-      clearMetaCaches();
-      setSchema(await listObjects(active.id));
+      clearMetaCaches(id);
+      updateSession(id, { schema: await listObjects(id) });
     } catch (e) {
       console.error("schema refresh failed", e);
     } finally {
@@ -329,16 +331,18 @@ export function MainShell() {
   };
 
   /** Re-open the dropped session in place. Reuses connect() (rebuilds the pool)
-      then refreshes the schema; openSession clears the disconnected flag on success. */
+      then refreshes the schema and clears the disconnected flag on success. */
   const onReconnect = async () => {
     if (reconnecting) return;
     setReconnecting(true);
     setConnMsg(null);
+    const id = active.id;
     try {
-      const info = await connect(active.id);
-      const schemaModel = await listObjects(active.id);
-      clearMetaCaches();
-      openSession(info, schemaModel);
+      const info = await connect(id);
+      const schemaModel = await listObjects(id);
+      clearMetaCaches(id);
+      updateSession(id, { info, schema: schemaModel });
+      if (useConnections.getState().active?.id === id) setDisconnected(false);
     } catch (e) {
       console.error("reconnect failed", e);
       setConnMsg(`Could not reconnect to '${active.database}': ${e}`);
@@ -977,13 +981,15 @@ export function MainShell() {
           busy={dbList.loading}
           error={dbList.error}
           onPick={async (db) => {
+            const id = active.id;
             try {
-              const info = await switchDatabase(active.id, db);
-              const schemaModel = await listObjects(active.id);
-              markConnected(active.id);
-              clearMetaCaches();
-              reset();
-              openSession(info, schemaModel);
+              const info = await switchDatabase(id, db);
+              const schemaModel = await listObjects(id);
+              markConnected(id);
+              clearMetaCaches(id);
+              // Only the tabs of *this* connection belong to the old database.
+              if (useConnections.getState().active?.id === id) reset();
+              updateSession(id, { info, schema: schemaModel });
               setShowDbPicker(false);
               // Reset cache so the next open re-fetches against the new active session.
               setDbList({ loading: false, items: [], error: null });

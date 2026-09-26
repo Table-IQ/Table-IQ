@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { ConnectedInfo, SchemaModel } from "../lib/commands";
-import { useConnections } from "./connectionStore";
+import { clearMetaCaches, useConnections } from "./connectionStore";
+import { useTabs } from "./tabsStore";
 
 const info = (id: string): ConnectedInfo => ({ id, name: id, database: `${id}_db`, engine: "postgres" });
 const schema = (name: string): SchemaModel => ({ schemas: [{ name, objects: [] }] as never });
@@ -84,5 +85,108 @@ describe("connectionStore sessions", () => {
     expect(st().active).toBeNull();
     expect(st().schema).toBeNull();
     expect(st().open).toEqual([]);
+  });
+});
+
+// Regression: review Critical #1 — the next shell's first render used the
+// previous connection's tabs (same `query:1` key → A's SQL landed in B's tab).
+describe("connectionStore sessions × tabs", () => {
+  beforeEach(() => {
+    useConnections.setState({ active: null, schema: null, open: [], disconnected: false });
+    useTabs.getState().reset();
+  });
+
+  it("switching to another connection clears the live tab list", () => {
+    const st = useConnections.getState;
+    st().openSession(info("a"), schema("A"));
+    st().openSession(info("b"), schema("B"));
+    useTabs.getState().openQuery("SELECT 'b';");
+    st().switchTo("a");
+    expect(useTabs.getState().tabs).toEqual([]);
+  });
+
+  it("opening a new connection clears the live tab list", () => {
+    useConnections.getState().openSession(info("a"), schema("A"));
+    useTabs.getState().openQuery("SELECT 'a';");
+    useConnections.getState().openSession(info("b"), schema("B"));
+    expect(useTabs.getState().tabs).toEqual([]);
+  });
+
+  it("closing the active connection clears the live tab list", () => {
+    const st = useConnections.getState;
+    st().openSession(info("a"), schema("A"));
+    st().openSession(info("b"), schema("B"));
+    useTabs.getState().openQuery("SELECT 'b';");
+    st().closeSession("b");
+    expect(useTabs.getState().tabs).toEqual([]);
+  });
+
+  it("re-opening the active connection (reconnect) keeps its tabs", () => {
+    useConnections.getState().openSession(info("a"), schema("A"));
+    useTabs.getState().openQuery("SELECT 'a';");
+    useConnections.getState().openSession(info("a"), schema("A2"));
+    expect(useTabs.getState().tabs).toHaveLength(1);
+  });
+
+  it("closing a background connection keeps the active tabs", () => {
+    const st = useConnections.getState;
+    st().openSession(info("a"), schema("A"));
+    st().openSession(info("b"), schema("B"));
+    useTabs.getState().openQuery("SELECT 'b';");
+    st().closeSession("a");
+    expect(useTabs.getState().tabs).toHaveLength(1);
+  });
+});
+
+// Regression: review Important #2 — a schema refresh that resolved after the user
+// switched away landed on the wrong session.
+describe("updateSession", () => {
+  beforeEach(() => {
+    useConnections.setState({ active: null, schema: null, open: [], disconnected: false });
+  });
+
+  it("updating a background session leaves the active schema alone", () => {
+    const st = useConnections.getState;
+    st().openSession(info("a"), schema("A"));
+    st().openSession(info("b"), schema("B"));
+    st().updateSession("a", { schema: schema("A-refreshed") });
+    expect(st().active?.id).toBe("b");
+    expect(st().schema).toEqual(schema("B"));
+    st().switchTo("a");
+    expect(st().schema).toEqual(schema("A-refreshed"));
+  });
+
+  it("updating the active session updates the live info and schema", () => {
+    const st = useConnections.getState;
+    st().openSession(info("a"), schema("A"));
+    st().updateSession("a", { info: { ...info("a"), database: "other" }, schema: schema("A2") });
+    expect(st().active?.database).toBe("other");
+    expect(st().schema).toEqual(schema("A2"));
+  });
+
+  it("updating a closed session is a no-op", () => {
+    const st = useConnections.getState;
+    st().openSession(info("a"), schema("A"));
+    st().updateSession("zzz", { schema: schema("Z") });
+    expect(st().open.map((o) => o.info.id)).toEqual(["a"]);
+    expect(st().schema).toEqual(schema("A"));
+  });
+});
+
+// Regression: review Important #3 — closing one connection wiped every open
+// session's metadata caches, and reopening a closed one served stale ones.
+describe("clearMetaCaches(connId)", () => {
+  it("drops only that connection's cached FKs and table meta", () => {
+    useConnections.setState({
+      fks: { a: [], b: [] },
+      tableMeta: {
+        "a.public.t": { count: 1, exact: true, pk: ["id"] },
+        "b.public.t": { count: 2, exact: true, pk: ["id"] },
+      },
+    });
+    clearMetaCaches("a");
+    const s = useConnections.getState();
+    expect(Object.keys(s.fks)).toEqual(["b"]);
+    expect(Object.keys(s.tableMeta)).toEqual(["b.public.t"]);
   });
 });

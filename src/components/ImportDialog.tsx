@@ -35,7 +35,7 @@ export function ImportDialog({
   schema: SchemaModel;
   onClose: () => void;
 }) {
-  const { setSchema } = useConnections();
+  const { updateSession } = useConnections();
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [target, setTarget] = useState<{ schema: string; table: string } | null>(null);
   const [mapping, setMapping] = useState<(string | null)[]>([]);
@@ -141,7 +141,7 @@ export function ImportDialog({
         columns,
         rows,
       );
-      setSchema(await listObjects(connId).catch(() => schema));
+      updateSession(connId, { schema: await listObjects(connId).catch(() => schema) });
       setStatus({ kind: "ok", msg: `Imported ${inserted} rows` });
     } catch (e) {
       setStatus({ kind: "err", msg: String(e) });
@@ -183,7 +183,7 @@ export function ImportDialog({
         !parquetTableExists,
         pq.bytes,
       );
-      setSchema(await listObjects(connId).catch(() => schema));
+      updateSession(connId, { schema: await listObjects(connId).catch(() => schema) });
       setStatus({ kind: "ok", msg: `Imported ${inserted.toLocaleString()} rows` });
     } catch (e) {
       setStatus({ kind: "err", msg: String(e) });

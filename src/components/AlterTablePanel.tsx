@@ -30,7 +30,7 @@ export function AlterTablePanel({
   columns: ColumnInfo[];
   onClose: () => void;
 }) {
-  const { setSchema } = useConnections();
+  const { updateSession } = useConnections();
   const [drops, setDrops] = useState<Set<string>>(new Set());
   // Per-column rename + retype, seeded from the current name/type. An op is only
   // emitted when a value actually differs from the original.
@@ -119,7 +119,7 @@ export function AlterTablePanel({
     try {
       await runScript(connId, sql);
       const refreshed = await listObjects(connId).catch(() => null);
-      if (refreshed) setSchema(refreshed);
+      if (refreshed) updateSession(connId, { schema: refreshed });
       setSql(null);
       setStatus({ kind: "ok", msg: "Applied" });
     } catch (e) {

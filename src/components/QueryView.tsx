@@ -141,6 +141,14 @@ export function QueryView({
     },
     [],
   );
+  // Save a pending edit the moment focus leaves the editor: a click on the
+  // connection rail unmounts this tab before the debounce would have fired.
+  const flushSql = useCallback(() => {
+    if (saveTimer.current === undefined) return;
+    window.clearTimeout(saveTimer.current);
+    saveTimer.current = undefined;
+    setTabSql(tabKey, sqlRef.current);
+  }, [setTabSql, tabKey]);
 
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
@@ -514,6 +522,7 @@ export function QueryView({
           onChange={onSqlChange}
           onRun={runOne}
           onRunAll={runAll}
+          onBlur={flushSql}
           schema={completionSchema}
           dialect={engine}
         />

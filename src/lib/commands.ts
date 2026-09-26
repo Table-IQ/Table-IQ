@@ -32,9 +32,10 @@ export function isConnectionLostError(msg: string): boolean {
 // errors are surfaced by the connection form, not the banner.
 const LIFECYCLE_CMDS = new Set(["connect", "test_connection", "disconnect"]);
 
-let connectionLostHandler: (() => void) | null = null;
-/** MainShell registers a callback fired when a live session drops. */
-export function setConnectionLostHandler(fn: (() => void) | null): void {
+let connectionLostHandler: ((connId?: string) => void) | null = null;
+/** MainShell registers a callback fired when a live session drops, with that
+ *  session's id when the command carried one (`{ id }`). */
+export function setConnectionLostHandler(fn: ((connId?: string) => void) | null): void {
   connectionLostHandler = fn;
 }
 
@@ -69,7 +70,7 @@ function invoke<T>(cmd: string, ...rest: unknown[]): Promise<T> {
   return call.catch(
     (e: unknown) => {
       if (!LIFECYCLE_CMDS.has(cmd) && isConnectionLostError(String((e as { message?: string })?.message ?? e))) {
-        connectionLostHandler?.();
+        connectionLostHandler?.((rest[0] as { id?: unknown } | undefined)?.id as string | undefined);
       }
       throw e;
     },

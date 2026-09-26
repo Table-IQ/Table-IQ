@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import {
+  disconnect,
   foreignKeys,
   openTable,
   primaryKey,
@@ -8,6 +9,8 @@ import {
   type ForeignKey,
   type SchemaModel,
 } from "../lib/commands";
+import { logError } from "../lib/report";
+import { useTabs } from "./tabsStore";
 
 /** Per-table facts that don't depend on the visible window. `count`/`exact` are
  *  the *unfiltered* totals — a filtered count is asked for directly. */
@@ -44,6 +47,9 @@ interface ConnectionState {
   /** Forget a session (the caller disconnects it). Closing the active one falls
    *  back to the last remaining session, or the welcome screen when none remain. */
   closeSession: (id: string) => void;
+  /** Refresh one session's info/schema (reconnect, ⌘D, schema refresh) without
+   *  bringing it to the front — the user may have switched away while it loaded. */
+  updateSession: (id: string, patch: Partial<OpenSession>) => void;
   setSchema: (schema: SchemaModel | null) => void;
   setDisconnected: (disconnected: boolean) => void;
 }
@@ -52,7 +58,14 @@ interface ConnectionState {
 const snapshot = (s: ConnectionState): OpenSession[] =>
   s.active ? s.open.map((o) => (o.info.id === s.active!.id ? { ...o, schema: s.schema } : o)) : s.open;
 
-export const useConnections = create<ConnectionState>((set) => ({
+// The tab list is global and each shell re-hydrates its connection's slice on
+// mount; clearing it whenever the active connection changes keeps the next shell
+// from ever rendering (or persisting over) the previous connection's tabs.
+function leaving(from: ConnectedInfo | null, toId: string | null): void {
+  if (from && from.id !== toId) useTabs.getState().reset();
+}
+
+export const useConnections = create<ConnectionState>((set, get) => ({
   saved: [],
   open: [],
   active: null,
@@ -62,7 +75,8 @@ export const useConnections = create<ConnectionState>((set) => ({
   tableMeta: {},
   setSaved: (saved) => set({ saved }),
   // A freshly active connection is, by definition, no longer disconnected.
-  openSession: (info, schema) =>
+  openSession: (info, schema) => {
+    leaving(get().active, info.id);
     set((s) => {
       const open = snapshot(s);
       const entry = { info, schema };
@@ -73,19 +87,33 @@ export const useConnections = create<ConnectionState>((set) => ({
         schema,
         disconnected: false,
       };
-    }),
-  switchTo: (id) =>
+    });
+  },
+  switchTo: (id) => {
+    const s = get();
+    const target = s.open.find((o) => o.info.id === id);
+    if (!target || s.active?.id === id) return;
+    leaving(s.active, id);
+    set({ open: snapshot(s), active: target.info, schema: target.schema, disconnected: false });
+  },
+  closeSession: (id) => {
+    const s = get();
+    const open = s.open.filter((o) => o.info.id !== id);
+    if (s.active?.id !== id) return set({ open });
+    const next = open[open.length - 1] ?? null;
+    leaving(s.active, next?.info.id ?? null);
+    set({ open, active: next?.info ?? null, schema: next?.schema ?? null, disconnected: false });
+  },
+  updateSession: (id, patch) =>
     set((s) => {
-      const target = s.open.find((o) => o.info.id === id);
-      if (!target || s.active?.id === id) return s;
-      return { open: snapshot(s), active: target.info, schema: target.schema, disconnected: false };
-    }),
-  closeSession: (id) =>
-    set((s) => {
-      const open = s.open.filter((o) => o.info.id !== id);
+      if (!s.open.some((o) => o.info.id === id)) return s;
+      const open = s.open.map((o) => (o.info.id === id ? { ...o, ...patch } : o));
       if (s.active?.id !== id) return { open };
-      const next = open[open.length - 1] ?? null;
-      return { open, active: next?.info ?? null, schema: next?.schema ?? null, disconnected: false };
+      return {
+        open,
+        active: patch.info ?? s.active,
+        schema: patch.schema !== undefined ? patch.schema : s.schema,
+      };
     }),
   setSchema: (schema) => set({ schema }),
   setDisconnected: (disconnected) => set({ disconnected }),
@@ -158,9 +186,35 @@ export function invalidateTableMeta(connId: string, schema: string, table: strin
   });
 }
 
-/** Drop every cached fact — sidebar Refresh, database switch, disconnect. */
-export function clearMetaCaches(): void {
-  inflightFks.clear();
-  inflightMeta.clear();
-  useConnections.setState({ fks: {}, tableMeta: {} });
+/** Drop cached facts — one connection's (disconnect), or all of them when no id
+ *  is given (sidebar Refresh, database switch). */
+export function clearMetaCaches(connId?: string): void {
+  if (connId === undefined) {
+    inflightFks.clear();
+    inflightMeta.clear();
+    useConnections.setState({ fks: {}, tableMeta: {} });
+    return;
+  }
+  const mine = (k: string) => k.startsWith(`${connId}.`);
+  inflightFks.delete(connId);
+  for (const k of [...inflightMeta.keys()]) if (mine(k)) inflightMeta.delete(k);
+  useConnections.setState((s) => {
+    const fks = { ...s.fks };
+    delete fks[connId];
+    return {
+      fks,
+      tableMeta: Object.fromEntries(Object.entries(s.tableMeta).filter(([k]) => !mine(k))),
+    };
+  });
+}
+
+/** Close one open connection from anywhere (rail ×, Disconnect): the UI closes
+ *  even if the backend call fails, so a dead session can always be dismissed. */
+export function closeConnection(id: string): Promise<void> {
+  return disconnect(id)
+    .catch((e) => logError("close connection", e))
+    .finally(() => {
+      clearMetaCaches(id);
+      useConnections.getState().closeSession(id);
+    });
 }

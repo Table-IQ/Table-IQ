@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { ConnectionRail } from "./ConnectionRail";
 import { Wordmark } from "./Brand";
 import { ThemeToggle } from "./ThemeToggle";
-import { disconnect, kvGet, kvScan, type KeyInfo, type KvValue } from "../lib/commands";
-import { useConnections } from "../state/connectionStore";
+import { kvGet, kvScan, type KeyInfo, type KvValue } from "../lib/commands";
+import { closeConnection, useConnections } from "../state/connectionStore";
 import { StatusBar, StatusDot } from "./ui/StatusBar";
 import { ColorDot } from "./ui/Chip";
 import { Section } from "./ui/Section";
@@ -15,7 +15,7 @@ import { IconRefresh, IconSearch } from "./ui/Icon";
  * native titlebar overlay region, wordmark + breadcrumb chip, status bar.
  */
 export function KvShell() {
-  const { active, saved, closeSession } = useConnections();
+  const { active, saved } = useConnections();
   const activeColor = active ? saved.find((c) => c.id === active.id)?.color ?? null : null;
   const [pattern, setPattern] = useState("*");
   const [keys, setKeys] = useState<KeyInfo[]>([]);
@@ -68,8 +68,7 @@ export function KvShell() {
           <ThemeToggle />
           <button
             onClick={async () => {
-              await disconnect(active.id);
-              closeSession(active.id);
+              await closeConnection(active.id);
             }}
             className="rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-text"
           >

@@ -1,8 +1,6 @@
 import { useState } from "react";
 import { createPortal } from "react-dom";
-import { disconnect } from "../lib/commands";
-import { logError } from "../lib/report";
-import { useConnections } from "../state/connectionStore";
+import { closeConnection, useConnections } from "../state/connectionStore";
 import { ContextMenu } from "./ui/ContextMenu";
 import { IconClose, IconDatabase, IconSliders } from "./ui/Icon";
 
@@ -14,7 +12,7 @@ type Label = "database" | "connection";
  * or more are open; clicking one brings it to the front without reconnecting.
  */
 export function ConnectionRail() {
-  const { open, active, saved, switchTo, closeSession } = useConnections();
+  const { open, active, saved, switchTo } = useConnections();
   const [label, setLabel] = useState<Label>(() =>
     localStorage.getItem(LABEL_KEY) === "connection" ? "connection" : "database",
   );
@@ -26,10 +24,6 @@ export function ConnectionRail() {
     localStorage.setItem(LABEL_KEY, l);
     setLabel(l);
   };
-  const onClose = (id: string) =>
-    disconnect(id)
-      .catch((e) => logError("connection rail: disconnect", e))
-      .finally(() => closeSession(id));
 
   return (
     <nav
@@ -58,10 +52,10 @@ export function ConnectionRail() {
                 <span className="w-full truncate text-center text-[11px] leading-tight">{text}</span>
               </button>
               <button
-                onClick={() => void onClose(info.id)}
+                onClick={() => void closeConnection(info.id)}
                 aria-label={`Close ${info.name}`}
                 title="Close connection"
-                className="absolute right-0.5 top-0.5 hidden h-4 w-4 items-center justify-center rounded-full bg-surface-2 text-muted hover:text-text group-hover:flex"
+                className="absolute right-0.5 top-0.5 hidden h-4 w-4 items-center justify-center rounded-full bg-surface-2 text-muted hover:text-text group-focus-within:flex group-hover:flex"
               >
                 <IconClose size={9} />
               </button>
