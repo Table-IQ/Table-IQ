@@ -3,6 +3,8 @@ import { EditorView, basicSetup } from "codemirror";
 import { Compartment, Prec } from "@codemirror/state";
 import { sql, PostgreSQL, MySQL, MSSQL, SQLite, type SQLDialect } from "@codemirror/lang-sql";
 import { keymap, placeholder } from "@codemirror/view";
+import { syntaxHighlighting } from "@codemirror/language";
+import { sqlHighlight } from "../lib/sqlHighlight";
 import type { Engine } from "../lib/commands";
 
 export interface SqlEditorHandle {
@@ -101,6 +103,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(
       parent: host.current,
       extensions: [
         basicSetup,
+        syntaxHighlighting(sqlHighlight),
         sqlCompartment.of(
           sql({ dialect: cmDialectFor(dialectRef.current), schema: schemaRef.current }),
         ),
@@ -131,9 +134,9 @@ export const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(
           if (u.docChanged) onChangeRef.current(u.state.doc.toString());
         }),
         EditorView.theme({
-          "&": { height: "100%", backgroundColor: "var(--bg)", color: "var(--text)" },
+          "&": { height: "100%", backgroundColor: "var(--bg)", color: "var(--syn-text)" },
           ".cm-scroller": { fontFamily: "var(--font-mono)", fontSize: "13px" },
-          ".cm-gutters": { backgroundColor: "var(--surface)", color: "var(--muted)", border: "none" },
+          ".cm-gutters": { backgroundColor: "var(--bg)", color: "var(--syn-gutter)", border: "none" },
           ".cm-activeLine": { backgroundColor: "color-mix(in srgb, var(--primary) 6%, transparent)" },
           ".cm-activeLineGutter": { backgroundColor: "transparent" },
           ".cm-content": { caretColor: "var(--text)" },

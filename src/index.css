@@ -56,6 +56,14 @@
   --delay-busy: 150ms;
   --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
   --ease-in: cubic-bezier(0.4, 0, 1, 1);
+
+  /* SQL syntax — TablePlus palette, sampled (DESIGN.md "SQL editor syntax colours") */
+  --syn-text: #000000;
+  --syn-keyword: #6499d3;
+  --syn-string: #cf5478;
+  --syn-comment: #449940;
+  --syn-number: #1a01f5;
+  --syn-gutter: #7e7e7e;
 }
 
 [data-theme="dark"] {
@@ -78,6 +86,13 @@
   --ok: #34d399;
   --shadow-soft: 0 1px 2px rgb(0 0 0 / 0.45), 0 1px 1px rgb(0 0 0 / 0.3);
   --shadow-pop: 0 8px 24px rgb(0 0 0 / 0.55), 0 2px 6px rgb(0 0 0 / 0.3);
+
+  --syn-text: var(--text);
+  --syn-keyword: #6cb6ff;
+  --syn-string: #ff7fa3;
+  --syn-comment: #6bc46d;
+  --syn-number: #a5a3ff;
+  --syn-gutter: #6e7681;
 }
 
 @theme inline {
