@@ -46,7 +46,7 @@ In the SQL editor, TablePlus uses Xcode-style colours. Soft-blue keywords recede
 ![Grid, dark](assets/connection-tabs-readability/08-grid-dark.png)
 
 ## Tests + review + QA
-- **Unit:** vitest **387/387** (was 366 on main).
+- **Unit:** vitest **387/387** at finalize, **408/408** after the ship-phase fixes (366 on main).
   - New: 17 store tests (sessions, switching, close, tab isolation, `updateSession`, scoped cache clear), 2 SQL highlighter tests that parse real SQL, and updated theme/auto-fit tests.
   - `tsc` and `vite build` are clean. No Rust changes.
 - **Whole-branch review** (fresh Opus reviewer). The critical finding and the important findings were all fixed, each with a failing test first where the code is testable without a DOM (this repo has no jsdom).
@@ -66,9 +66,24 @@ In the SQL editor, TablePlus uses Xcode-style colours. Soft-blue keywords recede
   - **Bug found and fixed:** the rail's options menu was painted under the sidebar, because the rail's `backdrop-filter` becomes the containing block for fixed-position children (8019b2b).
 - **Design review:** no remaining visual defects. The measured metrics are within about 2% of TablePlus.
 
+## /ship pre-landing review (after finalize)
+- **Coverage audit:** 70% of new paths are unit-covered; the 12 remaining are DOM-only glue, verified in the browser. It added 17 tests.
+- **Specialists** (testing, maintainability, performance, design, simplification) and the **red team** found:
+  - **Critical, fixed:** a metadata load still in flight could write stale data back after a refresh or close, and could resurrect a closed connection's cache.
+  - **Also fixed:** dead `setSchema`/`snapshot` removed; quoted identifiers no longer colour as strings; the rail menu uses a radio check slot with `aria-checked`; SQLite/DuckDB rail labels show the file name; a Reconnect that finishes after a close no longer leaves an orphan session.
+- **Adversarial pass** (Claude subagent; Codex not authenticated), fixed:
+  - Leaving a connection with staged or committing edits now asks first.
+  - A ⌘D switch that races a close no longer orphans a session.
+  - A ⌘D switch that finishes while another connection is in front clears the old database's saved tabs.
+  - ⌘O allows one connect per connection id at a time.
+  - A failing schema diff no longer raises the reconnect banner.
+- **Result:** vitest **408/408**, `tsc` and `vite build` clean. Everything else is logged in `pending.md` §2e.
+- **Leave-guard dialog:** its end-to-end browser check was best-effort. The headless browser can't send pointer events to the grid canvas to stage an edit, so the guard's logic is covered by unit tests instead.
+- **QA environment note:** after a page reload, the dev IPC bridge wedged on Postgres `connect` because a macOS keychain ACL prompt for the QA item was waiting. The final checks used a second MySQL connection. This does not affect the packaged app.
+
 ## Assumptions and deliberate limits
 - The rail shows only when 2+ connections are open, which is what TablePlus does.
-- Switching connections remounts the shell. **Query results and undo history reset on a connection switch**; the tab list and SQL persist. Unsaved staged cell edits are dropped, the same as today's tab switch (pending.md §2a).
+- Switching connections remounts the shell. **Query results and undo history reset on a connection switch**; the tab list and SQL persist. Staged cell edits now trigger a confirmation before you leave the connection (tab switches inside one connection still drop them; see pending.md §2a).
 - A dropped *background* session is not flagged until its next request after you switch back to it. The banner is scoped to the session that dropped.
 - The light keyword blue `#6499D3` is ≈3:1 on white, below WCAG AA. It is kept for TablePlus parity. `--syn-keyword` is a one-token change if you want AA.
 
