@@ -138,12 +138,13 @@ pub fn init_tracing() {
 /// Mask secrets: the literal after `PASSWORD` or `*_PASSWORD` (`[FOR account] [=] …`), after
 /// `SECRET` or `*_SECRET` (`[=] …`), and after MySQL's `IDENTIFIED [WITH plugin] BY|AS …`
 /// (plus its `REPLACE …`). A literal is `'…'`, a prefixed `N'…'`/`E'…'`/`X'…'`, `$tag$…$tag$`,
-/// or the first argument of a call such as `PASSWORD('…')`.
+/// or the first argument of a call such as `PASSWORD('…')`; MySQL's `"…"` counts after `=`
+/// and `IDENTIFIED BY|AS`. Comments between a keyword and its value are skipped.
 ///
 /// Keyword-anchored and fail-closed: nothing before a keyword is parsed, so no comment,
 /// string or odd escape earlier in the text can hide a password. A keyword that sits inside
 /// a string or comment may mask the next literal it meets — over-masking a log line is the
-/// safe direction.
+/// safe direction — and every keyword is looked at, even one inside another's mask.
 pub fn redact(sql: &str) -> Cow<'_, str> {
     let b = sql.as_bytes();
     let mut masks: Vec<(usize, usize)> = Vec::new(); // literal bodies, quotes excluded
@@ -158,7 +159,9 @@ pub fn redact(sql: &str) -> Cow<'_, str> {
             i += 1;
         }
         let w = &b[start..i];
-        let before = masks.len();
+        // The scan goes on from the keyword, never from the end of its mask: a keyword
+        // inside an identifier or string can open a fake literal that ends right at the real
+        // password's quote, and skipping it would hide the real keyword inside it.
         if is_kw(w, b"password") {
             masks.extend(value_after(b, i, true));
         } else if is_kw(w, b"secret") {
@@ -166,16 +169,25 @@ pub fn redact(sql: &str) -> Cow<'_, str> {
         } else if w.eq_ignore_ascii_case(b"identified") {
             identified(b, i, &mut masks);
         }
-        if masks.len() > before {
-            i = masks[masks.len() - 1].1 + 1;
-        }
     }
+    // A keyword inside a value can open a "literal" at the very end of the text (the closing
+    // `$$` of `PASSWORD $$secret$$`); there is nothing left there to hide.
+    masks.retain(|&(s, _)| s < b.len());
     if masks.is_empty() {
         return Cow::Borrowed(sql);
     }
+    // Overlapping (or nested) masks become their union, so the rewrite runs once, in order.
+    masks.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::with_capacity(masks.len());
+    for (s, e) in masks {
+        match merged.last_mut() {
+            Some(last) if s <= last.1 => last.1 = last.1.max(e),
+            _ => merged.push((s, e)),
+        }
+    }
     let mut out = String::with_capacity(sql.len());
     let mut at = 0;
-    for (s, e) in masks {
+    for (s, e) in merged {
         out.push_str(&sql[at..s]);
         out.push_str("***");
         at = e;
@@ -196,11 +208,22 @@ fn is_kw(w: &[u8], kw: &[u8]) -> bool {
             && w[w.len() - kw.len()..].eq_ignore_ascii_case(kw))
 }
 
+/// Skip whitespace and comments (`-- …` to the line end, `/* … */`; unterminated runs to
+/// the end).
 fn skip_ws(b: &[u8], mut i: usize) -> usize {
-    while i < b.len() && b[i].is_ascii_whitespace() {
-        i += 1;
+    loop {
+        while i < b.len() && b[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let rest = b.get(i..).unwrap_or_default();
+        if rest.starts_with(b"--") {
+            i = rest.iter().position(|&c| c == b'\n').map_or(b.len(), |p| i + p);
+        } else if rest.starts_with(b"/*") {
+            i = b[i + 2..].windows(2).position(|w| w == b"*/").map_or(b.len(), |p| i + 2 + p + 2);
+        } else {
+            return i;
+        }
     }
-    i
 }
 
 /// `word` (lowercase) starts at `i` as a whole word.
@@ -209,15 +232,17 @@ fn word_at(b: &[u8], i: usize, word: &[u8]) -> bool {
         && !b.get(i + word.len()).is_some_and(|&c| is_word(c))
 }
 
-/// Index of the quote closing the literal opened at `open` (`b.len()` if unterminated).
-/// `''` and a backslash both escape — the backslash only ever makes the mask longer.
+/// Index of the quote closing the literal opened at `open` (`b.len()` if unterminated) —
+/// the same quote character as `b[open]`. A doubled quote and a backslash both escape — the
+/// backslash only ever makes the mask longer.
 fn lit_end(b: &[u8], open: usize) -> usize {
+    let quote = b[open];
     let mut j = open + 1;
     while j < b.len() {
         match b[j] {
             b'\\' => j += 2,
-            b'\'' if b.get(j + 1) == Some(&b'\'') => j += 2,
-            b'\'' => return j,
+            c if c == quote && b.get(j + 1) == Some(&quote) => j += 2,
+            c if c == quote => return j,
             _ => j += 1,
         }
     }
@@ -225,8 +250,13 @@ fn lit_end(b: &[u8], open: usize) -> usize {
 }
 
 /// The body of the literal starting at `i`: `'…'`, one with a prefix glued on (`N`, `E`,
-/// `X`, `_utf8mb4`, …), or `$tag$…$tag$`.
-fn literal_at(b: &[u8], i: usize) -> Option<(usize, usize)> {
+/// `X`, `_utf8mb4`, …), or `$tag$…$tag$`. With `dq`, also MySQL's `"…"` string — only where
+/// a value is certain (after `=` or `IDENTIFIED BY`), since elsewhere `"` quotes an
+/// identifier.
+fn literal_at(b: &[u8], i: usize, dq: bool) -> Option<(usize, usize)> {
+    if dq && b.get(i) == Some(&b'"') {
+        return Some((i + 1, lit_end(b, i)));
+    }
     let mut q = i;
     while q < b.len() && (b[q].is_ascii_alphanumeric() || b[q] == b'_' || b[q] == b'&') {
         q += 1;
@@ -250,8 +280,8 @@ fn literal_at(b: &[u8], i: usize) -> Option<(usize, usize)> {
 }
 
 /// The literal at `i`, or the first argument of a call there (`PASSWORD('…')`).
-fn value_at(b: &[u8], i: usize) -> Option<(usize, usize)> {
-    if let Some(m) = literal_at(b, i) {
+fn value_at(b: &[u8], i: usize, dq: bool) -> Option<(usize, usize)> {
+    if let Some(m) = literal_at(b, i, dq) {
         return Some(m);
     }
     let mut k = i;
@@ -259,7 +289,7 @@ fn value_at(b: &[u8], i: usize) -> Option<(usize, usize)> {
         k += 1;
     }
     let k = skip_ws(b, k);
-    (b.get(k) == Some(&b'(')).then(|| literal_at(b, skip_ws(b, k + 1))).flatten()
+    (b.get(k) == Some(&b'(')).then(|| literal_at(b, skip_ws(b, k + 1), dq)).flatten()
 }
 
 /// After a keyword: `[FOR account] [=] value` (`FOR` only after `PASSWORD`).
@@ -272,10 +302,11 @@ fn value_after(b: &[u8], i: usize, allow_for: bool) -> Option<(usize, usize)> {
             j += 1;
         }
     }
-    if b.get(j) == Some(&b'=') {
+    let eq = b.get(j) == Some(&b'=');
+    if eq {
         j = skip_ws(b, j + 1);
     }
-    value_at(b, j)
+    value_at(b, j, eq)
 }
 
 /// After `IDENTIFIED`: `[WITH plugin] BY|AS value [REPLACE value]`.
@@ -295,11 +326,11 @@ fn identified(b: &[u8], i: usize, masks: &mut Vec<(usize, usize)>) {
     if !(word_at(b, j, b"by") || word_at(b, j, b"as")) {
         return;
     }
-    let Some(m) = value_at(b, skip_ws(b, j + 2)) else { return };
+    let Some(m) = value_at(b, skip_ws(b, j + 2), true) else { return };
     masks.push(m);
     let k = skip_ws(b, m.1 + 1);
     if word_at(b, k, b"replace") {
-        masks.extend(value_at(b, skip_ws(b, k + 7)));
+        masks.extend(value_at(b, skip_ws(b, k + 7), true));
     }
 }
 
@@ -455,6 +486,51 @@ mod tests {
             let _ = redact(&sql[..i]);
         }
         assert!(!redact(sql).contains("sé'c"));
+    }
+
+    /// A keyword inside an identifier or string opens a fake "literal" that ends exactly at the
+    /// real password's opening quote. The scan must not skip that masked region, or the real
+    /// keyword inside it — and so the real password after it — is never seen.
+    #[test]
+    fn a_fake_keyword_cannot_swallow_the_real_one() {
+        for sql in [
+            r#"ALTER ROLE "x PASSWORD '" PASSWORD 'LEAK1'"#,
+            "ALTER USER 'u'@'h IDENTIFIED BY' IDENTIFIED BY 'LEAK2'",
+            "ALTER LOGIN [x PASSWORD '] WITH PASSWORD = N'LEAK3'",
+        ] {
+            let out = redact(sql);
+            assert!(!out.contains("LEAK"), "{sql} leaked: {out}");
+        }
+    }
+
+    /// Nested masks (a keyword inside a dollar-quoted value) merge into their union.
+    #[test]
+    fn overlapping_masks_merge() {
+        assert_eq!(
+            redact("ALTER ROLE x PASSWORD $$a PASSWORD 'b' c$$"),
+            "ALTER ROLE x PASSWORD $$***$$"
+        );
+    }
+
+    #[test]
+    fn a_comment_between_keyword_and_value_is_skipped() {
+        assert_eq!(redact("ALTER ROLE x PASSWORD /*c*/ 'x1'"), "ALTER ROLE x PASSWORD /*c*/ '***'");
+        assert_eq!(
+            redact("ALTER ROLE x PASSWORD -- c\n 'x2'"),
+            "ALTER ROLE x PASSWORD -- c\n '***'"
+        );
+    }
+
+    #[test]
+    fn masks_mysql_double_quoted_passwords() {
+        assert_eq!(
+            redact(r#"CREATE USER 'u'@'%' IDENTIFIED BY "pw""#),
+            r#"CREATE USER 'u'@'%' IDENTIFIED BY "***""#
+        );
+        assert_eq!(
+            redact(r#"SET PASSWORD FOR 'u'@'h' = "pw2""#),
+            r#"SET PASSWORD FOR 'u'@'h' = "***""#
+        );
     }
 
     /// Fail-closed by design: text before a keyword isn't parsed, so a keyword inside a string
