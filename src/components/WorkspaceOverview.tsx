@@ -4,6 +4,7 @@ import { useTabs, type Tab } from "../state/tabsStore";
 import { closeTabForConnection, focusTabForConnection, hydrateForConnection } from "../lib/tabsPersist";
 import { IconClose, IconTable } from "./ui/Icon";
 import { ColorDot } from "./ui/Chip";
+import { useSettingsUi } from "./Settings";
 
 interface Card {
   connId: string;
@@ -46,6 +47,14 @@ export function WorkspaceOverview({ onClose }: { onClose: () => void }) {
   // focus and is cleaned up on unmount so it can't leak to the next overlay.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Settings (⌘,) owns the keyboard while it's open — its own Escape
+      // handler (App.tsx) closes it; without this guard the same Escape
+      // keypress also closed this overlay. App.tsx defers the actual close
+      // to a macrotask (setTimeout, not queueMicrotask — see
+      // closeSettingsDeferred in Settings.tsx for why), so `open` reads true
+      // here for this whole keypress no matter which window listener runs
+      // first.
+      if (useSettingsUi.getState().open) return;
       if (e.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKey);
