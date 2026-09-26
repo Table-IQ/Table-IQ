@@ -73,13 +73,19 @@ function ChoiceGroup<T extends string>({
   value,
   options,
   onChange,
+  "aria-label": ariaLabel,
 }: {
   value: T;
   options: { value: T; label: string }[];
   onChange: (v: T) => void;
+  "aria-label": string;
 }) {
   return (
-    <div className="inline-flex overflow-hidden rounded-md border border-border">
+    <div
+      role="group"
+      aria-label={ariaLabel}
+      className="inline-flex overflow-hidden rounded-md border border-border"
+    >
       {options.map((o) => (
         <button
           key={o.value}
@@ -97,12 +103,26 @@ function ChoiceGroup<T extends string>({
   );
 }
 
-function Field({ label, children }: { label: string; children: ReactNode }) {
+/** `group`: the children are their own control (a ChoiceGroup — a set of
+ *  buttons with its own `role="group"`/`aria-label`), so wrapping in a
+ *  `<label>` would make clicking the label text activate the first button.
+ *  Omit `group` for a real single control (e.g. a `<select>`), where the
+ *  `<label>` association is exactly what's wanted. */
+function Field({
+  label,
+  children,
+  group,
+}: {
+  label: string;
+  children: ReactNode;
+  group?: boolean;
+}) {
+  const Tag = group ? "div" : "label";
   return (
-    <label className="flex items-center justify-between gap-4 text-sm text-text">
+    <Tag className="flex items-center justify-between gap-4 text-sm text-text">
       <span>{label}</span>
       {children}
-    </label>
+    </Tag>
   );
 }
 
@@ -114,8 +134,9 @@ function GeneralSection() {
   const [railLabel, setRailLabel] = useState<RailLabel>(loadRailLabel);
   return (
     <div className="space-y-4 p-4">
-      <Field label="Theme">
+      <Field label="Theme" group>
         <ChoiceGroup<ThemeChoice>
+          aria-label="Theme"
           value={choice}
           onChange={setChoice}
           options={[
@@ -125,12 +146,16 @@ function GeneralSection() {
           ]}
         />
       </Field>
-      <Field label="Connection rail shows">
+      <Field label="Connection rail shows" group>
         <ChoiceGroup<RailLabel>
+          aria-label="Connection rail shows"
           value={railLabel}
           onChange={(v) => {
             saveRailLabel(v);
             setRailLabel(v);
+            // A mounted ConnectionRail (own local copy of this pref) listens
+            // for this to re-read `loadRailLabel()` live.
+            window.dispatchEvent(new CustomEvent("tiq:prefs"));
           }}
           options={[
             { value: "database", label: "Database name" },

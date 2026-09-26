@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Engine } from "../lib/commands";
 import { canLeaveSession, closeConnection, useConnections } from "../state/connectionStore";
@@ -36,6 +36,15 @@ export function ConnectionRail() {
   const { open, active, saved, switchTo } = useConnections();
   const [label, setLabel] = useState<Label>(loadRailLabel);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+
+  // Settings' General section owns the same `tiq:rail:label` key but keeps its
+  // own local state — without this, a change made there while the rail is
+  // already mounted wouldn't show up until remount.
+  useEffect(() => {
+    const onPrefs = () => setLabel(loadRailLabel());
+    window.addEventListener("tiq:prefs", onPrefs);
+    return () => window.removeEventListener("tiq:prefs", onPrefs);
+  }, []);
 
   if (open.length < 2) return null;
 
