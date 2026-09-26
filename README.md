@@ -17,9 +17,18 @@ Several connections can stay open at once: ⌘O opens another alongside the curr
 once two or more are open a rail at the far left switches between them without reconnecting,
 each keeping its own tabs and SQL. Data reads like TablePlus: monospaced 12.5px cells in tight
 rows, and TablePlus's SQL syntax colours in light mode (dark mode has its own palette).
+Opening a connection or switching database shows its progress (connecting, then loading
+schema) under the title bar instead of freezing the window.
 
 MongoDB and Redis get a lighter document/key-value shell (`DocShell` / `KvShell`) rather
 than the SQL grid and ERD.
+
+⌘K opens a TablePlus-style command palette: search tables, databases and saved queries in one
+place, or jump straight to Open Connection (⌘O), Open Database (⌘D), Settings (⌘,), Cancel
+Running Queries (⌘.), Workspace Overview (⌘⇧\), or Customize Toolbar. The sidebar's Queries
+and History tabs list saved queries and past runs per connection. Settings (⌘,) holds theme,
+the connection-rail label, editor font size and your AI provider in one page; the title bar's
+right icon group is reorderable and hideable from Settings → Toolbar or a right-click.
 
 AI features (NL→SQL, explain/optimize/fix) are opt-in and bring-your-own-key
 (Anthropic/OpenAI/Gemini), or local via Ollama — nothing is sent anywhere unless you

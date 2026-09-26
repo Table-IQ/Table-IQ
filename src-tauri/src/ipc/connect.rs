@@ -558,7 +558,15 @@ pub async fn count_rows_exact(
     token_id: String,
 ) -> Result<OpenTableInfo, String> {
     let drv = state.session(&id)?;
-    exact_count(&state.cancels, drv.as_ref(), &schema, &table, &filters.unwrap_or_default(), &token_id).await
+    exact_count(
+        &state.cancels,
+        drv.as_ref(),
+        &schema,
+        &table,
+        &filters.unwrap_or_default(),
+        &ckey(&id, &token_id),
+    )
+    .await
 }
 
 /// The body of [`count_rows_exact`], outside Tauri so it can be tested.
@@ -598,6 +606,9 @@ pub async fn get_table_window(
     let drv = state.session(&id)?;
     let f = filters.unwrap_or_default();
     let o = order.unwrap_or_default();
+    // Namespaced by connection: two connections browsing the same `schema.table` must not
+    // share a `request_key` entry.
+    let key = request_key.map(|k| ckey(&id, &k));
     // `after` (the previous page's last-row key) lets the driver seek instead of OFFSET.
     let batch = table_window(
         &state.cancels,
@@ -609,7 +620,7 @@ pub async fn get_table_window(
         &f,
         &o,
         after.as_deref(),
-        request_key.as_deref(),
+        key.as_deref(),
     )
     .await?;
     let bytes = crate::query::window::encode_ipc(&batch).map_err(|e| e.to_string())?;
@@ -727,11 +738,14 @@ pub async fn run_query(
 ) -> Result<Vec<StatementResultMeta>, String> {
     let drv = state.session(&id)?;
     // Register a cancel token before the (possibly long) run so `cancel_query` can find it.
+    // Namespaced by connection so an empty/duplicate client `query_id` can't collide with
+    // another connection's, and so `cancel_all` can find every token for this connection.
     let token = CancelToken::new();
     let query_id = query_id.unwrap_or_default();
-    lk(&state.cancels).insert(query_id.clone(), token.clone());
+    let key = ckey(&id, &query_id);
+    lk(&state.cancels).insert(key.clone(), token.clone());
     let res = drv.run_statements(&statements, QUERY_CAP, &token).await;
-    lk(&state.cancels).remove(&query_id);
+    lk(&state.cancels).remove(&key);
     // User SQL may have been DDL; don't page a table with a stale column list.
     drv.forget_meta();
 
@@ -792,11 +806,74 @@ pub async fn cancel_query(
     id: String,
     query_id: String,
 ) -> Result<(), String> {
-    if !lk(&state.cancels).contains_key(&query_id) {
+    let key = ckey(&id, &query_id);
+    if !lk(&state.cancels).contains_key(&key) {
         return Ok(()); // already completed/removed
     }
     let drv = state.session(&id)?;
-    cancel_registered(&state.cancels, drv.as_ref(), &query_id).await
+    cancel_registered(&state.cancels, drv.as_ref(), &key).await
+}
+
+/// Prefix a cancel-registry key with its connection id. Two connections can otherwise pick
+/// the same `token_id` / `request_key` (or both default an absent `query_id` to `""`) and
+/// clobber each other's entry; namespacing by connection also gives [`cancel_all_for`] a
+/// prefix to search for "every token that belongs to this connection".
+pub fn ckey(id: &str, k: &str) -> String {
+    format!("{id}\u{1f}{k}")
+}
+
+/// Every token currently registered under `id`'s namespace — a snapshot, cloned out from
+/// under the lock. Pure so it's unit-testable without a driver or a live query.
+fn keys_for(map: &HashMap<String, CancelToken>, id: &str) -> Vec<CancelToken> {
+    let prefix = ckey(id, "");
+    map.iter().filter(|(k, _)| k.starts_with(&prefix)).map(|(_, t)| t.clone()).collect()
+}
+
+/// Cancel every in-flight query registered for connection `id` — the body of [`cancel_all`],
+/// outside Tauri so it can be tested. Marks each token cancelled (same flag
+/// [`cancel_registered`] sets, so a stopped query is told apart from its own timeout) then
+/// asks the driver to interrupt it server-side. An engine without cancellation support
+/// (`DriverError::NotImplemented`, e.g. SQL Server) — or any other cancel failure — doesn't
+/// count towards the total; [`cancel_all`] turns "found running queries but couldn't stop
+/// any" into a clear error.
+pub async fn cancel_all_for(
+    cancels: &Mutex<HashMap<String, CancelToken>>,
+    drv: &dyn SqlDriver,
+    id: &str,
+) -> usize {
+    let tokens = keys_for(&lk(cancels), id);
+    let mut cancelled = 0;
+    for t in &tokens {
+        t.mark_cancelled();
+        if drv.cancel(t).await.is_ok() {
+            cancelled += 1;
+        }
+    }
+    cancelled
+}
+
+/// Cancel every query running on connection `id` (⌘. / the palette's "Cancel Running
+/// Queries") — table pages, the exact-count probe, and the SQL editor's Run, whatever is in
+/// flight. Returns how many were stopped; `0` with nothing registered means nothing was
+/// running. `0` with something registered means the engine has no cancel support at all.
+#[tauri::command]
+pub async fn cancel_all(state: State<'_, ConnState>, id: String) -> Result<usize, String> {
+    let drv = state.session(&id)?;
+    let had_running = !keys_for(&lk(&state.cancels), &id).is_empty();
+    let n = cancel_all_for(&state.cancels, drv.as_ref(), &id).await;
+    cancel_all_outcome(n, had_running)
+}
+
+/// The body of [`cancel_all`]'s result decision, outside Tauri so it's unit-testable without
+/// a live command dispatch: `0` stopped with something registered means every token belonged
+/// to an engine with no cancel support at all (e.g. SQL Server, or any driver that hasn't
+/// overridden the default `cancel` → `DriverError::NotImplemented`) — turn that into a clear
+/// error instead of the ambiguous "stopped 0 queries".
+fn cancel_all_outcome(n: usize, had_running: bool) -> Result<usize, String> {
+    if n == 0 && had_running {
+        return Err("Cancellation is not supported for this engine.".to_string());
+    }
+    Ok(n)
 }
 
 /// The body of [`cancel_query`], outside Tauri so it can be tested.
@@ -1345,18 +1422,21 @@ pub fn list_saved_queries(state: State<ConnState>) -> Vec<SavedQuery> {
     lk(&state.library).saved.clone()
 }
 
-/// Save (or update) a named query. Empty `id` mints a new one.
+/// Save (or update) a named query. Empty `id` mints a new one. `conn_id` of `None`
+/// makes the query global (visible for every connection); `Some` scopes it to one.
 #[tauri::command(async)]
 pub fn save_query(
     state: State<ConnState>,
     id: Option<String>,
     name: String,
     sql: String,
+    conn_id: Option<String>,
 ) -> Result<SavedQuery, String> {
     let q = SavedQuery {
         id: id.filter(|s| !s.is_empty()).unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
         name,
         sql,
+        conn_id,
     };
     let mut lib = lk(&state.library);
     lib.upsert_saved(q.clone());
@@ -1777,5 +1857,46 @@ mod tests {
         ] {
             assert!(check_export_path(p).is_err(), "{p} must be refused");
         }
+    }
+
+    /// `keys_for` must pick only this connection's namespace — a `token_id`/`request_key`
+    /// another connection happened to reuse must not come back as "ours".
+    #[test]
+    fn keys_for_picks_only_this_connections_keys() {
+        let mut map = HashMap::new();
+        map.insert(ckey("conn1", "table:public.users"), CancelToken::new());
+        map.insert(ckey("conn1", ""), CancelToken::new()); // an empty query_id default
+        map.insert(ckey("conn2", "table:public.users"), CancelToken::new()); // same raw key, other conn
+        map.insert("conn1-legacy".to_string(), CancelToken::new()); // no separator: not conn1's
+
+        let found = keys_for(&map, "conn1");
+        assert_eq!(found.len(), 2, "expected only conn1's two entries");
+
+        assert!(keys_for(&map, "conn2").len() == 1);
+        assert!(keys_for(&map, "unknown").is_empty());
+    }
+
+    /// `cancel_all`'s `n == 0 && had_running` branch: an engine whose driver hasn't overridden
+    /// the default `cancel` (→ `DriverError::NotImplemented`, e.g. SQL Server) stops nothing,
+    /// but "0 stopped" must not be reported as "nothing was running". No live DB or Tauri
+    /// `State` needed — `cancel_all`'s own logic is exercised via its two extracted,
+    /// Tauri-free pieces (`keys_for`, `cancel_all_for`) plus the outcome decision itself.
+    #[tokio::test]
+    async fn cancel_all_reports_unsupported_when_the_engine_cant_cancel() {
+        let tmp = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        let drv = SqliteDriver::connect(&path).await.expect("connect"); // default cancel() is NotImplemented
+
+        let mut map = HashMap::new();
+        map.insert(ckey("conn1", "table:public.users"), CancelToken::new());
+        let cancels = Mutex::new(map);
+
+        let had_running = !keys_for(&lk(&cancels), "conn1").is_empty();
+        assert!(had_running);
+        let n = cancel_all_for(&cancels, &drv, "conn1").await;
+        assert_eq!(n, 0, "the sqlite driver can't cancel, so nothing counts as stopped");
+
+        let outcome = cancel_all_outcome(n, had_running);
+        assert_eq!(outcome, Err("Cancellation is not supported for this engine.".to_string()));
     }
 }

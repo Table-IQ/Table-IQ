@@ -1,16 +1,34 @@
 import { create } from "zustand";
 import {
+  connect,
   disconnect,
   foreignKeys,
+  listObjects,
   openTable,
   primaryKey,
+  switchDatabase,
   type ConnConfig,
   type ConnectedInfo,
   type ForeignKey,
   type SchemaModel,
 } from "../lib/commands";
+import { markConnected } from "../lib/lastConnected";
 import { logError } from "../lib/report";
+import { persistForConnection } from "../lib/tabsPersist";
 import { useTabs } from "./tabsStore";
+
+/** A connect (or switch-database) in flight. `id` is always the connection
+ *  targeted; `name` is the connection's name for stage "connect"/"schema", or
+ *  the *target database* name for stage "switch" (what the UI labels it with).
+ *  `since` (a `performance.now()` stamp) feeds a single shared `<Elapsed>`
+ *  clock across stage transitions. Only one such operation is ever tracked at
+ *  a time. A database switch is not cancellable — see `cancelConnecting`. */
+export interface ConnectingState {
+  id: string;
+  name: string;
+  stage: "connect" | "schema" | "switch";
+  since: number;
+}
 
 /** Per-table facts that don't depend on the visible window. `count`/`exact` are
  *  the *unfiltered* totals — a filtered count is asked for directly. */
@@ -36,6 +54,9 @@ interface ConnectionState {
   schema: SchemaModel | null;
   /** True when an established session dropped mid-use — drives the reconnect banner. */
   disconnected: boolean;
+  /** A connect/switch-database in flight, or null when idle. Drives the busy UI
+   *  in ConnectionManager's row and MainShell's header strip. */
+  connecting: ConnectingState | null;
   /** The active table tab has staged (uncommitted) edits or is committing them. */
   editsPending: boolean;
   /** Lazy cache: connection id → every FK edge in the database. */
@@ -70,6 +91,7 @@ export const useConnections = create<ConnectionState>((set, get) => ({
   active: null,
   schema: null,
   disconnected: false,
+  connecting: null,
   editsPending: false,
   fks: {},
   tableMeta: {},
@@ -231,4 +253,123 @@ export function closeConnection(id: string): Promise<void> {
       clearMetaCaches(id);
       useConnections.getState().closeSession(id);
     });
+}
+
+// ── connect / switch-database with visible progress ────────────────────────
+// A remote DB behind SSH can take seconds to connect and introspect. Both flows
+// below track `connecting` through "connect"/"schema" (or "switch") stages so
+// ConnectionManager and MainShell can show a spinner + elapsed timer instead of
+// looking frozen. `openConnection` supports Cancel: the Rust connect itself
+// can't be aborted (CONNECT_TIMEOUT bounds it), so Cancel just stops the UI
+// waiting on it and its late result is handled by `discardIfStale` below.
+// `switchDatabaseFlow` is deliberately NOT cancellable — Rust's
+// `switch_database` swaps the live session before it returns, so discarding
+// the result would desync the frontend from a backend that already moved.
+let gen = 0;
+
+/** A connect attempt landed after the user moved on (cancelled, or a newer
+ *  attempt at a different id took over). Disconnect it — unless it's already
+ *  a live session (another path opened it) or a newer attempt at the *same*
+ *  id has since claimed `connecting` (that attempt must not be killed). Only
+ *  used by `openConnection` — a database switch is never discarded this way. */
+function discardIfStale(id: string): void {
+  const s = useConnections.getState();
+  if (s.open.some((o) => o.info.id === id)) return;
+  if (s.connecting?.id === id) return;
+  disconnect(id).catch((e) => logError("discard stale connection", e));
+}
+
+/** Connect to `cfg` and load its schema, tracking `connecting` throughout.
+ *  Resolves `true` on success, `false` when cancelled/superseded — including
+ *  when the stale attempt's own connect/schema call later fails, which is
+ *  not a real error to surface. A real (non-stale) failure clears
+ *  `connecting` and rethrows so the caller's existing error handling
+ *  (status line / connMsg) still fires. */
+export async function openConnection(cfg: ConnConfig): Promise<boolean> {
+  const my = ++gen;
+  const since = performance.now();
+  useConnections.setState({ connecting: { id: cfg.id, name: cfg.name, stage: "connect", since } });
+  try {
+    const info = await connect(cfg.id);
+    if (my !== gen) {
+      discardIfStale(cfg.id);
+      return false;
+    }
+    useConnections.setState({ connecting: { id: cfg.id, name: cfg.name, stage: "schema", since } });
+    const schema =
+      info.engine === "redis" || info.engine === "mongodb" ? null : await listObjects(cfg.id);
+    if (my !== gen) {
+      discardIfStale(cfg.id);
+      return false;
+    }
+    markConnected(cfg.id);
+    useConnections.getState().openSession(info, schema);
+    useConnections.setState({ connecting: null });
+    return true;
+  } catch (e) {
+    if (my !== gen) {
+      // Stale attempt (cancelled, or superseded) — its late failure isn't a
+      // real error to surface; just clean up like any other stale result.
+      discardIfStale(cfg.id);
+      return false;
+    }
+    useConnections.setState({ connecting: null });
+    throw e;
+  }
+}
+
+/** Cancel the connect in flight. Bumps `gen` (so the in-flight attempt's own
+ *  result is now stale) and clears `connecting` immediately — the UI stops
+ *  waiting right away, before the backend call itself returns.
+ *
+ *  A no-op while a database switch (stage "switch") is in flight: Rust's
+ *  `switch_database` swaps the live session for `id` before it even returns,
+ *  so by the time that promise resolves the backend has already moved —
+ *  "cancelling" here would just desync the frontend from it (stale UI, live
+ *  queries running against the new database). `switchDatabaseFlow` always
+ *  applies its result; see there. */
+export function cancelConnecting(): void {
+  if (useConnections.getState().connecting?.stage === "switch") return;
+  gen++;
+  useConnections.setState({ connecting: null });
+}
+
+/** Switch connection `id` to database `db`, tracking `connecting` (stage
+ *  "switch", `name` set to the target database so the UI can read "Switching
+ *  to <db>…"). Lifted from MainShell's DatabasePicker onPick handler.
+ *
+ *  Not cancellable (see `cancelConnecting`) — once `switchDatabase()` resolves
+ *  its result is always applied, even if `gen` moved on in the meantime. The
+ *  one exception is the session being explicitly closed (rail ×, Disconnect)
+ *  while the switch was in flight: the rebuilt backend session is then an
+ *  orphan and gets disconnected instead of resurrecting it. A real failure
+ *  clears `connecting` and rethrows. */
+export async function switchDatabaseFlow(id: string, db: string): Promise<boolean> {
+  const my = ++gen;
+  const since = performance.now();
+  useConnections.setState({ connecting: { id, name: db, stage: "switch", since } });
+  try {
+    const info = await switchDatabase(id, db);
+    if (!useConnections.getState().open.some((o) => o.info.id === id)) {
+      // Closed while switching: the backend just rebuilt an orphan session.
+      await disconnect(id).catch(() => {});
+      if (my === gen) useConnections.setState({ connecting: null });
+      return false;
+    }
+    const schema = await listObjects(id);
+    markConnected(id);
+    clearMetaCaches(id);
+    // The old database's tabs go — live if this connection is still in front,
+    // otherwise its persisted slice (so they never rebind to the new database).
+    if (useConnections.getState().active?.id === id) useTabs.getState().reset();
+    else persistForConnection(id, { tabs: [], activeKey: null, queryCount: 0 }, null);
+    useConnections.getState().updateSession(id, { info, schema });
+    // Only clear `connecting` if a newer attempt hasn't since claimed it — this
+    // switch's own result is still applied above unconditionally.
+    if (my === gen) useConnections.setState({ connecting: null });
+    return true;
+  } catch (e) {
+    if (my === gen) useConnections.setState({ connecting: null });
+    throw e;
+  }
 }

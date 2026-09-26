@@ -106,6 +106,22 @@ Full account in `docs/finalize/2026-09-26-connection-tabs-readability.md`.
 | **Grid headers left-aligned** | TablePlus centres them; glide has no header-alignment key (needs a custom header draw). |
 | **`--text-mono-cell` token** | The 12.5px data size is a literal in the sidebar lists and `theme.ts`, not a CSS variable. |
 
+### 2f. Deferred from the `palette-sqllog-settings` branch, PR-A (0.5.0)
+
+Full account in `docs/finalize/2026-09-27-palette-sqllog-settings.md`. PR-B (SQL log, User Management, Metrics Board) and PR-C (Backup/Restore, MCP Server/Activity) are the rest of this plan.
+
+| Item | Why |
+|---|---|
+| **Saved queries orphaned by deleting their connection** | Saved queries now carry a `conn_id`. Deleting that connection leaves its queries on disk but hidden forever. Options: delete them with the connection, promote them to global, or show "orphaned" ones everywhere. This needs a product decision; no data is lost today. |
+| **"Workspace Overview" palette row has no icon** | QA ISSUE-002 (cosmetic). |
+| **In-tab "Query cancelled" message is error-red** | QA ISSUE-004. The top "Cancelled N" strip is neutral; QueryView's message panel predates it. |
+| **Side-sheet connect shows only "Connecting…"** | The new-connection form's status line doesn't show the "Loading schema…" stage, and its Cancel sits behind the sheet. The card and the header strip do show both. |
+| **Settings choice groups use `aria-pressed`** | A radiogroup would be more accurate for single-choice controls. The ⌘K palette has no `listbox`/`option` roles (pre-existing). |
+| **History search has no debounce** | One request per keystroke, and no guard against a late response. |
+| **Workspace Overview keyboard** | ArrowDown moves one card, not one row, and focus isn't trapped in the dialog. |
+| **Title-bar action map isn't type-linked to `TOOLBAR_ITEMS`** | A new toolbar item without an action is dropped silently. |
+| **`StorageLike`/`defaultStorage` duplicated** | `src/lib/prefs.ts` and `src/lib/toolbarPrefs.ts` carry the same 9 lines. |
+
 ---
 
 ## 3. Other pending work (pre-existing, not touched by this branch)

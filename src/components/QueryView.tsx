@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SqlEditor, type SqlEditorHandle } from "./SqlEditor";
-import { AiSettings } from "./AiSettings";
+import { useSettingsUi } from "./Settings";
 import { PlanView } from "./PlanView";
-import { QueryLibraryPanel } from "./QueryLibraryPanel";
 import { ChartView } from "./ChartView";
 import { PluginsPanel } from "./PluginsPanel";
 import { DiffResultsView } from "./DiffResultsView";
@@ -105,9 +104,7 @@ export function QueryView({
   const [runStart, setRunStart] = useState(0);
   const [plan, setPlan] = useState<string | null>(null);
   const [editorH, setEditorH] = useState<number>(readEditorHeight);
-  const [drawer, setDrawer] = useState<
-    "none" | "library" | "chart" | "plugins" | "diff" | "ai" | "aisettings"
-  >("none");
+  const [drawer, setDrawer] = useState<"none" | "chart" | "plugins" | "diff" | "ai">("none");
   const recordResult = useResults((s) => s.record);
   const recentCount = useResults((s) => s.recents.length);
   const setTabSql = useTabs((s) => s.setTabSql);
@@ -222,6 +219,9 @@ export function QueryView({
         setError(String(e));
         setRun(null);
       } finally {
+        // `run_query` records history whether the run succeeded or failed —
+        // let a mounted History tab (SidebarLibrary) know to refetch.
+        window.dispatchEvent(new Event("tiq:history"));
         if (seq === runSeq.current) {
           runningRef.current = false;
           setRunning(false);
@@ -397,7 +397,10 @@ export function QueryView({
           <ToolbarButton label="Explain" onClick={() => void explain()} disabled={running} />
         )}
         <ToolbarDivider />
-        <ToolbarButton label="Library" onClick={() => setDrawer("library")} />
+        <ToolbarButton
+          label="Library"
+          onClick={() => window.dispatchEvent(new CustomEvent("tiq:sidebar", { detail: "queries" }))}
+        />
         {selectedMeta && (
           <ToolbarButton
             label="Chart"
@@ -482,7 +485,7 @@ export function QueryView({
               Fix
             </button>
             <button
-              onClick={() => setDrawer("aisettings")}
+              onClick={() => useSettingsUi.getState().show("ai")}
               className="rounded-md border border-border px-2 py-1 text-xs text-muted hover:text-text"
               title="AI settings"
             >
@@ -614,14 +617,6 @@ export function QueryView({
         }
       />
 
-      {drawer === "aisettings" && <AiSettings onClose={() => setDrawer("none")} />}
-      {drawer === "library" && (
-        <QueryLibraryPanel
-          currentSql={sqlRef.current}
-          onLoad={setEditorText}
-          onClose={() => setDrawer("none")}
-        />
-      )}
       {drawer === "plugins" && selectedMeta?.resultId && (
         <PluginsPanel resultId={selectedMeta.resultId} onClose={() => setDrawer("none")} />
       )}

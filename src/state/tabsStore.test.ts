@@ -24,6 +24,16 @@ describe("tabsStore", () => {
     expect(useTabs.getState().tabs[0].sql).toBeUndefined();
   });
 
+  it("openQuery(sql, title) uses the given title instead of 'Query N'", () => {
+    useTabs.getState().openQuery("SELECT 1;", "Recent users");
+    expect(useTabs.getState().tabs[0]).toMatchObject({ title: "Recent users", sql: "SELECT 1;" });
+  });
+
+  it("openQuery falls back to 'Query N' when title is blank", () => {
+    useTabs.getState().openQuery("SELECT 1;", "  ");
+    expect(useTabs.getState().tabs[0].title).toBe("Query 1");
+  });
+
   it("setTabSql updates only the targeted tab's sql", () => {
     useTabs.getState().openQuery("SELECT 1;");
     useTabs.getState().openQuery("SELECT 2;");

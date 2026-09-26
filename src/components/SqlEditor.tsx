@@ -5,6 +5,7 @@ import { sql, PostgreSQL, MySQL, MSSQL, SQLite, type SQLDialect } from "@codemir
 import { keymap, placeholder } from "@codemirror/view";
 import { syntaxHighlighting } from "@codemirror/language";
 import { sqlHighlight } from "../lib/sqlHighlight";
+import { loadEditorFontSize } from "../lib/prefs";
 import type { Engine } from "../lib/commands";
 
 export interface SqlEditorHandle {
@@ -38,6 +39,13 @@ interface Props {
 // ponytail: redis/mongodb don't use this SQL editor today (they get their own tab
 // kinds); default unmapped/absent engines to Postgres rather than adding a fifth
 // CodeMirror dialect nobody drives yet.
+/** Settings' Editor section persists `tiq:editor:fontSize`; kept in its own
+ *  compartment (not the static theme below) so it can be reconfigured live
+ *  without recreating the EditorView. */
+function fontSizeTheme(px: number) {
+  return EditorView.theme({ ".cm-scroller": { fontSize: `${px}px` } });
+}
+
 function cmDialectFor(engine: Engine | undefined): SQLDialect {
   switch (engine) {
     case "mysql":
@@ -76,6 +84,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(
   dialectRef.current = dialect;
 
   const sqlCompartment = useRef(new Compartment()).current;
+  const fontSizeCompartment = useRef(new Compartment()).current;
 
   useImperativeHandle(ref, () => ({
     setText: (v: string) => {
@@ -111,6 +120,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(
         sqlCompartment.of(
           sql({ dialect: cmDialectFor(dialectRef.current), schema: schemaRef.current }),
         ),
+        fontSizeCompartment.of(fontSizeTheme(loadEditorFontSize())),
         // `basicSetup`'s defaultKeymap binds Mod-Enter to insertBlankLine; without
         // Prec.highest that binding wins (same precedence, registered first) and
         // ⌘↵ inserts a newline instead of running the query.
@@ -140,7 +150,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(
         }),
         EditorView.theme({
           "&": { height: "100%", backgroundColor: "var(--bg)", color: "var(--syn-text)" },
-          ".cm-scroller": { fontFamily: "var(--font-mono)", fontSize: "13px" },
+          ".cm-scroller": { fontFamily: "var(--font-mono)" },
           ".cm-gutters": { backgroundColor: "var(--bg)", color: "var(--syn-gutter)", border: "none" },
           ".cm-activeLine": { backgroundColor: "color-mix(in srgb, var(--primary) 6%, transparent)" },
           ".cm-activeLineGutter": { backgroundColor: "transparent" },
@@ -166,6 +176,26 @@ export const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(
       effects: sqlCompartment.reconfigure(sql({ dialect: cmDialectFor(dialect), schema })),
     });
   }, [schema, dialect, sqlCompartment]);
+
+  // Settings' Editor section has no wiring to this specific editor instance —
+  // it just persists a preference and fires "tiq:prefs" (a "storage" event
+  // fires too, from other windows/tabs). Re-read on either so an already-open
+  // editor updates without remounting.
+  useEffect(() => {
+    const applyFontSize = () => {
+      const view = viewRef.current;
+      if (!view) return;
+      view.dispatch({
+        effects: fontSizeCompartment.reconfigure(fontSizeTheme(loadEditorFontSize())),
+      });
+    };
+    window.addEventListener("tiq:prefs", applyFontSize);
+    window.addEventListener("storage", applyFontSize);
+    return () => {
+      window.removeEventListener("tiq:prefs", applyFontSize);
+      window.removeEventListener("storage", applyFontSize);
+    };
+  }, [fontSizeCompartment]);
 
   return <div ref={host} className="h-full overflow-auto" />;
 });

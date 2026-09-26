@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ConnectionRail } from "./ConnectionRail";
 import { Wordmark } from "./Brand";
 import { ThemeToggle } from "./ThemeToggle";
 import { ObjectTree } from "./ObjectTree";
+import { SidebarLibrary } from "./SidebarLibrary";
 import { TableView } from "./TableView";
 import { QueryView } from "./QueryView";
 import { ErdView } from "./ErdView";
@@ -15,10 +16,13 @@ import { ConnectionPicker } from "./ConnectionPicker";
 import { DatabasePicker } from "./DatabasePicker";
 import { isFileEngine } from "./ConnectionManager";
 import { Onboarding } from "./Onboarding";
+import { WorkspaceOverview } from "./WorkspaceOverview";
+import { useSettingsUi } from "./Settings";
 import { Inspector } from "./Inspector";
 import { ContextMenu, type ContextMenuItem } from "./ui/ContextMenu";
 import { ResizeHandle, clampWidth } from "./ui/ResizeHandle";
 import { logError } from "../lib/report";
+import { shouldSwitchDatabase } from "../lib/databasePicker";
 import { hydrateForConnection, persistForConnection } from "../lib/tabsPersist";
 import { ToolbarButton, Toolbar, ToolbarDivider, ToolbarSpacer } from "./ui/Toolbar";
 import { StatusBar, StatusDot } from "./ui/StatusBar";
@@ -34,42 +38,56 @@ import {
   IconErd,
   IconHelp,
   IconImport,
+  IconLink,
+  IconOverview,
   IconPlay,
   IconPlus,
   IconRefresh,
   IconSidebar,
   IconSidebarRight,
+  IconSliders,
+  IconStop,
   IconStructure,
+  IconTable,
+  IconView,
 } from "./ui/Icon";
 import {
+  cancelConnecting,
   canLeaveSession,
   clearMetaCaches,
   closeConnection,
+  openConnection,
+  switchDatabaseFlow,
   useConnections,
 } from "../state/connectionStore";
 import { useTabs } from "../state/tabsStore";
 import type { Tab } from "../state/tabsStore";
 import {
+  cancelAll,
   connect,
   disconnect,
   downloadText,
   exportTable,
   listDatabases,
   listObjects,
+  listSavedQueries,
   setConnectionLostHandler,
-  switchDatabase,
   type ConnConfig,
   type Engine,
   type ExportFormat,
   type ObjectInfo,
+  type SavedQuery,
 } from "../lib/commands";
+import { savedQueriesForConn } from "../lib/history";
 import {
   buildTableScript,
   quoteIdent,
   selectStarter,
   type ScriptColumn,
 } from "../lib/tableScript";
-import { markConnected } from "../lib/lastConnected";
+import { Elapsed } from "./ui/Elapsed";
+import { applyToolbar, loadToolbar } from "../lib/toolbarPrefs";
+import { DEFAULT_HIDDEN_TOOLBAR_IDS, DEFAULT_TOOLBAR_PREF, TOOLBAR_ITEMS } from "../lib/toolbarItems";
 
 /** The schema a connection should open on. Every engine has a conventional
  *  "your stuff lives here" schema; alphabetical order picks `auth` over
@@ -93,13 +111,12 @@ export function MainShell() {
     schema,
     saved,
     open,
-    openSession,
     switchTo,
     updateSession,
     disconnected,
     setDisconnected,
+    connecting,
   } = useConnections();
-  const opening = useRef(new Set<string>());
   const [reconnecting, setReconnecting] = useState(false);
   const [refreshingSchema, setRefreshingSchema] = useState(false);
   // A dropped session (broken pipe, server shutdown, …) raises the reconnect
@@ -116,12 +133,18 @@ export function MainShell() {
   // Header color chip resolves from the saved ConnConfig (ConnectedInfo doesn't carry color).
   const activeColor = active ? saved.find((c) => c.id === active.id)?.color ?? null : null;
   const tabsState = useTabs();
-  const { tabs, activeKey, openTable, openQuery, openErd, close, setActive: setActiveTab, reset } =
+  const { tabs, activeKey, openTable, openQuery, openErd, close, setActive: setActiveTab } =
     tabsState;
   const [showStructure, setShowStructure] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showDiff, setShowDiff] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
+  // ⌘⇧\ Workspace Overview (TablePlus parity) — a grid of every open tab
+  // across every open connection.
+  const [showWorkspaceOverview, setShowWorkspaceOverview] = useState(false);
+  // ⌘K palette's Queries group — lazily fetched on open, same list SidebarLibrary
+  // uses, filtered through `savedQueriesForConn` below.
+  const [paletteSaved, setPaletteSaved] = useState<SavedQuery[]>([]);
   // ⌘O Open Connection palette (TablePlus-style switcher; replaces the left-edge rail).
   const [showConnPicker, setShowConnPicker] = useState(false);
   // ⌘D Switch Database — opens the per-server database picker (TablePlus parity).
@@ -162,6 +185,42 @@ export function MainShell() {
   useEffect(() => {
     window.localStorage.setItem("tiq:layout:inspectorW", String(inspectorW));
   }, [inspectorW]);
+
+  // Sidebar tab (Items / Queries / History), persisted like the other layout prefs.
+  const SIDEBAR_TABS = ["items", "queries", "history"] as const;
+  type SidebarTab = (typeof SIDEBAR_TABS)[number];
+  const isSidebarTab = (v: unknown): v is SidebarTab =>
+    typeof v === "string" && (SIDEBAR_TABS as readonly string[]).includes(v);
+  const [sidebarTab, setSidebarTabState] = useState<SidebarTab>(() => {
+    try {
+      const raw = window.localStorage.getItem("tiq:sidebar:tab");
+      return isSidebarTab(raw) ? raw : "items";
+    } catch {
+      return "items";
+    }
+  });
+  const setSidebarTab = (t: SidebarTab) => {
+    setSidebarTabState(t);
+    try {
+      window.localStorage.setItem("tiq:sidebar:tab", t);
+    } catch {
+      /* private mode etc. — tab still switches, just doesn't persist */
+    }
+  };
+  // QueryView's "Library" button dispatches this instead of opening its old drawer
+  // (same pattern as `tiq:show-tour`), so the sidebar becomes the one library UI.
+  useEffect(() => {
+    const onSidebarEvent = (e: Event) => {
+      const detail = (e as CustomEvent<string>).detail;
+      if (isSidebarTab(detail)) {
+        setShowSidebar(true);
+        setSidebarTab(detail);
+      }
+    };
+    window.addEventListener("tiq:sidebar", onSidebarEvent);
+    return () => window.removeEventListener("tiq:sidebar", onSidebarEvent);
+  }, []);
+
   const [showHelp, setShowHelp] = useState(false);
   const [pinned, setPinned] = useState<string[]>([]);
   const [erdFocus, setErdFocus] = useState<string | undefined>(undefined);
@@ -178,6 +237,17 @@ export function MainShell() {
   // Sidebar-foot "+" → new-object menu (TablePlus parity, Slice 31).
   const [sidebarMenu, setSidebarMenu] = useState<{ x: number; y: number } | null>(null);
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; tab: Tab } | null>(null);
+  // Right-click on the title bar → "Customize Toolbar…" (Task 7).
+  const [headerMenu, setHeaderMenu] = useState<{ x: number; y: number } | null>(null);
+  // Title-bar right icon group order/visibility (Task 7, Settings → Toolbar).
+  // Re-read on `tiq:toolbar`, dispatched by Settings after a save (same
+  // custom-event precedent as `tiq:sidebar` / `tiq:show-tour`).
+  const [toolbarPref, setToolbarPref] = useState(() => loadToolbar() ?? DEFAULT_TOOLBAR_PREF);
+  useEffect(() => {
+    const onToolbarEvent = () => setToolbarPref(loadToolbar() ?? DEFAULT_TOOLBAR_PREF);
+    window.addEventListener("tiq:toolbar", onToolbarEvent);
+    return () => window.removeEventListener("tiq:toolbar", onToolbarEvent);
+  }, []);
   // A failed export from the object context menu has nowhere else to land: the menu is gone
   // by the time the write fails, and the Table/Query status bars belong to a tab body that
   // may not even be open. One message, one strip — not a toast system.
@@ -185,6 +255,9 @@ export function MainShell() {
   /** A connection switch (or an in-place reconnect) that failed. Same reasoning
    *  as `exportMsg`: the picker is gone by the time the error lands. */
   const [connMsg, setConnMsg] = useState<string | null>(null);
+  /** ⌘. / "Cancel Running Queries" outcome — "Cancelled N queries" or "No running
+   *  queries". Neutral, not `connMsg`: it's not an error, so it must not read as one. */
+  const [cancelMsg, setCancelMsg] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState<string | null>(null);
 
   // Keep the sidebar schema selection valid across connection/database switches.
@@ -225,13 +298,11 @@ export function MainShell() {
     );
   }, [active, tabs, activeKey, tabsState.queryCount, hydrated]);
 
-  // Load the list of databases visible from this connection and open the picker.
-  // Idempotent — repeated triggers reuse the cached items unless the user closes
-  // the picker, which resets state so the next open re-fetches.
-  const openDbPicker = async () => {
-    // A SQLite/DuckDB connection *is* its file — there is no other database to switch to.
-    if (!active || isFileEngine(active.engine as Engine)) return;
-    setShowDbPicker(true);
+  // Load the list of databases visible from this connection. Idempotent — shows
+  // the cached items instantly (no loading flash) while refetching underneath.
+  // Shared by the ⌘D picker and the palette's lazily-loaded Databases group.
+  const loadDbList = async () => {
+    if (!active) return;
     setDbList((s) => (s.items.length > 0 ? s : { loading: true, items: [], error: null }));
     try {
       const items = await listDatabases(active.id);
@@ -241,6 +312,63 @@ export function MainShell() {
     }
   };
 
+  const openDbPicker = async () => {
+    // A SQLite/DuckDB connection *is* its file — there is no other database to switch to.
+    if (!active || isFileEngine(active.engine as Engine)) return;
+    setShowDbPicker(true);
+    await loadDbList();
+  };
+
+  /** ⌘. / the palette's "Cancel Running Queries": stop everything this connection has in
+   *  flight — table pages, the exact-count probe, the SQL editor's Run. */
+  const cancelAllQueries = async () => {
+    if (!active) return;
+    try {
+      const n = await cancelAll(active.id);
+      setCancelMsg(n > 0 ? `Cancelled ${n} quer${n === 1 ? "y" : "ies"}` : "No running queries");
+    } catch (e) {
+      // A real failure (e.g. "Cancellation is not supported for this engine") — this one
+      // does belong in the danger-styled strip.
+      setConnMsg(String(e));
+    }
+  };
+
+  // Switch to `db` on the active connection. Not cancellable (see switchDatabaseFlow) —
+  // callers close their own picker UI before invoking this so the header's connecting
+  // strip is visible underneath. Shared by the ⌘D DatabasePicker and the palette's
+  // Databases entries.
+  const pickDatabase = async (db: string) => {
+    if (!active || useConnections.getState().connecting) return; // one connect/switch in flight at a time
+    if (!shouldSwitchDatabase(db, active.database)) return;
+    if (!(await canLeaveSession())) return; // switching resets every open tab — ask first
+    const id = active.id;
+    setShowDbPicker(false);
+    setConnMsg(null);
+    void switchDatabaseFlow(id, db)
+      .then(() => {
+        // Reset cache so the next open re-fetches against the new active session.
+        setDbList({ loading: false, items: [], error: null });
+      })
+      .catch((e) => {
+        console.error("database switch failed", e);
+        setConnMsg(`Could not switch to '${db}': ${e}`);
+      });
+  };
+
+  // Palette's Databases and Queries groups are lazy: fetched only once ⌘K is open,
+  // reusing the same list/cache the ⌘D picker and sidebar Queries tab already use.
+  useEffect(() => {
+    if (!showPalette || !active || isFileEngine(active.engine as Engine)) return;
+    void loadDbList();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showPalette, active?.id]);
+  useEffect(() => {
+    if (!showPalette) return;
+    listSavedQueries()
+      .then(setPaletteSaved)
+      .catch((e) => logError("command palette: saved queries", e));
+  }, [showPalette]);
+
   // Keyboard shortcuts. ⌘O is new — Open Connection picker (TablePlus parity).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -248,10 +376,26 @@ export function MainShell() {
       // and calls preventDefault when the SQL editor is focused — the workspace
       // shortcuts must not fire on top of it.
       if (e.defaultPrevented) return;
+      // Settings (⌘,) owns the keyboard while it's open — its own Escape
+      // handler (App.tsx) closes it; without this guard the same Escape
+      // keypress also cancelled an in-flight connection here. App.tsx defers
+      // the actual close to a macrotask (setTimeout, not queueMicrotask —
+      // see closeSettingsDeferred in Settings.tsx for why), so `open` reads
+      // true here for this whole keypress no matter which window listener
+      // runs first.
+      if (useSettingsUi.getState().open) return;
       const meta = e.metaKey || e.ctrlKey;
       if (meta && e.key.toLowerCase() === "k") {
         e.preventDefault();
-        setShowPalette((v) => !v);
+        if (e.shiftKey) {
+          // ⌘⇧K alias for Open Connection. CodeMirror's own keymap owns plain
+          // ⌘⇧K as deleteLine when the editor has focus — it calls
+          // preventDefault first, so the `e.defaultPrevented` guard above
+          // means this alias only fires when the editor doesn't consume it.
+          setShowConnPicker((v) => !v);
+        } else {
+          setShowPalette((v) => !v);
+        }
       } else if (meta && e.key.toLowerCase() === "o") {
         e.preventDefault();
         setShowConnPicker((v) => !v);
@@ -270,6 +414,18 @@ export function MainShell() {
       } else if (meta && e.key === "]") {
         e.preventDefault();
         setShowInspector((v) => !v);
+      } else if (meta && e.key === ".") {
+        e.preventDefault();
+        void cancelAllQueries();
+      } else if (
+        meta &&
+        e.shiftKey &&
+        (e.key === "\\" || e.key === "|" || e.code === "Backslash")
+      ) {
+        // Shift usually remaps `key` to "|" on a US layout — `code` is the
+        // physical-key fallback so this still fires on other layouts.
+        e.preventDefault();
+        setShowWorkspaceOverview((v) => !v);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -277,35 +433,134 @@ export function MainShell() {
   }, [openQuery, close, activeKey, active?.id]);
 
   const commands = useMemo<Command[]>(() => {
-    const list: Command[] = [];
+    const list: Command[] = [
+      { id: "act:erd", label: "Diagram", group: "Commands", icon: <IconErd />, run: openErd },
+      {
+        id: "act:open-conn",
+        label: "Open Connection",
+        group: "Commands",
+        icon: <IconLink />,
+        shortcut: "⌘O",
+        run: () => setShowConnPicker(true),
+      },
+      // A file engine (sqlite/duckdb) has no other database to switch to — same
+      // condition that hides the Databases group below and no-ops openDbPicker.
+      ...((!active || !isFileEngine(active.engine as Engine)
+        ? [
+            {
+              id: "act:open-db",
+              label: "Open Database",
+              group: "Commands",
+              icon: <IconDatabase />,
+              shortcut: "⌘D",
+              run: () => void openDbPicker(),
+            },
+          ]
+        : []) as Command[]),
+      {
+        id: "act:workspace-overview",
+        label: "Workspace Overview",
+        group: "Commands",
+        shortcut: "⌘⇧\\",
+        run: () => setShowWorkspaceOverview(true),
+      },
+      {
+        id: "act:settings",
+        label: "Settings",
+        group: "Commands",
+        icon: <IconSliders />,
+        shortcut: "⌘,",
+        run: () => useSettingsUi.getState().show(),
+      },
+      {
+        id: "act:customize-toolbar",
+        label: "Customize Toolbar",
+        group: "Commands",
+        icon: <IconOverview />,
+        run: () => useSettingsUi.getState().show("toolbar"),
+      },
+      {
+        id: "act:query",
+        label: "New Query",
+        group: "Commands",
+        icon: <IconPlus />,
+        shortcut: "⌘T",
+        run: () => openQuery(),
+      },
+      {
+        id: "act:table",
+        label: "New Table…",
+        group: "Commands",
+        icon: <IconStructure />,
+        run: () => setShowStructure(true),
+      },
+      {
+        id: "act:import",
+        label: "Import CSV / JSON…",
+        group: "Commands",
+        icon: <IconImport />,
+        run: () => setShowImport(true),
+      },
+      {
+        id: "act:diff",
+        label: "Diff with another connection…",
+        group: "Commands",
+        icon: <IconDiff />,
+        run: () => setShowDiff(true),
+      },
+      {
+        id: "act:cancel-all",
+        label: "Cancel Running Queries",
+        group: "Commands",
+        icon: <IconStop />,
+        shortcut: "⌘.",
+        run: () => void cancelAllQueries(),
+      },
+    ];
     for (const s of schema?.schemas ?? []) {
       for (const o of s.objects) {
         list.push({
           id: `tbl:${s.name}.${o.name}`,
           label: `${s.name}.${o.name}`,
           hint: o.kind,
+          group: "Tables",
+          icon: o.kind === "View" ? <IconView /> : <IconTable />,
           run: () => openTable(s.name, o.name),
         });
       }
     }
-    list.push(
-      { id: "act:query", label: "New Query", hint: "⌘T", run: () => openQuery() },
-      { id: "act:erd", label: "Open Schema Diagram (ERD)", hint: "action", run: openErd },
-      { id: "act:table", label: "New Table…", hint: "action", run: () => setShowStructure(true) },
-      { id: "act:import", label: "Import CSV / JSON…", hint: "action", run: () => setShowImport(true) },
-      { id: "act:diff", label: "Diff with another connection…", hint: "action", run: () => setShowDiff(true) },
-      {
-        id: "act:switch-db",
-        label: "Switch Database…",
-        hint: "⌘D",
-        run: () => void openDbPicker(),
-      },
-    );
+    // File engines (sqlite/duckdb) are their own database — nothing to list or switch to.
+    if (active && !isFileEngine(active.engine as Engine)) {
+      for (const db of dbList.items) {
+        list.push({
+          id: `db:${db}`,
+          label: db,
+          hint: db === active.database ? "current" : undefined,
+          group: "Databases",
+          icon: <IconDatabase />,
+          run: () => void pickDatabase(db),
+        });
+      }
+    }
+    if (active) {
+      for (const q of savedQueriesForConn(paletteSaved, active.id)) {
+        list.push({
+          id: `q:${q.id}`,
+          label: q.name,
+          group: "Queries",
+          icon: <IconPlay />,
+          run: () => openQuery(q.sql, q.name),
+        });
+      }
+    }
     return list;
-    // openDbPicker is intentionally not a dep — recomputing the command list on
-    // every keystroke (active changes) would churn the palette unnecessarily.
+    // `active`, `openDbPicker` and `pickDatabase` are intentionally not deps — they
+    // close over `active` fresh every render, and `schema`/`dbList.items` already
+    // change whenever a connection or database switch would make them stale.
+    // Recomputing on every unrelated render (e.g. a keystroke) would churn the
+    // palette unnecessarily.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [schema, openTable, openQuery, openErd]);
+  }, [schema, openTable, openQuery, openErd, dbList.items, paletteSaved]);
 
   // Until this connection's tabs are hydrated the tab store may still hold the
   // previous connection's — never render (or persist) those under this one.
@@ -366,26 +621,20 @@ export function MainShell() {
   };
 
   /** Open another saved connection alongside this one (TablePlus: the rail then
-   *  lists both). An already-open connection is just brought to the front. */
+   *  lists both). An already-open connection is just brought to the front.
+   *  Routes through the store's `openConnection` so the header shows progress
+   *  instead of looking frozen while the (possibly remote) DB connects. */
   const onSwapConnection = async (c: ConnConfig) => {
-    if (c.id === active.id || opening.current.has(c.id)) return;
+    if (c.id === active.id || connecting) return; // one connect in flight at a time
     if (!(await canLeaveSession())) return;
     setConnMsg(null);
     if (open.some((o) => o.info.id === c.id)) return switchTo(c.id);
-    // One connect per id at a time: a double pick would race two backend sessions.
-    opening.current.add(c.id);
     try {
-      const info = await connect(c.id);
-      const schemaModel =
-        info.engine === "redis" || info.engine === "mongodb" ? null : await listObjects(c.id);
-      markConnected(c.id);
-      openSession(info, schemaModel);
+      await openConnection(c);
     } catch (e) {
       // The current session is untouched, so just say what failed.
       console.error("connection open failed", e);
       setConnMsg(`Could not open '${c.name}': ${e}`);
-    } finally {
-      opening.current.delete(c.id);
     }
   };
 
@@ -606,15 +855,60 @@ export function MainShell() {
     </div>
   );
 
+  // Data-driven right icon group (Task 7): `TOOLBAR_ITEMS` (shared with
+  // Settings' Toolbar section) supplies the id + label; this map supplies the
+  // per-id icon/onClick/`when` — that wiring is component-specific, so it
+  // stays here rather than in the shared `lib/toolbarItems.ts`. `when: false`
+  // hides an item outright (e.g. a file engine has no database to switch),
+  // independent of the user's order/hidden prefs. `render` is an escape hatch
+  // for items that are already their own stateful component (ThemeToggle).
+  const titlebarActions: Record<
+    string,
+    { icon?: ReactNode; onClick?: () => void; shortcut?: string; when?: boolean; render?: () => ReactNode }
+  > = {
+    "refresh-schema": {
+      icon: <IconRefresh size={16} className={refreshingSchema ? "animate-spin" : undefined} />,
+      onClick: () => void onRefreshSchema(),
+    },
+    "switch-database": {
+      icon: <IconDatabase size={16} />,
+      shortcut: "⌘D",
+      onClick: () => void openDbPicker(),
+      when: !fileEngine,
+    },
+    "command-palette": {
+      icon: <IconCommand size={16} />,
+      shortcut: "⌘K",
+      onClick: () => setShowPalette(true),
+    },
+    "theme-toggle": { render: () => <ThemeToggle /> },
+    help: { icon: <IconHelp size={16} />, onClick: () => setShowHelp((v) => !v) },
+    "workspace-overview": {
+      icon: <IconOverview size={16} />,
+      shortcut: "⌘⇧\\",
+      onClick: () => setShowWorkspaceOverview(true),
+    },
+  };
+  const visibleTitlebarIds = applyToolbar(
+    TOOLBAR_ITEMS.map((i) => i.id),
+    toolbarPref,
+    DEFAULT_HIDDEN_TOOLBAR_IDS,
+  );
+
   return (
     <div className="flex h-full flex-col">
       {/* ── TITLE BAR ─────────────────────────────────────────────────────── */}
       <header
         className="tiq-titlebar-drag flex shrink-0 items-center gap-2 border-b border-border bg-surface pl-[78px] pr-2"
         style={{ height: "var(--header-h)" }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          setHeaderMenu({ x: e.clientX, y: e.clientY });
+        }}
       >
         {/* Left icon group — TablePlus groups toolbar icons into a rounded
-            container/card rather than free-floating icons (Slice 33). */}
+            container/card rather than free-floating icons (Slice 33). Fixed —
+            not part of the customizable right icon group. */}
         <IconGroup>
           <IconButton
             icon={<IconSidebar size={16} />}
@@ -630,33 +924,25 @@ export function MainShell() {
         {/* Centered TablePlus connection capsule */}
         <div className="mx-2 flex flex-1 items-center justify-center">{connCapsule}</div>
 
-        {/* Right icon groups — actions in one card, the inspector toggle in its own. */}
+        {/* Right icon group — data-driven (Task 7): order/visibility come from
+            `toolbarPref`, customizable via right-click → Customize Toolbar or
+            Settings → Toolbar. The inspector toggle + Disconnect stay fixed. */}
         <IconGroup>
-          <IconButton
-            icon={<IconRefresh size={16} className={refreshingSchema ? "animate-spin" : undefined} />}
-            label="Refresh schema"
-            onClick={() => void onRefreshSchema()}
-          />
-          {!fileEngine && (
-            <IconButton
-              icon={<IconDatabase size={16} />}
-              label="Switch database"
-              shortcut="⌘D"
-              onClick={() => void openDbPicker()}
-            />
-          )}
-          <IconButton
-            icon={<IconCommand size={16} />}
-            label="Command palette"
-            shortcut="⌘K"
-            onClick={() => setShowPalette(true)}
-          />
-          <ThemeToggle />
-          <IconButton
-            icon={<IconHelp size={16} />}
-            label="Help / Show tour"
-            onClick={() => setShowHelp((v) => !v)}
-          />
+          {visibleTitlebarIds.map((id) => {
+            const item = TOOLBAR_ITEMS.find((i) => i.id === id);
+            const action = titlebarActions[id];
+            if (!item || !action || action.when === false) return null;
+            if (action.render) return <span key={id}>{action.render()}</span>;
+            return (
+              <IconButton
+                key={id}
+                icon={action.icon}
+                label={item.label}
+                shortcut={action.shortcut}
+                onClick={action.onClick}
+              />
+            );
+          })}
         </IconGroup>
         <IconGroup>
           <IconButton
@@ -675,6 +961,44 @@ export function MainShell() {
           Disconnect
         </button>
       </header>
+
+      {/* ── CONNECTING STRIP ──────────────────────────────────────────────── */}
+      {/* Opening another connection (rail/⌘O) or switching database (⌘D) can hit a
+          slow remote DB behind SSH; this makes the wait visible instead of the
+          workspace looking frozen. Cancel stops the UI waiting on a
+          connect — the store discards its late result. A database switch has
+          no Cancel: Rust has already swapped the live session by the time its
+          result lands, so there is nothing safe to cancel. */}
+      {connecting && (
+        <>
+          <div className="tiq-progress shrink-0" aria-hidden />
+          <div className="flex h-7 shrink-0 items-center justify-center gap-2 border-b border-border bg-surface px-3 text-[11px] text-muted">
+            <IconRefresh size={11} className="animate-spin text-primary" aria-hidden />
+            <span>
+              {connecting.stage === "connect"
+                ? "Connecting to "
+                : connecting.stage === "schema"
+                  ? "Loading schema for "
+                  : "Switching to "}
+              <span className="font-medium text-text">{connecting.name}</span>…
+            </span>
+            <Elapsed
+              since={connecting.since}
+              minMs={1000}
+              className="tiq-delayed font-mono tabular-nums"
+            />
+            {connecting.stage !== "switch" && (
+              <button
+                onClick={cancelConnecting}
+                title="Cancel"
+                className="ml-1 inline-flex h-5 items-center rounded-[var(--radius)] border border-border px-2 text-[11px] text-muted hover:bg-surface-2 hover:text-text"
+              >
+                Cancel
+              </button>
+            )}
+          </div>
+        </>
+      )}
 
       {/* ── RECONNECT BANNER ──────────────────────────────────────────────── */}
       {/* TablePlus parity: an established session that drops shows a red, clickable
@@ -714,6 +1038,22 @@ export function MainShell() {
         </div>
       )}
 
+      {/* Neutral, not danger — "Cancelled N queries" / "No running queries" are outcomes,
+          not errors. A real cancel-all failure goes through `connMsg` above instead. */}
+      {cancelMsg && (
+        <div className="flex h-7 shrink-0 items-center gap-2 border-b border-border bg-surface-2 px-3 text-[11px] text-muted">
+          <span className="min-w-0 flex-1 truncate" title={cancelMsg}>
+            {cancelMsg}
+          </span>
+          <button
+            onClick={() => setCancelMsg(null)}
+            className="shrink-0 underline underline-offset-2 hover:opacity-80"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {exportMsg && (
         <div className="flex h-7 shrink-0 items-center gap-2 border-b border-danger/30 bg-danger/10 px-3 text-[11px] text-danger">
           <span className="min-w-0 flex-1 truncate" title={exportMsg}>
@@ -740,71 +1080,84 @@ export function MainShell() {
             {/* Items / Queries / History — subtler than the prior version; active uses
                 a soft background instead of the bottom-edge primary line. */}
             <div className="flex h-[26px] shrink-0 items-center gap-px border-b border-border px-1">
-              {(["Items", "Queries", "History"] as const).map((t, i) => (
+              {(
+                [
+                  ["items", "Items"],
+                  ["queries", "Queries"],
+                  ["history", "History"],
+                ] as const
+              ).map(([value, label]) => (
                 <button
-                  key={t}
+                  key={value}
+                  onClick={() => setSidebarTab(value)}
                   className={`flex-1 rounded-[var(--radius-sm)] py-[3px] text-[11px] transition-colors ${
-                    i === 0 ? "bg-surface-2 text-text" : "text-muted hover:text-text"
+                    sidebarTab === value ? "bg-surface-2 text-text" : "text-muted hover:text-text"
                   }`}
-                  title={t}
+                  title={label}
                 >
-                  {t}
+                  {label}
                 </button>
               ))}
             </div>
             <div className="min-h-0 flex-1">
-              <ObjectTree
-                schema={schema}
-                activeKey={activeKey}
-                pinned={pinned}
-                onlySchema={activeSchema}
-                onOpen={(schemaName, obj) => openTable(schemaName, obj.name)}
-                onContext={(e, schemaName, obj) => {
-                  e.preventDefault();
-                  setObjMenu({ x: e.clientX, y: e.clientY, schema: schemaName, obj });
-                }}
-                onPinToggle={togglePin}
-              />
-            </div>
-            <div
-              className="flex shrink-0 items-center gap-1 border-t border-border px-2 text-[10px] text-muted"
-              style={{ height: "var(--statusbar-h)" }}
-            >
-              <button
-                onClick={(e) => {
-                  const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                  setSidebarMenu({ x: r.left, y: r.top - 4 });
-                }}
-                title="New table, view, function, schema…"
-                aria-label="New object"
-                className="inline-flex h-[18px] w-[18px] items-center justify-center rounded text-muted transition-colors hover:bg-surface-2 hover:text-text"
-              >
-                <IconPlus size={12} />
-              </button>
-              {schema.schemas.length > 1 ? (
-                <select
-                  value={activeSchema ?? ""}
-                  onChange={(e) => setActiveSchema(e.target.value)}
-                  title="Active schema"
-                  className="-ml-0.5 max-w-[120px] cursor-pointer truncate rounded-[var(--radius-sm)] bg-transparent font-mono text-[10px] text-muted hover:text-text focus:outline-none"
-                >
-                  {schema.schemas.map((s) => (
-                    <option key={s.name} value={s.name}>
-                      {s.name}
-                    </option>
-                  ))}
-                </select>
+              {sidebarTab === "items" ? (
+                <ObjectTree
+                  schema={schema}
+                  activeKey={activeKey}
+                  pinned={pinned}
+                  onlySchema={activeSchema}
+                  onOpen={(schemaName, obj) => openTable(schemaName, obj.name)}
+                  onContext={(e, schemaName, obj) => {
+                    e.preventDefault();
+                    setObjMenu({ x: e.clientX, y: e.clientY, schema: schemaName, obj });
+                  }}
+                  onPinToggle={togglePin}
+                />
               ) : (
-                <span className="font-mono">{activeSchema ?? "public"}</span>
+                <SidebarLibrary mode={sidebarTab} connId={active.id} />
               )}
-              <span className="ml-auto">
-                {(
-                  schema.schemas.find((s) => s.name === activeSchema)?.objects.length ??
-                  schema.schemas.reduce((n, s) => n + s.objects.length, 0)
-                )}{" "}
-                objects
-              </span>
             </div>
+            {sidebarTab === "items" && (
+              <div
+                className="flex shrink-0 items-center gap-1 border-t border-border px-2 text-[10px] text-muted"
+                style={{ height: "var(--statusbar-h)" }}
+              >
+                <button
+                  onClick={(e) => {
+                    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                    setSidebarMenu({ x: r.left, y: r.top - 4 });
+                  }}
+                  title="New table, view, function, schema…"
+                  aria-label="New object"
+                  className="inline-flex h-[18px] w-[18px] items-center justify-center rounded text-muted transition-colors hover:bg-surface-2 hover:text-text"
+                >
+                  <IconPlus size={12} />
+                </button>
+                {schema.schemas.length > 1 ? (
+                  <select
+                    value={activeSchema ?? ""}
+                    onChange={(e) => setActiveSchema(e.target.value)}
+                    title="Active schema"
+                    className="-ml-0.5 max-w-[120px] cursor-pointer truncate rounded-[var(--radius-sm)] bg-transparent font-mono text-[10px] text-muted hover:text-text focus:outline-none"
+                  >
+                    {schema.schemas.map((s) => (
+                      <option key={s.name} value={s.name}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className="font-mono">{activeSchema ?? "public"}</span>
+                )}
+                <span className="ml-auto">
+                  {(
+                    schema.schemas.find((s) => s.name === activeSchema)?.objects.length ??
+                    schema.schemas.reduce((n, s) => n + s.objects.length, 0)
+                  )}{" "}
+                  objects
+                </span>
+              </div>
+            )}
           </aside>
         )}
         {showSidebar && (
@@ -984,6 +1337,10 @@ export function MainShell() {
       )}
       {showPalette && <CommandPalette commands={commands} onClose={() => setShowPalette(false)} />}
 
+      {showWorkspaceOverview && (
+        <WorkspaceOverview onClose={() => setShowWorkspaceOverview(false)} />
+      )}
+
       {showConnPicker && (
         <ConnectionPicker
           connections={saved}
@@ -999,31 +1356,7 @@ export function MainShell() {
           activeDatabase={active.database}
           busy={dbList.loading}
           error={dbList.error}
-          onPick={async (db) => {
-            const id = active.id;
-            try {
-              const info = await switchDatabase(id, db);
-              const st = useConnections.getState();
-              // Closed while switching: the backend just rebuilt an orphan session.
-              if (!st.open.some((o) => o.info.id === id)) {
-                await disconnect(id).catch(() => {});
-                return;
-              }
-              const schemaModel = await listObjects(id);
-              markConnected(id);
-              clearMetaCaches(id);
-              // The old database's tabs go — live if this connection is still in
-              // front, otherwise its persisted slice (so they never rebind to db2).
-              if (useConnections.getState().active?.id === id) reset();
-              else persistForConnection(id, { tabs: [], activeKey: null, queryCount: 0 }, null);
-              updateSession(id, { info, schema: schemaModel });
-              setShowDbPicker(false);
-              // Reset cache so the next open re-fetches against the new active session.
-              setDbList({ loading: false, items: [], error: null });
-            } catch (e) {
-              setDbList({ loading: false, items: dbList.items, error: String(e) });
-            }
-          }}
+          onPick={pickDatabase}
           onClose={() => setShowDbPicker(false)}
         />
       )}
@@ -1205,6 +1538,20 @@ export function MainShell() {
             />
           );
         })()}
+      {headerMenu && (
+        <ContextMenu
+          x={headerMenu.x}
+          y={headerMenu.y}
+          items={[
+            {
+              id: "customize-toolbar",
+              label: "Customize Toolbar…",
+              onSelect: () => useSettingsUi.getState().show("toolbar"),
+            },
+          ]}
+          onClose={() => setHeaderMenu(null)}
+        />
+      )}
       {showHelp && <HelpMenu onTour={() => { setShowHelp(false); /* tour re-trigger handled by Onboarding */ window.dispatchEvent(new CustomEvent("tiq:show-tour")); }} onClose={() => setShowHelp(false)} />}
       <Onboarding />
     </div>

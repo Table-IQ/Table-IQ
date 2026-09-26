@@ -1,18 +1,26 @@
 import { useEffect, useMemo, useState } from "react";
 import { BrandMark } from "./Brand";
 import { ThemeToggle } from "./ThemeToggle";
+import { useSettingsUi } from "./Settings";
 import { Onboarding } from "./Onboarding";
 import { EngineIcon } from "./ui/EngineIcon";
-import { IconClose, IconExport, IconImport, IconKey, IconPlus, IconSearch } from "./ui/Icon";
+import { Elapsed } from "./ui/Elapsed";
+import {
+  IconClose,
+  IconExport,
+  IconImport,
+  IconKey,
+  IconPlus,
+  IconRefresh,
+  IconSearch,
+} from "./ui/Icon";
 import { ContextMenu } from "./ui/ContextMenu";
 import {
-  connect,
   deleteConnection,
   downloadText,
   exportConnections,
   importConnections,
   listConnections,
-  listObjects,
   pickKeyFile,
   saveConnection,
   testConnection,
@@ -20,9 +28,17 @@ import {
   type Engine,
 } from "../lib/commands";
 import { defaultSshConfig, type SshConfig } from "../lib/ssh";
-import { useConnections } from "../state/connectionStore";
-import { getLastConnected, markConnected } from "../lib/lastConnected";
+import { cancelConnecting, openConnection, useConnections, type ConnectingState } from "../state/connectionStore";
+import { getLastConnected } from "../lib/lastConnected";
 import { version as APP_VERSION } from "../../package.json";
+
+/** Connecting stage → row label. "switch" never happens here (that's the
+ *  DatabasePicker's flow) but the union is shared, so cover it anyway. */
+const BUSY_LABEL: Record<ConnectingState["stage"], string> = {
+  connect: "Connecting…",
+  schema: "Loading schema…",
+  switch: "Loading schema…",
+};
 
 /** Default connection color (light-mode `--primary`). Connections still on this
  *  value are treated as "no custom tag" — so the row dot is suppressed. */
@@ -102,7 +118,7 @@ function envTagOf(c: ConnConfig): { label: string; tone: "ok" | "warn" | "muted"
 }
 
 export function ConnectionManager() {
-  const { saved, setSaved, openSession } = useConnections();
+  const { saved, setSaved, connecting } = useConnections();
   const [form, setForm] = useState<ConnConfig>(blankConfig);
   const [password, setPassword] = useState("");
   // SSH secrets are split so the form can show password + key passphrase the way
@@ -149,21 +165,39 @@ export function ConnectionManager() {
       .catch((e) => setStatus({ kind: "err", msg: `Could not load saved connections: ${e}` }));
   }, [setSaved]);
 
+  // Cancel drops the store's `connecting` state immediately, but the row's own
+  // status line (`status`) only followed once `doConnect`'s promise settled —
+  // which, for a slow backend, left it reading "Connecting…" well after Cancel.
+  // Reset it here too so Cancel always reads back as idle right away.
+  const handleCancel = () => {
+    cancelConnecting();
+    setStatus({ kind: "idle", msg: "" });
+  };
+
   // ⌘N opens the new-connection sheet. MainShell handles ⌘N for new query once
   // there's an active connection, so the two don't clash.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Settings (⌘,) owns the keyboard while it's open — its own Escape
+      // handler (App.tsx) closes it; without this guard the same Escape
+      // keypress also dropped the new-connection sheet / cancelled an
+      // in-flight connection. App.tsx defers the actual close to a macrotask
+      // (setTimeout, not queueMicrotask — see closeSettingsDeferred in
+      // Settings.tsx for why), so `open` reads true here for this whole
+      // keypress no matter which window listener runs first.
+      if (useSettingsUi.getState().open) return;
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "n") {
         e.preventDefault();
         openSheetForNew();
-      } else if (e.key === "Escape" && sheetOpen) {
-        setSheetOpen(false);
+      } else if (e.key === "Escape") {
+        if (sheetOpen) setSheetOpen(false);
+        else if (connecting) handleCancel();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sheetOpen]);
+  }, [sheetOpen, connecting]);
 
   const refresh = () =>
     listConnections()
@@ -222,15 +256,13 @@ export function ConnectionManager() {
   };
 
   const doConnect = async (cfg: ConnConfig, pw?: string) => {
+    if (connecting) return; // one connect at a time — ConnRow disables other rows too
     setStatus({ kind: "busy", msg: "Connecting…" });
     try {
       if (pw !== undefined)
         await saveConnection(cfg, pw || undefined, effectiveSshSecret || undefined);
-      const info = await connect(cfg.id);
-      const schema =
-        info.engine === "redis" || info.engine === "mongodb" ? null : await listObjects(cfg.id);
-      markConnected(cfg.id);
-      openSession(info, schema);
+      const ok = await openConnection(cfg);
+      if (!ok) setStatus({ kind: "idle", msg: "" }); // cancelled — no error to show
     } catch (e) {
       setStatus({ kind: "err", msg: String(e) });
     }
@@ -403,8 +435,10 @@ export function ConnectionManager() {
                   key={c.id}
                   conn={c}
                   armed={armedDelete === c.id}
-                  status={status}
+                  busy={connecting?.id === c.id ? connecting : null}
+                  disabled={connecting !== null && connecting.id !== c.id}
                   onConnect={() => void doConnect(c)}
+                  onCancel={handleCancel}
                   onEdit={() => openSheetForEdit(c)}
                   onDelete={() => setArmedDelete(c.id)}
                   onConfirmDelete={async () => {
@@ -447,6 +481,7 @@ export function ConnectionManager() {
               id: "connect",
               label: "Connect",
               shortcut: "↵",
+              disabled: connecting !== null,
               onSelect: () => void doConnect(menu.conn),
             },
             { id: "edit", label: "Edit…", onSelect: () => openSheetForEdit(menu.conn) },
@@ -867,12 +902,16 @@ export function ConnectionManager() {
 }
 
 /** TablePlus-style connection row: 2-letter engine circle + name + env tag, with
- *  host:port/db underneath. Hover reveals edit + delete buttons on the right. */
+ *  host:port/db underneath. Hover reveals edit + delete buttons on the right —
+ *  or, while this row is the one connecting, a spinner + elapsed timer + Cancel
+ *  (Esc also cancels). Other rows go `disabled` for the duration. */
 function ConnRow({
   conn,
   armed,
-  status: _status,
+  busy,
+  disabled,
   onConnect,
+  onCancel,
   onEdit,
   onDelete,
   onConfirmDelete,
@@ -880,8 +919,10 @@ function ConnRow({
 }: {
   conn: ConnConfig;
   armed: boolean;
-  status: { kind: "idle" | "busy" | "ok" | "err"; msg: string };
+  busy: ConnectingState | null;
+  disabled: boolean;
   onConnect: () => void;
+  onCancel: () => void;
   onEdit: () => void;
   onDelete: () => void;
   onConfirmDelete: () => void;
@@ -892,12 +933,15 @@ function ConnRow({
     tag.tone === "ok" ? "text-ok" : tag.tone === "warn" ? "text-warn" : "text-muted-2";
   return (
     <li
-      className="group flex cursor-pointer items-center gap-3 rounded-[var(--radius)] px-2.5 py-2 transition-colors hover:bg-surface"
+      className={`group flex cursor-pointer items-center gap-3 rounded-[var(--radius)] px-2.5 py-2 transition-colors hover:bg-surface ${
+        disabled ? "pointer-events-none opacity-50" : ""
+      }`}
       onContextMenu={onContextMenu}
-      onDoubleClick={onConnect}
+      onDoubleClick={busy ? undefined : onConnect}
     >
       <button
         onClick={onConnect}
+        disabled={!!busy}
         className="flex min-w-0 flex-1 items-center gap-3 text-left"
         title={`Double-click or press Enter to connect to ${conn.name}`}
       >
@@ -920,35 +964,53 @@ function ConnRow({
           </div>
         </div>
       </button>
-      <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-        <button
-          onClick={onEdit}
-          title="Edit"
-          aria-label={`Edit ${conn.name}`}
-          className="inline-flex h-7 items-center rounded-[var(--radius)] px-2 text-[11.5px] text-muted hover:bg-surface-2 hover:text-text"
-        >
-          Edit
-        </button>
-        {armed ? (
+      {busy ? (
+        <div className="flex shrink-0 items-center gap-2 text-[11px] text-muted">
+          <IconRefresh size={12} className="animate-spin text-primary" aria-hidden />
+          <span>{BUSY_LABEL[busy.stage]}</span>
+          <Elapsed since={busy.since} minMs={1000} className="tiq-delayed font-mono tabular-nums" />
           <button
-            onClick={onConfirmDelete}
-            title="Click again to confirm"
-            aria-label={`Confirm delete ${conn.name}`}
-            className="inline-flex h-7 items-center rounded-[var(--radius)] bg-danger/10 px-2 text-[11.5px] font-medium text-danger hover:bg-danger/20"
+            onClick={(e) => {
+              e.stopPropagation();
+              onCancel();
+            }}
+            title="Cancel (Esc)"
+            className="inline-flex h-6 items-center rounded-[var(--radius)] border border-border px-2 text-[11px] text-muted hover:bg-surface-2 hover:text-text"
           >
-            Confirm delete?
+            Cancel
           </button>
-        ) : (
+        </div>
+      ) : (
+        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
           <button
-            onClick={onDelete}
-            title="Delete"
-            aria-label={`Delete ${conn.name}`}
-            className="inline-flex h-7 w-7 items-center justify-center rounded-[var(--radius)] text-muted hover:bg-surface-2 hover:text-danger"
+            onClick={onEdit}
+            title="Edit"
+            aria-label={`Edit ${conn.name}`}
+            className="inline-flex h-7 items-center rounded-[var(--radius)] px-2 text-[11.5px] text-muted hover:bg-surface-2 hover:text-text"
           >
-            ×
+            Edit
           </button>
-        )}
-      </div>
+          {armed ? (
+            <button
+              onClick={onConfirmDelete}
+              title="Click again to confirm"
+              aria-label={`Confirm delete ${conn.name}`}
+              className="inline-flex h-7 items-center rounded-[var(--radius)] bg-danger/10 px-2 text-[11.5px] font-medium text-danger hover:bg-danger/20"
+            >
+              Confirm delete?
+            </button>
+          ) : (
+            <button
+              onClick={onDelete}
+              title="Delete"
+              aria-label={`Delete ${conn.name}`}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-[var(--radius)] text-muted hover:bg-surface-2 hover:text-danger"
+            >
+              ×
+            </button>
+          )}
+        </div>
+      )}
     </li>
   );
 }

@@ -17,7 +17,7 @@ interface TabsState {
   activeKey: string | null;
   queryCount: number;
   openTable: (schema: string, table: string, view?: Tab["view"]) => void;
-  openQuery: (sql?: string) => void;
+  openQuery: (sql?: string, title?: string) => void;
   setTabSql: (key: string, sql: string) => void;
   openErd: () => void;
   close: (key: string) => void;
@@ -45,15 +45,16 @@ export const useTabs = create<TabsState>((set) => ({
         activeKey: key,
       };
     }),
-  openQuery: (sql) =>
+  openQuery: (sql, title) =>
     set((s) => {
       const n = s.queryCount + 1;
       const key = `query:${n}`;
       // Guard: this action is handed straight to onClick in a few places, where
       // React would otherwise pass the click event in as `sql`.
       const text = typeof sql === "string" ? sql : undefined;
+      const label = typeof title === "string" && title.trim() ? title : `Query ${n}`;
       return {
-        tabs: [...s.tabs, { key, kind: "query", title: `Query ${n}`, sql: text }],
+        tabs: [...s.tabs, { key, kind: "query", title: label, sql: text }],
         activeKey: key,
         queryCount: n,
       };

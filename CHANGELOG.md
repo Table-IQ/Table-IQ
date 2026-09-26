@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.5.0 — 2026-09-27
+
+Connecting never looks frozen now, and the sidebar's Queries and History tabs work. ⌘K
+reaches TablePlus parity, and three new things are one shortcut away: a Settings page,
+Cancel Running Queries, and a Workspace Overview. The title-bar icons are yours to
+arrange.
+
+### Added
+- **You can see a connection opening.** The card you clicked shows a spinner,
+  "Connecting…" then "Loading schema…", an elapsed timer and a Cancel button, and the
+  other cards wait. Opening another connection with ⌘O or switching database with ⌘D
+  shows a progress strip under the title bar instead of a frozen window.
+- **Queries and History tabs in the sidebar.** Queries lists your saved queries (this
+  connection's plus global ones). You can save the open query with +, rename one with
+  F2 or a double-click, delete it, and click to open it in a new tab. History lists
+  this connection's runs by day (Today, Yesterday, date), and a new run appears the
+  moment it finishes. The sidebar remembers which tab you left open.
+- **Settings (⌘,).** One page for theme, the connection-rail label, editor font size
+  (applied live) and your AI provider, plus Toolbar, Backup and MCP sections.
+- **⌘K matches TablePlus.** Search tables, databases and saved queries in one place,
+  grouped, with icons and shortcut hints, and your current database marked. Commands
+  include Diagram, Open Connection (⌘O, or ⌘⇧K), Open Database (⌘D), Workspace
+  Overview, Cancel Running Queries, Customize Toolbar and Settings.
+- **Cancel Running Queries (⌘.)** stops every query and page load running on the
+  current connection and tells you how many it stopped.
+- **Workspace Overview (⌘⇧\\).** A grid of every open tab across every open
+  connection. Click one to jump there, switching connection if needed, or × to close
+  it.
+- **Customize Toolbar.** Right-click the title bar, or open Settings → Toolbar, to
+  hide or reorder its icons. Your layout persists.
+
+### Changed
+- The Query tab's **Library** button now opens the sidebar's Queries tab. The
+  slide-in drawer is gone.
+- The AI settings drawer moved into Settings → AI.
+
+### Fixed
+- Pressing Esc to close a menu or the palette no longer cancels a connection that is
+  still opening.
+- Picking your current database in ⌘K no longer closes every tab. Picking another
+  one asks first if a table has unsaved edits.
+- A connection you cancelled no longer reports a red timeout error later.
+- Two connections browsing the same table no longer cancel each other's page loads.
+- Esc closes the Workspace Overview reliably. Settings and other panels now announce
+  themselves as dialogs to screen readers.
+
 ## 0.4.0 — 2026-09-26
 
 Keep several databases open at once and switch between them from a TablePlus-style

@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { IconClose } from "./Icon";
 
 export function Panel({
@@ -29,6 +29,7 @@ export function Panel({
   // Close plays the exit animation first; the parent unmounts us when it ends.
   // (Under reduced motion it still ends, after 0.01ms — see index.css.)
   const [closing, setClosing] = useState(false);
+  const titleId = useId();
   return (
     <div
       className={`tiq-overlay flex items-center justify-center p-6 ${closing ? "tiq-pop-out" : "tiq-pop-in"}`}
@@ -37,10 +38,13 @@ export function Panel({
       }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
         className={`flex max-h-[92vh] w-full flex-col overflow-hidden rounded-lg border border-border bg-bg shadow-[var(--shadow-pop)] ${w}`}
       >
         <header className="flex h-10 shrink-0 items-center gap-2 border-b border-border bg-surface px-3">
-          <div className="flex-1 truncate text-sm font-semibold text-text">{title}</div>
+          <div id={titleId} className="flex-1 truncate text-sm font-semibold text-text">{title}</div>
           {onClose && (
             <button
               onClick={() => setClosing(true)}
