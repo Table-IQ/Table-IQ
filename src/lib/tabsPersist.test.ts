@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  closeTabForConnection,
   closeTabIn,
   filterStaleTabs,
+  focusTabForConnection,
   focusTabIn,
   hydrateForConnection,
   persistForConnection,
@@ -173,5 +175,59 @@ describe("closeTabIn", () => {
     const out = closeTabIn(base, "nope");
     expect(out.tabs).toEqual(base.tabs);
     expect(out.activeKey).toBe(base.activeKey);
+  });
+});
+
+// Regression: a caller that snapshots a connection's slice once (e.g. to render a
+// grid of cards) and then fires two closes/focuses off that same snapshot would
+// have each write clobber the other's. `closeTabForConnection` /
+// `focusTabForConnection` read storage fresh on every call so sequential calls
+// against the same connection compose correctly with no caller-side bookkeeping.
+describe("closeTabForConnection", () => {
+  let store: ReturnType<typeof memStorage>;
+  beforeEach(() => {
+    store = memStorage();
+  });
+
+  it("closing X then Y (same connection) leaves both gone", () => {
+    const slice: PersistedTabs = {
+      tabs: [
+        { key: "query:x", kind: "query", title: "X" },
+        { key: "query:y", kind: "query", title: "Y" },
+        { key: "query:z", kind: "query", title: "Z" },
+      ],
+      activeKey: "query:x",
+      queryCount: 3,
+    };
+    persistForConnection("bg", slice, store);
+    closeTabForConnection("bg", "query:x", store);
+    closeTabForConnection("bg", "query:y", store);
+    const got = hydrateForConnection("bg", store, null);
+    expect(got?.tabs.map((t) => t.key)).toEqual(["query:z"]);
+  });
+
+  it("is a no-op when nothing is persisted for the connection", () => {
+    closeTabForConnection("nope", "query:x", store);
+    expect(hydrateForConnection("nope", store, null)).toBeNull();
+  });
+});
+
+describe("focusTabForConnection", () => {
+  it("reads storage fresh and moves activeKey", () => {
+    const store = memStorage();
+    persistForConnection(
+      "bg",
+      {
+        tabs: [
+          { key: "query:x", kind: "query", title: "X" },
+          { key: "query:y", kind: "query", title: "Y" },
+        ],
+        activeKey: "query:x",
+        queryCount: 2,
+      },
+      store,
+    );
+    focusTabForConnection("bg", "query:y", store);
+    expect(hydrateForConnection("bg", store, null)?.activeKey).toBe("query:y");
   });
 });

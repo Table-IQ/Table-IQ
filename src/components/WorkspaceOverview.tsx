@@ -1,13 +1,7 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { canLeaveSession, useConnections } from "../state/connectionStore";
 import { useTabs, type Tab } from "../state/tabsStore";
-import {
-  closeTabIn,
-  focusTabIn,
-  hydrateForConnection,
-  persistForConnection,
-  type PersistedTabs,
-} from "../lib/tabsPersist";
+import { closeTabForConnection, focusTabForConnection, hydrateForConnection } from "../lib/tabsPersist";
 import { IconClose, IconTable } from "./ui/Icon";
 import { ColorDot } from "./ui/Chip";
 
@@ -18,8 +12,6 @@ interface Card {
   tab: Tab;
 }
 
-const EMPTY_SLICE: PersistedTabs = { tabs: [], activeKey: null, queryCount: 0 };
-
 /**
  * ⌘⇧\ — TablePlus-style Workspace Overview: every open tab across every open
  * connection, in one grid. Click focuses it (switching connection first if
@@ -27,31 +19,32 @@ const EMPTY_SLICE: PersistedTabs = { tabs: [], activeKey: null, queryCount: 0 };
  *
  * The active connection's tabs live in `useTabs` (source of truth until the
  * next persist); every other open connection's live only in its persisted
- * slice (`tabsPersist.ts`) — hydrated here, and rewritten directly on click/×
- * since there's no mounted shell for that connection to do it.
+ * slice (`tabsPersist.ts`) — read fresh on every render AND fresh again inside
+ * each click handler (`focusTabForConnection`/`closeTabForConnection` do their
+ * own read-modify-write), so two clicks against the same background
+ * connection in a row can't clobber each other off a stale snapshot.
  */
 export function WorkspaceOverview({ onClose }: { onClose: () => void }) {
   const { open, active, saved } = useConnections();
   const liveTabs = useTabs((s) => s.tabs);
   const containerRef = useRef<HTMLDivElement>(null);
   const cardRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  // Bumped after a write to a background connection's persisted slice. Storage
+  // writes don't otherwise trigger a re-render, so without this the grid would
+  // keep showing a tab that a previous click already closed/refocused.
+  const [, setVersion] = useState(0);
 
   useEffect(() => {
     containerRef.current?.focus();
   }, []);
 
-  // Every OTHER open session's persisted slice — read once per render so the
-  // cards below and the click handlers agree on the same snapshot.
-  const otherSlices = new Map<string, PersistedTabs>();
-  for (const o of open) {
-    if (o.info.id === active?.id) continue;
-    otherSlices.set(o.info.id, hydrateForConnection(o.info.id, null, o.schema) ?? EMPTY_SLICE);
-  }
-
   const cards: Card[] = [];
   for (const o of open) {
     const connColor = saved.find((c) => c.id === o.info.id)?.color ?? null;
-    const tabs = o.info.id === active?.id ? liveTabs : otherSlices.get(o.info.id)!.tabs;
+    const tabs =
+      o.info.id === active?.id
+        ? liveTabs
+        : hydrateForConnection(o.info.id, null, o.schema)?.tabs ?? [];
     for (const tab of tabs) cards.push({ connId: o.info.id, connName: o.info.name, connColor, tab });
   }
 
@@ -62,8 +55,7 @@ export function WorkspaceOverview({ onClose }: { onClose: () => void }) {
       // Mirrors ConnectionRail's switchTo guard: jumping away from the active
       // connection must not silently discard its staged grid edits.
       if (!(await canLeaveSession())) return;
-      const slice = otherSlices.get(card.connId) ?? EMPTY_SLICE;
-      persistForConnection(card.connId, focusTabIn(slice, card.tab.key), null);
+      focusTabForConnection(card.connId, card.tab.key, null);
       useConnections.getState().switchTo(card.connId);
     }
     onClose();
@@ -73,8 +65,8 @@ export function WorkspaceOverview({ onClose }: { onClose: () => void }) {
     if (card.connId === active?.id) {
       useTabs.getState().close(card.tab.key);
     } else {
-      const slice = otherSlices.get(card.connId) ?? EMPTY_SLICE;
-      persistForConnection(card.connId, closeTabIn(slice, card.tab.key), null);
+      closeTabForConnection(card.connId, card.tab.key, null);
+      setVersion((v) => v + 1);
     }
   };
 

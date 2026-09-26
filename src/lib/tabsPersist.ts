@@ -89,6 +89,39 @@ export function closeTabIn(slice: PersistedTabs, key: string): PersistedTabs {
   return { ...slice, tabs, activeKey };
 }
 
+/**
+ * Move `connId`'s persisted `activeKey` to `key` — reads storage fresh, applies
+ * `focusTabIn`, writes it back. Unlike a caller that snapshots the slice once
+ * (e.g. to render a list) and reuses that snapshot across multiple calls, this
+ * always starts from the latest state on disk, so sequential calls against the
+ * same connection compose instead of clobbering each other. A no-op when
+ * nothing is persisted for `connId` yet.
+ */
+export function focusTabForConnection(
+  connId: string,
+  key: string,
+  storage: Pick<Storage, "getItem" | "setItem"> | null,
+): void {
+  const slice = hydrateForConnection(connId, storage, null);
+  if (!slice) return;
+  persistForConnection(connId, focusTabIn(slice, key), storage);
+}
+
+/**
+ * Remove tab `key` from `connId`'s persisted slice — reads storage fresh,
+ * applies `closeTabIn`, writes it back. See `focusTabForConnection` for why the
+ * fresh read matters. A no-op when nothing is persisted for `connId` yet.
+ */
+export function closeTabForConnection(
+  connId: string,
+  key: string,
+  storage: Pick<Storage, "getItem" | "setItem"> | null,
+): void {
+  const slice = hydrateForConnection(connId, storage, null);
+  if (!slice) return;
+  persistForConnection(connId, closeTabIn(slice, key), storage);
+}
+
 /** Write the persisted slice for `connId`. Best-effort (silently ignores quota errors). */
 export function persistForConnection(
   connId: string,
