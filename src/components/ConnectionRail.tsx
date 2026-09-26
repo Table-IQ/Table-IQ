@@ -7,7 +7,26 @@ import { ContextMenu } from "./ui/ContextMenu";
 import { IconClose, IconDatabase, IconSliders } from "./ui/Icon";
 
 const LABEL_KEY = "tiq:rail:label";
-type Label = "database" | "connection";
+export type RailLabel = "database" | "connection";
+type Label = RailLabel;
+
+/** Read/write `tiq:rail:label`. Exported so Settings' General section can
+ *  reuse the same read/write instead of touching localStorage directly. */
+export function loadRailLabel(): RailLabel {
+  try {
+    return localStorage.getItem(LABEL_KEY) === "connection" ? "connection" : "database";
+  } catch {
+    return "database";
+  }
+}
+
+export function saveRailLabel(l: RailLabel): void {
+  try {
+    localStorage.setItem(LABEL_KEY, l);
+  } catch {
+    // quota / private mode — ignore
+  }
+}
 
 /**
  * Far-left rail of the *open* connections (TablePlus parity). Only shown once two
@@ -15,15 +34,13 @@ type Label = "database" | "connection";
  */
 export function ConnectionRail() {
   const { open, active, saved, switchTo } = useConnections();
-  const [label, setLabel] = useState<Label>(() =>
-    localStorage.getItem(LABEL_KEY) === "connection" ? "connection" : "database",
-  );
+  const [label, setLabel] = useState<Label>(loadRailLabel);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
 
   if (open.length < 2) return null;
 
   const pickLabel = (l: Label) => {
-    localStorage.setItem(LABEL_KEY, l);
+    saveRailLabel(l);
     setLabel(l);
   };
 

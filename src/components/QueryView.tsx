@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SqlEditor, type SqlEditorHandle } from "./SqlEditor";
-import { AiSettings } from "./AiSettings";
+import { useSettingsUi } from "./Settings";
 import { PlanView } from "./PlanView";
 import { ChartView } from "./ChartView";
 import { PluginsPanel } from "./PluginsPanel";
@@ -104,9 +104,7 @@ export function QueryView({
   const [runStart, setRunStart] = useState(0);
   const [plan, setPlan] = useState<string | null>(null);
   const [editorH, setEditorH] = useState<number>(readEditorHeight);
-  const [drawer, setDrawer] = useState<"none" | "chart" | "plugins" | "diff" | "ai" | "aisettings">(
-    "none",
-  );
+  const [drawer, setDrawer] = useState<"none" | "chart" | "plugins" | "diff" | "ai">("none");
   const recordResult = useResults((s) => s.record);
   const recentCount = useResults((s) => s.recents.length);
   const setTabSql = useTabs((s) => s.setTabSql);
@@ -484,7 +482,7 @@ export function QueryView({
               Fix
             </button>
             <button
-              onClick={() => setDrawer("aisettings")}
+              onClick={() => useSettingsUi.getState().show("ai")}
               className="rounded-md border border-border px-2 py-1 text-xs text-muted hover:text-text"
               title="AI settings"
             >
@@ -616,7 +614,6 @@ export function QueryView({
         }
       />
 
-      {drawer === "aisettings" && <AiSettings onClose={() => setDrawer("none")} />}
       {drawer === "plugins" && selectedMeta?.resultId && (
         <PluginsPanel resultId={selectedMeta.resultId} onClose={() => setDrawer("none")} />
       )}
