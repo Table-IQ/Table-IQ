@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use tableiq_lib::drivers::{
     mysql::MySqlDriver, postgres::PgDriver, CancelToken, DriverError, SqlDriver,
 };
-use tableiq_lib::ipc::connect::cancel_all_for;
+use tableiq_lib::ipc::connect::{cancel_all_for, ckey};
 
 #[tokio::test]
 async fn pg_cancel_interrupts_long_query() {
@@ -91,7 +91,7 @@ async fn pg_cancel_all_stops_two_queries() {
     let mut handles = Vec::new();
     for i in 0..2 {
         let token = CancelToken::new();
-        cancels.lock().unwrap().insert(format!("{conn_id}\u{1f}q{i}"), token.clone());
+        cancels.lock().unwrap().insert(ckey(conn_id, &format!("q{i}")), token.clone());
         let d = drv.clone();
         handles.push(tokio::spawn(async move {
             d.run_statements(&["SELECT pg_sleep(30)".to_string()], 100, &token).await

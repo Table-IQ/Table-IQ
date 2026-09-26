@@ -818,7 +818,7 @@ pub async fn cancel_query(
 /// the same `token_id` / `request_key` (or both default an absent `query_id` to `""`) and
 /// clobber each other's entry; namespacing by connection also gives [`cancel_all_for`] a
 /// prefix to search for "every token that belongs to this connection".
-fn ckey(id: &str, k: &str) -> String {
+pub fn ckey(id: &str, k: &str) -> String {
     format!("{id}\u{1f}{k}")
 }
 
