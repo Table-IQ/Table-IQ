@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatLogTs, mergeEntries } from "./sqlLog";
+import { formatLogTs, mergeEntries, shouldApply } from "./sqlLog";
 import type { SqlLogEntry } from "./commands";
 
 /** Build a `ts_us` (µs since epoch) for a LOCAL date/time + extra microseconds
@@ -59,5 +59,19 @@ describe("mergeEntries", () => {
   it("returns prev unchanged (same reference) when next is empty", () => {
     const prev = [e(1), e(2)];
     expect(mergeEntries(prev, [], 100)).toBe(prev);
+  });
+});
+
+describe("shouldApply", () => {
+  it("applies when the generation hasn't moved since the poll started", () => {
+    expect(shouldApply(3, 3)).toBe(true);
+  });
+
+  it("does not apply when a clear or connection switch bumped the generation", () => {
+    expect(shouldApply(3, 4)).toBe(false);
+  });
+
+  it("does not apply for a poll started before the very first generation bump", () => {
+    expect(shouldApply(0, 1)).toBe(false);
   });
 });

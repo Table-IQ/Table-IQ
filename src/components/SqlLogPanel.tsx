@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { highlightCode } from "@lezer/highlight";
 import { StandardSQL } from "@codemirror/lang-sql";
 import { sqlLog, clearSqlLog, type SqlLogEntry } from "../lib/commands";
-import { formatLogTs, mergeEntries, SQL_LOG_CAP } from "../lib/sqlLog";
+import { formatLogTs, mergeEntries, shouldApply, SQL_LOG_CAP } from "../lib/sqlLog";
 import { sqlHighlight } from "../lib/sqlHighlight";
 import { logError } from "../lib/report";
 import { ResizeHandle, clampWidth } from "./ui/ResizeHandle";
@@ -79,6 +79,33 @@ function highlightSql(sqlText: string): string {
 }
 
 /**
+ * One log entry (fix round 1): extracted + `memo`'d so an unrelated poll tick
+ * that only appends new entries doesn't re-highlight the ones already on
+ * screen — `entry` keeps its object identity across `mergeEntries` calls for
+ * anything already present, so `memo`'s shallow prop comparison skips a
+ * re-render (and therefore the `useMemo` below) for every entry except the
+ * newly-appended ones.
+ */
+const LogEntryRow = memo(function LogEntryRow({
+  entry,
+  highlight,
+}: {
+  entry: SqlLogEntry;
+  highlight: boolean;
+}) {
+  const html = useMemo(
+    () => (highlight ? highlightSql(entry.sql) : null),
+    [entry.sql, highlight],
+  );
+  return (
+    <div className="mb-2">
+      <div className="text-muted">-- {formatLogTs(entry.ts_us)}</div>
+      {html !== null ? <div dangerouslySetInnerHTML={{ __html: html }} /> : entry.sql}
+    </div>
+  );
+});
+
+/**
  * TablePlus-parity SQL log panel (⌘⇧C, Task 9): every statement the app ran
  * on `connId`, each preceded by a `-- <timestamp>` comment line. Polls
  * `sqlLog` every second while mounted (skipped while the tab is hidden),
@@ -88,6 +115,12 @@ function highlightSql(sqlText: string): string {
 export function SqlLogPanel({ connId }: { connId: string }) {
   const [entries, setEntries] = useState<SqlLogEntry[]>([]);
   const lastSeqRef = useRef(0);
+  // Bumped on clear and on connId change; each poll captures it when it
+  // *starts* and checks it again when it resolves (`shouldApply`) — see
+  // sqlLog.ts. Fixes a clear racing an in-flight poll (the poll would
+  // otherwise reapply the pre-clear entries and `lastSeq` right after).
+  const genRef = useRef(0);
+  const inFlightRef = useRef(false);
   const [height, setHeight] = useState<number>(() => {
     const n = Number(readLS(HEIGHT_KEY));
     return Number.isFinite(n) && n > 0 ? clampWidth(n, MIN_H, MAX_H) : DEFAULT_H;
@@ -101,29 +134,41 @@ export function SqlLogPanel({ connId }: { connId: string }) {
 
   // `seq` is global across every connection (design-notes.md), so on a
   // connection switch the old entries no longer belong here — start over.
+  // Declared (and thus committed) before the poll effect below, so its
+  // generation bump is visible to the poll effect's own setup that runs
+  // right after — see the ordering note in `shouldApply`'s doc comment.
   useEffect(() => {
+    genRef.current += 1;
     lastSeqRef.current = 0;
     stickyBottomRef.current = true;
     setEntries([]);
   }, [connId]);
 
-  // Poll only while mounted; skip a tick while the window/tab is hidden.
+  // Poll only while mounted; skip a tick while the window/tab is hidden or a
+  // previous poll is still in flight (a slow response shouldn't pile up
+  // concurrent requests).
   useEffect(() => {
-    let cancelled = false;
+    let unmounted = false; // true unmount only — a connId change is already
+    // covered by the generation bump above, since this whole effect re-runs.
     const poll = () => {
-      if (document.hidden) return;
+      if (document.hidden || inFlightRef.current) return;
+      const gen = genRef.current;
+      inFlightRef.current = true;
       sqlLog(connId, lastSeqRef.current)
         .then((next) => {
-          if (cancelled || next.length === 0) return;
+          if (unmounted || !shouldApply(gen, genRef.current) || next.length === 0) return;
           lastSeqRef.current = next[next.length - 1].seq;
           setEntries((prev) => mergeEntries(prev, next, SQL_LOG_CAP));
         })
-        .catch((e) => logError("sql log: poll", e));
+        .catch((e) => logError("sql log: poll", e))
+        .finally(() => {
+          inFlightRef.current = false;
+        });
     };
     poll();
     const id = window.setInterval(poll, POLL_MS);
     return () => {
-      cancelled = true;
+      unmounted = true;
       window.clearInterval(id);
     };
   }, [connId]);
@@ -140,9 +185,17 @@ export function SqlLogPanel({ connId }: { connId: string }) {
   };
 
   const onClear = () => {
-    void clearSqlLog(connId).catch((e) => logError("sql log: clear", e));
+    // Bump the generation and reset local state synchronously, *before*
+    // kicking off `clearSqlLog` — any poll already in flight resolves after
+    // this and its generation check now fails, so it can't reapply the
+    // pre-clear entries or push `lastSeq` back up; any poll tick that fires
+    // after this point (even before `clearSqlLog` itself resolves) starts
+    // over from `afterSeq = 0`.
+    genRef.current += 1;
     lastSeqRef.current = 0;
+    stickyBottomRef.current = true;
     setEntries([]);
+    void clearSqlLog(connId).catch((e) => logError("sql log: clear", e));
   };
 
   return (
@@ -165,16 +218,7 @@ export function SqlLogPanel({ connId }: { connId: string }) {
         {entries.length === 0 ? (
           <div className="text-muted">No statements logged yet.</div>
         ) : (
-          entries.map((e) => (
-            <div key={e.seq} className="mb-2">
-              <div className="text-muted">-- {formatLogTs(e.ts_us)}</div>
-              {highlight ? (
-                <div dangerouslySetInnerHTML={{ __html: highlightSql(e.sql) }} />
-              ) : (
-                e.sql
-              )}
-            </div>
-          ))
+          entries.map((e) => <LogEntryRow key={e.seq} entry={e} highlight={highlight} />)
         )}
       </div>
       <div className="flex shrink-0 items-center justify-between gap-2 border-t border-border bg-surface px-3 py-1.5">

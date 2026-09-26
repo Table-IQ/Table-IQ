@@ -48,3 +48,17 @@ export function mergeEntries(
   }
   return merged.length > cap ? merged.slice(merged.length - cap) : merged;
 }
+
+/**
+ * Generation guard for the panel's poll loop (fix round 1): `SqlLogPanel`
+ * bumps a generation counter on every clear and every connection switch, and
+ * each in-flight poll captures the counter's value when it *starts*. A poll
+ * that resolves after a later clear/switch must not apply its (now stale)
+ * result — otherwise a clear can race an in-flight poll and have the old
+ * entries (and `lastSeq`) reappear right after the trash button fires.
+ * `gen` is the value captured when the poll started; `currentGen` is read
+ * fresh when the poll resolves.
+ */
+export function shouldApply(gen: number, currentGen: number): boolean {
+  return gen === currentGen;
+}
