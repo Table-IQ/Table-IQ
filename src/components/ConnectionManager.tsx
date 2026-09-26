@@ -165,6 +165,15 @@ export function ConnectionManager() {
       .catch((e) => setStatus({ kind: "err", msg: `Could not load saved connections: ${e}` }));
   }, [setSaved]);
 
+  // Cancel drops the store's `connecting` state immediately, but the row's own
+  // status line (`status`) only followed once `doConnect`'s promise settled —
+  // which, for a slow backend, left it reading "Connecting…" well after Cancel.
+  // Reset it here too so Cancel always reads back as idle right away.
+  const handleCancel = () => {
+    cancelConnecting();
+    setStatus({ kind: "idle", msg: "" });
+  };
+
   // ⌘N opens the new-connection sheet. MainShell handles ⌘N for new query once
   // there's an active connection, so the two don't clash.
   useEffect(() => {
@@ -182,7 +191,7 @@ export function ConnectionManager() {
         openSheetForNew();
       } else if (e.key === "Escape") {
         if (sheetOpen) setSheetOpen(false);
-        else if (connecting) cancelConnecting();
+        else if (connecting) handleCancel();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -429,7 +438,7 @@ export function ConnectionManager() {
                   busy={connecting?.id === c.id ? connecting : null}
                   disabled={connecting !== null && connecting.id !== c.id}
                   onConnect={() => void doConnect(c)}
-                  onCancel={cancelConnecting}
+                  onCancel={handleCancel}
                   onEdit={() => openSheetForEdit(c)}
                   onDelete={() => setArmedDelete(c.id)}
                   onConfirmDelete={async () => {

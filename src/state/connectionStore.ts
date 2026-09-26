@@ -280,9 +280,11 @@ function discardIfStale(id: string): void {
 }
 
 /** Connect to `cfg` and load its schema, tracking `connecting` throughout.
- *  Resolves `true` on success, `false` when cancelled/superseded. A real
- *  failure clears `connecting` and rethrows so the caller's existing error
- *  handling (status line / connMsg) still fires. */
+ *  Resolves `true` on success, `false` when cancelled/superseded — including
+ *  when the stale attempt's own connect/schema call later fails, which is
+ *  not a real error to surface. A real (non-stale) failure clears
+ *  `connecting` and rethrows so the caller's existing error handling
+ *  (status line / connMsg) still fires. */
 export async function openConnection(cfg: ConnConfig): Promise<boolean> {
   const my = ++gen;
   const since = performance.now();
@@ -305,7 +307,13 @@ export async function openConnection(cfg: ConnConfig): Promise<boolean> {
     useConnections.setState({ connecting: null });
     return true;
   } catch (e) {
-    if (my === gen) useConnections.setState({ connecting: null });
+    if (my !== gen) {
+      // Stale attempt (cancelled, or superseded) — its late failure isn't a
+      // real error to surface; just clean up like any other stale result.
+      discardIfStale(cfg.id);
+      return false;
+    }
+    useConnections.setState({ connecting: null });
     throw e;
   }
 }

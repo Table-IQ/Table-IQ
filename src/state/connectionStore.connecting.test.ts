@@ -125,6 +125,33 @@ describe("openConnection", () => {
     expect(useConnections.getState().connecting).toBeNull();
     expect(useConnections.getState().active).toBeNull();
   });
+
+  it("a cancelled connect that later fails resolves false and doesn't throw", async () => {
+    const p = pending<ConnectedInfo>();
+    connect.mockReturnValueOnce(p.promise);
+    disconnect.mockResolvedValue(undefined);
+    const attempt = openConnection(cfg("a", "Alpha"));
+    cancelConnecting();
+    p.reject(new Error("late failure"));
+    await expect(attempt).resolves.toBe(false);
+    expect(disconnect).toHaveBeenCalledWith("a");
+    expect(useConnections.getState().connecting).toBeNull();
+    expect(useConnections.getState().active).toBeNull();
+  });
+
+  it("a cancel during stage 'schema' leads to a disconnect", async () => {
+    connect.mockResolvedValueOnce(info("a"));
+    listObjects.mockImplementation(async () => {
+      expect(useConnections.getState().connecting?.stage).toBe("schema");
+      cancelConnecting();
+      throw new Error("late failure");
+    });
+    disconnect.mockResolvedValue(undefined);
+    const ok = await openConnection(cfg("a", "Alpha"));
+    expect(ok).toBe(false);
+    expect(disconnect).toHaveBeenCalledWith("a");
+    expect(useConnections.getState().connecting).toBeNull();
+  });
 });
 
 describe("switchDatabaseFlow", () => {
