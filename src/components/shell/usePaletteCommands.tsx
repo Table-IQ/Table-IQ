@@ -153,6 +153,13 @@ export function usePaletteCommands(options: UsePaletteCommandsOptions): Command[
         run: () => useSettingsUi.getState().show("mcp"),
       },
       {
+        id: "act:mcp-activity",
+        label: "MCP Activity",
+        group: "Commands",
+        icon: <IconChip />,
+        run: () => openView("mcp", "MCP Activity"),
+      },
+      {
         id: "act:customize-toolbar",
         label: "Customize Toolbar",
         group: "Commands",

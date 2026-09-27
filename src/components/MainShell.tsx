@@ -85,6 +85,7 @@ import {
 } from "../lib/tableScript";
 import { UsersView } from "./UsersView";
 import { MetricsBoard } from "./MetricsBoard";
+import { McpActivityView } from "./McpActivityView";
 import { Elapsed } from "./ui/Elapsed";
 import { applyToolbar, loadToolbar } from "../lib/toolbarPrefs";
 import {
@@ -667,6 +668,11 @@ export function MainShell() {
           <MetricsBoard connId={active.id} engine={active.engine as Engine} />
         </ErrorBoundary>
       )}
+      {activeTab?.kind === "mcp" && (
+        <ErrorBoundary key={activeTab.key} label={`mcp tab ${activeTab.key}`}>
+          <McpActivityView />
+        </ErrorBoundary>
+      )}
       {activeTab?.kind === "table" &&
         (activeObj ? (
           <ErrorBoundary key={activeTab.key} label={`table tab ${activeTab.key}`}>
@@ -1191,7 +1197,8 @@ export function MainShell() {
           {(!activeTab ||
             activeTab.kind === "erd" ||
             activeTab.kind === "users" ||
-            activeTab.kind === "metrics") && (
+            activeTab.kind === "metrics" ||
+            activeTab.kind === "mcp") && (
             <StatusBar
               left={
                 <>
