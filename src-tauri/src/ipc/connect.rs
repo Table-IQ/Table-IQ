@@ -1230,9 +1230,10 @@ pub async fn rows_of(
 /// With a `query_id`, the run is registered under `ckey(id, query_id)` like [`run_query`],
 /// so `cancel_query` and ⌘. (`cancel_all`) can stop it.
 ///
-/// `read_only` (Metrics widgets): `sql` must pass `mcp::guard::guard_sql` as a read and runs
-/// inside a read-only transaction (`read_only_stmts`), so a SELECT calling a function that
-/// writes (`setval`, …) fails or is rolled back instead of repeating every refresh.
+/// `read_only` (Metrics widgets): `sql` must pass the widget guard (`mcp::guard::widget_stmts`
+/// — MCP's, minus its DuckDB file-access refusals) and runs inside a read-only transaction,
+/// so a SELECT calling a function that writes (`setval`, …) fails or is rolled back instead
+/// of repeating every refresh.
 #[tauri::command]
 pub async fn query_rows(
     state: State<'_, ConnState>,
@@ -1245,14 +1246,23 @@ pub async fn query_rows(
     let drv = state.session(&id)?;
     let cap = max_rows.unwrap_or(1000).min(1000);
     let key = query_id.map(|q| ckey(&id, &q));
-    let stmts = if read_only.unwrap_or(false) {
-        let cfg = state.configs().into_iter().find(|c| c.id == id);
-        let engine = cfg.map(|c| c.engine).ok_or_else(|| "unknown connection".to_string())?;
-        crate::mcp::guard::read_only_stmts(&engine, &sql)?
-    } else {
-        vec![sql]
-    };
+    let stmts = if read_only.unwrap_or(false) { widget_stmts(&state, &id, &sql)? } else { vec![sql] };
     registered_rows(&state.cancels, drv.as_ref(), key.as_deref(), &stmts, cap).await
+}
+
+/// Would a Metrics widget's `sql` pass the guard it runs under (`query_rows` with
+/// `read_only`)? The add/edit modal asks before saving, so a widget that would only error on
+/// every refresh is refused up front, with the reason.
+#[tauri::command]
+pub fn validate_widget_sql(state: State<ConnState>, id: String, sql: String) -> Result<(), String> {
+    widget_stmts(&state, &id, &sql).map(|_| ())
+}
+
+/// `sql` guarded and wrapped for a widget on connection `id` (by its saved engine).
+fn widget_stmts(state: &ConnState, id: &str, sql: &str) -> Result<Vec<String>, String> {
+    let cfg = state.configs().into_iter().find(|c| c.id == id);
+    let engine = cfg.map(|c| c.engine).ok_or_else(|| "unknown connection".to_string())?;
+    crate::mcp::guard::widget_stmts(&engine, sql)
 }
 
 /// The body of [`query_rows`], outside Tauri so it can be tested: [`rows_of`] with a cancel
@@ -2541,6 +2551,22 @@ mod tests {
         });
         assert!(panicked.is_err());
         assert!(not_restoring("restore-panics").is_ok(), "a panic still clears the mark");
+    }
+
+    /// The widget check `validate_widget_sql` runs is the guard `query_rows` applies: a DuckDB
+    /// file read and a SQL Server `'OPEN'` literal pass it, a write does not.
+    #[test]
+    fn widget_sql_check_is_the_read_only_query_rows_guard() {
+        let mut duck = sqlite_cfg("w-duck", std::path::Path::new("/tmp/w.duckdb"));
+        duck.engine = "duckdb".into();
+        let mut ms = sqlite_cfg("w-ms", std::path::Path::new("/tmp/unused"));
+        ms.engine = "sqlserver".into();
+        let state = state_with(vec![duck, ms]);
+        assert!(widget_stmts(&state, "w-duck", "SELECT * FROM read_csv('/data/x.csv')").is_ok());
+        assert!(widget_stmts(&state, "w-ms", "SELECT count(*) FROM t WHERE status = 'OPEN'").is_ok());
+        let e = widget_stmts(&state, "w-ms", "DELETE FROM t").unwrap_err();
+        assert!(e.contains("read-only"), "{e}");
+        assert!(widget_stmts(&state, "nope", "SELECT 1").is_err());
     }
 
     /// A SQL Server session: answers HEADERONLY with `backup_of`, `DB_NAME()` with `on`, and

@@ -5,8 +5,10 @@ import {
   isReadOnlyWidgetSql,
   loadBoard,
   saveBoard,
+  widgetSaveError,
   widgetValue,
   MIN_REFRESH_SEC,
+  WIDGET_SQL_HINT,
   type Board,
   type Widget,
   type WidgetKind,
@@ -92,11 +94,12 @@ export function MetricsBoard({ connId, engine }: { connId: string; engine: Engin
         )}
       </div>
       {modal?.mode === "add" && (
-        <WidgetModal dialect={dialect} onClose={() => setModal(null)} onSave={addWidget} />
+        <WidgetModal connId={connId} dialect={dialect} onClose={() => setModal(null)} onSave={addWidget} />
       )}
       {modal?.mode === "edit" && (
         <WidgetModal
           initial={modal.widget}
+          connId={connId}
           dialect={dialect}
           onClose={() => setModal(null)}
           onSave={(w) => editWidget(modal.widget.id, w)}
@@ -281,11 +284,13 @@ function TableValue({ columns, rows }: { columns: string[]; rows: (string | null
 
 function WidgetModal({
   initial,
+  connId,
   dialect,
   onClose,
   onSave,
 }: {
   initial?: Widget;
+  connId: string;
   dialect: SqlDialect;
   onClose: () => void;
   onSave: (w: Omit<Widget, "id">) => void;
@@ -294,6 +299,9 @@ function WidgetModal({
   const [sql, setSql] = useState(initial?.sql ?? "");
   const [kind, setKind] = useState<WidgetKind>(initial?.kind ?? "number");
   const [refreshSec, setRefreshSec] = useState(initial?.refreshSec ?? 10);
+  // The backend guard's refusal at save time (cleared on edit), and "asking it now".
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
 
   const titleValid = title.trim().length > 0;
   const sqlPresent = sql.trim().length > 0;
@@ -301,8 +309,15 @@ function WidgetModal({
   const refreshValid = Number.isFinite(refreshSec) && refreshSec >= MIN_REFRESH_SEC;
   const valid = titleValid && sqlPresent && sqlReadOnly && refreshValid;
 
-  const save = () => {
-    if (!valid) return;
+  const save = async () => {
+    if (!valid || checking) return;
+    setChecking(true);
+    const err = await widgetSaveError(connId, sql.trim(), dialect);
+    setChecking(false);
+    if (err) {
+      setSaveError(err);
+      return;
+    }
     onSave({ title: title.trim(), sql: sql.trim(), kind, refreshSec });
   };
 
@@ -313,8 +328,8 @@ function WidgetModal({
       width="sm"
       footer={
         <button
-          onClick={save}
-          disabled={!valid}
+          onClick={() => void save()}
+          disabled={!valid || checking}
           className="rounded-md bg-primary px-3 py-1 text-xs font-medium text-white hover:bg-primary-hover disabled:opacity-50"
         >
           {initial ? "Save" : "Add"}
@@ -337,12 +352,17 @@ function WidgetModal({
             className={`${field} w-full font-mono`}
             rows={4}
             value={sql}
-            onChange={(e) => setSql(e.target.value)}
+            onChange={(e) => {
+              setSql(e.target.value);
+              setSaveError(null);
+            }}
           />
           {sqlPresent && !sqlReadOnly && (
-            <span className="mt-1 block text-[11px] text-danger">
-              Must be a single read-only statement (SELECT, WITH, SHOW, EXPLAIN, VALUES,
-              TABLE, DESCRIBE or DESC) — no writes, no multiple statements.
+            <span className="mt-1 block text-[11px] text-danger">{WIDGET_SQL_HINT}</span>
+          )}
+          {sqlReadOnly && saveError && (
+            <span role="alert" className="mt-1 block text-[11px] text-danger">
+              {saveError}
             </span>
           )}
         </label>

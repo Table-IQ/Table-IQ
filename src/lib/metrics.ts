@@ -8,7 +8,7 @@
  * `{ widgets: Widget[] }`. Pure functions take an optional Storage so the
  * unit tests can pass an in-memory map.
  */
-import { queryRows, type Rows } from "./commands";
+import { queryRows, validateWidgetSql, type Rows } from "./commands";
 import { buildSeries, MAX_BARS, type Point } from "./chart";
 import { splitStatements, type SqlDialect } from "./sqlSplit";
 
@@ -120,6 +120,28 @@ export function fetchWidgetRows(
   run: typeof queryRows = queryRows,
 ): Promise<Rows> {
   return run(connId, widget.sql, widgetRowCap(widget.kind), queryId, true);
+}
+
+/** Shown when the fast TS check refuses a widget's SQL. */
+export const WIDGET_SQL_HINT =
+  "Must be a single read-only statement (SELECT, WITH, SHOW, EXPLAIN, VALUES, TABLE, DESCRIBE or DESC) — no writes, no multiple statements.";
+
+/** Why the add/edit modal can't save `sql`, or null. The TS check (`isReadOnlyWidgetSql`)
+ *  answers instantly while typing; the backend guard every refresh runs under has the last
+ *  word at save time, so a widget can't save fine and then fail on every refresh. */
+export async function widgetSaveError(
+  connId: string,
+  sql: string,
+  dialect: SqlDialect,
+  validate: typeof validateWidgetSql = validateWidgetSql,
+): Promise<string | null> {
+  if (!isReadOnlyWidgetSql(sql, dialect)) return WIDGET_SQL_HINT;
+  try {
+    await validate(connId, sql);
+    return null;
+  } catch (e) {
+    return String(e);
+  }
 }
 
 /** Shape a `query_rows` result for display, per widget kind:

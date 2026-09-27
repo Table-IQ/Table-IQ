@@ -860,6 +860,13 @@ export async function queryRows(
   });
 }
 
+/** Would this Metrics widget SQL pass the backend guard its refreshes run under? Rejects
+ *  with the reason. The browser preview has no backend guard: the modal's TS check stands. */
+export async function validateWidgetSql(id: string, sql: string): Promise<void> {
+  if (!inTauri()) return;
+  await invoke<null>("validate_widget_sql", { id, sql });
+}
+
 // ── MCP server (Task 14) ───────────────────────────────────────────────────
 export interface McpConn {
   id: string;

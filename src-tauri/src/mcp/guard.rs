@@ -1,9 +1,10 @@
-//! The SQL guard in front of MCP `run_query` and read-only `query_rows` (Metrics widgets),
-//! and the read-only transaction it runs inside.
+//! The SQL guard in front of MCP `run_query` and read-only `query_rows` (Metrics widgets,
+//! slightly looser: DuckDB file reads), and the read-only transaction it runs inside.
 //!
 //! Fail-closed on purpose, like `metrics.ts`'s `isReadOnlyWidgetSql` it mirrors: the write
-//! keyword scan runs on the RAW upper-cased text (a keyword inside a literal rejects too),
-//! and the one-statement scanner refuses wherever it could disagree with the engine about
+//! keyword scan runs on the RAW upper-cased text (a keyword inside a literal rejects too —
+//! only SQL Server's own verbs are looked for in the code alone, once the scanner has read
+//! it), and the one-statement scanner refuses wherever it could disagree with the engine about
 //! where a literal or comment ends, instead of guessing — a guess that blanks a real `;`
 //! is how a second statement slips past it.
 
@@ -36,7 +37,8 @@ fn engine_functions(engine: &str) -> &'static [&'static str] {
     match engine {
         // DuckDB has no users, so these reach whatever the app can read. Sharing a DuckDB
         // connection also turns external access off on its instance (`mcp::server`).
-        "duckdb" => &["READ_*", "GLOB", "*_SCAN", "SNIFF_CSV", "PARQUET_*", "QUERY", "QUERY_TABLE", "GETENV"],
+        // The file readers are `DUCKDB_FILE_FUNCTIONS`, which only MCP refuses.
+        "duckdb" => &["QUERY", "QUERY_TABLE", "GETENV"],
         // Files, other servers and other sessions — and every built-in that executes SQL text
         // it is handed (`query_to_xml('SELECT pg_read_'||'file(…)')`), since a name check
         // can't see inside a string that is only assembled at run time. From `pg_proc`: the
@@ -55,21 +57,36 @@ fn engine_functions(engine: &str) -> &'static [&'static str] {
             "BINARY_UPGRADE_*",
         ],
         "mysql" => &["LOAD_FILE", "GET_LOCK"],
-        "sqlserver" => &["OPENROWSET", "OPENDATASOURCE", "OPENQUERY", "XP_*"],
+        "sqlserver" => &[
+            "OPENROWSET", "OPENDATASOURCE", "OPENQUERY", "XP_*",
+            // Server-side file readers: Extended Events, trace and audit files.
+            "FN_XE_FILE_TARGET_READ_FILE", "FN_TRACE_GETTABLE", "FN_GET_AUDIT_FILE",
+        ],
         _ => &[],
     }
 }
 
-/// May `sql` run as a read on an `engine` connection (MCP, Metrics widgets)? `writes`: the
-/// connection allows writes, which lifts the keyword checks but never the one-statement
-/// rule or the function denylist.
+/// DuckDB's file readers. MCP refuses them (DuckDB has no users: they read whatever the app
+/// can); a Metrics widget — the user's own SQL on their own connection — may use them.
+const DUCKDB_FILE_FUNCTIONS: [&str; 5] = ["READ_*", "GLOB", "*_SCAN", "SNIFF_CSV", "PARQUET_*"];
+
+/// May `sql` run over MCP on an `engine` connection? `writes`: the connection allows writes,
+/// which lifts the keyword checks but never the one-statement rule or the function denylist.
 pub fn guard_sql(engine: &str, sql: &str, writes: bool) -> Result<(), String> {
+    guard(engine, sql, writes, true)
+}
+
+/// [`guard_sql`]; `mcp: false` is a Metrics widget's check, which lets DuckDB read files
+/// ([`DUCKDB_FILE_FUNCTIONS`], a quoted path in a table position).
+fn guard(engine: &str, sql: &str, writes: bool, mcp: bool) -> Result<(), String> {
     if sql.trim().is_empty() {
         return Err("Empty SQL.".into());
     }
-    single_statement(engine, sql)?;
+    // `code`: the text with its literals and quoted identifiers blanked out.
+    let code = scan(engine, sql)?;
     let upper = sql.to_uppercase();
-    if let Some(f) = engine_functions(engine).iter().find(|f| has_pattern(&upper, f)) {
+    let file_fns: &[&str] = if mcp && engine == "duckdb" { &DUCKDB_FILE_FUNCTIONS } else { &[] };
+    if let Some(f) = engine_functions(engine).iter().chain(file_fns).find(|f| has_pattern(&upper, f)) {
         return Err(format!(
             "`{}` is not allowed on this connection: it reads files or acts outside the query \
              (refused anywhere in the text, even inside a string or comment).",
@@ -81,7 +98,7 @@ pub fn guard_sql(engine: &str, sql: &str, writes: bool) -> Result<(), String> {
         return Err("Unicode-escaped names and strings (U&'…') are not allowed on this connection.".into());
     }
     // `FROM '/etc/hosts'`: DuckDB reads a file named in a table position.
-    if engine == "duckdb" && quoted_table(&upper) {
+    if mcp && engine == "duckdb" && quoted_table(&upper) {
         return Err("A quoted name in a table position (FROM, JOIN, a FROM list, DESCRIBE, SUMMARIZE, \
                     PIVOT — a file path to DuckDB) is not allowed on this connection."
             .into());
@@ -89,12 +106,23 @@ pub fn guard_sql(engine: &str, sql: &str, writes: bool) -> Result<(), String> {
     if writes {
         return Ok(());
     }
-    let tsql: &[&str] = if engine == "sqlserver" { &TSQL_KEYWORDS } else { &[] };
-    if let Some(k) = WRITE_KEYWORDS.iter().chain(tsql).find(|k| has_word(&upper, k)) {
+    if let Some(k) = WRITE_KEYWORDS.iter().find(|k| has_word(&upper, k)) {
         return Err(format!(
             "Only read-only SQL is allowed here: `{k}` is not allowed (it is refused anywhere in \
              the text, even inside a string or comment)."
         ));
+    }
+    // The T-SQL verbs only as code: `status = 'OPEN'` or a column `[close]` is data. The
+    // scanner refused anything it could read differently from SQL Server, so what it blanked
+    // is a literal or a quoted name to the server too.
+    if engine == "sqlserver" {
+        let code = code.to_uppercase();
+        if let Some(k) = TSQL_KEYWORDS.iter().find(|k| has_word(&code, k)) {
+            return Err(format!(
+                "Only read-only SQL is allowed here: `{k}` is not allowed outside a string or \
+                 quoted name (SQL Server needs no `;` between statements)."
+            ));
+        }
     }
     let first = first_keyword(sql);
     if !READ_FIRST.contains(&first.as_str()) {
@@ -219,6 +247,12 @@ fn skip_blank(mut s: &str) -> &str {
 /// MySQL/SQLite; `[…]` identifiers on SQLite/SQL Server. Every scan byte is ASCII, so UTF-8
 /// text passes through untouched.
 pub fn single_statement(engine: &str, sql: &str) -> Result<(), String> {
+    scan(engine, sql).map(|_| ())
+}
+
+/// [`single_statement`]'s scan, returning `sql` with every literal and quoted identifier
+/// (delimiters included) blanked to spaces — comments are kept.
+fn scan(engine: &str, sql: &str) -> Result<String, String> {
     let refuse = |why: &str| Err(format!("Only a single statement is allowed: {why}."));
     if sql.contains("/*!") || sql.contains("/*M!") {
         return refuse("MySQL executable comments (/*! … */) are refused");
@@ -235,6 +269,8 @@ pub fn single_statement(engine: &str, sql: &str) -> Result<(), String> {
     let brackets = matches!(engine, "sqlite" | "sqlserver");
     let dollars = matches!(engine, "postgres" | "duckdb");
     let mut ended = false; // past a top-level `;`: only whitespace may follow
+    let mut code = b.to_vec();
+    let mut blank = |from: usize, to: usize| code[from..=to].fill(b' ');
     let mut i = 0;
     while i < b.len() {
         let c = b[i];
@@ -248,14 +284,25 @@ pub fn single_statement(engine: &str, sql: &str) -> Result<(), String> {
         let next = b.get(i + 1).copied();
         match c {
             b';' => ended = true,
-            b'\'' | b'"' => i = close_quote(b, i, c)?,
-            b'`' if backticks => i = close_quote(b, i, c)?,
+            b'\'' | b'"' => {
+                let end = close_quote(b, i, c)?;
+                blank(i, end);
+                i = end;
+            }
+            b'`' if backticks => {
+                let end = close_quote(b, i, c)?;
+                blank(i, end);
+                i = end;
+            }
             b'[' if brackets => {
                 let end = b[i + 1..].iter().position(|&x| x == b']').map(|p| i + 1 + p);
                 match end {
                     None => return refuse("unterminated [identifier]"),
                     Some(e) if b.get(e + 1) == Some(&b']') => return refuse("`]]` inside [identifier]"),
-                    Some(e) => i = e,
+                    Some(e) => {
+                        blank(i, e);
+                        i = e;
+                    }
                 }
             }
             b'-' if next == Some(b'-') => {
@@ -283,7 +330,8 @@ pub fn single_statement(engine: &str, sql: &str) -> Result<(), String> {
         }
         i += 1;
     }
-    Ok(())
+    // Only ASCII bytes were blanked (whole spans, so no UTF-8 sequence is split).
+    Ok(String::from_utf8(code).expect("whole spans blanked"))
 }
 
 /// Index of the quote that closes the literal opened at `open`. A doubled quote and a
@@ -310,6 +358,14 @@ fn close_quote(b: &[u8], open: usize, q: u8) -> Result<usize, String> {
 pub fn read_only_stmts(engine: &str, sql: &str) -> Result<Vec<String>, String> {
     let stmts = read_only_wrap(engine, sql)?;
     guard_sql(engine, sql, false)?;
+    Ok(stmts)
+}
+
+/// [`read_only_stmts`] for a Metrics widget — the user's own SQL on their own connection, so
+/// DuckDB may read files ([`guard`] with `mcp: false`); everything else is as strict.
+pub fn widget_stmts(engine: &str, sql: &str) -> Result<Vec<String>, String> {
+    let stmts = read_only_wrap(engine, sql)?;
+    guard(engine, sql, false, false)?;
     Ok(stmts)
 }
 
@@ -552,6 +608,9 @@ mod tests {
             ("sqlserver", "SELECT * FROM OPENDATASOURCE('x', 'y').db.dbo.t"),
             ("sqlserver", "SELECT * FROM OPENQUERY(srv, 'SELECT 1')"),
             ("sqlserver", "SELECT * FROM master..xp_dirtree('C:\\')"),
+            ("sqlserver", "SELECT * FROM sys.fn_xe_file_target_read_file('C:\\x*.xel', NULL, NULL, NULL)"),
+            ("sqlserver", "SELECT * FROM fn_trace_gettable('C:\\x.trc', default)"),
+            ("sqlserver", "SELECT * FROM sys.fn_get_audit_file('C:\\a\\*', default, default)"),
         ];
         for (e, sql) in reject {
             assert!(guard_sql(e, sql, false).is_err(), "{e}: {sql:?} must be refused");
@@ -602,6 +661,58 @@ mod tests {
             assert!(guard_sql(e, "/*!50000 DROP TABLE t */ SELECT 1", true).is_err(), "{e}");
             assert!(guard_sql(e, "", true).is_err(), "{e}");
         }
+    }
+
+    /// The widget path is the user's own SQL on their own connection: DuckDB file reads that
+    /// worked in v0.6.0 stay allowed there. MCP keeps refusing them.
+    #[test]
+    fn widgets_may_read_duckdb_files_mcp_may_not() {
+        for sql in [
+            "SELECT * FROM read_csv('/data/sales.csv')",
+            "SELECT count(*) FROM read_parquet('events.parquet')",
+            "SELECT * FROM 'events.parquet'",
+            "SELECT a.x FROM t a JOIN '/data/b.csv' b USING (k)",
+            "SELECT * FROM glob('/data/*.csv')",
+        ] {
+            assert!(widget_stmts("duckdb", sql).is_ok(), "widget: {sql:?} must be allowed: {:?}", widget_stmts("duckdb", sql));
+            assert!(read_only_stmts("duckdb", sql).is_err(), "MCP: {sql:?} must be refused");
+            assert!(guard_sql("duckdb", sql, true).is_err(), "MCP writes: {sql:?} must be refused");
+        }
+        // Still refused for widgets: SQL executed from a string, writes, a second statement.
+        for sql in ["SELECT * FROM query('DELETE FROM t')", "DELETE FROM t", "SELECT 1; SELECT 2", "COPY t TO 'x.csv'"] {
+            assert!(widget_stmts("duckdb", sql).is_err(), "widget: {sql:?} must be refused");
+        }
+        // Other engines' denylists are not relaxed for widgets.
+        assert!(widget_stmts("postgres", "SELECT pg_read_file('/etc/passwd')").is_err());
+        assert!(widget_stmts("sqlserver", "SELECT * FROM OPENROWSET('x', 'y', 'SELECT 1')").is_err());
+    }
+
+    /// T-SQL verbs are refused only as code: inside a string literal or a quoted identifier
+    /// they are data (`status = 'OPEN'`, a column `[close]`) — on both paths.
+    #[test]
+    fn tsql_keywords_ignore_literals_and_quoted_identifiers() {
+        for sql in [
+            "SELECT * FROM orders WHERE status = 'OPEN'",
+            "SELECT [open], [close], \"open\" FROM prices",
+            "SELECT N'USE master' AS s, 'IF' AS t",
+            "SELECT count(*) FROM tickets WHERE state IN ('OPEN', 'CLOSE', 'PRINT')",
+        ] {
+            assert_eq!(guard_sql("sqlserver", sql, false), Ok(()), "MCP: {sql:?}");
+            assert!(widget_stmts("sqlserver", sql).is_ok(), "widget: {sql:?}");
+        }
+        for sql in [
+            "SELECT 1 OPEN c",
+            "SELECT 1 AS[x]USE master",
+            "SELECT 'x'USE master",
+            "SELECT \"a\"WAITFOR DELAY '00:10'",
+            "SELECT 'x' AS [a]]USE master",
+            "SELECT 'unterminated USE",
+        ] {
+            assert!(guard_sql("sqlserver", sql, false).is_err(), "MCP: {sql:?} must be refused");
+            assert!(widget_stmts("sqlserver", sql).is_err(), "widget: {sql:?} must be refused");
+        }
+        // Generic write keywords are still refused anywhere, literals included.
+        assert!(guard_sql("sqlserver", "SELECT * FROM t WHERE op = 'DELETE'", false).is_err());
     }
 
     #[test]

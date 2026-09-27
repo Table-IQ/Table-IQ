@@ -64,6 +64,14 @@ describe("IPC bridge invoke", () => {
     });
   });
 
+  it("asks validate_widget_sql with the connection and the SQL", async () => {
+    reply("null", 200, "application/json");
+    await cmds.validateWidgetSql("c1", "SELECT 1");
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/__ipc/validate_widget_sql");
+    expect(JSON.parse(init.body)).toEqual({ id: "c1", sql: "SELECT 1" });
+  });
+
   it("throws the parsed body on a non-ok response, so Rust Err(String) arrives as that string", async () => {
     reply(JSON.stringify("unknown connection"), 400, "application/json");
     await expect(cmds.connect("nope")).rejects.toBe("unknown connection");
