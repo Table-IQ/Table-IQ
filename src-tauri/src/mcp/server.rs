@@ -6,6 +6,7 @@
 //! [`TOOL_TIMEOUT`]. A query that times out is cancelled (where the engine can) and keeps
 //! its slot until it really ends, so a retrying agent can't pile queries onto the pools.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
@@ -29,7 +30,7 @@ use super::{record, Activity, McpConfig};
 use crate::connections::ConnConfig;
 use crate::drivers::{DriverError, SqlDriver};
 use crate::ipc::connect::{
-    cancel_registered, ckey, connect_inner, rows_of, switch_inner, ConnState, Rows,
+    cancel_registered, ckey, connect_inner, not_restoring, rows_of, switch_inner, ConnState, Rows,
 };
 use crate::drivers::CancelToken;
 
@@ -306,19 +307,32 @@ fn allowed(host: &dyn Host, cfg: &McpConfig, id: &str) -> Result<(ConnConfig, bo
 }
 
 /// The live session for `conn`, connecting on demand. A DuckDB one is hardened first.
+/// Refused while a restore is swapping the connection's file.
 async fn session(host: &dyn Host, conn: &ConnConfig) -> Result<Arc<dyn SqlDriver>, String> {
     let state = host.conns();
+    not_restoring(&conn.id)?;
     let drv = match state.session(&conn.id) {
         Ok(d) => d,
-        Err(_) => {
-            connect_inner(state, &conn.id).await?;
-            state.session(&conn.id)?
-        }
+        Err(_) => connect_once(state, &conn.id).await?,
     };
     if conn.engine == "duckdb" {
         harden_duckdb(drv.as_ref()).await?;
     }
     Ok(drv)
+}
+
+/// Connect `id` on demand, one call at a time per connection: parallel calls wait for the
+/// first and use its session, instead of each opening (and tunnelling) one of their own.
+async fn connect_once(state: &ConnState, id: &str) -> Result<Arc<dyn SqlDriver>, String> {
+    static GATES: LazyLock<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
+        LazyLock::new(Default::default);
+    let gate = crate::lk(&GATES).entry(id.to_string()).or_default().clone();
+    let _one = gate.lock().await;
+    if let Ok(d) = state.session(id) {
+        return Ok(d); // the call ahead of this one connected it
+    }
+    connect_inner(state, id).await?;
+    state.session(id)
 }
 
 /// DuckDB has no users: a table function can read any file the app can (`read_text`,
@@ -961,6 +975,41 @@ mod tests {
         assert!(e.to_lowercase().contains("lock") || e.to_lowercase().contains("cannot"), "{e}");
         // A second call finds it hardened already and carries on.
         assert!(query(&m, "duck", "SELECT 1").await.is_ok());
+    }
+
+    /// A restore swapping the file must not have MCP reconnect to the old one underneath it:
+    /// every tool is refused (and nothing is opened) until the restore ends.
+    #[tokio::test]
+    async fn a_restore_in_progress_blocks_mcp_sessions_and_connects() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = sqlite(&tmp, "mcp-restoring").await;
+        let m = mcp(vec![conn.clone()], &[("mcp-restoring", false)]);
+        let guard = crate::ipc::connect::Restoring::begin("mcp-restoring").unwrap();
+        let e = session(m.host.as_ref(), &conn).await.err().expect("refused");
+        assert!(e.contains("being restored"), "{e}");
+        let e = connect_inner(m.host.conns(), "mcp-restoring").await.err().expect("refused");
+        assert!(e.contains("being restored"), "{e}");
+        let e = query(&m, "mcp-restoring", "SELECT n FROM t").await.unwrap_err();
+        assert!(e.contains("being restored"), "{e}");
+        assert!(m.host.conns().session("mcp-restoring").is_err(), "nothing was opened");
+        drop(guard);
+        assert!(query(&m, "mcp-restoring", "SELECT n FROM t").await.is_ok());
+    }
+
+    /// Parallel calls on a connection that isn't open yet connect it once: every one of
+    /// them gets the session that ends up installed, not one it opened and lost.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn parallel_on_demand_connects_open_one_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = sqlite(&tmp, "mcp-once").await;
+        let m = mcp(vec![conn.clone()], &[("mcp-once", false)]);
+        let calls = (0..8).map(|_| {
+            let (host, conn) = (m.host.clone(), conn.clone());
+            tokio::spawn(async move { session(host.as_ref(), &conn).await.map_err(|e| e.to_string()) })
+        });
+        let got: Vec<_> = futures_util::future::join_all(calls).await.into_iter().map(|r| r.unwrap().unwrap()).collect();
+        let installed = m.host.conns().session("mcp-once").unwrap();
+        assert!(got.iter().all(|d| same_driver(d, &installed)), "one session for every caller");
     }
 
     /// `TIQ_MSSQL_URL`'s ADO string, split the way `tests/sqlserver.rs` does.

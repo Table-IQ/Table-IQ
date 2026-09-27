@@ -2,8 +2,8 @@
 //! and stream table windows to the UI. Routes all six engines — Postgres, MySQL/MariaDB,
 //! SQLite, SQL Server, MongoDB, and Redis.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use serde::Serialize;
 use tauri::ipc::Response;
@@ -236,6 +236,42 @@ impl ConnState {
     }
 }
 
+/// Connections whose file a restore is swapping right now. Nothing else may open a session
+/// on one meanwhile: an MCP call reconnecting on demand would land on the old file — and for
+/// DuckDB, the restore's own reopen could then pick up that instance, still on the old file.
+static RESTORING: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Default::default);
+
+/// Marks a connection as being restored until dropped — so a panic mid-restore clears it too.
+/// Only its holder may open a session on the connection meanwhile ([`connect_session`]).
+pub(crate) struct Restoring(String);
+
+impl Restoring {
+    pub(crate) fn begin(id: &str) -> Result<Self, String> {
+        if !lk(&RESTORING).insert(id.to_string()) {
+            return Err(being_restored(id));
+        }
+        Ok(Self(id.to_string()))
+    }
+}
+
+impl Drop for Restoring {
+    fn drop(&mut self) {
+        lk(&RESTORING).remove(&self.0);
+    }
+}
+
+fn being_restored(id: &str) -> String {
+    format!("Connection `{id}` is being restored; try again when the restore finishes.")
+}
+
+/// Refuses while a restore is swapping `id`'s database.
+pub(crate) fn not_restoring(id: &str) -> Result<(), String> {
+    if lk(&RESTORING).contains(id) {
+        return Err(being_restored(id));
+    }
+    Ok(())
+}
+
 #[derive(Serialize)]
 pub struct ConnectedInfo {
     pub id: String,
@@ -338,6 +374,18 @@ pub async fn connect(state: State<'_, ConnState>, id: String) -> Result<Connecte
 
 /// `connect`'s body, callable without a tauri `State` (the MCP server reuses it).
 pub(crate) async fn connect_inner(state: &ConnState, id: &str) -> Result<ConnectedInfo, String> {
+    connect_session(state, id, None).await
+}
+
+/// [`connect_inner`]; `restore` is the restore that is reopening its own connection — the
+/// only caller allowed to open one while it is being restored.
+pub(crate) async fn connect_session(
+    state: &ConnState,
+    id: &str,
+    restore: Option<&Restoring>,
+) -> Result<ConnectedInfo, String> {
+    let restore_ok = |id: &str| if restore.is_some() { Ok(()) } else { not_restoring(id) };
+    restore_ok(id)?;
     let id = id.to_string();
     let cfg = {
         let store = lk(&state.store);
@@ -373,7 +421,12 @@ pub(crate) async fn connect_inner(state: &ConnState, id: &str) -> Result<Connect
         } else {
             let drv = open_driver(&eff, &password).await?;
             let drv = Arc::new(Logged { inner: drv, log: state.sql_log_for(&id) });
-            lk(&state.sessions).insert(id.clone(), drv);
+            // Checked again under the sessions lock: a restore that began while this was
+            // opening takes the session out after marking the connection, so it never finds
+            // one here on the file it is about to replace.
+            let mut sessions = lk(&state.sessions);
+            restore_ok(&id)?;
+            sessions.insert(id.clone(), drv);
         }
         Ok(())
     }
@@ -2074,13 +2127,16 @@ async fn restore_inner(
             check_restore_source(&path)?;
             // Everything knowable up front, before the session is taken out and closed.
             backup::check_file_backup(&cfg.engine, &cfg.database, &path)?;
-            let drv = state.session(id)?;
-            lk(&state.sessions).remove(id);
+            // Marked before the session is taken out, cleared once it is reopened: nothing
+            // (an MCP call reconnecting on demand) may open the old file in between.
+            let restoring = Restoring::begin(id)?;
+            let drv = lk(&state.sessions).remove(id).ok_or_else(|| "not connected (or not a SQL connection)".to_string())?;
             // Results belong to the database being replaced.
             lk(&state.results).purge(id);
             let restored = backup::file_restore(drv, &cfg.engine, &cfg.database, &path).await;
             // Reopen whatever happened: the old file after a failure, the restored one after success.
-            let reopened = connect_inner(state, id).await;
+            let reopened = connect_session(state, id, Some(&restoring)).await;
+            drop(restoring);
             let res = match (restored, reopened) {
                 (Err(e), Err(r)) => Err(format!("{e} — and the connection could not be reopened: {r}")),
                 (Err(e), Ok(_)) => Err(e),
@@ -2415,6 +2471,31 @@ mod tests {
         assert!(s.ok, "{s:?}");
         assert_eq!(scalar(&state, "c1", "SELECT COUNT(*) FROM items").await.unwrap(), "3", "the table is back");
         assert!(bak.exists(), "the backup itself is only read");
+    }
+
+    /// While a restore swaps the file, `connect` is refused (it would open the old file) —
+    /// the restore's own reopen is not — and the mark clears when the restore ends, even by
+    /// a panic. A second restore of the same connection is refused meanwhile.
+    #[tokio::test]
+    async fn a_restore_in_progress_refuses_other_connects_and_always_clears() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_with(vec![sqlite_cfg("being-restored", &tmp.path().join("r.db"))]);
+        let guard = Restoring::begin("being-restored").unwrap();
+        let e = connect_inner(&state, "being-restored").await.err().expect("refused");
+        assert!(e.contains("being restored"), "{e}");
+        assert!(state.session("being-restored").is_err(), "nothing was opened");
+        assert!(Restoring::begin("being-restored").is_err(), "one restore at a time");
+        connect_session(&state, "being-restored", Some(&guard)).await.unwrap();
+        assert!(state.session("being-restored").is_ok(), "the restore itself reopens");
+        drop(guard);
+        assert!(not_restoring("being-restored").is_ok());
+
+        let panicked = std::panic::catch_unwind(|| {
+            let _g = Restoring::begin("restore-panics").unwrap();
+            panic!("mid-restore");
+        });
+        assert!(panicked.is_err());
+        assert!(not_restoring("restore-panics").is_ok(), "a panic still clears the mark");
     }
 
     /// A SQL Server session: answers HEADERONLY with `backup_of`, `DB_NAME()` with `on`, and
