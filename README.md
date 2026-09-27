@@ -26,7 +26,7 @@ than the SQL grid and ERD.
 ⌘K opens a TablePlus-style command palette: search tables, databases and saved queries in one
 place, or jump straight to Open Connection (⌘O), Open Database (⌘D), Settings (⌘,), Cancel
 Running Queries (⌘.), Workspace Overview (⌘⇧\), Toggle SQL Log (⌘⇧C), Database User
-Management, Metrics Board, or Customize Toolbar. The sidebar's Queries
+Management, Metrics Board, Backup / Restore Database, MCP Activity, or Customize Toolbar. The sidebar's Queries
 and History tabs list saved queries and past runs per connection. Settings (⌘,) holds theme,
 the connection-rail label, editor font size and your AI provider in one page; the title bar's
 right icon group is reorderable and hideable from Settings → Toolbar or a right-click.
@@ -41,6 +41,14 @@ masked as `'***'`; **Database User Management**, to list, create, drop or change
 for roles/logins on Postgres, MySQL and SQL Server, previewing the SQL before it runs;
 and a **Metrics Board**, a per-connection dashboard of read-only widgets (number, bar,
 line or table) that refresh on a timer and reject any query that would write data.
+
+**Backup / Restore Database** (⌘K) use `pg_dump` / `pg_restore` / `psql`, `mysqldump` / `mysql`,
+SQL Server `BACKUP` / `RESTORE`, or a file copy for SQLite and DuckDB. Restore asks you to type
+the database name and refuses a backup that would write to another database.
+
+**MCP server** (Settings → MCP): Claude Code or Claude Desktop can list and query the connections
+you tick, over `http://127.0.0.1:7431/mcp` with a bearer token. It's local only and read-only by
+default, and every call shows in **MCP Activity** (⌘K).
 
 ## Development
 
