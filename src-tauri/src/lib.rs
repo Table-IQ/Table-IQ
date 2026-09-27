@@ -8,6 +8,7 @@ pub mod connections;
 pub mod drivers;
 pub mod ipc;
 pub mod library;
+pub mod mcp;
 pub mod plugins;
 pub mod query;
 pub mod sql_log;
@@ -108,6 +109,12 @@ pub fn invoke_handler<R: tauri::Runtime>(
         cancel_backup_job,
         detect_backup_tools,
         restore_database,
+        mcp::mcp_get_config,
+        mcp::mcp_set_config,
+        mcp::mcp_status,
+        mcp::mcp_token,
+        mcp::mcp_regenerate_token,
+        mcp::mcp_activity,
     ]
 }
 
@@ -119,6 +126,12 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(ConnState::new())
         .invoke_handler(invoke_handler())
+        // The MCP server starts with the app when enabled. The QA bridge doesn't run this;
+        // Settings → MCP starts it there.
+        .setup(|app| {
+            mcp::autostart(app.handle().clone());
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -80,7 +80,7 @@ pub struct ConnState {
     tunnels: Mutex<HashMap<String, Tunnel>>,
     /// In-flight cancel tokens keyed by client-supplied query id (plan spec #6), or by a
     /// page fetch's `request_key`.
-    cancels: Mutex<HashMap<String, CancelToken>>,
+    pub(crate) cancels: Mutex<HashMap<String, CancelToken>>,
     /// Saved queries + searchable run history (persisted JSON).
     library: Mutex<crate::library::QueryLibrary>,
     /// Per-connection SQL logs (the bottom panel). Keyed by conn id, not by session, so a
@@ -179,6 +179,31 @@ impl ConnState {
     /// The connection's SQL log, created on first use.
     pub(crate) fn sql_log_for(&self, id: &str) -> Arc<SqlLog> {
         lk(&self.sql_logs).entry(id.to_string()).or_default().clone()
+    }
+
+    /// A `ConnState` over an in-memory store holding `cfgs` — nothing read from or saved to disk.
+    #[cfg(test)]
+    pub(crate) fn with_configs(cfgs: Vec<ConnConfig>) -> Self {
+        let mut store = ConnStore::default();
+        for c in cfgs {
+            store.upsert(c);
+        }
+        Self {
+            store: Mutex::new(store),
+            sessions: Mutex::new(HashMap::new()),
+            kv_sessions: Mutex::new(HashMap::new()),
+            doc_sessions: Mutex::new(HashMap::new()),
+            results: Mutex::new(ResultStore::default()),
+            tunnels: Mutex::new(HashMap::new()),
+            cancels: Mutex::new(HashMap::new()),
+            library: Mutex::new(Default::default()),
+            sql_logs: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Every saved connection's config (a snapshot).
+    pub(crate) fn configs(&self) -> Vec<ConnConfig> {
+        lk(&self.store).connections.clone()
     }
 
     pub(crate) fn session(&self, id: &str) -> Result<Arc<dyn SqlDriver>, String> {
@@ -1098,6 +1123,10 @@ pub async fn rows_of(
 ///
 /// With a `query_id`, the run is registered under `ckey(id, query_id)` like [`run_query`],
 /// so `cancel_query` and ⌘. (`cancel_all`) can stop it.
+///
+/// `read_only` (Metrics widgets): `sql` must pass `mcp::guard::guard_sql` as a read and runs
+/// inside a read-only transaction (`read_only_stmts`), so a SELECT calling a function that
+/// writes (`setval`, …) fails or is rolled back instead of repeating every refresh.
 #[tauri::command]
 pub async fn query_rows(
     state: State<'_, ConnState>,
@@ -1105,11 +1134,19 @@ pub async fn query_rows(
     sql: String,
     max_rows: Option<usize>,
     query_id: Option<String>,
+    read_only: Option<bool>,
 ) -> Result<Rows, String> {
     let drv = state.session(&id)?;
     let cap = max_rows.unwrap_or(1000).min(1000);
     let key = query_id.map(|q| ckey(&id, &q));
-    registered_rows(&state.cancels, drv.as_ref(), key.as_deref(), &[sql], cap).await
+    let stmts = if read_only.unwrap_or(false) {
+        let cfg = state.configs().into_iter().find(|c| c.id == id);
+        let engine = cfg.map(|c| c.engine).ok_or_else(|| "unknown connection".to_string())?;
+        crate::mcp::guard::read_only_stmts(&engine, &sql)?
+    } else {
+        vec![sql]
+    };
+    registered_rows(&state.cancels, drv.as_ref(), key.as_deref(), &stmts, cap).await
 }
 
 /// The body of [`query_rows`], outside Tauri so it can be tested: [`rows_of`] with a cancel
@@ -2234,23 +2271,8 @@ mod tests {
         assert!(check_restore_source(dir.to_str().unwrap()).is_err(), "a directory");
     }
 
-    /// A `ConnState` over an in-memory store holding `cfgs` — nothing read from or saved to disk.
     fn state_with(cfgs: Vec<ConnConfig>) -> ConnState {
-        let mut store = ConnStore::default();
-        for c in cfgs {
-            store.upsert(c);
-        }
-        ConnState {
-            store: Mutex::new(store),
-            sessions: Mutex::new(HashMap::new()),
-            kv_sessions: Mutex::new(HashMap::new()),
-            doc_sessions: Mutex::new(HashMap::new()),
-            results: Mutex::new(ResultStore::default()),
-            tunnels: Mutex::new(HashMap::new()),
-            cancels: Mutex::new(HashMap::new()),
-            library: Mutex::new(Default::default()),
-            sql_logs: Mutex::new(HashMap::new()),
-        }
+        ConnState::with_configs(cfgs)
     }
 
     fn sqlite_cfg(id: &str, file: &std::path::Path) -> ConnConfig {
@@ -2658,5 +2680,53 @@ mod tests {
         let stmt = vec!["SELECT 1".to_string()];
         registered_rows(&cancels, drv.as_ref(), None, &stmt, 10).await.expect("unregistered read");
         assert!(lk(&cancels).is_empty());
+    }
+
+    /// The read-only wrapper (`mcp::guard::read_only_stmts`, used by MCP and by Metrics
+    /// widgets through `query_rows(read_only)`): the read comes back through `rows_of`, and a
+    /// statement that fails mid-transaction never hands its pooled connection back still
+    /// inside `BEGIN` — the next wrapped read would die on "cannot start a transaction within
+    /// a transaction", and a later write would sit uncommitted where no one else sees it.
+    #[tokio::test]
+    async fn read_only_wrapper_reads_and_leaves_no_dirty_connection_after_an_error() {
+        use crate::mcp::guard::read_only_stmts;
+        let tmp = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        let drv = SqliteDriver::connect(&path).await.expect("connect");
+        drv.run_script("CREATE TABLE t (n INTEGER); INSERT INTO t VALUES (1),(2),(3)").await.expect("seed");
+
+        let stmts = read_only_stmts("sqlite", "SELECT n FROM t ORDER BY n").unwrap();
+        let rows = rows_of(&drv, &stmts, 2, &CancelToken::new()).await.expect("wrapped read");
+        assert_eq!(rows.columns, vec!["n".to_string()]);
+        assert_eq!(rows.rows, vec![vec![Some("1".to_string())], vec![Some("2".to_string())]]);
+        assert!(rows.truncated);
+
+        let failing = read_only_stmts("sqlite", "SELECT * FROM missing_table").unwrap();
+        let e = rows_of(&drv, &failing, 10, &CancelToken::new()).await.err().expect("fails");
+        assert!(e.contains("missing_table"), "{e}");
+
+        // More wrapped reads than the pool has connections: every one must find a clean one.
+        for _ in 0..6 {
+            rows_of(&drv, &stmts, 10, &CancelToken::new()).await.expect("a clean connection after the error");
+        }
+        drv.run_script("INSERT INTO t VALUES (4)").await.expect("plain write");
+        let other = SqliteDriver::connect(&path).await.expect("second driver");
+        let n = rows_of(&other, &["SELECT count(*) FROM t".to_string()], 1, &CancelToken::new()).await.unwrap();
+        assert_eq!(n.rows[0][0].as_deref(), Some("4"), "the write committed, not trapped in a leftover transaction");
+    }
+
+    /// DuckDB runs each call on its own connection clone and rolls back what it left open;
+    /// the wrapper's failure path must leave the shared database writable and consistent.
+    #[tokio::test]
+    async fn read_only_wrapper_on_duckdb_rolls_back_after_an_error() {
+        use crate::mcp::guard::read_only_stmts;
+        let drv = DuckDriver::connect(":memory:").await.expect("connect");
+        drv.run_script("CREATE TABLE t (n INTEGER); INSERT INTO t VALUES (1)").await.expect("seed");
+        let failing = read_only_stmts("duckdb", "SELECT * FROM missing_table").unwrap();
+        assert!(rows_of(&drv, &failing, 10, &CancelToken::new()).await.is_err());
+        let ok = read_only_stmts("duckdb", "SELECT count(*) FROM t").unwrap();
+        let rows = rows_of(&drv, &ok, 10, &CancelToken::new()).await.expect("wrapped read");
+        assert_eq!(rows.rows[0][0].as_deref(), Some("1"));
+        drv.run_script("INSERT INTO t VALUES (2)").await.expect("write after the failed wrap");
     }
 }
