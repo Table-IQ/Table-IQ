@@ -42,7 +42,12 @@ fn engine_functions(engine: &str) -> &'static [&'static str] {
         // can't see inside a string that is only assembled at run time. From `pg_proc`: the
         // `*_to_xml*` family, `ts_stat`/`ts_rewrite`, plus admin functions with side effects.
         "postgres" => &[
-            "PG_READ_FILE*", "PG_READ_BINARY_FILE", "PG_LS_*", "PG_STAT_FILE", "PG_FILE_*", "LO_*",
+            "PG_READ_FILE*", "PG_READ_BINARY_FILE", "PG_LS_*", "PG_STAT_FILE", "PG_FILE_*",
+            // The large-object functions (by name: `lo_col` is just a column).
+            "LO_IMPORT", "LO_EXPORT", "LO_FROM_BYTEA", "LO_PUT", "LO_CREATE", "LO_CREAT", "LO_UNLINK",
+            "LO_TRUNCATE*", "LO_OPEN", "LO_GET", "LO_CLOSE", "LOREAD", "LOWRITE",
+            // tablefunc's crosstab runs the SQL text it is handed.
+            "CROSSTAB*",
             "DBLINK*", "PG_TERMINATE_BACKEND", "PG_CANCEL_BACKEND", "PG_RELOAD_CONF", "PG_ADVISORY_*",
             "*_TO_XML*", "TS_STAT", "TS_REWRITE", "SET_CONFIG", "PG_SWITCH_WAL", "PG_EXECUTE_*",
             "PG_PROMOTE", "PG_ROTATE_LOGFILE", "PG_LOG_BACKEND_MEMORY_CONTEXTS", "*_REPLICATION_SLOT",
@@ -125,18 +130,20 @@ fn matches_at(upper: &str, kw: &str, left: bool, right: bool) -> bool {
 }
 
 /// Words after which DuckDB takes a table — and so a quoted file path.
-const TABLE_WORDS: [&str; 6] = ["FROM", "JOIN", "DESCRIBE", "SUMMARIZE", "PIVOT", "UNPIVOT"];
+const TABLE_WORDS: [&str; 7] = ["FROM", "JOIN", "DESCRIBE", "SUMMARIZE", "PIVOT", "UNPIVOT", "SHOW"];
 /// Words that end a FROM list.
 const FROM_ENDS: [&str; 12] =
     ["WHERE", "GROUP", "HAVING", "ORDER", "LIMIT", "QUALIFY", "WINDOW", "UNION", "EXCEPT", "INTERSECT", "OFFSET", "SELECT"];
 
 /// A `'` or `"` in a DuckDB table position: right after one of [`TABLE_WORDS`], or after a
-/// `,` inside a FROM list (`FROM t, '/p'`). Fail-closed: a FROM list runs to the next
-/// [`FROM_ENDS`] word, so an `IN ('a', 'b')` inside a JOIN's ON is refused too.
+/// top-level `,` of a FROM list (`FROM (SELECT 1) s, '/p'`). The list is read at its own
+/// bracket depth: it ends at a [`FROM_ENDS`] word or at the `)` closing the subquery it sits
+/// in, and commas inside brackets (`ON a IN ('x', 'y')`, `concat(a, '-')`) are not its own.
 fn quoted_table(upper: &str) -> bool {
+    let b = upper.as_bytes();
     let word_at = |i: usize, kw: &str| {
-        let b = upper.as_bytes();
-        (i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_'))
+        upper[i..].starts_with(kw)
+            && (i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_'))
             && !upper[i + kw.len()..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
     };
     let quoted_next = |rest: &str| skip_blank(rest).starts_with(['\'', '"']);
@@ -145,22 +152,42 @@ fn quoted_table(upper: &str) -> bool {
             if !word_at(i, kw) {
                 return false;
             }
-            let rest = &upper[i + kw.len()..];
-            if quoted_next(rest) {
+            let start = i + kw.len();
+            if quoted_next(&upper[start..]) {
                 return true;
             }
-            if *kw != "FROM" {
-                return false;
-            }
-            // The FROM list: up to the first word that ends it.
-            let end = FROM_ENDS
-                .iter()
-                .filter_map(|e| rest.match_indices(e).map(|(j, _)| j).find(|&j| word_at(i + kw.len() + j, e)))
-                .min()
-                .unwrap_or(rest.len());
-            rest[..end].match_indices(',').any(|(j, _)| quoted_next(&rest[j + 1..end]))
+            *kw == "FROM" && from_list_has_quoted_item(upper, start, &word_at, &quoted_next)
         })
     })
+}
+
+fn from_list_has_quoted_item(
+    upper: &str,
+    start: usize,
+    word_at: &dyn Fn(usize, &str) -> bool,
+    quoted_next: &dyn Fn(&str) -> bool,
+) -> bool {
+    let b = upper.as_bytes();
+    let (mut depth, mut j) = (0usize, start);
+    while j < b.len() {
+        match b[j] {
+            // Skip a quoted name or literal whole: its brackets and commas are not syntax.
+            q @ (b'\'' | b'"') => {
+                j += 1;
+                while j < b.len() && b[j] != q {
+                    j += 1;
+                }
+            }
+            b'(' => depth += 1,
+            b')' if depth == 0 => return false, // the subquery around this FROM ends
+            b')' => depth -= 1,
+            b',' if depth == 0 && quoted_next(&upper[j + 1..]) => return true,
+            _ if depth == 0 && FROM_ENDS.iter().any(|e| word_at(j, e)) => return false,
+            _ => {}
+        }
+        j += 1;
+    }
+    false
 }
 
 /// `s` past leading whitespace and comments.
@@ -469,6 +496,16 @@ mod tests {
             ("duckdb", "SELECT * FROM (DESCRIBE '/etc/hosts')"),
             ("duckdb", "SELECT * FROM (SUMMARIZE '/etc/hosts')"),
             ("duckdb", "SELECT * FROM (PIVOT '/tmp/x.csv' ON a USING sum(b))"),
+            ("duckdb", "SELECT * FROM (SELECT 1 AS a) s, '/etc/hosts'"),
+            ("duckdb", "SELECT * FROM t JOIN u ON u.a IN ('a', 'b'), '/etc/hosts'"),
+            ("duckdb", "SHOW '/etc/hosts'"),
+            ("postgres", "SELECT * FROM crosstab('SELECT pg_read_'||'file(''/etc/hosts''), 1, 1') AS c(a text, b text)"),
+            ("postgres", "SELECT * FROM crosstab2('SELECT 1')"),
+            ("postgres", "SELECT lo_from_bytea(0, 'x')"),
+            ("postgres", "SELECT lo_put(1, 0, 'x')"),
+            ("postgres", "SELECT lo_truncate64(0, 1)"),
+            ("postgres", "SELECT loread(0, 1)"),
+            ("postgres", "SELECT lowrite(0, 'x')"),
             ("postgres", "SELECT pg_read_file('/etc/passwd')"),
             ("postgres", "SELECT pg_read_binary_file('/etc/passwd')"),
             ("postgres", "SELECT * FROM pg_ls_dir('.')"),
@@ -529,6 +566,11 @@ mod tests {
             ("duckdb", "SELECT * FROM t WHERE a IN ('x', 'y') ORDER BY b"),
             ("duckdb", "SELECT 'a', 'b' FROM t"),
             ("duckdb", "DESCRIBE t"),
+            ("duckdb", "SELECT * FROM t JOIN u ON u.a IN ('a', 'b')"),
+            ("duckdb", "SELECT * FROM t JOIN u ON concat(t.a, '-') = u.k"),
+            ("duckdb", "SELECT (SELECT max(x) FROM t) AS m, 'x' AS tag"),
+            ("duckdb", "SELECT * FROM t AS \"a(b\", u"),
+            ("postgres", "SELECT lo_col, local_id, lo_count FROM t"),
             ("postgres", "SELECT 'x' FROM t"),
             ("mysql", "SELECT load_count FROM t"),
             ("sqlserver", "SELECT xpos FROM t"),

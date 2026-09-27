@@ -347,8 +347,10 @@ pub struct SqlServerDriver {
     /// How this session connected (credentials included, as sqlx's pools keep theirs): only
     /// [`SqlDriver::abandon`] uses it, to `KILL` a stuck session from a second connection.
     config: Config,
-    /// This session's `@@SPID`, for that `KILL`.
+    /// This session's `@@SPID`, for that `KILL`, and its `login_time` — checked before the
+    /// `KILL`, since a SPID is reused once its session ends.
     spid: i16,
+    login_time: Option<std::string::String>,
     /// The database this session belongs to, read back with `DB_NAME()` at connect (the
     /// configured name may be empty, meaning "the login's default"). Everything outside the
     /// query tab — browse, edit, delete — emits two-part names that resolve inside whatever
@@ -371,6 +373,16 @@ async fn open(config: &Config) -> DResult<Conn> {
     tcp.set_nodelay(true).ok();
     Client::connect(config.clone(), tcp.compat_write()).await.map_err(db)
 }
+
+/// Is the session `KILL` would hit still the one this driver opened? SPIDs are reused, so
+/// the `login_time` recorded at connect must match what the server shows now. Anything
+/// unknown is "no".
+fn same_session(recorded: Option<&str>, observed: Option<&str>) -> bool {
+    matches!((recorded, observed), (Some(a), Some(b)) if a == b)
+}
+
+/// `login_time` as text, stable to compare (ISO 8601 with milliseconds).
+const LOGIN_TIME: &str = "CONVERT(varchar(30), login_time, 126)";
 
 /// How long to wait for the TCP connect before giving up. Without it an unreachable host
 /// hangs on the OS default (~75s on macOS), which the UI reads as a frozen app.
@@ -420,7 +432,9 @@ impl SqlServerDriver {
         let mut client = open(&config).await?;
         // Ask the server rather than trusting `database`: it may be empty (the login's default).
         let row = client
-            .simple_query("SELECT DB_NAME(), @@SPID")
+            .simple_query(format!(
+                "SELECT DB_NAME(), @@SPID, (SELECT {LOGIN_TIME} FROM sys.dm_exec_sessions WHERE session_id = @@SPID)"
+            ))
             .await
             .map_err(db)?
             .into_row()
@@ -432,11 +446,14 @@ impl SqlServerDriver {
             .unwrap_or_default()
             .to_string();
         let spid = row.as_ref().and_then(|r| r.try_get::<i16, _>(1).ok().flatten()).unwrap_or(0);
+        let login_time =
+            row.as_ref().and_then(|r| r.try_get::<&str, _>(2).ok().flatten()).map(str::to_string);
         Ok(Self {
             client: Arc::new(Mutex::new(Some(client))),
             abandoned: Default::default(),
             config,
             spid,
+            login_time,
             database,
             meta: Default::default(),
         })
@@ -546,18 +563,32 @@ impl SqlDriver for SqlServerDriver {
     /// Fail every queued and later call at once, then close the TCP connection (dropping
     /// the client) as soon as the lock is free — which ends and rolls back the server-side
     /// session. The caller's task holding the lock mid-query must be aborted for that.
+    fn database(&self) -> Option<std::string::String> {
+        Some(self.database.clone())
+    }
+
     fn abandon(&self) {
         self.abandoned.store(true, std::sync::atomic::Ordering::SeqCst);
         let (client, config, spid) = (self.client.clone(), self.config.clone(), self.spid);
+        let login_time = self.login_time.clone();
         tokio::spawn(async move {
             // SQL Server notices a closed connection only when it next writes to it, so a
             // long query would run on. KILL ends it (and rolls it back) at once — where the
-            // login may (ALTER ANY CONNECTION); otherwise it ends with its query.
+            // login may (ALTER ANY CONNECTION); otherwise it ends with its query. Only if the
+            // SPID is still this session: once it ends, the number goes to someone else.
             if spid > 0 {
                 if let Ok(mut side) = open(&config).await {
-                    let sql = format!("KILL {spid}");
-                    note(&sql);
-                    let _ = side.simple_query(sql).await;
+                    let check = format!("SELECT {LOGIN_TIME} FROM sys.dm_exec_sessions WHERE session_id = {spid}");
+                    let now = match side.simple_query(check).await {
+                        Ok(s) => s.into_row().await.ok().flatten(),
+                        Err(_) => None,
+                    };
+                    let now = now.as_ref().and_then(|r| r.try_get::<&str, _>(0).ok().flatten());
+                    if same_session(login_time.as_deref(), now) {
+                        let sql = format!("KILL {spid}");
+                        note(&sql);
+                        let _ = side.simple_query(sql).await;
+                    }
                 }
             }
             drop(client.lock().await.take());
@@ -577,13 +608,21 @@ impl SqlDriver for SqlServerDriver {
         &self,
         stmts: &[String],
         cap: usize,
-        _token: &CancelToken,
+        token: &CancelToken,
     ) -> DResult<Vec<StmtOutput>> {
         use futures_util::StreamExt;
         use tiberius::QueryItem;
 
         // One pinned connection, so BEGIN/…/COMMIT across statements lands on the same session.
         let mut c = self.lock().await?;
+        // "Running now": a caller timing out can tell a query that holds the connection (and
+        // has to be abandoned) from one still queued (which can just stop waiting). Recorded,
+        // then the flag checked — the `CancelToken` protocol — so a cancel landing while this
+        // was queued stops it before it touches the connection.
+        token.set_backend_id(i64::from(self.spid));
+        if token.is_cancelled() {
+            return Err(DriverError::Cancelled);
+        }
         let mut outs = Vec::with_capacity(stmts.len());
         for stmt in stmts {
             let start = std::time::Instant::now();
@@ -1160,7 +1199,7 @@ impl SqlDriver for SqlServerDriver {
 
 #[cfg(test)]
 mod tests {
-    use super::{cell_to_string, encryption_for, plain_select};
+    use super::{cell_to_string, encryption_for, plain_select, same_session};
 
     /// `SET ROWCOUNT` also caps DML and procedure calls, so it may only wrap a batch that is
     /// nothing but a SELECT. The query tab splits T-SQL on `;`/GO only, so a newline-separated
@@ -1336,5 +1375,17 @@ mod tests {
         for sql in [STRUCT_COLUMNS_SQL, STRUCT_INDEXES_SQL, STRUCT_TRIGGERS_SQL] {
             assert!(sql.contains("OBJECT_ID(@P1)"), "the relation must be bound: {sql}");
         }
+    }
+
+    /// `KILL` only the session this driver opened: a SPID seen with another `login_time` (or
+    /// not visible at all) belongs to someone else by now, or can't be checked — skip it.
+    #[test]
+    fn kill_only_the_same_session() {
+        let t = "2026-09-27T10:00:00.123";
+        assert!(same_session(Some(t), Some(t)));
+        assert!(!same_session(Some(t), Some("2026-09-27T10:05:00.000")), "the SPID was reused");
+        assert!(!same_session(Some(t), None), "gone, or not visible to this login");
+        assert!(!same_session(None, Some(t)), "never recorded");
+        assert!(!same_session(None, None));
     }
 }

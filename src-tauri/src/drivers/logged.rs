@@ -105,6 +105,9 @@ impl SqlDriver for Logged {
     fn abandon(&self) {
         self.inner.abandon()
     }
+    fn database(&self) -> Option<String> {
+        self.inner.database()
+    }
     async fn primary_key(&self, schema: &str, table: &str) -> DResult<Vec<String>> {
         CURRENT.scope(self.log.clone(), self.inner.primary_key(schema, table)).await
     }
