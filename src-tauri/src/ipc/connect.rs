@@ -11,6 +11,7 @@ use tauri::State;
 
 use arrow::record_batch::RecordBatch;
 
+use crate::backup;
 use crate::connections::{self, ConnConfig, ConnStore};
 use crate::lk;
 use crate::drivers::{
@@ -1773,16 +1774,22 @@ fn check_export_path(path: &str) -> Result<(), String> {
 /// `check_export_path` with the config directory passed in, so it is testable without
 /// mutating `TIQ_CONFIG_DIR` out from under the rest of the suite.
 fn check_export_path_in(path: &str, app_dir: &std::path::Path) -> Result<(), String> {
+    check_dest_in(path, app_dir, &EXPORT_EXTS, "an export")
+}
+
+/// The shared destination guard: absolute, an allowlisted extension, outside `app_dir`.
+/// `what` names the file in the messages ("an export", "a backup").
+fn check_dest_in(path: &str, app_dir: &std::path::Path, exts: &[&str], what: &str) -> Result<(), String> {
     if path.is_empty() {
         return Err("no destination path".into());
     }
     let p = std::path::Path::new(path);
     if !p.is_absolute() {
-        return Err(format!("{path}: an export must be written to an absolute path"));
+        return Err(format!("{path}: {what} must be written to an absolute path"));
     }
     match p.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase) {
-        Some(ext) if EXPORT_EXTS.contains(&ext.as_str()) => {}
-        _ => return Err(format!("{path}: an export must end in {}", EXPORT_EXTS.join(", "))),
+        Some(ext) if exts.contains(&ext.as_str()) => {}
+        _ => return Err(format!("{path}: {what} must end in {}", exts.join(", "))),
     }
     // `json` is on the allowlist and TableIQ's own config dir is full of json, so the
     // extension check alone left `connections.json` (→ the bundle-import path) and `ai.json`
@@ -1791,8 +1798,28 @@ fn check_export_path_in(path: &str, app_dir: &std::path::Path) -> Result<(), Str
     let dir = p.parent().unwrap_or(p);
     if dir.starts_with(app_dir) || real(dir).starts_with(real(app_dir)) {
         return Err(format!(
-            "{path}: an export cannot be written into TableIQ's own configuration directory"
+            "{path}: {what} cannot be written into TableIQ's own configuration directory"
         ));
+    }
+    Ok(())
+}
+
+/// Backup destinations: the export guard with the backup file types.
+const BACKUP_EXTS: [&str; 7] = ["dump", "sql", "backup", "db", "sqlite", "duckdb", "bak"];
+
+fn check_backup_path(path: &str) -> Result<(), String> {
+    check_backup_path_in(path, &crate::appdir::app_dir())
+}
+
+fn check_backup_path_in(path: &str, app_dir: &std::path::Path) -> Result<(), String> {
+    check_dest_in(path, app_dir, &BACKUP_EXTS, "a backup")
+}
+
+/// SQL Server writes the backup on the server (possibly Windows), so there is nothing local to
+/// check beyond presence; `backup::mssql_backup_sql` quotes it.
+fn check_server_backup_path(path: &str) -> Result<(), String> {
+    if path.trim().is_empty() || path.contains('\0') {
+        return Err("enter the backup file's path on the server".into());
     }
     Ok(())
 }
@@ -1811,6 +1838,84 @@ pub fn write_text_file(path: String, contents: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+// ── Backup Database ────────────────────────────────────────────────────────
+
+/// Start backing up `database` on connection `id` into `path` and return the job id that
+/// `backup_job` polls. Postgres and MySQL/MariaDB run `pg_dump` / `mysqldump` (found via
+/// `tool_dir` → PATH → the usual install dirs); SQLite, DuckDB and SQL Server back themselves
+/// up with SQL on the open session. For SQL Server `path` is a path ON THE SERVER.
+#[tauri::command]
+pub async fn backup_database(
+    state: State<'_, ConnState>,
+    id: String,
+    database: String,
+    path: String,
+    format: Option<String>,
+    tool_dir: Option<String>,
+) -> Result<String, String> {
+    let cfg = {
+        let store = lk(&state.store);
+        store.connections.iter().find(|c| c.id == id).cloned().ok_or_else(|| "unknown connection".to_string())?
+    };
+    let format = backup::PgFormat::parse(format.as_deref())?;
+    match cfg.engine.as_str() {
+        "postgres" | "mysql" => {
+            check_backup_path(&path)?;
+            // Connected only: a tunnel exists only while connected, and without it the tool
+            // would go straight to the host behind the bastion.
+            state.session(&id)?;
+            let tunnel = lk(&state.tunnels).get(&id).map(|t| t.local_addr());
+            if tunnel.is_none() && cfg.ssh.as_ref().is_some_and(|s| s.enabled) {
+                return Err("The SSH tunnel for this connection is not open — reconnect, then back up".into());
+            }
+            let (host, port) = backup::endpoint(&cfg.host, cfg.port, tunnel);
+            let target = backup::Target {
+                host,
+                port,
+                user: cfg.username.clone(),
+                database,
+                sslmode: cfg.sslmode.clone(),
+            };
+            let password = connections::get_password(&id).unwrap_or_default();
+            backup::tool_backup(&cfg.engine, &target, &password, format, &path, tool_dir.as_deref()).await
+        }
+        "sqlite" | "duckdb" | "sqlserver" => {
+            let drv = state.session(&id)?;
+            // File engines back up their own file (the guard against writing onto it needs
+            // the path); SQL Server backs up the database the UI is on.
+            let db = if cfg.engine == "sqlserver" {
+                check_server_backup_path(&path)?;
+                if database.is_empty() {
+                    return Err("no database to back up".into());
+                }
+                database
+            } else {
+                check_backup_path(&path)?;
+                cfg.database.clone()
+            };
+            let engine = cfg.engine.clone();
+            Ok(backup::spawn_future(async move { backup::sql_backup(drv, &engine, &db, &path).await }))
+        }
+        _ => Err("Backup is not supported for this engine".into()),
+    }
+}
+
+/// A backup job's lines from `after` on, and its outcome once finished.
+#[tauri::command]
+pub fn backup_job(job_id: String, after: usize) -> Result<backup::JobStatus, String> {
+    backup::job_status(&job_id, after)
+}
+
+#[tauri::command]
+pub fn cancel_backup_job(job_id: String) -> Result<(), String> {
+    backup::cancel_job(&job_id)
+}
+
+/// The backup/restore client tools found (Settings → Backup tools).
+#[tauri::command]
+pub async fn detect_backup_tools(tool_dir: Option<String>) -> Vec<backup::ToolInfo> {
+    backup::detect(tool_dir.as_deref()).await
+}
 
 #[cfg(test)]
 mod tests {
@@ -1943,6 +2048,34 @@ mod tests {
         // A real export destination outside the config dir still works.
         let ok = tmp.path().join("result.csv");
         assert_eq!(check_export_path_in(ok.to_str().unwrap(), &app), Ok(()));
+    }
+
+    /// `pg_dump`/`mysqldump`/`VACUUM INTO` write wherever they are told, so the backup
+    /// destination gets the export guard with the backup file types.
+    #[test]
+    fn backup_path_accepts_backup_files_and_rejects_the_rest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = tmp.path().join("ai.rhobots.tableiq");
+        std::fs::create_dir_all(&app).unwrap();
+        for ext in ["dump", "sql", "backup", "db", "sqlite", "duckdb", "bak", "DUMP"] {
+            let p = tmp.path().join(format!("shop.{ext}"));
+            assert_eq!(check_backup_path_in(p.to_str().unwrap(), &app), Ok(()), "{ext}");
+        }
+        assert!(check_backup_path_in("", &app).is_err(), "empty");
+        assert!(check_backup_path_in("shop.dump", &app).is_err(), "relative");
+        assert!(check_backup_path_in("/Users/x/.zshrc.sh", &app).is_err(), ".sh");
+        assert!(check_backup_path_in("/Users/x/.ssh/authorized_keys", &app).is_err(), "no extension");
+        let inside = app.join("tiq.db");
+        assert!(check_backup_path_in(inside.to_str().unwrap(), &app).is_err(), "inside app_dir");
+    }
+
+    /// SQL Server writes the file on the server, so only the quoting rules apply there.
+    #[test]
+    fn server_backup_path_needs_only_to_be_present() {
+        assert_eq!(check_server_backup_path("/var/opt/mssql/data/x.bak"), Ok(()));
+        assert_eq!(check_server_backup_path(r"C:\Backups\it's.bak"), Ok(()));
+        assert!(check_server_backup_path("  ").is_err());
+        assert!(check_server_backup_path("/x\0.bak").is_err(), "NUL");
     }
 
     /// A file engine's `database` is its file path: "switching" to the catalog name the
