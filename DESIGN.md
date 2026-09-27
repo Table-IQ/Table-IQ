@@ -74,6 +74,7 @@ Fonts:
 | `--tabbar-h` | 30 | 26 |
 | `--statusbar-h` | 24 | 22 |
 | `--header-h` | 38 | 32 |
+| `--titlebar-h` | — | 52 (connected workspace only; `--header-h` is unchanged) |
 | `--sidebar-w` | 232 | 220 |
 | `--inspector-w` | 260 | 240 |
 | `--gap-tight` | 6 | 4 |
@@ -140,14 +141,27 @@ saturated than our previous indigo-tinted dark.
 
 ## Layout building blocks
 
-### Window chrome (32px)
-- macOS traffic-lights reserve (left ~80px)
-- `<Wordmark>` + active-connection dot + name (left)
-- Breadcrumb: `connection · database · schema · table` (center, font-mono)
-- Right icon strip: refresh schema, switch database, command palette, theme, help, Workspace
-  Overview (hidden by default), SQL Log, Metrics Board (hidden by default), inspector toggle,
-  disconnect. User-reorderable and hideable (Settings → Toolbar, or right-click the title bar)
-  except the fixed inspector-toggle/disconnect pair.
+### Titlebar — glass capsules (52px, `--titlebar-h`)
+TablePlus's toolbar idiom: 20px glyphs (`strokeWidth={1.5}`) in 36×32 hit areas, grouped
+into 36px full-radius glass capsules (`Capsule` / `CapsuleButton` / `CapsuleDivider`,
+`ui/Capsule.tsx`). The whole `<header>` is the drag region (`data-tauri-drag-region` +
+`.tiq-titlebar-drag`); capsules and the pill are `.tiq-no-drag`. Traffic lights sit at
+`trafficLightPosition { x: 18, y: 20 }` behind an 84px left reserve. There is no secondary
+toolbar under it.
+
+| Group | Contents |
+|---|---|
+| G1 | Toggle sidebar ⌘[ · Open connection ⌘O |
+| G2 | Discard · Review (popover, `StagedReview`) · Commit ⌘S with a `bg-text text-bg` count badge — driven only by the active table tab's staged edits (`useStaged`); disabled with "No staged changes" otherwise |
+| G3 | Open database ⌘D (pinned, not customizable; hidden for file engines) · `SQL` New query ⌘T · ERD · `+` More (New Table, Import, Diff, Backup / Restore where supported) |
+| Pill | `flex-1` status pill tinted by the connection env: `ENV \| Engine : SSL : SSH : connection : database : schema.table`. Object shrinks first, then database, then connection; the database is dropped when it equals the connection name; the `title` always carries the full text. While connecting: spinner + "Loading schema…" |
+| G4 | The user's customizable items (`TOOLBAR_ITEMS`, Settings → Toolbar, or right-click empty header space → Customize Toolbar…), then a fixed Cancel running queries ⌘. Below 1180px only the first two items show and the rest move under `»` (`.tiq-g4-extra` / `.tiq-g4-more`; the `@media` rule in `index.css` is the only source of the breakpoint) |
+| G5 | Settings ⌘, · Toggle inspector ⌘] · Disconnect |
+
+Tokens: `--glass-bg`, `--glass-border`, `--glass-shadow` (capsules and the pill border);
+`--env-<tone>` / `--env-<tone>-text` for the pill (`local`, `development`, `testing`,
+`staging`, `production`, and `none` = glass). No TLS version or traffic rate is shown:
+neither is measured.
 
 ### Tab strip (26px)
 - `<` `>` history navigation

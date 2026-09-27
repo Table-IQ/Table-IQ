@@ -228,6 +228,16 @@ body {
   app-region: no-drag;
 }
 
+/* Titlebar capsule G4: below 1180px only the first two customizable items show
+   and the rest move under the » overflow button. This @media rule is the only
+   source of truth for the breakpoint — no JS constant (it couldn't drive @media). */
+.tiq-g4-extra { display: none }
+.tiq-g4-more { display: inline-flex }
+@media (min-width: 1180px) {
+  .tiq-g4-extra { display: inline-flex }
+  .tiq-g4-more { display: none }
+}
+
 /* Subtle keyboard-shortcut hint pills used in toolbars / palette / status bar. */
 .tiq-kbd {
   display: inline-flex;

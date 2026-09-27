@@ -1,7 +1,9 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { ConnectionRail } from "./ConnectionRail";
 import { Wordmark } from "./Brand";
-import { ThemeToggle } from "./ThemeToggle";
+import { NEXT_THEME, ThemeToggle } from "./ThemeToggle";
+import { useTheme } from "../theme/ThemeProvider";
+import { TitleBar, type TitleBarItem } from "./TitleBar";
 import { ObjectTree } from "./ObjectTree";
 import { SidebarLibrary } from "./SidebarLibrary";
 import { TableView } from "./TableView";
@@ -26,29 +28,19 @@ import { ResizeHandle, clampWidth } from "./ui/ResizeHandle";
 import { logError } from "../lib/report";
 import { shouldSwitchDatabase } from "../lib/databasePicker";
 import { hydrateForConnection, persistForConnection } from "../lib/tabsPersist";
-import { ToolbarButton, Toolbar, ToolbarDivider, ToolbarSpacer } from "./ui/Toolbar";
 import { StatusBar, StatusDot } from "./ui/StatusBar";
-import { ColorDot } from "./ui/Chip";
-import { IconButton, IconGroup } from "./ui/IconButton";
+import { IconButton } from "./ui/IconButton";
 import {
   IconChevronLeft,
   IconChevronRight,
   IconClose,
   IconCommand,
-  IconDatabase,
-  IconDiff,
-  IconErd,
   IconHelp,
-  IconImport,
   IconMetrics,
   IconOverview,
-  IconPlay,
   IconPlus,
   IconRefresh,
-  IconSidebar,
-  IconSidebarRight,
   IconSqlLog,
-  IconStructure,
 } from "./ui/Icon";
 import {
   cancelConnecting,
@@ -97,6 +89,7 @@ import {
 } from "../lib/toolbarItems";
 import { useShellKeymap } from "./shell/useShellKeymap";
 import { usePaletteCommands } from "./shell/usePaletteCommands";
+import { supportsBackup, supportsRestore } from "../lib/backup";
 import { loadPins, savePins, livePins } from "../lib/pins";
 
 /** The schema a connection should open on. Every engine has a conventional
@@ -140,8 +133,7 @@ export function MainShell() {
     });
     return () => setConnectionLostHandler(null);
   }, [setDisconnected, activeId]);
-  // Header color chip resolves from the saved ConnConfig (ConnectedInfo doesn't carry color).
-  const activeColor = active ? saved.find((c) => c.id === active.id)?.color ?? null : null;
+  const { choice: themeChoice, setChoice: setThemeChoice } = useTheme();
   const tabsState = useTabs();
   // Every tab change goes through `tabGuard` (staged edits live in the mounted tab only).
   const { tabs, activeKey } = tabsState;
@@ -265,8 +257,6 @@ export function MainShell() {
   // Sidebar-foot "+" → new-object menu (TablePlus parity, Slice 31).
   const [sidebarMenu, setSidebarMenu] = useState<{ x: number; y: number } | null>(null);
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; tab: Tab } | null>(null);
-  // Right-click on the title bar → "Customize Toolbar…" (Task 7).
-  const [headerMenu, setHeaderMenu] = useState<{ x: number; y: number } | null>(null);
   // Title-bar right icon group order/visibility (Task 7, Settings → Toolbar).
   // Re-read on `tiq:toolbar`, dispatched by Settings after a save (same
   // custom-event precedent as `tiq:sidebar` / `tiq:show-tour`).
@@ -692,70 +682,14 @@ export function MainShell() {
     </>
   );
 
-  // Breadcrumb: TablePlus-style monospace strip — no border / bg, just dim · separators
-  // and a brighter active-table segment. Compact (h-5) so it fits the 32px titlebar.
-  // The database segment is a button that opens the ⌘D picker (TablePlus parity).
-  // TablePlus's signature centered connection capsule: a single rounded pill that
-  // carries the whole context — `conn | ENGINE : database ▾ : schema.table` — with
-  // `|`/`:` separators. The name opens ⌘O (swap connection); the database segment
-  // opens ⌘D (switch database). Replaces the old left chip + plain breadcrumb.
-  const sep = (s: string) => (
-    <span aria-hidden className="text-border-strong">
-      {s}
-    </span>
-  );
-  const connCapsule = (
-    <div
-      className="flex h-[22px] max-w-[60vw] items-center gap-1.5 overflow-hidden rounded-full border border-border bg-bg/70 px-2.5 font-mono text-[11px] text-muted shadow-[var(--shadow-soft)] backdrop-blur-sm"
-      data-testid="conn-capsule"
-    >
-      <button
-        onClick={() => setShowConnPicker(true)}
-        title="Open Connection · ⌘O"
-        className="inline-flex h-[18px] items-center gap-1.5 rounded-full px-1 text-text transition-colors hover:bg-surface-2"
-      >
-        {activeColor && <ColorDot color={activeColor} size={7} />}
-        <span className="font-medium">{active.name}</span>
-      </button>
-      {sep("|")}
-      <span className="uppercase tracking-wide">{active.engine}</span>
-      {sep(":")}
-      {fileEngine ? (
-        // A file engine has one database — the file — so there is nothing to switch to.
-        <span className="truncate px-1 text-text" data-testid="breadcrumb-db">
-          {active.database || "(none)"}
-        </span>
-      ) : (
-        <button
-          onClick={() => void openDbPicker()}
-          title="Switch database · ⌘D"
-          className="inline-flex h-[18px] items-center rounded-full px-1 text-text transition-colors hover:bg-surface-2"
-          data-testid="breadcrumb-db"
-        >
-          {active.database || "(none)"}
-          <span aria-hidden className="ml-1 text-muted-2">
-            ▾
-          </span>
-        </button>
-      )}
-      {activeTab?.kind === "table" && activeTab.schema && activeTab.table && (
-        <>
-          {sep(":")}
-          <span className="truncate text-text">
-            {activeTab.schema}.<span className="font-medium">{activeTab.table}</span>
-          </span>
-        </>
-      )}
-    </div>
-  );
-
-  // Data-driven right icon group (Task 7): `TOOLBAR_ITEMS` (shared with
+  // Data-driven titlebar capsule G4 (Task 7): `TOOLBAR_ITEMS` (shared with
   // Settings' Toolbar section) supplies the id + label; this map supplies the
   // per-id icon/onClick/`when` — that wiring is component-specific, so it
   // stays here rather than in the shared `lib/toolbarItems.ts`. `when: false`
-  // hides an item outright (e.g. a file engine has no database to switch),
-  // independent of the user's order/hidden prefs. `render` is an escape hatch
-  // for items that are already their own stateful component (ThemeToggle).
+  // hides an item outright, independent of the user's order/hidden prefs.
+  // `render` is an escape hatch for items that are already their own stateful
+  // component (ThemeToggle).
+  const G4_ICON = { size: 20, strokeWidth: 1.5 } as const;
   const titlebarActions: Record<
     ToolbarId,
     {
@@ -769,35 +703,30 @@ export function MainShell() {
     }
   > = {
     "refresh-schema": {
-      icon: <IconRefresh size={16} className={refreshingSchema ? "animate-spin" : undefined} />,
+      icon: <IconRefresh {...G4_ICON} className={refreshingSchema ? "animate-spin" : undefined} />,
       onClick: () => void onRefreshSchema(),
     },
-    "switch-database": {
-      icon: <IconDatabase size={16} />,
-      shortcut: "⌘D",
-      onClick: () => void openDbPicker(),
-      when: !fileEngine,
-    },
     "command-palette": {
-      icon: <IconCommand size={16} />,
+      icon: <IconCommand {...G4_ICON} />,
       shortcut: "⌘K",
       onClick: () => setShowPalette(true),
     },
-    "theme-toggle": { render: () => <ThemeToggle /> },
-    help: { icon: <IconHelp size={16} />, onClick: () => setShowHelp((v) => !v) },
+    // `onClick` is what the » overflow menu runs; the capsule renders the toggle itself.
+    "theme-toggle": { render: () => <ThemeToggle />, onClick: () => setThemeChoice(NEXT_THEME[themeChoice]) },
+    help: { icon: <IconHelp {...G4_ICON} />, onClick: () => setShowHelp((v) => !v) },
     "workspace-overview": {
-      icon: <IconOverview size={16} />,
+      icon: <IconOverview {...G4_ICON} />,
       shortcut: "⌘⇧\\",
       onClick: () => setShowWorkspaceOverview(true),
     },
     "sql-log": {
-      icon: <IconSqlLog size={16} />,
+      icon: <IconSqlLog {...G4_ICON} />,
       shortcut: "⌘⇧C",
       active: showSqlLog,
       onClick: () => setShowSqlLog((v) => !v),
     },
     metrics: {
-      icon: <IconMetrics size={16} />,
+      icon: <IconMetrics {...G4_ICON} />,
       onClick: () => void tabGuard.openView("metrics", "Metrics Board"),
     },
   };
@@ -806,77 +735,56 @@ export function MainShell() {
     toolbarPref,
     DEFAULT_HIDDEN_TOOLBAR_IDS,
   );
+  // `visibleTitlebarIds` is `applyToolbar`'s output over `TOOLBAR_ITEMS`' own ids,
+  // so every id is a `ToolbarId` (`applyToolbar` stays `string[]` for stored prefs).
+  const titlebarItems: TitleBarItem[] = visibleTitlebarIds.flatMap((id) => {
+    const a = titlebarActions[id as ToolbarId];
+    if (a.when === false) return [];
+    return [{ id, label: TOOLBAR_ITEMS.find((i) => i.id === id)!.label, ...a }];
+  });
 
   return (
     <div className="flex h-full flex-col">
       {/* ── TITLE BAR ─────────────────────────────────────────────────────── */}
-      <header
-        className="tiq-titlebar-drag flex shrink-0 items-center gap-2 border-b border-border bg-surface pl-[78px] pr-2"
-        style={{ height: "var(--header-h)" }}
-        onContextMenu={(e) => {
-          e.preventDefault();
-          setHeaderMenu({ x: e.clientX, y: e.clientY });
-        }}
-      >
-        {/* Left icon group — TablePlus groups toolbar icons into a rounded
-            container/card rather than free-floating icons (Slice 33). Fixed —
-            not part of the customizable right icon group. */}
-        <IconGroup>
-          <IconButton
-            icon={<IconSidebar size={16} />}
-            label="Toggle sidebar"
-            shortcut="⌘["
-            active={showSidebar}
-            onClick={() => setShowSidebar((v) => !v)}
-          />
-        </IconGroup>
-
-        <Wordmark className="ml-1 text-[13px]" />
-
-        {/* Centered TablePlus connection capsule */}
-        <div className="mx-2 flex flex-1 items-center justify-center">{connCapsule}</div>
-
-        {/* Right icon group — data-driven (Task 7): order/visibility come from
-            `toolbarPref`, customizable via right-click → Customize Toolbar or
-            Settings → Toolbar. The inspector toggle + Disconnect stay fixed. */}
-        <IconGroup>
-          {visibleTitlebarIds.map((id) => {
-            const item = TOOLBAR_ITEMS.find((i) => i.id === id);
-            // `visibleTitlebarIds` is `applyToolbar`'s output over `TOOLBAR_ITEMS`'
-            // own ids (see below), so every `id` here is a `ToolbarId` — `applyToolbar`
-            // itself stays untyped `string[]` (shared with Settings' persisted prefs).
-            const action = titlebarActions[id as ToolbarId];
-            if (!item || !action || action.when === false) return null;
-            if (action.render) return <span key={id}>{action.render()}</span>;
-            return (
-              <IconButton
-                key={id}
-                icon={action.icon}
-                label={item.label}
-                shortcut={action.shortcut}
-                active={action.active}
-                onClick={action.onClick}
-              />
-            );
-          })}
-        </IconGroup>
-        <IconGroup>
-          <IconButton
-            icon={<IconSidebarRight size={16} />}
-            label="Toggle inspector"
-            shortcut="⌘]"
-            active={showInspector}
-            onClick={() => setShowInspector((v) => !v)}
-          />
-        </IconGroup>
-        <button
-          onClick={onDisconnect}
-          title="Disconnect"
-          className="ml-1 h-[28px] rounded-lg border border-border px-2.5 text-[11px] text-muted transition-colors hover:border-border-strong hover:text-text"
-        >
-          Disconnect
-        </button>
-      </header>
+      <TitleBar
+        cfg={
+          saved.find((c) => c.id === active.id) ?? {
+            name: active.name,
+            engine,
+            database: active.database,
+            sslmode: "prefer",
+            ssh: null,
+            env: null,
+            color: null,
+          }
+        }
+        activeObject={
+          activeTab?.kind === "table" && activeTab.schema && activeTab.table
+            ? `${activeTab.schema}.${activeTab.table}`
+            : null
+        }
+        fileEngine={fileEngine}
+        connecting={!!connecting}
+        showSidebar={showSidebar}
+        showInspector={showInspector}
+        items={titlebarItems}
+        canBackup={supportsBackup(engine)}
+        canRestore={supportsRestore(engine, active.database)}
+        onToggleSidebar={() => setShowSidebar((v) => !v)}
+        onToggleInspector={() => setShowInspector((v) => !v)}
+        onOpenConnection={() => setShowConnPicker(true)}
+        onOpenDatabase={() => void openDbPicker()}
+        onNewQuery={() => void tabGuard.openQuery()}
+        onOpenErd={() => void tabGuard.openErd()}
+        onNewTable={() => setShowStructure(true)}
+        onImport={() => setShowImport(true)}
+        onDiff={() => setShowDiff(true)}
+        onBackup={() => setShowBackup(true)}
+        onRestore={() => setShowRestore(true)}
+        onCancelQueries={() => void cancelAllQueries()}
+        onCustomizeToolbar={() => useSettingsUi.getState().show("toolbar")}
+        onDisconnect={() => void onDisconnect()}
+      />
 
       {/* ── CONNECTING STRIP ──────────────────────────────────────────────── */}
       {/* Opening another connection (rail/⌘O) or switching database (⌘D) can hit a
@@ -1086,36 +994,6 @@ export function MainShell() {
         )}
 
         <main className="flex min-w-0 flex-1 flex-col">
-          {/* Primary action toolbar */}
-          <Toolbar>
-            <ToolbarButton icon={<IconPlus />} label="Query" shortcut="⌘T" onClick={() => void tabGuard.openQuery()} />
-            <ToolbarButton icon={<IconErd />} label="ERD" onClick={() => void tabGuard.openErd()} />
-            <ToolbarButton
-              icon={<IconStructure />}
-              label="Table"
-              onClick={() => setShowStructure(true)}
-            />
-            <ToolbarButton
-              icon={<IconImport />}
-              label="Import"
-              onClick={() => setShowImport(true)}
-            />
-            <ToolbarButton
-              icon={<IconDiff />}
-              label="Diff"
-              onClick={() => setShowDiff(true)}
-            />
-            <ToolbarDivider />
-            {activeTab?.kind === "query" && (
-              <span className="text-[11px] text-muted">
-                <IconPlay size={11} className="-mb-px inline" /> Run with{" "}
-                <span className="tiq-kbd">⌘↵</span>
-              </span>
-            )}
-            <ToolbarSpacer />
-            <ToolbarButton icon={<IconCommand />} label="Search" shortcut="⌘K" onClick={() => setShowPalette(true)} />
-          </Toolbar>
-
           {/* Tab strip — tabs only, no actions */}
           <div
             className="flex shrink-0 items-stretch gap-0 overflow-x-auto border-b border-border bg-bg"
@@ -1487,20 +1365,6 @@ export function MainShell() {
             />
           );
         })()}
-      {headerMenu && (
-        <ContextMenu
-          x={headerMenu.x}
-          y={headerMenu.y}
-          items={[
-            {
-              id: "customize-toolbar",
-              label: "Customize Toolbar…",
-              onSelect: () => useSettingsUi.getState().show("toolbar"),
-            },
-          ]}
-          onClose={() => setHeaderMenu(null)}
-        />
-      )}
       {showHelp && <HelpMenu onTour={() => { setShowHelp(false); /* tour re-trigger handled by Onboarding */ window.dispatchEvent(new CustomEvent("tiq:show-tour")); }} onClose={() => setShowHelp(false)} />}
       <Onboarding />
     </div>
@@ -1514,7 +1378,7 @@ function HelpMenu({ onTour, onClose }: { onTour: () => void; onClose: () => void
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
   return (
-    <div className="fixed right-4 top-12 z-50 w-72 rounded-lg border border-border bg-bg p-2 shadow-[var(--shadow-pop)]">
+    <div className="fixed right-4 top-[calc(var(--titlebar-h)+4px)] z-50 w-72 rounded-lg border border-border bg-bg p-2 shadow-[var(--shadow-pop)]">
       <button
         onClick={onTour}
         className="block w-full rounded-md px-3 py-2 text-left text-xs text-text hover:bg-surface-2"

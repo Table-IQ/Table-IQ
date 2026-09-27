@@ -7,6 +7,7 @@ import {
   TOOLBAR_KEY,
   type ToolbarPref,
 } from "./toolbarPrefs";
+import { DEFAULT_HIDDEN_TOOLBAR_IDS, TOOLBAR_ITEMS } from "./toolbarItems";
 
 function memStorage(): Pick<Storage, "getItem" | "setItem" | "removeItem"> {
   const m = new Map<string, string>();
@@ -116,5 +117,23 @@ describe("applyToolbar", () => {
       "a",
       "was-default-hidden",
     ]);
+  });
+
+  // Open database moved out of the customizable group (it's pinned in G3), so a
+  // pref saved before that still lists `switch-database` — it must vanish, not
+  // crash or leave a ghost item.
+  it("ignores a stored pref's retired switch-database id", () => {
+    const pref: ToolbarPref = {
+      order: ["refresh-schema", "switch-database", "command-palette"],
+      hidden: [],
+    };
+    const out = applyToolbar(
+      TOOLBAR_ITEMS.map((i) => i.id),
+      pref,
+      DEFAULT_HIDDEN_TOOLBAR_IDS,
+    );
+    expect(out).not.toContain("switch-database");
+    expect(out.slice(0, 2)).toEqual(["refresh-schema", "command-palette"]);
+    expect(TOOLBAR_ITEMS).toHaveLength(7);
   });
 });

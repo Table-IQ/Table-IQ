@@ -258,6 +258,9 @@ function ToolbarSection() {
 
   return (
     <div className="space-y-3 p-4">
+      <p className="text-xs text-muted">
+        The first two items stay visible in narrow windows; the rest move under »
+      </p>
       <div className="space-y-0.5">
         {fullOrder.map((id, i) => {
           const item = TOOLBAR_ITEMS.find((t) => t.id === id);
