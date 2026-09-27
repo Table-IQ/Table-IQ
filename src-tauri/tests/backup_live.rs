@@ -388,27 +388,39 @@ async fn mysqldump_shim_works_without_the_process_privilege() {
     const USER: &str = "tiq_bk_noproc";
     const PW: &str = "Np-7c1f-Backup";
     let mut root = sqlx::MySqlConnection::connect(&url).await.unwrap();
+    // Idempotent: a user left by an earlier crashed run is replaced, not an error.
     root.execute(format!("DROP USER IF EXISTS '{USER}'@'%'").as_str()).await.unwrap();
-    root.execute(format!("CREATE USER '{USER}'@'%' IDENTIFIED BY '{PW}'").as_str()).await.unwrap();
-    root.execute(
-        format!("GRANT SELECT, SHOW VIEW, TRIGGER, LOCK TABLES, EVENT ON {TEST_DB}.* TO '{USER}'@'%'").as_str(),
-    )
-    .await
-    .unwrap();
 
-    let shim = tempfile::tempdir().unwrap();
-    mysql_shim(shim.path());
-    let dir = tempfile::tempdir().unwrap();
-    let out = dir.path().join("np.sql");
-    let (mut t, _) = target(&url);
-    t.user = USER.into();
-    let id = backup::tool_backup("mysql", &t, PW, PgFormat::Custom, out.to_str().unwrap(), shim.path().to_str())
-        .await
-        .unwrap();
-    let (s, lines) = wait(&id).await;
-    let bytes = std::fs::read(&out).unwrap_or_default();
-    // Drop the user before asserting, so a failure doesn't leave it behind.
+    // Everything between CREATE and DROP runs in its own task, so a panic anywhere in it
+    // (CREATE, GRANT, starting the backup, the wait) surfaces as a JoinError here instead of
+    // unwinding past the DROP below and leaving the user behind.
+    let body = tokio::spawn({
+        let url = url.clone();
+        async move {
+            let mut root = sqlx::MySqlConnection::connect(&url).await.unwrap();
+            root.execute(format!("CREATE USER '{USER}'@'%' IDENTIFIED BY '{PW}'").as_str()).await.unwrap();
+            root.execute(
+                format!("GRANT SELECT, SHOW VIEW, TRIGGER, LOCK TABLES, EVENT ON {TEST_DB}.* TO '{USER}'@'%'")
+                    .as_str(),
+            )
+            .await
+            .unwrap();
+            let shim = tempfile::tempdir().unwrap();
+            mysql_shim(shim.path());
+            let dir = tempfile::tempdir().unwrap();
+            let out = dir.path().join("np.sql");
+            let (mut t, _) = target(&url);
+            t.user = USER.into();
+            let id = backup::tool_backup("mysql", &t, PW, PgFormat::Custom, out.to_str().unwrap(), shim.path().to_str())
+                .await
+                .unwrap();
+            let (s, lines) = wait(&id).await;
+            (s, lines, std::fs::read(&out).unwrap_or_default())
+        }
+    })
+    .await;
     root.execute(format!("DROP USER IF EXISTS '{USER}'@'%'").as_str()).await.unwrap();
+    let (s, lines, bytes) = body.expect("backup as the no-PROCESS user panicked (user dropped)");
 
     assert!(s.ok, "{s:?}\n{}", lines.join("\n"));
     assert!(String::from_utf8_lossy(&bytes).contains("CREATE TABLE `tiq_bk_items`"));
