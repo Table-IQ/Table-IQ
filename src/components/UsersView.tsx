@@ -227,7 +227,10 @@ function CreateUserModal({
   const create = async () => {
     setStatus({ kind: "busy", msg: "Creating…" });
     try {
-      await runScript(connId, createUserSql(engine, { name, password, host }));
+      // `valid` above checks name.trim().length > 0, so an all-whitespace name never gets
+      // here — but a name with surrounding whitespace (e.g. pasted) must be trimmed before
+      // it reaches the SQL, same as validation already treats it.
+      await runScript(connId, createUserSql(engine, { name: name.trim(), password, host }));
       onDone();
     } catch (e) {
       setStatus({ kind: "err", msg: String(e) });
