@@ -725,6 +725,33 @@ mod tests {
         assert!(!ct_eq(b"", b"a"));
     }
 
+    /// Every call in this suite goes through `query()`, which hands `run_query` a bare
+    /// `Extensions::new()` — so the actual header-reading branch of `client_name` (as
+    /// opposed to its "no Parts inserted" fallback) never runs anywhere else.
+    #[test]
+    fn client_name_reads_and_truncates_the_user_agent() {
+        let (parts, _) = axum::http::Request::builder()
+            .header(header::USER_AGENT, "a".repeat(100))
+            .body(())
+            .unwrap()
+            .into_parts();
+        let mut ext = Extensions::new();
+        ext.insert(parts);
+        assert_eq!(client_name(&ext), "a".repeat(80), "truncated to 80 chars");
+    }
+
+    #[test]
+    fn client_name_falls_back_to_unknown() {
+        // No `Parts` inserted at all (the case every other test in this file hits).
+        assert_eq!(client_name(&Extensions::new()), "unknown");
+
+        // `Parts` present but with no User-Agent header.
+        let (parts, _) = axum::http::Request::builder().body(()).unwrap().into_parts();
+        let mut ext = Extensions::new();
+        ext.insert(parts);
+        assert_eq!(client_name(&ext), "unknown");
+    }
+
     /// Bearer auth and the Origin refusal, over real HTTP on an ephemeral loopback port.
     #[tokio::test]
     async fn auth_refuses_a_missing_or_wrong_bearer_and_any_origin() {
