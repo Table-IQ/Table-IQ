@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   listConnections,
   mcpActivity,
@@ -41,6 +41,16 @@ const openMcpSettings = () => useSettingsUi.getState().show("mcp");
  * pre-toggle status for up to one whole poll interval. A second effect
  * watches `useSettingsUi`'s `open` and refetches status the instant it flips
  * from true to false (fix round 1), on top of the poll tick above.
+ *
+ * Status is now written from two independent call sites (that poll tick and
+ * the Settings-closed effect), so it gets its own request counter,
+ * `statusReqRef`, separate from the activity poll's `genRef` (fix round 2):
+ * every `refreshStatus()` call captures the counter's next value, and on
+ * resolve applies the result only if no *newer* `refreshStatus()` call has
+ * started since — via the same `shouldApply` used everywhere else — which
+ * drops a response that resolves after unmount (both effects' cleanups bump
+ * the counter) AND a slower response that would otherwise overwrite a
+ * fresher one that started later but resolved first.
  */
 export function McpActivityView() {
   const [activities, setActivities] = useState<McpActivity[]>([]);
@@ -49,8 +59,18 @@ export function McpActivityView() {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const lastSeqRef = useRef(0);
   const genRef = useRef(0);
+  const statusReqRef = useRef(0);
   const settingsOpen = useSettingsUi((s) => s.open);
   const wasSettingsOpenRef = useRef(settingsOpen);
+
+  const refreshStatus = useCallback(() => {
+    const req = ++statusReqRef.current;
+    mcpStatus()
+      .then((s) => {
+        if (shouldApply(req, statusReqRef.current)) setStatus(s);
+      })
+      .catch((e) => logError("mcp activity: status", e));
+  }, []);
 
   useEffect(() => {
     listConnections()
@@ -65,14 +85,14 @@ export function McpActivityView() {
     const tick = () => {
       if (stopped || document.hidden || inFlight) return;
       inFlight = true;
-      Promise.all([mcpActivity(lastSeqRef.current), mcpStatus()])
-        .then(([next, s]) => {
-          if (stopped || !shouldApply(gen, genRef.current)) return;
-          setStatus(s);
-          if (next.length > 0) {
-            lastSeqRef.current = next[next.length - 1].seq;
-            setActivities((prev) => mergeActivity(prev, next, MCP_ACTIVITY_CAP));
-          }
+      // Independent of the activity fetch below (fix round 2) — a status
+      // failure must not drop this tick's activity merge, and vice versa.
+      refreshStatus();
+      mcpActivity(lastSeqRef.current)
+        .then((next) => {
+          if (stopped || !shouldApply(gen, genRef.current) || next.length === 0) return;
+          lastSeqRef.current = next[next.length - 1].seq;
+          setActivities((prev) => mergeActivity(prev, next, MCP_ACTIVITY_CAP));
         })
         .catch((e) => logError("mcp activity: poll", e))
         .finally(() => {
@@ -84,9 +104,10 @@ export function McpActivityView() {
     return () => {
       stopped = true;
       genRef.current++;
+      statusReqRef.current++; // invalidate a status fetch this tick started but hasn't resolved yet
       window.clearInterval(id);
     };
-  }, []);
+  }, [refreshStatus]);
 
   // Settings just closed (true → false) — refresh immediately rather than
   // wait for the next poll tick, so flipping the server on/off in Settings
@@ -94,12 +115,11 @@ export function McpActivityView() {
   useEffect(() => {
     const wasOpen = wasSettingsOpenRef.current;
     wasSettingsOpenRef.current = settingsOpen;
-    if (wasOpen && !settingsOpen) {
-      mcpStatus()
-        .then(setStatus)
-        .catch((e) => logError("mcp activity: status", e));
-    }
-  }, [settingsOpen]);
+    if (wasOpen && !settingsOpen) refreshStatus();
+    return () => {
+      statusReqRef.current++; // invalidate on unmount, or before the next open/close flip
+    };
+  }, [settingsOpen, refreshStatus]);
 
   const toggleExpanded = (seq: number) =>
     setExpanded((prev) => {
