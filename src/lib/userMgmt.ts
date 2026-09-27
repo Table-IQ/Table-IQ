@@ -90,9 +90,15 @@ export function dropUserSql(
     case "sqlserver": {
       // The user (in the current database) must go before the login it depends on. A login
       // can have no user here; an unguarded DROP USER would fail AFTER the batch went on to
-      // drop the login, reporting failure for a drop that happened.
+      // drop the login, reporting failure for a drop that happened. Worse, DROP USER can
+      // fail for an UNRELATED reason (it owns a schema) while the batch keeps going and drops
+      // the login anyway — a half-succeeded drop with a misleading error. TRY/CATCH + THROW
+      // stops the login from being touched unless the user step actually completed.
       const user = dbUser ?? name;
-      return `IF USER_ID(${nLiteral(user)}) IS NOT NULL DROP USER ${quoteIdent(user, "sqlserver")}; DROP LOGIN ${quoteIdent(name, "sqlserver")};`;
+      return (
+        `BEGIN TRY IF USER_ID(${nLiteral(user)}) IS NOT NULL DROP USER ${quoteIdent(user, "sqlserver")}; ` +
+        `DROP LOGIN ${quoteIdent(name, "sqlserver")}; END TRY BEGIN CATCH THROW; END CATCH`
+      );
     }
     default:
       return unsupported(engine);

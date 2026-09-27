@@ -125,17 +125,22 @@ describe("dropUserSql", () => {
 
   it("sqlserver drops the user (only if it exists) before the login, falling back to the login name", () => {
     expect(dropUserSql("sqlserver", { name: "bob" })).toBe(
-      `IF USER_ID(N'bob') IS NOT NULL DROP USER [bob]; DROP LOGIN [bob];`,
+      `BEGIN TRY IF USER_ID(N'bob') IS NOT NULL DROP USER [bob]; DROP LOGIN [bob]; END TRY BEGIN CATCH THROW; END CATCH`,
     );
     expect(dropUserSql("sqlserver", { name: "bob", dbUser: null })).toBe(
-      `IF USER_ID(N'bob') IS NOT NULL DROP USER [bob]; DROP LOGIN [bob];`,
+      `BEGIN TRY IF USER_ID(N'bob') IS NOT NULL DROP USER [bob]; DROP LOGIN [bob]; END TRY BEGIN CATCH THROW; END CATCH`,
     );
   });
 
   it("sqlserver drops the listed database user, which can differ from the login", () => {
     expect(dropUserSql("sqlserver", { name: "bob_login", dbUser: "bob's user" })).toBe(
-      `IF USER_ID(N'bob''s user') IS NOT NULL DROP USER [bob's user]; DROP LOGIN [bob_login];`,
+      `BEGIN TRY IF USER_ID(N'bob''s user') IS NOT NULL DROP USER [bob's user]; DROP LOGIN [bob_login]; END TRY BEGIN CATCH THROW; END CATCH`,
     );
+  });
+
+  it("sqlserver wraps the drop in TRY/CATCH so a DROP USER failure (e.g. it owns a schema) aborts before DROP LOGIN runs", () => {
+    const sql = dropUserSql("sqlserver", { name: "bob" });
+    expect(sql).toMatch(/^BEGIN TRY .*DROP LOGIN \[bob\]; END TRY BEGIN CATCH THROW; END CATCH$/);
   });
 });
 
