@@ -26,13 +26,21 @@ const openMcpSettings = () => useSettingsUi.getState().show("mcp");
  * `connId` and `MainShell` mounts it the same regardless of the active
  * connection.
  *
- * Polls `mcpActivity(lastSeq)` every 2s, skipping a tick while
- * `document.hidden` or a previous poll is still in flight. `MainShell` only
- * renders this component while the "mcp" tab is the active one, so mounting
- * already covers "poll only while active" — unmounting stops the interval.
- * `gen`/`shouldApply` (reused from `sqlLog.ts`, same as `MetricsBoard`'s
- * widgets) drop a result that resolves after unmount, the one reset event
- * this view has (no clear button, no connection to switch away from).
+ * Polls `mcpActivity(lastSeq)` AND `mcpStatus()` every 2s, skipping a tick
+ * while `document.hidden` or a previous poll is still in flight. `MainShell`
+ * only renders this component while the "mcp" tab is the active one, so
+ * mounting already covers "poll only while active" — unmounting stops the
+ * interval. `gen`/`shouldApply` (reused from `sqlLog.ts`, same as
+ * `MetricsBoard`'s widgets) drop a result that resolves after unmount, the
+ * one reset event this view has (no clear button, no connection to switch
+ * away from).
+ *
+ * Settings is an overlay, not a route — this view stays mounted underneath
+ * it, so toggling the server from the header's own "Settings → MCP" button
+ * and closing Settings again would otherwise leave the header showing the
+ * pre-toggle status for up to one whole poll interval. A second effect
+ * watches `useSettingsUi`'s `open` and refetches status the instant it flips
+ * from true to false (fix round 1), on top of the poll tick above.
  */
 export function McpActivityView() {
   const [activities, setActivities] = useState<McpActivity[]>([]);
@@ -41,11 +49,10 @@ export function McpActivityView() {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const lastSeqRef = useRef(0);
   const genRef = useRef(0);
+  const settingsOpen = useSettingsUi((s) => s.open);
+  const wasSettingsOpenRef = useRef(settingsOpen);
 
   useEffect(() => {
-    mcpStatus()
-      .then(setStatus)
-      .catch((e) => logError("mcp activity: status", e));
     listConnections()
       .then(setConns)
       .catch((e) => logError("mcp activity: connections", e));
@@ -58,11 +65,14 @@ export function McpActivityView() {
     const tick = () => {
       if (stopped || document.hidden || inFlight) return;
       inFlight = true;
-      mcpActivity(lastSeqRef.current)
-        .then((next) => {
-          if (stopped || !shouldApply(gen, genRef.current) || next.length === 0) return;
-          lastSeqRef.current = next[next.length - 1].seq;
-          setActivities((prev) => mergeActivity(prev, next, MCP_ACTIVITY_CAP));
+      Promise.all([mcpActivity(lastSeqRef.current), mcpStatus()])
+        .then(([next, s]) => {
+          if (stopped || !shouldApply(gen, genRef.current)) return;
+          setStatus(s);
+          if (next.length > 0) {
+            lastSeqRef.current = next[next.length - 1].seq;
+            setActivities((prev) => mergeActivity(prev, next, MCP_ACTIVITY_CAP));
+          }
         })
         .catch((e) => logError("mcp activity: poll", e))
         .finally(() => {
@@ -77,6 +87,19 @@ export function McpActivityView() {
       window.clearInterval(id);
     };
   }, []);
+
+  // Settings just closed (true → false) — refresh immediately rather than
+  // wait for the next poll tick, so flipping the server on/off in Settings
+  // and closing it shows up in the header right away.
+  useEffect(() => {
+    const wasOpen = wasSettingsOpenRef.current;
+    wasSettingsOpenRef.current = settingsOpen;
+    if (wasOpen && !settingsOpen) {
+      mcpStatus()
+        .then(setStatus)
+        .catch((e) => logError("mcp activity: status", e));
+    }
+  }, [settingsOpen]);
 
   const toggleExpanded = (seq: number) =>
     setExpanded((prev) => {
