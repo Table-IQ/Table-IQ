@@ -352,6 +352,15 @@ pub struct RowCount {
     pub exact: bool,
 }
 
+/// One base table's catalog stats for the connection lobby. `None` where the engine's
+/// catalog can't say (no size function, never analyzed) — the UI hides what it lacks.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TableStat {
+    pub name: String,
+    pub rows: Option<i64>,
+    pub bytes: Option<i64>,
+}
+
 /// Above this many estimated rows, an unfiltered `count_rows` reports the catalog estimate
 /// instead of running `COUNT(*)`: past it an exact count is too slow to wait for on open.
 pub const EXACT_COUNT_MAX: i64 = 10_000_000;
@@ -632,6 +641,11 @@ pub trait SqlDriver: Send + Sync {
     /// a view, an unknown table, or an engine without one.
     async fn estimate_rows(&self, _schema: &str, _table: &str) -> DResult<Option<i64>> {
         Ok(None)
+    }
+    /// Every base table in `schema` with its row estimate and total on-disk bytes (table +
+    /// indexes + toast), from the catalog only. Views are excluded. Default: nothing.
+    async fn table_stats(&self, _schema: &str) -> DResult<Vec<TableStat>> {
+        Ok(Vec::new())
     }
     /// Read a window of rows from a table as Arrow (read-only browse), filtered and
     /// ordered. See [`build_order_by`] for what `order` means when it is empty.

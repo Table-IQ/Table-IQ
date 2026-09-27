@@ -14,8 +14,26 @@ use super::{
     build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
     ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec, IndexInfo, ObjectInfo,
     ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver, StmtOutput,
-    TableStructure, TriggerInfo, EXACT_COUNT_MAX,
+    TableStat, TableStructure, TriggerInfo, EXACT_COUNT_MAX,
 };
+
+/// Above this, a `table_stats` catalog read gives up rather than block the lobby.
+const STATS_TIMEOUT_MS: u64 = 5_000;
+
+/// One leaf's estimated row count: `c` is the leaf's `pg_class` row, `s.bs` the block size.
+/// Never-ANALYZEd (`reltuples = -1`; before PG 14, `reltuples = 0` with `relpages = 0`) is
+/// estimated from its size: pages × tuples-per-page, a tuple being its fixed-width columns
+/// (32 bytes per variable-width one) plus 28 bytes of header and line pointer. Shared,
+/// byte-identical, between `estimate_rows` and `table_stats`.
+const PG_LEAF_ROW_ESTIMATE: &str = "CASE \
+    WHEN c.reltuples > 0 AND c.relpages > 0 \
+      THEN c.reltuples::float8 / c.relpages * floor(pg_relation_size(c.oid) / s.bs) \
+    WHEN c.reltuples > 0 OR (c.reltuples = 0 AND c.relpages > 0) THEN c.reltuples::float8 \
+    ELSE floor(pg_relation_size(c.oid) / s.bs) * floor(s.bs / (28 + ( \
+      SELECT COALESCE(SUM(CASE WHEN a.attlen > 0 THEN a.attlen ELSE 32 END), 0) \
+      FROM pg_attribute a \
+      WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped))) \
+    END";
 
 /// Postgres reports "canceling statement due to user request" as SQLSTATE 57014; that is a
 /// clean cancellation, not a query error.
@@ -681,31 +699,61 @@ impl SqlDriver for PgDriver {
     /// tuples-per-page, a tuple being its fixed-width columns (32 bytes per variable-width
     /// one) plus 28 bytes of header and line pointer. Views: `None`.
     async fn estimate_rows(&self, schema: &str, table: &str) -> DResult<Option<i64>> {
-        sqlx::query_scalar(
+        let sql = format!(
             "WITH RECURSIVE rel AS ( \
                SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
                WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('r', 'p', 'm') \
                UNION ALL \
                SELECT i.inhrelid FROM pg_inherits i JOIN rel ON i.inhparent = rel.oid) \
-             SELECT COALESCE(SUM(CASE \
-               WHEN c.reltuples > 0 AND c.relpages > 0 \
-                 THEN c.reltuples::float8 / c.relpages * floor(pg_relation_size(c.oid) / s.bs) \
-               WHEN c.reltuples > 0 OR (c.reltuples = 0 AND c.relpages > 0) THEN c.reltuples::float8 \
-               ELSE floor(pg_relation_size(c.oid) / s.bs) * floor(s.bs / (28 + ( \
-                 SELECT COALESCE(SUM(CASE WHEN a.attlen > 0 THEN a.attlen ELSE 32 END), 0) \
-                 FROM pg_attribute a \
-                 WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped))) \
-               END), 0)::bigint \
+             SELECT COALESCE(SUM({est}), 0)::bigint \
              FROM rel JOIN pg_class c ON c.oid = rel.oid \
              CROSS JOIN (SELECT current_setting('block_size')::float8 AS bs) s \
              WHERE c.relkind IN ('r', 'm') \
              HAVING EXISTS (SELECT 1 FROM rel)",
-        )
-        .bind(schema)
-        .bind(table)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(db)
+            est = PG_LEAF_ROW_ESTIMATE
+        );
+        sqlx::query_scalar(&sql)
+            .bind(schema)
+            .bind(table)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db)
+    }
+
+    /// Every base table (and materialized view) in `schema`, top-level meaning "not a child
+    /// in `pg_inherits`" — a declarative partition or legacy-inheritance child is excluded
+    /// and instead summed into its top ancestor. Rows: [`PG_LEAF_ROW_ESTIMATE`] per leaf,
+    /// summed. Bytes: `pg_total_relation_size` (table + indexes + toast) per leaf, summed.
+    /// Bounded by [`STATS_TIMEOUT_MS`]; on a timeout the error is returned as-is.
+    async fn table_stats(&self, schema: &str) -> DResult<Vec<TableStat>> {
+        let sql = format!(
+            "WITH RECURSIVE tops AS ( \
+               SELECT c.oid AS top, c.relname FROM pg_class c \
+               JOIN pg_namespace n ON n.oid = c.relnamespace \
+               WHERE n.nspname = $1 AND c.relkind IN ('r', 'p', 'm') \
+                 AND NOT EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhrelid = c.oid)), \
+             tree AS ( \
+               SELECT top, top AS oid FROM tops \
+               UNION ALL SELECT t.top, i.inhrelid FROM tree t JOIN pg_inherits i ON i.inhparent = t.oid) \
+             SELECT tops.relname, \
+                    COALESCE(SUM(CASE WHEN c.relkind IN ('r', 'm') THEN {est} END), 0)::float8, \
+                    COALESCE(SUM(pg_total_relation_size(c.oid)), 0)::bigint \
+             FROM tree JOIN tops USING (top) JOIN pg_class c ON c.oid = tree.oid \
+             CROSS JOIN (SELECT current_setting('block_size')::float8 AS bs) s \
+             GROUP BY tops.relname ORDER BY 3 DESC",
+            est = PG_LEAF_ROW_ESTIMATE
+        );
+        let mut tx = self
+            .pool
+            .begin_with(format!("BEGIN; SET LOCAL statement_timeout = {STATS_TIMEOUT_MS}"))
+            .await
+            .map_err(db)?;
+        let rows: Vec<(String, f64, i64)> =
+            sqlx::query_as(&sql).bind(schema).fetch_all(&mut *tx).await.map_err(db)?;
+        Ok(rows
+            .into_iter()
+            .map(|(name, rows, bytes)| TableStat { name, rows: Some(rows as i64), bytes: Some(bytes) })
+            .collect())
     }
 
     async fn open_window_filtered(

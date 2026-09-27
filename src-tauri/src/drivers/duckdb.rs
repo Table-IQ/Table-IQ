@@ -23,7 +23,7 @@ use super::{
     build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken,
     ColumnDetail, ColumnFilter, ColumnInfo, ColsPk, DResult, DriverError, EditSpec, ForeignKey,
     IndexInfo, MetaCache, ObjectInfo, ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel,
-    SortKey, SqlDriver, StmtOutput, TableStructure,
+    SortKey, SqlDriver, StmtOutput, TableStat, TableStructure,
 };
 
 fn db(e: ::duckdb::Error) -> DriverError {
@@ -395,6 +395,33 @@ impl SqlDriver for DuckDriver {
             })
             .await?;
         Ok(rows.first().and_then(|r| r[0].as_deref()).and_then(|v| v.parse().ok()))
+    }
+
+    /// Every base table in `schema` with `duckdb_tables()`'s `estimated_size`. Views are
+    /// excluded (the query only reads `duckdb_tables()`, never `duckdb_views()`). DuckDB has
+    /// no per-table on-disk size, so `bytes` is always `None`.
+    async fn table_stats(&self, schema: &str) -> DResult<Vec<TableStat>> {
+        let binds = vec![Some(schema.to_string())];
+        let rows = self
+            .with(move |c| {
+                rows_of(
+                    c,
+                    "SELECT table_name, estimated_size FROM duckdb_tables() \
+                     WHERE database_name = current_database() AND schema_name = ?",
+                    &binds,
+                )
+            })
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| {
+                Some(TableStat {
+                    name: r.first()?.clone()?,
+                    rows: r.get(1).and_then(|v| v.as_deref()).and_then(|v| v.parse().ok()),
+                    bytes: None,
+                })
+            })
+            .collect())
     }
 
     async fn open_window_filtered(

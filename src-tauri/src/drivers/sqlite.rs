@@ -16,7 +16,7 @@ use super::{
     build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
     ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec, ForeignKey, IndexInfo,
     ObjectInfo, ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver,
-    StmtOutput, TableStructure, TriggerInfo,
+    StmtOutput, TableStat, TableStructure, TriggerInfo,
 };
 
 /// Unwrap `sqlx::Error::Database` to the bare server message — sqlx otherwise prefixes it with
@@ -57,6 +57,16 @@ fn query(sql: &str) -> sqlx::query::Query<'_, Sqlite, <Sqlite as sqlx::Database>
 
 fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// Above this many bytes, a `dbstat` sweep (which reads every page of the file) is skipped
+/// rather than pay for a full-file scan on open.
+const SQLITE_DBSTAT_MAX_BYTES: i64 = 256 * 1024 * 1024;
+
+/// Whether a `dbstat` sweep of `page_count` pages of `page_size` bytes each is affordable.
+/// Allowed at exactly [`SQLITE_DBSTAT_MAX_BYTES`], refused one page past it.
+fn dbstat_allowed(page_count: i64, page_size: i64) -> bool {
+    page_count.saturating_mul(page_size) <= SQLITE_DBSTAT_MAX_BYTES
 }
 
 /// SQLite is dynamically typed and coerces a text bind on its own, so a placeholder is
@@ -303,6 +313,60 @@ impl SqlDriver for SqliteDriver {
             qy = qy.bind(b.clone());
         }
         Ok(RowCount { count: Some(qy.fetch_one(&self.pool).await.map_err(db)?), exact: true })
+    }
+
+    /// Every table in `schema` (SQLite's own schema is `main`; another name means an
+    /// attached database). `rows` is always `None` — SQLite keeps no catalog row estimate,
+    /// and `COUNT(*)` would scan. `bytes` sums `dbstat`'s per-page sizes onto their owning
+    /// table (an index's b-tree is attributed to its table by name) below
+    /// [`SQLITE_DBSTAT_MAX_BYTES`] — past that, or if `dbstat` isn't compiled in, every
+    /// table gets `bytes: None` rather than pay for a sweep of the whole file.
+    async fn table_stats(&self, schema: &str) -> DResult<Vec<TableStat>> {
+        let master = if schema == "main" {
+            "sqlite_master".to_string()
+        } else {
+            format!("{}.sqlite_master", quote_ident(schema))
+        };
+        let pragma = |name: &str| {
+            if schema == "main" {
+                format!("PRAGMA {name}")
+            } else {
+                format!("PRAGMA {}.{name}", quote_ident(schema))
+            }
+        };
+
+        let q = format!("SELECT name FROM {master} WHERE type='table' AND name NOT LIKE 'sqlite_%'");
+        note(&q);
+        let names: Vec<String> = sqlx::query_scalar(&q).fetch_all(&self.pool).await.map_err(db)?;
+
+        let pc_sql = pragma("page_count");
+        note(&pc_sql);
+        let page_count: i64 = sqlx::query_scalar(&pc_sql).fetch_one(&self.pool).await.map_err(db)?;
+        let ps_sql = pragma("page_size");
+        note(&ps_sql);
+        let page_size: i64 = sqlx::query_scalar(&ps_sql).fetch_one(&self.pool).await.map_err(db)?;
+
+        let mut bytes_by_table: HashMap<String, i64> = HashMap::new();
+        if dbstat_allowed(page_count, page_size) {
+            let q = format!(
+                "SELECT m.tbl_name, SUM(d.pgsize) FROM dbstat(?1) d JOIN {master} m ON m.name = d.name \
+                 GROUP BY m.tbl_name"
+            );
+            note(&q);
+            if let Ok(rows) =
+                sqlx::query_as::<_, (String, i64)>(&q).bind(schema).fetch_all(&self.pool).await
+            {
+                bytes_by_table = rows.into_iter().collect();
+            }
+        }
+
+        Ok(names
+            .into_iter()
+            .map(|name| {
+                let bytes = bytes_by_table.get(&name).copied();
+                TableStat { name, rows: None, bytes }
+            })
+            .collect())
     }
 
     async fn open_window_filtered(
@@ -629,5 +693,26 @@ mod tests {
         assert_eq!(fks[0].from_column, "parent_id");
         assert_eq!(fks[0].to_table, "parent");
         assert_eq!(fks[0].to_column, "id");
+    }
+
+    #[test]
+    fn dbstat_allowed_at_the_boundary() {
+        assert!(dbstat_allowed(SQLITE_DBSTAT_MAX_BYTES / 4096, 4096), "exactly the cap");
+        assert!(!dbstat_allowed(SQLITE_DBSTAT_MAX_BYTES / 4096 + 1, 4096), "one page past the cap");
+    }
+
+    /// Live FK-style check: `table_stats` on a tiny database gets non-`None` bytes (dbstat
+    /// is compiled into the bundled SQLite here, unlike the file's own `table_stats.rs`
+    /// integration test, which tolerates either).
+    #[tokio::test]
+    async fn table_stats_reports_bytes_on_a_tiny_db() {
+        let tmp = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
+        let drv = SqliteDriver::connect(tmp.path().to_str().unwrap()).await.expect("connect");
+        sqlx::query("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)").execute(&drv.pool).await.unwrap();
+        sqlx::query("INSERT INTO t (v) VALUES ('x')").execute(&drv.pool).await.unwrap();
+        let s = drv.table_stats("main").await.expect("table_stats");
+        let t = s.iter().find(|t| t.name == "t").expect("listed");
+        assert!(t.bytes.is_some(), "dbstat is compiled into the bundled SQLite");
+        assert!(t.rows.is_none(), "SQLite has no catalog row estimate");
     }
 }

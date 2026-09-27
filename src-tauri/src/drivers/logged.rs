@@ -12,7 +12,7 @@ use async_trait::async_trait;
 
 use super::{
     CancelToken, ColumnFilter, DResult, EditSpec, ForeignKey, QueryResult, RowCount,
-    SchemaModel, SortKey, SqlDriver, StmtOutput, TableStructure,
+    SchemaModel, SortKey, SqlDriver, StmtOutput, TableStat, TableStructure,
 };
 use crate::sql_log::{SqlLog, CURRENT};
 
@@ -38,6 +38,9 @@ impl SqlDriver for Logged {
     }
     async fn estimate_rows(&self, schema: &str, table: &str) -> DResult<Option<i64>> {
         CURRENT.scope(self.log.clone(), self.inner.estimate_rows(schema, table)).await
+    }
+    async fn table_stats(&self, schema: &str) -> DResult<Vec<TableStat>> {
+        CURRENT.scope(self.log.clone(), self.inner.table_stats(schema)).await
     }
     async fn open_window_filtered(
         &self,
@@ -189,6 +192,10 @@ mod tests {
             rec("estimate_rows");
             Ok(Some(102))
         }
+        async fn table_stats(&self, _: &str) -> DResult<Vec<TableStat>> {
+            rec("table_stats");
+            Ok(vec![TableStat { name: "t".into(), rows: Some(1), bytes: Some(2) }])
+        }
         async fn open_window_filtered(
             &self,
             _: &str,
@@ -303,6 +310,7 @@ mod tests {
         assert_eq!(ok(d.introspect().await).schemas[0].name, "introspect");
         assert_eq!(ok(d.count_rows("s", "t", &[], None).await).count, Some(101));
         assert_eq!(ok(d.estimate_rows("s", "t").await), Some(102));
+        assert_eq!(ok(d.table_stats("s").await).len(), 1);
         assert_eq!(tag(&ok(d.open_window_filtered("s", "t", 0, 1, &[], &[], None).await)), "open_window_filtered");
         assert_eq!(
             tag(&ok(d.open_window_cancellable("s", "t", 0, 1, &[], &[], None, &t).await)),
@@ -329,7 +337,7 @@ mod tests {
         assert_eq!(
             logged,
             [
-                "introspect", "count_rows", "estimate_rows", "open_window_filtered",
+                "introspect", "count_rows", "estimate_rows", "table_stats", "open_window_filtered",
                 "open_window_cancellable", "open_window", "insert_row", "run_statements",
                 "run_query", "cancel", "primary_key", "apply_edit", "delete_row", "run_script",
                 "explain_json", "foreign_keys", "describe_table", "list_databases", "close",

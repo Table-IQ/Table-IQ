@@ -22,7 +22,7 @@ use super::{
     build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
     ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec, ForeignKey, IndexInfo,
     ObjectInfo, ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver,
-    StmtOutput, TableStructure, TriggerInfo,
+    StmtOutput, TableStat, TableStructure, TriggerInfo,
 };
 
 type Conn = Client<Compat<TcpStream>>;
@@ -542,6 +542,31 @@ impl SqlServerDriver {
     }
 }
 
+/// Transpose `query_text`'s column-major `(name, rows, bytes)` result into one [`TableStat`]
+/// per row. Each cell is `query_text`'s own stringified form, parsed back to `i64`; column 0
+/// is the table name, column 1 the row count, column 2 the bytes (absent, or `NULL`, in the
+/// `sys.partitions` fallback).
+fn stats_from_columns(cols: &[Vec<Option<std::string::String>>]) -> Vec<TableStat> {
+    let names = match cols.first() {
+        Some(c) => c,
+        None => return Vec::new(),
+    };
+    let parse = |col: Option<&Vec<Option<std::string::String>>>, i: usize| {
+        col.and_then(|c| c.get(i)).and_then(|o| o.as_deref()).and_then(|s| s.parse::<i64>().ok())
+    };
+    names
+        .iter()
+        .enumerate()
+        .filter_map(|(i, name)| {
+            Some(TableStat {
+                name: name.clone()?,
+                rows: parse(cols.get(1), i),
+                bytes: parse(cols.get(2), i),
+            })
+        })
+        .collect()
+}
+
 /// Build an all-Utf8 batch from column-major string data. An empty result (e.g. end-of-cursor)
 /// has no column metadata, so return a 0-row / 0-column batch rather than erroring.
 fn to_batch(columns: &[std::string::String], data: &[Vec<Option<std::string::String>>]) -> DResult<RecordBatch> {
@@ -859,6 +884,31 @@ impl SqlDriver for SqlServerDriver {
             .and_then(|o| o.as_ref())
             .and_then(|s| s.parse::<i64>().ok())
             .map(|n| n.max(0)))
+    }
+
+    /// Every base table in `schema` with its maintained row count and reserved bytes from
+    /// `sys.dm_db_partition_stats`. A least-privilege login can't read that DMV (it needs
+    /// VIEW DATABASE STATE), so on error this falls back to `sys.partitions` — the same
+    /// view [`SqlDriver::estimate_rows`] uses — with `bytes: None`.
+    async fn table_stats(&self, schema: &str) -> DResult<Vec<TableStat>> {
+        let s = schema.replace('\'', "''");
+        let full = format!(
+            "SELECT o.name, SUM(CASE WHEN ps.index_id IN (0,1) THEN ps.row_count ELSE 0 END), \
+                    SUM(ps.reserved_page_count) * 8192 \
+             FROM sys.dm_db_partition_stats ps JOIN sys.objects o ON ps.object_id = o.object_id \
+             JOIN sys.schemas s ON o.schema_id = s.schema_id \
+             WHERE o.type = 'U' AND s.name = '{s}' GROUP BY o.name"
+        );
+        let rows_only = format!(
+            "SELECT o.name, SUM(p.rows), NULL FROM sys.partitions p \
+             JOIN sys.objects o ON p.object_id = o.object_id JOIN sys.schemas s ON o.schema_id = s.schema_id \
+             WHERE o.type = 'U' AND s.name = '{s}' AND p.index_id IN (0,1) GROUP BY o.name"
+        );
+        let (_, cols) = match self.query_text(&full).await {
+            Ok(r) => r,
+            Err(_) => self.query_text(&rows_only).await?, // VIEW DATABASE STATE missing
+        };
+        Ok(stats_from_columns(&cols))
     }
 
     async fn primary_key(&self, schema: &str, table: &str) -> DResult<Vec<std::string::String>> {
@@ -1199,7 +1249,27 @@ impl SqlDriver for SqlServerDriver {
 
 #[cfg(test)]
 mod tests {
-    use super::{cell_to_string, encryption_for, plain_select, same_session};
+    use super::{cell_to_string, encryption_for, plain_select, same_session, stats_from_columns};
+
+    /// A 2-row, 3-column fixture: `t` has a byte size (the `sys.dm_db_partition_stats` path),
+    /// `no_bytes` doesn't (the `sys.partitions` fallback, whose bytes column is a literal
+    /// `NULL` in every row).
+    #[test]
+    fn stats_from_columns_transposes_and_parses() {
+        let cols = vec![
+            vec![Some("t".to_string()), Some("no_bytes".to_string())],
+            vec![Some("10".to_string()), Some("20".to_string())],
+            vec![Some("1024".to_string()), None],
+        ];
+        let stats = stats_from_columns(&cols);
+        assert_eq!(stats.len(), 2);
+        assert_eq!(stats[0].name, "t");
+        assert_eq!(stats[0].rows, Some(10));
+        assert_eq!(stats[0].bytes, Some(1024));
+        assert_eq!(stats[1].name, "no_bytes");
+        assert_eq!(stats[1].rows, Some(20));
+        assert_eq!(stats[1].bytes, None);
+    }
 
     /// `SET ROWCOUNT` also caps DML and procedure calls, so it may only wrap a batch that is
     /// nothing but a SELECT. The query tab splits T-SQL on `;`/GO only, so a newline-separated

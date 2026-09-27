@@ -474,6 +474,18 @@ export async function estimateRows(id: string, schema: string, table: string): P
   return invoke<number | null>("estimate_rows", { id, schema, table });
 }
 
+/** One base table's catalog stats (the connection lobby). Null where the engine can't say. */
+export interface TableStat {
+  name: string;
+  rows: number | null;
+  bytes: number | null;
+}
+
+export async function tableStats(id: string, schema: string): Promise<TableStat[]> {
+  if (!inTauri()) return [];
+  return invoke<TableStat[]>("table_stats", { id, schema });
+}
+
 /**
  * An exact, unbounded COUNT(*). Cancel it with `cancelQuery(id, tokenId)`; a cancelled
  * count rejects with "Query cancelled", as a cancelled runQuery does.

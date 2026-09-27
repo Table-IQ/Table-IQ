@@ -13,7 +13,7 @@ use super::{
     build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
     ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec, FilterOp, ForeignKey, IndexInfo,
     ObjectInfo, ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver,
-    StmtOutput, TableStructure, TriggerInfo, EXACT_COUNT_MAX,
+    StmtOutput, TableStat, TableStructure, TriggerInfo, EXACT_COUNT_MAX,
 };
 
 use std::collections::HashMap;
@@ -586,6 +586,25 @@ impl SqlDriver for MySqlDriver {
         .map_err(db)?
         .flatten();
         Ok(est.map(|n| n as i64))
+    }
+
+    /// The data dictionary's per-table size: `TABLE_ROWS` (InnoDB's sampled estimate) and
+    /// `DATA_LENGTH + INDEX_LENGTH`. Cached for `information_schema_stats_expiry` (24h by
+    /// default), so both are estimates — the lobby shows them with a "≈" prefix.
+    async fn table_stats(&self, schema: &str) -> DResult<Vec<TableStat>> {
+        let rows: Vec<(String, Option<u64>, Option<u64>)> = sqlx::query_as(
+            "SELECT CAST(TABLE_NAME AS CHAR) AS name, CAST(TABLE_ROWS AS UNSIGNED) AS table_rows, \
+                    CAST(DATA_LENGTH + INDEX_LENGTH AS UNSIGNED) AS bytes \
+             FROM information_schema.tables WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE'",
+        )
+        .bind(schema)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(rows
+            .into_iter()
+            .map(|(name, r, b)| TableStat { name, rows: r.map(|n| n as i64), bytes: b.map(|n| n as i64) })
+            .collect())
     }
 
     async fn open_window_filtered(

@@ -731,6 +731,17 @@ pub async fn estimate_rows(
     drv.estimate_rows(&schema, &table).await.map_err(|e| e.to_string())
 }
 
+/// Catalog stats for every base table in `schema` (the connection lobby). Never a scan.
+#[tauri::command]
+pub async fn table_stats(
+    state: State<'_, ConnState>,
+    id: String,
+    schema: String,
+) -> Result<Vec<crate::drivers::TableStat>, String> {
+    let drv = state.session(&id)?;
+    drv.table_stats(&schema).await.map_err(|e| e.to_string())
+}
+
 /// An exact, unbounded `COUNT(*)` — the "count exactly" the UI offers when `open_table`
 /// returned an estimate. Registered under `token_id` like `run_query`, so `cancel_query`
 /// stops it.
