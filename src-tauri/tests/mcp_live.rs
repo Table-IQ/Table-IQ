@@ -64,6 +64,7 @@ fn seed(db: &std::path::Path) {
 
 fn sqlite_conn(id: &str, db: &std::path::Path) -> ConnConfig {
     ConnConfig {
+        env: None,
         id: id.into(),
         name: id.into(),
         color: None,

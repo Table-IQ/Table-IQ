@@ -105,6 +105,8 @@ export interface ConnConfig {
   sslmode: string;
   /** Optional SSH bastion. Omitted/undefined ⇒ direct connection (matches Rust Option<SshConfig>). */
   ssh?: SshConfig | null;
+  /** Environment tag; tints the titlebar pill. */
+  env?: import("./connEnv").ConnEnv | null;
 }
 export interface ColumnInfo {
   name: string;

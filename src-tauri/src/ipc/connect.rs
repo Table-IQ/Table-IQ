@@ -2257,6 +2257,7 @@ mod tests {
     #[tokio::test]
     async fn open_driver_refuses_an_unknown_engine() {
         let cfg = ConnConfig {
+            env: None,
             id: "x".into(),
             name: "x".into(),
             color: None,
@@ -2422,6 +2423,7 @@ mod tests {
 
     fn sqlite_cfg(id: &str, file: &std::path::Path) -> ConnConfig {
         ConnConfig {
+            env: None,
             id: id.into(),
             name: id.into(),
             color: None,
@@ -2664,6 +2666,7 @@ mod tests {
 
     fn mssql_state(fake: FakeMssql) -> (ConnState, Arc<FakeMssql>) {
         let cfg = ConnConfig {
+            env: None,
             id: "ms".into(),
             name: "ms".into(),
             color: None,
@@ -2731,6 +2734,7 @@ mod tests {
     #[test]
     fn switching_database_is_refused_for_file_engines() {
         let cfg = |engine: &str, database: &str| ConnConfig {
+            env: None,
             id: "x".into(),
             name: "x".into(),
             color: None,

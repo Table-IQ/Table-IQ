@@ -28,6 +28,7 @@ import {
   type Engine,
 } from "../lib/commands";
 import { defaultSshConfig, type SshConfig } from "../lib/ssh";
+import { CONN_ENVS, type ConnEnv } from "../lib/connEnv";
 import { cancelConnecting, openConnection, useConnections, type ConnectingState } from "../state/connectionStore";
 import { getLastConnected } from "../lib/lastConnected";
 import { version as APP_VERSION } from "../../package.json";
@@ -857,8 +858,26 @@ export function ConnectionManager() {
                 >
                   Test
                 </button>
+                <label className="ml-auto flex flex-col gap-1 text-[11px] text-muted">
+                  <span>Environment</span>
+                  <select
+                    className={`${field} w-36`}
+                    value={form.env ?? ""}
+                    onChange={(e) => set("env", (e.target.value || null) as ConnEnv | null)}
+                  >
+                    <option value="">None</option>
+                    {CONN_ENVS.map((env) => (
+                      <option key={env} value={env}>
+                        {env[0].toUpperCase() + env.slice(1)}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="text-[10px] text-muted">
+                    Production asks before committing staged edits
+                  </span>
+                </label>
                 <label
-                  className="ml-auto inline-flex items-center gap-2 text-[11px] text-muted"
+                  className="inline-flex items-center gap-2 text-[11px] text-muted"
                   title="Pick a color for this connection (shown as the env tag dot)"
                 >
                   <span>Color tag</span>

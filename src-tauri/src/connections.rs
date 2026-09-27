@@ -30,6 +30,10 @@ pub struct ConnConfig {
     /// password live in the keychain under `ssh:<conn_id>`.
     #[serde(default)]
     pub ssh: Option<SshConfig>,
+    /// TablePlus-style environment tag ("local" | "development" | "testing" | "staging" |
+    /// "production"); tints the titlebar pill. `serde(default)` keeps old configs loading.
+    #[serde(default)]
+    pub env: Option<String>,
 }
 
 fn default_sslmode() -> String {
@@ -271,6 +275,7 @@ mod tests {
     #[test]
     fn config_roundtrips_through_json() {
         let cfg = ConnConfig {
+            env: None,
             id: "abc".into(),
             name: "Local PG".into(),
             color: Some("#4f46e5".into()),
@@ -297,6 +302,7 @@ mod tests {
         // named after the user. Empty `database` must NOT produce `…/?sslmode=…`
         // (which masks the real cause behind a connect error).
         let cfg = ConnConfig {
+            env: None,
             id: "x".into(),
             name: "x".into(),
             color: None,
@@ -315,6 +321,7 @@ mod tests {
     #[test]
     fn file_engines_use_the_database_field_as_a_path() {
         let mut cfg = ConnConfig {
+            env: None,
             id: "x".into(),
             name: "x".into(),
             color: None,
@@ -341,6 +348,7 @@ mod tests {
     #[test]
     fn url_encodes_special_chars_in_password() {
         let cfg = ConnConfig {
+            env: None,
             id: "x".into(),
             name: "x".into(),
             color: None,
@@ -361,6 +369,7 @@ mod tests {
     fn bundle_export_import_roundtrip_is_secret_free() {
         let mut store = ConnStore::default();
         store.upsert(ConnConfig {
+            env: None,
             id: "1".into(),
             name: "PG".into(),
             color: None,
@@ -401,6 +410,7 @@ mod tests {
     #[test]
     fn with_host_port_retargets_url_to_local_forward_postgres() {
         let cfg = ConnConfig {
+            env: None,
             id: "x".into(),
             name: "x".into(),
             color: None,
@@ -427,6 +437,7 @@ mod tests {
     #[test]
     fn with_host_port_retargets_url_to_local_forward_mysql() {
         let cfg = ConnConfig {
+            env: None,
             id: "x".into(),
             name: "x".into(),
             color: None,
@@ -448,6 +459,7 @@ mod tests {
     fn bundle_stays_secret_free_with_ssh_config_present() {
         let mut store = ConnStore::default();
         store.upsert(ConnConfig {
+            env: None,
             id: "1".into(),
             name: "PG via SSH".into(),
             color: None,
@@ -521,6 +533,7 @@ mod tests {
     fn import_never_takes_over_an_existing_connection() {
         let mut store = ConnStore::default();
         store.upsert(ConnConfig {
+            env: None,
             id: "prod-1".into(),
             name: "Prod DB".into(),
             color: None,
@@ -562,6 +575,7 @@ mod tests {
     #[test]
     fn url_encodes_host_and_sslmode() {
         let cfg = ConnConfig {
+            env: None,
             id: "x".into(),
             name: "x".into(),
             color: None,
@@ -582,6 +596,7 @@ mod tests {
     #[test]
     fn url_keeps_an_ipv6_literal_host_intact() {
         let cfg = ConnConfig {
+            env: None,
             id: "x".into(),
             name: "x".into(),
             color: None,
@@ -639,6 +654,7 @@ mod tests {
     fn upsert_replaces_existing_by_id() {
         let mut store = ConnStore::default();
         let mut cfg = ConnConfig {
+            env: None,
             id: "1".into(),
             name: "A".into(),
             color: None,
