@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { create } from "zustand";
 import { AiSettingsForm } from "./AiSettings";
+import { McpSettings } from "./McpSettings";
 import { loadRailLabel, saveRailLabel, type RailLabel } from "./ConnectionRail";
 import {
   clampEditorFontSize,
@@ -201,10 +202,6 @@ function EditorSection() {
   );
 }
 
-function Placeholder({ text }: { text: string }) {
-  return <div className="p-4 text-sm text-muted">{text}</div>;
-}
-
 /**
  * Checkbox list (hide/show) + ↑/↓ reorder for the title-bar's right icon
  * group (Task 7). No drag library — matches the brief. `TOOLBAR_ITEMS` is the
@@ -393,10 +390,6 @@ function BackupSection() {
   );
 }
 
-function McpSection() {
-  return <Placeholder text="MCP settings are coming in a later release." />;
-}
-
 function sectionBody(section: Section) {
   switch (section) {
     case "general":
@@ -410,7 +403,7 @@ function sectionBody(section: Section) {
     case "backup":
       return <BackupSection />;
     case "mcp":
-      return <McpSection />;
+      return <McpSettings />;
   }
 }
 

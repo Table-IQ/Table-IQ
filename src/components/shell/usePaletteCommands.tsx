@@ -3,6 +3,7 @@ import type { Command } from "../CommandPalette";
 import { isFileEngine } from "../ConnectionManager";
 import { useSettingsUi } from "../Settings";
 import {
+  IconChip,
   IconDatabase,
   IconDiff,
   IconErd,
@@ -143,6 +144,13 @@ export function usePaletteCommands(options: UsePaletteCommandsOptions): Command[
         icon: <IconSliders />,
         shortcut: "⌘,",
         run: () => useSettingsUi.getState().show(),
+      },
+      {
+        id: "act:mcp",
+        label: "MCP Server",
+        group: "Commands",
+        icon: <IconChip />,
+        run: () => useSettingsUi.getState().show("mcp"),
       },
       {
         id: "act:customize-toolbar",

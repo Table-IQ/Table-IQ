@@ -840,15 +840,97 @@ export interface Rows {
 
 /** Run `sql` and return its rows, capped at `maxRows` (never above 1000). With a `queryId`,
  *  `cancelQuery(id, queryId)` — and ⌘. (`cancelAll`) — can stop it while it runs. */
+/** `readOnly`: the SQL must pass the backend's read-only guard and runs inside a read-only
+ *  transaction (Metrics widgets pass it). */
 export async function queryRows(
   id: string,
   sql: string,
   maxRows?: number,
   queryId?: string,
+  readOnly?: boolean,
 ): Promise<Rows> {
   if (!inTauri())
     return { columns: ["label", "value"], rows: [["a", "3"], ["b", "5"]], truncated: false };
-  return invoke<Rows>("query_rows", { id, sql, maxRows: maxRows ?? null, queryId: queryId ?? null });
+  return invoke<Rows>("query_rows", {
+    id,
+    sql,
+    maxRows: maxRows ?? null,
+    queryId: queryId ?? null,
+    readOnly: readOnly ?? null,
+  });
+}
+
+// ── MCP server (Task 14) ───────────────────────────────────────────────────
+export interface McpConn {
+  id: string;
+  writes: boolean;
+}
+export interface McpConfig {
+  enabled: boolean;
+  port: number;
+  row_cap: number;
+  connections: McpConn[];
+}
+export interface McpStatus {
+  running: boolean;
+  port: number | null;
+  url: string | null;
+  error: string | null;
+}
+export interface McpActivity {
+  seq: number;
+  ts_ms: number;
+  client: string;
+  tool: string;
+  conn_id: string | null;
+  sql: string | null;
+  rows: number | null;
+  ms: number;
+  ok: boolean;
+  error: string | null;
+}
+
+// Browser mock: the server only exists in the app, so the mock never claims it is running.
+let mockMcp: McpConfig = { enabled: false, port: 7431, row_cap: 500, connections: [] };
+const MOCK_MCP_STATUS: McpStatus = {
+  running: false,
+  port: null,
+  url: null,
+  error: "Browser preview: the MCP server runs only in the TableIQ app.",
+};
+
+export async function mcpGetConfig(): Promise<McpConfig> {
+  if (!inTauri()) return mockMcp;
+  return invoke<McpConfig>("mcp_get_config");
+}
+
+/** Save, then restart the server (stopped when disabled). */
+export async function mcpSetConfig(cfg: McpConfig): Promise<McpStatus> {
+  if (!inTauri()) {
+    mockMcp = cfg;
+    return MOCK_MCP_STATUS;
+  }
+  return invoke<McpStatus>("mcp_set_config", { cfg });
+}
+
+export async function mcpStatus(): Promise<McpStatus> {
+  if (!inTauri()) return MOCK_MCP_STATUS;
+  return invoke<McpStatus>("mcp_status");
+}
+
+export async function mcpToken(): Promise<string> {
+  if (!inTauri()) return "mock0000token0000mock0000token00";
+  return invoke<string>("mcp_token");
+}
+
+export async function mcpRegenerateToken(): Promise<string> {
+  if (!inTauri()) return "mock1111token1111mock1111token11";
+  return invoke<string>("mcp_regenerate_token");
+}
+
+export async function mcpActivity(afterSeq: number): Promise<McpActivity[]> {
+  if (!inTauri()) return [];
+  return invoke<McpActivity[]>("mcp_activity", { afterSeq });
 }
 
 // ── WASM plugins (Extism) ──────────────────────────────────────────────────
