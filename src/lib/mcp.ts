@@ -5,6 +5,11 @@
  */
 import type { McpConfig } from "./commands";
 
+/** Shown under every DuckDB connection in Settings → MCP: sharing one turns external access
+ *  off and locks its instance's configuration (`harden_duckdb` in `mcp/server.rs`). */
+export const DUCKDB_SHARING_NOTE =
+  "Sharing disables file and HTTP functions (read_csv, read_parquet, …) on this connection until TableIQ restarts.";
+
 export function mcpUrl(port: number): string {
   return `http://127.0.0.1:${port}/mcp`;
 }

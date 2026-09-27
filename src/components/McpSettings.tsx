@@ -13,6 +13,7 @@ import {
 import {
   claudeCodeCommand,
   claudeDesktopConfig,
+  DUCKDB_SHARING_NOTE,
   isSqlEngine,
   maskToken,
   mcpUrl,
@@ -197,7 +198,7 @@ export function McpSettings() {
             return (
               <li
                 key={c.id}
-                className={`flex items-center justify-between gap-2 rounded-md px-2 py-1 ${
+                className={`flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 rounded-md px-2 py-1 ${
                   s?.writes ? "border border-warn/40 bg-warn/10" : "border border-transparent hover:bg-surface-2"
                 }`}
               >
@@ -222,6 +223,9 @@ export function McpSettings() {
                     />
                     {s.writes ? "Writes allowed" : "Allow writes"}
                   </label>
+                )}
+                {c.engine === "duckdb" && (
+                  <p className="basis-full text-xs text-muted">{DUCKDB_SHARING_NOTE}</p>
                 )}
               </li>
             );
@@ -273,13 +277,15 @@ export function McpSettings() {
         <p className="font-medium text-text">Use a read-only database user for anything that matters.</p>
         <p>
           Read-only here means a SQL guard plus a read-only transaction (or one that is rolled back).
-          It cannot stop everything a plain SELECT can reach: functions with side effects (
-          <span className="font-mono">pg_terminate_backend</span>, <span className="font-mono">dblink</span>
-          ), file readers (<span className="font-mono">pg_read_file</span>,{" "}
-          <span className="font-mono">LOAD_FILE</span>, DuckDB <span className="font-mono">read_csv</span>
-          ), locks and long-running queries. On MySQL, DDL commits before the read-only transaction
-          can refuse it — the guard is what stops it. On SQL Server a slow agent query holds the
-          connection the grid uses. Agent queries also appear in the connection's SQL log.
+          The guard refuses the known file and side-effect functions (
+          <span className="font-mono">pg_read_file</span>, <span className="font-mono">dblink</span>,{" "}
+          <span className="font-mono">LOAD_FILE</span>, <span className="font-mono">OPENROWSET</span>, DuckDB{" "}
+          <span className="font-mono">read_csv</span>…), but no list is complete: extensions and
+          user-defined functions can still act. On MySQL, DDL commits before the read-only
+          transaction can refuse it — the guard is what stops it. A query past 30 seconds is
+          cancelled; SQL Server's connection (which the grid shares) is closed and reopened instead,
+          and a DuckDB query cannot be stopped at all — it runs to the end, holding one of four
+          query slots. Agent queries also appear in the connection's SQL log.
         </p>
       </div>
     </div>

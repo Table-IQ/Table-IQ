@@ -79,6 +79,7 @@ Full account in `docs/finalize/2026-09-25-table-ux-and-duckdb.md`.
 | Item | Why |
 |---|---|
 | **Arrow upgrade (53 → 55+), then a current `duckdb` crate** | The newest `duckdb` crate that builds beside arrow 53 is 1.2.2, which has no `interrupt_handle` and builds each result fully in memory before the 50k cap applies. Upgrading arrow across the app unlocks DuckDB cancel, streaming results and newer `.duckdb` storage versions. The Stop button is still shown for DuckDB and reports "not implemented". |
+| **MCP can't stop a DuckDB query** | Same cause as above: an MCP `run_query` on DuckDB that passes its 30s timeout keeps running (and keeps one of the four MCP query slots) until it finishes. Four such queries leave MCP answering metadata tools only until one ends. Settings → MCP says so. |
 | **Staged edits vs. other refreshes** | Search, filter, sort, paging, page size and Refresh now refuse to run with unsaved edits. Insert row, Delete row, "Set value" from the row menu, closing Alter and an Inspector save still refetch and drop other staged edits. |
 | **First / Last page buttons** | The pager has Prev/Next only. "Last" would need a reversed keyset read (`ORDER BY pk DESC LIMIT n`, then flip). No "go to page N" exists either, so no slow deep-OFFSET jump is exposed. |
 | **Explicit NULL from the + Row draft** | Blank draft cells now leave the column to its DEFAULT (that fixed serial keys). There is no way to type NULL into a nullable column that has a DEFAULT; it needs a per-cell NULL toggle in the draft rail. |
