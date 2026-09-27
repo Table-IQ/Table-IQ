@@ -5,7 +5,9 @@ import {
   cancelBackupJob,
   hasNativeFileDialog,
   pickBackupPath,
+  pickRestorePath,
   queryRows,
+  restoreDatabase,
   type Engine,
 } from "../lib/commands";
 import {
@@ -15,6 +17,7 @@ import {
   loadBackupToolDir,
   mssqlBackupPath,
   needsTypedPath,
+  restoreExtensions,
   type BackupFormat,
 } from "../lib/backup";
 import { Panel } from "./ui/Panel";
@@ -27,6 +30,8 @@ const primaryBtn =
   "inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1 text-xs font-medium text-white hover:bg-primary-hover disabled:opacity-50";
 const secondaryBtn =
   "rounded-md border border-border px-3 py-1 text-xs text-text hover:bg-surface-2 disabled:opacity-50";
+const dangerBtn =
+  "inline-flex items-center gap-1.5 rounded-md bg-danger px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50";
 
 /** The dialog polls the job this often (brief: 500ms). */
 const POLL_MS = 500;
@@ -36,26 +41,34 @@ const LOG_CAP = 500;
 type Outcome = { ok: boolean; error: string | null };
 
 /**
- * TablePlus "Backup Database". One dialog for backup and — in Task 13 — restore: both pick a
- * file (native dialog, or a typed path under the QA bridge and for SQL Server, whose file
- * lives on the server), start a job, then stream its log with Elapsed and Cancel until it
- * finishes. Only the start call and the copy differ by mode.
+ * TablePlus "Backup Database" / "Restore Database". Both pick a file (native dialog, or a
+ * typed path under the QA bridge and for SQL Server, whose file lives on the server), start a
+ * job, then stream its log with Elapsed and Cancel until it finishes. Restore is destructive:
+ * it is styled red and starts only once the user has typed the database name (which the Rust
+ * command checks again).
  */
 export function BackupRestoreDialog({
+  mode,
   connId,
   connName,
   engine,
+  host,
   database,
   onClose,
+  onRestored,
 }: {
-  /** Task 13 adds "restore". */
-  mode: "backup";
+  mode: "backup" | "restore";
   connId: string;
   connName: string;
   engine: Engine;
+  /** The server restore writes to, shown so the target is unmistakable ("" for a file). */
+  host?: string;
   database: string;
   onClose: () => void;
+  /** After a successful restore: the caller reloads the schema. */
+  onRestored?: () => void;
 }) {
+  const restore = mode === "restore";
   const typed = needsTypedPath(engine, hasNativeFileDialog());
   const [format, setFormat] = useState<BackupFormat>("custom");
   const [path, setPath] = useState("");
@@ -65,8 +78,13 @@ export function BackupRestoreDialog({
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(false);
+  const [confirm, setConfirm] = useState("");
   const logRef = useRef<HTMLPreElement>(null);
-  const running = job !== null && outcome === null;
+  const onRestoredRef = useRef(onRestored);
+  onRestoredRef.current = onRestored;
+  // A file-engine restore runs inside the start call itself (close, swap, reopen).
+  const running = starting || (job !== null && outcome === null);
+  const confirmed = confirm === database;
 
   // SQL Server writes on the server: seed the path from the instance's default backup dir.
   useEffect(() => {
@@ -99,6 +117,7 @@ export function BackupRestoreDialog({
         if (s.lines.length) setLines((l) => [...l, ...s.lines].slice(-LOG_CAP));
         if (s.done) {
           setOutcome({ ok: s.ok, error: s.error });
+          if (s.ok && restore) onRestoredRef.current?.();
           return;
         }
       } catch (e) {
@@ -112,7 +131,7 @@ export function BackupRestoreDialog({
       stop = true;
       window.clearTimeout(timer);
     };
-  }, [job]);
+  }, [job, restore]);
 
   // Keep the newest line in view.
   useEffect(() => {
@@ -123,10 +142,9 @@ export function BackupRestoreDialog({
   const choose = async () => {
     setError("");
     try {
-      const p = await pickBackupPath(
-        defaultBackupName(database, engine, format),
-        backupExtensions(engine, format),
-      );
+      const p = restore
+        ? await pickRestorePath(restoreExtensions(engine))
+        : await pickBackupPath(defaultBackupName(database, engine, format), backupExtensions(engine, format));
       if (p) setPath(p);
     } catch (e) {
       setError(String(e));
@@ -139,7 +157,9 @@ export function BackupRestoreDialog({
     setOutcome(null);
     setStarting(true);
     try {
-      const id = await backupDatabase(connId, database, path.trim(), format, loadBackupToolDir());
+      const id = restore
+        ? await restoreDatabase(connId, database, path.trim(), confirm, loadBackupToolDir())
+        : await backupDatabase(connId, database, path.trim(), format, loadBackupToolDir());
       setJob({ id, since: performance.now() });
     } catch (e) {
       setJob(null);
@@ -160,23 +180,31 @@ export function BackupRestoreDialog({
 
   return (
     <Panel
-      title="Backup Database"
+      title={restore ? "Restore Database" : "Backup Database"}
       onClose={running ? undefined : onClose}
       width="md"
       footer={
         <>
           <div className="min-w-0 flex-1 truncate text-xs" role="status" aria-live="polite">
-            {job && !outcome && (
+            {running && (
               <span className="inline-flex items-center gap-1.5 text-muted">
                 <IconRefresh size={11} className="animate-spin text-primary" aria-hidden />
-                Backing up… <Elapsed since={job.since} className="tabular-nums" />
+                {restore ? "Restoring…" : "Backing up…"}{" "}
+                {job && <Elapsed since={job.since} className="tabular-nums" />}
               </span>
             )}
-            {outcome?.ok && <span className="text-ok">Backup complete — {path.trim()}</span>}
-            {outcome && !outcome.ok && <span className="text-danger">{outcome.error ?? "Backup failed"}</span>}
+            {outcome?.ok && (
+              <span className="text-ok">
+                {restore ? `Restored ${database} from ${path.trim()}` : `Backup complete — ${path.trim()}`}
+              </span>
+            )}
+            {outcome && !outcome.ok && (
+              <span className="text-danger">{outcome.error ?? (restore ? "Restore failed" : "Backup failed")}</span>
+            )}
             {error && <span className="text-danger">{error}</span>}
           </div>
           {running ? (
+            job &&
             canCancelBackup(engine) && (
               <button type="button" onClick={() => void cancel()} className={secondaryBtn}>
                 Cancel
@@ -187,14 +215,20 @@ export function BackupRestoreDialog({
               <button type="button" onClick={onClose} className={secondaryBtn}>
                 {outcome?.ok ? "Done" : "Close"}
               </button>
-              <button
-                type="button"
-                onClick={() => void start()}
-                disabled={!path.trim() || starting}
-                className={primaryBtn}
-              >
-                Start Backup
-              </button>
+              {restore ? (
+                <button
+                  type="button"
+                  onClick={() => void start()}
+                  disabled={!path.trim() || !confirmed || outcome?.ok === true}
+                  className={dangerBtn}
+                >
+                  Restore
+                </button>
+              ) : (
+                <button type="button" onClick={() => void start()} disabled={!path.trim()} className={primaryBtn}>
+                  Start Backup
+                </button>
+              )}
             </>
           )}
         </>
@@ -206,13 +240,26 @@ export function BackupRestoreDialog({
           <span className="font-mono font-semibold text-text">{connName}</span>
           <span>·</span>
           <span>{engine}</span>
+          {host && (
+            <>
+              <span>·</span>
+              <span className="font-mono">{host}</span>
+            </>
+          )}
           <span>·</span>
           <span className="truncate font-mono text-text" title={database}>
             {database}
           </span>
         </div>
 
-        {engine === "postgres" && (
+        {restore && (
+          <p className="rounded-md border border-danger/30 bg-danger/10 px-2 py-1.5 text-danger">
+            Restoring replaces the contents of <span className="font-mono font-semibold">{database}</span> with the
+            backup. Anything written since the backup is lost. This cannot be undone.
+          </p>
+        )}
+
+        {!restore && engine === "postgres" && (
           <label className="flex items-center justify-between gap-4 text-text">
             <span>Format</span>
             <select
@@ -231,7 +278,13 @@ export function BackupRestoreDialog({
           <div className="flex items-center gap-2">
             {typed ? (
               <input
-                aria-label={engine === "sqlserver" ? "Backup file path on the server" : "Backup file path"}
+                aria-label={
+                  engine === "sqlserver"
+                    ? "Backup file path on the server"
+                    : restore
+                      ? "Backup file to restore"
+                      : "Backup file path"
+                }
                 className={`${field} min-w-0 flex-1 font-mono`}
                 value={path}
                 disabled={running}
@@ -259,16 +312,42 @@ export function BackupRestoreDialog({
           </div>
           {engine === "sqlserver" && (
             <div className="text-muted">
-              SQL Server writes the file on the database server, at this path. Backups run to the end once started.
+              {restore
+                ? "SQL Server reads the file on the database server, at this path. Other sessions on the database are disconnected, and a restore runs to the end once started."
+                : "SQL Server writes the file on the database server, at this path. Backups run to the end once started."}
+            </div>
+          )}
+          {restore && (engine === "postgres" || engine === "mysql") && (
+            <div className="text-muted">
+              {engine === "postgres"
+                ? "A custom-format archive is restored with pg_restore --clean (its objects are dropped first); a plain .sql file runs through psql and stops at the first error."
+                : "The .sql file runs through mysql. Cancelling part-way leaves the database partly restored."}
             </div>
           )}
           {hint && <div className="text-muted">{hint}</div>}
         </div>
 
+        {restore && (
+          <label className="block space-y-1 text-text">
+            <span>
+              Type <span className="select-all font-mono font-semibold">{database}</span> to confirm
+            </span>
+            <input
+              aria-label="Type the database name to confirm the restore"
+              className={`${field} w-full font-mono ${confirm && !confirmed ? "border-danger" : ""}`}
+              value={confirm}
+              disabled={running}
+              spellCheck={false}
+              autoComplete="off"
+              onChange={(e) => setConfirm(e.target.value)}
+            />
+          </label>
+        )}
+
         {(lines.length > 0 || job) && (
           <pre
             ref={logRef}
-            aria-label="Backup log"
+            aria-label={restore ? "Restore log" : "Backup log"}
             className="max-h-64 min-h-24 overflow-auto rounded-md border border-border bg-surface p-2 font-mono text-[11px] leading-relaxed text-text"
           >
             {lines.join("\n")}

@@ -35,6 +35,18 @@ export function backupExtensions(engine: Engine, format: BackupFormat): string[]
   }
 }
 
+/** Restore (Task 13) takes what backup writes. An in-memory file database has no file to
+ *  restore into. */
+export function supportsRestore(engine: Engine, database: string): boolean {
+  return supportsBackup(engine) && !(isFile(engine) && (database === ":memory:" || database === ""));
+}
+
+/** File types for the Open dialog: every kind the engine's restore reads (Postgres sniffs a
+ *  custom archive vs plain SQL itself). */
+export function restoreExtensions(engine: Engine): string[] {
+  return engine === "postgres" ? ["dump", "backup", "sql"] : backupExtensions(engine, "custom");
+}
+
 /** SQL Server writes the file on the server, and the bridge has no native dialog: both type
  *  the path instead. */
 export function needsTypedPath(engine: Engine, nativeDialog: boolean): boolean {

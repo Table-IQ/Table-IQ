@@ -145,6 +145,7 @@ export function MainShell() {
   const [showStructure, setShowStructure] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showBackup, setShowBackup] = useState(false);
+  const [showRestore, setShowRestore] = useState(false);
   const [showDiff, setShowDiff] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
   // ⌘⇧\ Workspace Overview (TablePlus parity) — a grid of every open tab
@@ -432,6 +433,7 @@ export function MainShell() {
     setShowImport,
     setShowDiff,
     setShowBackup,
+    setShowRestore,
     cancelAllQueries,
   });
 
@@ -1254,6 +1256,18 @@ export function MainShell() {
           engine={active.engine as Engine}
           database={active.database}
           onClose={() => setShowBackup(false)}
+        />
+      )}
+      {showRestore && (
+        <BackupRestoreDialog
+          mode="restore"
+          connId={active.id}
+          connName={active.name}
+          engine={active.engine as Engine}
+          host={fileEngine ? "" : saved.find((c) => c.id === active.id)?.host ?? ""}
+          database={active.database}
+          onClose={() => setShowRestore(false)}
+          onRestored={() => void onRefreshSchema()}
         />
       )}
       {showDiff && (

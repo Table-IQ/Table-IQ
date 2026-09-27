@@ -7,8 +7,10 @@ import {
   loadBackupToolDir,
   mssqlBackupPath,
   needsTypedPath,
+  restoreExtensions,
   saveBackupToolDir,
   supportsBackup,
+  supportsRestore,
 } from "./backup";
 
 function memStorage() {
@@ -50,6 +52,26 @@ describe("backup engine rules", () => {
     expect(needsTypedPath("postgres", true)).toBe(false);
     expect(needsTypedPath("postgres", false)).toBe(true);
     expect(needsTypedPath("sqlserver", true)).toBe(true);
+  });
+});
+
+describe("restore engine rules", () => {
+  it("restores what backup writes, except an in-memory file database", () => {
+    expect(supportsRestore("postgres", "shop")).toBe(true);
+    expect(supportsRestore("sqlserver", "shop")).toBe(true);
+    expect(supportsRestore("sqlite", "/Users/me/app.db")).toBe(true);
+    expect(supportsRestore("sqlite", ":memory:")).toBe(false);
+    expect(supportsRestore("duckdb", ":memory:")).toBe(false);
+    expect(supportsRestore("redis", "0")).toBe(false);
+    expect(supportsRestore("mongodb", "shop")).toBe(false);
+  });
+
+  it("opens the file types the Rust allowlist accepts", () => {
+    expect(restoreExtensions("postgres")).toEqual(["dump", "backup", "sql"]);
+    expect(restoreExtensions("mysql")).toEqual(["sql"]);
+    expect(restoreExtensions("sqlite")).toEqual(["sqlite", "db"]);
+    expect(restoreExtensions("duckdb")).toEqual(["duckdb", "db"]);
+    expect(restoreExtensions("sqlserver")).toEqual(["bak"]);
   });
 });
 

@@ -24,7 +24,7 @@ import {
 import type { ConnectedInfo, Engine, SavedQuery, SchemaModel } from "../../lib/commands";
 import { savedQueriesForConn } from "../../lib/history";
 import { supportsUserMgmt } from "../../lib/userMgmt";
-import { supportsBackup } from "../../lib/backup";
+import { supportsBackup, supportsRestore } from "../../lib/backup";
 import type { ViewKind } from "../../state/tabsStore";
 
 export interface UsePaletteCommandsOptions {
@@ -45,6 +45,7 @@ export interface UsePaletteCommandsOptions {
   setShowImport: Dispatch<SetStateAction<boolean>>;
   setShowDiff: Dispatch<SetStateAction<boolean>>;
   setShowBackup: Dispatch<SetStateAction<boolean>>;
+  setShowRestore: Dispatch<SetStateAction<boolean>>;
   cancelAllQueries: () => Promise<void>;
 }
 
@@ -72,6 +73,7 @@ export function usePaletteCommands(options: UsePaletteCommandsOptions): Command[
     setShowImport,
     setShowDiff,
     setShowBackup,
+    setShowRestore,
     cancelAllQueries,
   } = options;
 
@@ -187,6 +189,18 @@ export function usePaletteCommands(options: UsePaletteCommandsOptions): Command[
               group: "Commands",
               icon: <IconExport />,
               run: () => setShowBackup(true),
+            },
+          ]
+        : []) as Command[]),
+      // Hidden where there is nothing to restore into (mongodb/redis, an in-memory file db).
+      ...((active && supportsRestore(active.engine as Engine, active.database)
+        ? [
+            {
+              id: "act:restore",
+              label: "Restore Database",
+              group: "Commands",
+              icon: <IconImport />,
+              run: () => setShowRestore(true),
             },
           ]
         : []) as Command[]),

@@ -716,6 +716,32 @@ export async function backupDatabase(
   return invoke<string>("backup_database", { id, database, path, format, toolDir: toolDir || null });
 }
 
+/** The native Open dialog for a backup to restore; null when cancelled. */
+export async function pickRestorePath(extensions: string[]): Promise<string | null> {
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const picked = await open({ multiple: false, directory: false, filters: [{ name: "Backup", extensions }] });
+  return typeof picked === "string" ? picked : null;
+}
+
+/** Restore `database` from the backup at `path` (on the server for SQL Server) — DESTRUCTIVE.
+ *  `confirm` is the name the user typed; the Rust command refuses unless it equals `database`.
+ *  Returns a job id for `backupJob`. */
+export async function restoreDatabase(
+  id: string,
+  database: string,
+  path: string,
+  confirm: string,
+  toolDir: string,
+): Promise<string> {
+  if (!inTauri()) {
+    if (confirm !== database) throw new Error(`The typed name does not match "${database}" — nothing was restored`);
+    const job = `mock-restore-${mockBackupPolls.size + 1}`;
+    mockBackupPolls.set(job, 0);
+    return job;
+  }
+  return invoke<string>("restore_database", { id, database, path, confirm, toolDir: toolDir || null });
+}
+
 export async function backupJob(jobId: string, after: number): Promise<BackupJobStatus> {
   if (!inTauri()) {
     const n = (mockBackupPolls.get(jobId) ?? 0) + 1;
