@@ -52,14 +52,21 @@ function ensureHighlightCss(): void {
   document.head.appendChild(style);
 }
 
-function escapeHtml(s: string): string {
+/** Exported for unit testing (SqlLogPanel.test.ts) — no component harness needed, it's a
+ *  pure string transform. */
+export function escapeHtml(s: string): string {
   return s.replace(/[&<>]/g, (c) => (c === "&" ? "&amp;" : c === "<" ? "&lt;" : "&gt;"));
 }
 
 /** Highlight one SQL statement to an HTML string using the editor's own
  * `sqlHighlight` classes/colours (dialect-agnostic `StandardSQL`, since a
- * log entry can come from any connected engine). */
-function highlightSql(sqlText: string): string {
+ * log entry can come from any connected engine).
+ *
+ * Exported for unit testing: `ensureHighlightCss` no-ops when `document` is
+ * undefined (no jsdom in this project), so this whole function — lezer
+ * parse + highlight, no DOM required otherwise — is safe to call from a
+ * plain Node test. */
+export function highlightSql(sqlText: string): string {
   ensureHighlightCss();
   const tree = StandardSQL.language.parser.parse(sqlText);
   let html = "";
