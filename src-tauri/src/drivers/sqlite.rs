@@ -164,6 +164,11 @@ impl SqlDriver for SqliteDriver {
     ) -> DResult<Vec<StmtOutput>> {
         // One pooled connection for the whole script so BEGIN/…/COMMIT share a session.
         let mut conn = self.pool.acquire().await.map_err(db)?;
+        // Cancelled while waiting for the connection: never start. The progress handler below
+        // only looks every 1000 steps, which a short INSERT never reaches.
+        if token.is_cancelled() {
+            return Err(DriverError::Cancelled);
+        }
         // SQLite has no server to cancel on: a progress handler interrupts the running
         // statement once `cancel` flags the token. `live` switches it off when this run ends
         // — even if this future is dropped — so a stale token can't interrupt the pooled

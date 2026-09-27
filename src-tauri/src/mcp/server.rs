@@ -30,7 +30,8 @@ use super::{record, Activity, McpConfig};
 use crate::connections::ConnConfig;
 use crate::drivers::{DriverError, SqlDriver};
 use crate::ipc::connect::{
-    cancel_registered, ckey, connect_inner, not_restoring, rows_of, switch_inner, ConnState, Rows,
+    cancel_registered, ckey, connect_inner, not_restoring, open_sql_session, replace_session, rows_of, ConnState,
+    Rows,
 };
 use crate::drivers::CancelToken;
 
@@ -321,12 +322,17 @@ async fn session(host: &dyn Host, conn: &ConnConfig) -> Result<Arc<dyn SqlDriver
     Ok(drv)
 }
 
+/// The per-connection lock [`connect_once`] takes (one entry per shared connection).
+fn connect_gate(id: &str) -> Arc<tokio::sync::Mutex<()>> {
+    static GATES: LazyLock<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
+        LazyLock::new(Default::default);
+    crate::lk(&GATES).entry(id.to_string()).or_default().clone()
+}
+
 /// Connect `id` on demand, one call at a time per connection: parallel calls wait for the
 /// first and use its session, instead of each opening (and tunnelling) one of their own.
 async fn connect_once(state: &ConnState, id: &str) -> Result<Arc<dyn SqlDriver>, String> {
-    static GATES: LazyLock<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
-        LazyLock::new(Default::default);
-    let gate = crate::lk(&GATES).entry(id.to_string()).or_default().clone();
+    let gate = connect_gate(id);
     let _one = gate.lock().await;
     if let Ok(d) = state.session(id) {
         return Ok(d); // the call ahead of this one connected it
@@ -432,39 +438,58 @@ async fn describe_table_body(host: Arc<dyn Host>, cfg: Arc<McpConfig>, a: Descri
 /// cancelled or abandoned — never the fresh one.
 type Started = Arc<std::sync::Mutex<Option<Arc<dyn SqlDriver>>>>;
 
-/// `token` is registered under `key` by the caller before this runs (so its timeout handler
-/// always finds it) and unregistered here when the query ends.
+/// An MCP query's cancel token, registered under its key for as long as this lives: until
+/// the query ends — or, when the call is refused before it starts (no free slot), at once.
+struct Registered {
+    host: Arc<dyn Host>,
+    key: String,
+}
+
+impl Registered {
+    fn new(host: Arc<dyn Host>, key: String, token: &CancelToken) -> Self {
+        crate::lk(&host.conns().cancels).insert(key.clone(), token.clone());
+        Self { host, key }
+    }
+}
+
+impl Drop for Registered {
+    fn drop(&mut self) {
+        crate::lk(&self.host.conns().cancels).remove(&self.key);
+    }
+}
+
+/// `token` is registered (`_registered`) by the caller before this runs, so its timeout
+/// handler always finds it.
 async fn run_query_body(
     host: Arc<dyn Host>,
     cfg: Arc<McpConfig>,
     a: RunQueryArgs,
-    key: String,
+    _registered: Registered,
     token: CancelToken,
     started: Started,
 ) -> Done {
-    let res = async {
-        let (conn, writes) = allowed(host.as_ref(), &cfg, &a.connection_id)?;
-        let stmts = if writes {
-            guard_sql(&conn.engine, &a.sql, true)?;
-            vec![a.sql.clone()]
-        } else {
-            read_only_stmts(&conn.engine, &a.sql)?
-        };
-        let cap = a.max_rows.unwrap_or(cfg.row_cap).min(cfg.row_cap);
-        let drv = session(host.as_ref(), &conn).await?;
-        *crate::lk(&started) = Some(drv.clone());
-        let rows = rows_of(drv.as_ref(), &stmts, cap, &token).await;
-        if writes {
-            drv.forget_meta(); // it may have been DDL, as in `run_query`
-        }
-        let mut rows = rows?;
-        fit_rows(&mut rows, MAX_RESPONSE_BYTES);
-        let n = rows.rows.len();
-        Ok((json(&rows)?, Some(n)))
+    let (conn, writes) = allowed(host.as_ref(), &cfg, &a.connection_id)?;
+    let stmts = if writes {
+        guard_sql(&conn.engine, &a.sql, true)?;
+        vec![a.sql.clone()]
+    } else {
+        read_only_stmts(&conn.engine, &a.sql)?
+    };
+    let cap = a.max_rows.unwrap_or(cfg.row_cap).min(cfg.row_cap);
+    let drv = session(host.as_ref(), &conn).await?;
+    // Timed out while connecting: the agent was told it was cancelled, so it must not run.
+    if token.is_cancelled() {
+        return Err("Query cancelled".into());
     }
-    .await;
-    crate::lk(&host.conns().cancels).remove(&key);
-    res
+    *crate::lk(&started) = Some(drv.clone());
+    let rows = rows_of(drv.as_ref(), &stmts, cap, &token).await;
+    if writes {
+        drv.forget_meta(); // it may have been DDL, as in `run_query`
+    }
+    let mut rows = rows?;
+    fit_rows(&mut rows, MAX_RESPONSE_BYTES);
+    let n = rows.rows.len();
+    Ok((json(&rows)?, Some(n)))
 }
 
 /// Drop trailing rows until `rows` serializes within `budget` bytes, flagging `truncated`.
@@ -491,17 +516,49 @@ fn fit_rows(rows: &mut Rows, budget: usize) {
 /// already (⌘D mid-query), which is left alone.
 async fn reconnect(host: Arc<dyn Host>, id: String, old: Arc<dyn SqlDriver>) {
     let state = host.conns();
-    let still_current = state.session(&id).is_ok_and(|cur| same_driver(&cur, &old));
-    if !still_current {
-        return;
+    let open = open_sql_session(state, &id, old.database().filter(|db| !db.is_empty()));
+    reconnect_with(state, &id, &old, open).await;
+}
+
+/// [`reconnect`] with the opening of the new session passed in (tests race ⌘D against it).
+/// The new session is installed only if `old` is still current once it is open.
+async fn reconnect_with(
+    state: &ConnState,
+    id: &str,
+    old: &Arc<dyn SqlDriver>,
+    open: impl Future<Output = Result<Arc<dyn SqlDriver>, String>>,
+) {
+    if !state.session(id).is_ok_and(|cur| same_driver(&cur, old)) {
+        return; // replaced already: nothing to open
     }
-    let res = match old.database() {
-        Some(db) if !db.is_empty() => switch_inner(state, id.clone(), db).await,
-        _ => connect_inner(state, &id).await,
-    };
-    if let Err(e) = res {
-        crate::applog::log("error", &format!("MCP: reconnecting {id} after a timeout failed: {e}"));
+    match open.await {
+        Ok(new) => {
+            replace_session(state, id, old, new);
+        }
+        Err(e) => crate::applog::log("error", &format!("MCP: reconnecting {id} after a timeout failed: {e}")),
     }
+}
+
+/// A SQL Server query past its deadline, its `token` already flagged. Still queued behind
+/// another query (it never recorded that it runs): stop waiting, nothing ran — `None`.
+/// Holding the pinned connection: abandon the session, then abort, and return the session
+/// to replace.
+fn sqlserver_timeout(token: &CancelToken, started: &Started, abort: impl FnOnce()) -> Option<Arc<dyn SqlDriver>> {
+    // Looked at only now, after the flag: a query that got the connection before it was set
+    // recorded that it runs (`SqlServerDriver::run_statements`) — and its session in
+    // `started` before that — so it is seen as running and its session is the one abandoned.
+    if token.backend_id().is_none() {
+        abort();
+        return None;
+    }
+    let drv = crate::lk(started).clone();
+    // Abandoned BEFORE the abort: dropping the task releases the connection's lock to the
+    // next waiter, which must find the session abandoned, not read the half-read stream.
+    if let Some(d) = &drv {
+        d.abandon();
+    }
+    abort();
+    drv
 }
 
 /// The same session object (by address; the vtable half of the pointer is irrelevant).
@@ -555,34 +612,27 @@ impl TiqMcp {
         // here, before the work starts, so the timeout handler below always finds the token.
         let key = ckey(&id, &format!("mcp:{}", uuid::Uuid::new_v4()));
         let token = CancelToken::new();
-        crate::lk(&self.host.conns().cancels).insert(key.clone(), token.clone());
+        let registered = Registered::new(self.host.clone(), key.clone(), &token);
         let started: Started = Arc::default();
-        let work = run_query_body(self.host.clone(), self.cfg.clone(), a, key.clone(), token.clone(), started.clone());
+        let work = run_query_body(self.host.clone(), self.cfg.clone(), a, registered, token.clone(), started.clone());
         let (host, conn_id) = (self.host.clone(), id.clone());
         let on_timeout = move |task: &tokio::task::AbortHandle| -> String {
-            let drv = crate::lk(&started).clone();
+            // Flag first, whatever the engine: a query still waiting — for a pooled
+            // connection, SQL Server's pinned one, or its on-demand connect — sees the flag
+            // when it gets there and never runs (the drivers check it once connected).
+            token.mark_cancelled();
             match engine.as_str() {
                 "sqlserver" => {
-                    // Flag first, then look: a query still queued for the pinned connection
-                    // either sees the flag when it gets the lock (and never runs), or has
-                    // recorded that it runs — see `SqlServerDriver::run_statements`.
-                    token.mark_cancelled();
-                    let running = token.backend_id().is_some();
-                    task.abort();
-                    crate::lk(&host.conns().cancels).remove(&key);
-                    if !running {
+                    let Some(drv) = sqlserver_timeout(&token, &started, || task.abort()) else {
                         // Only waiting behind someone else's query (the user's own tab): just
                         // stop waiting. Nothing ran, and their query is theirs to finish.
                         return "It was still waiting for the SQL Server connection, which another \
                                 query is using; nothing ran."
                             .into();
-                    }
-                    // Ours holds the connection: fail everything queued behind it, end it
-                    // server-side and open a new session in its place.
-                    if let Some(drv) = drv {
-                        drv.abandon();
-                        tokio::spawn(reconnect(host, id, drv));
-                    }
+                    };
+                    // Ours held the connection: everything queued behind it fails, it ends
+                    // server-side, and a new session opens in its place.
+                    tokio::spawn(reconnect(host, id, drv));
                     "SQL Server cannot cancel a running query, so TableIQ closed its connection \
                      (rolling back anything uncommitted) and is reconnecting."
                         .into()
@@ -592,6 +642,7 @@ impl TiqMcp {
                     .into(),
                 // Postgres/MySQL cancel server-side; SQLite interrupts at its next step.
                 _ => {
+                    let drv = crate::lk(&started).clone();
                     if let Some(drv) = drv {
                         tokio::spawn(async move {
                             let _ = cancel_registered(&host.conns().cancels, drv.as_ref(), &key).await;
@@ -1010,6 +1061,216 @@ mod tests {
         let got: Vec<_> = futures_util::future::join_all(calls).await.into_iter().map(|r| r.unwrap().unwrap()).collect();
         let installed = m.host.conns().session("mcp-once").unwrap();
         assert!(got.iter().all(|d| same_driver(d, &installed)), "one session for every caller");
+    }
+
+    /// A session that records `abandon` into a shared log (everything else is unused).
+    struct Abandons(Arc<std::sync::Mutex<Vec<&'static str>>>);
+
+    #[async_trait::async_trait]
+    impl SqlDriver for Abandons {
+        async fn introspect(&self) -> crate::drivers::DResult<crate::drivers::SchemaModel> {
+            unimplemented!()
+        }
+        async fn count_rows(
+            &self,
+            _: &str,
+            _: &str,
+            _: &[crate::drivers::ColumnFilter],
+            _: Option<&CancelToken>,
+        ) -> crate::drivers::DResult<crate::drivers::RowCount> {
+            unimplemented!()
+        }
+        async fn open_window_filtered(
+            &self,
+            _: &str,
+            _: &str,
+            _: usize,
+            _: usize,
+            _: &[crate::drivers::ColumnFilter],
+            _: &[crate::drivers::SortKey],
+            _: Option<&[Option<String>]>,
+        ) -> crate::drivers::DResult<arrow::record_batch::RecordBatch> {
+            unimplemented!()
+        }
+        async fn primary_key(&self, _: &str, _: &str) -> crate::drivers::DResult<Vec<String>> {
+            unimplemented!()
+        }
+        async fn apply_edit(&self, _: &str, _: &str, _: &crate::drivers::EditSpec) -> crate::drivers::DResult<u64> {
+            unimplemented!()
+        }
+        async fn run_statements(
+            &self,
+            _: &[String],
+            _: usize,
+            _: &CancelToken,
+        ) -> crate::drivers::DResult<Vec<crate::drivers::StmtOutput>> {
+            unimplemented!()
+        }
+        async fn run_script(&self, _: &str) -> crate::drivers::DResult<u64> {
+            unimplemented!()
+        }
+        fn abandon(&self) {
+            self.0.lock().unwrap().push("abandon");
+        }
+    }
+
+    /// SQL Server timeout order: a query holding the connection is abandoned BEFORE its task
+    /// is aborted — aborting hands the connection's lock to the next waiter, which must find
+    /// it abandoned, not read the half-read stream. One still queued is only aborted.
+    #[test]
+    fn a_sql_server_timeout_abandons_before_it_aborts() {
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let started: Started = Arc::new(std::sync::Mutex::new(Some(Arc::new(Abandons(log.clone())))));
+
+        let running = CancelToken::new();
+        running.set_backend_id(51);
+        running.mark_cancelled();
+        let abandoned = sqlserver_timeout(&running, &started, || log.lock().unwrap().push("abort"));
+        assert!(abandoned.is_some(), "returned for reconnecting");
+        assert_eq!(*log.lock().unwrap(), ["abandon", "abort"]);
+
+        log.lock().unwrap().clear();
+        let queued = CancelToken::new();
+        queued.mark_cancelled();
+        assert!(sqlserver_timeout(&queued, &started, || log.lock().unwrap().push("abort")).is_none());
+        assert_eq!(*log.lock().unwrap(), ["abort"], "a queued query's connection is someone else's: not abandoned");
+    }
+
+    /// A reconnect opens its new session first and installs it only if the old one is still
+    /// current: ⌘D (or Reconnect) landing while it opens keeps the session it installed.
+    #[tokio::test]
+    async fn a_reconnect_never_replaces_a_session_installed_while_it_opened() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = sqlite(&tmp, "recon").await;
+        let open = || async {
+            let d = crate::drivers::sqlite::SqliteDriver::connect(&conn.database).await.unwrap();
+            Arc::new(d) as Arc<dyn SqlDriver>
+        };
+        let state = ConnState::with_configs(vec![conn.clone()]);
+        state.adopt_session("recon", open().await);
+        let old = state.session("recon").unwrap();
+
+        let mine = open().await;
+        let ours = mine.clone();
+        let racing = async {
+            state.adopt_session("recon", open().await); // ⌘D, mid-reconnect
+            Ok(ours)
+        };
+        reconnect_with(&state, "recon", &old, racing).await;
+        let cur = state.session("recon").unwrap();
+        assert!(!same_driver(&cur, &mine) && !same_driver(&cur, &old), "⌘D's session stays");
+
+        // Nothing racing: the reconnect's session goes in.
+        let old = cur;
+        reconnect_with(&state, "recon", &old, async { Ok(mine.clone()) }).await;
+        assert!(same_driver(&state.session("recon").unwrap(), &mine));
+    }
+
+    /// A query that times out while still waiting for a pooled connection must not run once
+    /// it gets one: the timeout said it was cancelled.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_query_timed_out_waiting_for_a_connection_never_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut m = mcp(vec![sqlite(&tmp, "pool-busy").await], &[("pool-busy", true)]);
+        query(&m, "pool-busy", "SELECT 1").await.unwrap(); // connected
+        let drv = m.host.conns().session("pool-busy").unwrap();
+        pool_held_timeout_never_runs(&mut m, "pool-busy", drv, RUNAWAY, "t", "3").await;
+    }
+
+    /// Timed out while its on-demand connect was still pending: once connected, it must not
+    /// run. DuckDB, whose driver has no flag check of its own, so this is the connect path's.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_query_timed_out_while_connecting_never_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("pending.duckdb");
+        let seed = crate::drivers::duckdb::DuckDriver::connect(path.to_str().unwrap()).await.unwrap();
+        seed.run_script("CREATE TABLE t (n INTEGER)").await.unwrap();
+        drop(seed);
+        let mut m = mcp(vec![cfg_of("duck-pending", "duckdb", path.to_str().unwrap())], &[("duck-pending", true)]);
+        m.timeout = Duration::from_millis(300);
+        let gate = connect_gate("duck-pending");
+        let held = gate.lock().await; // another call is connecting it
+        let e = query(&m, "duck-pending", "INSERT INTO t VALUES (1)").await.unwrap_err();
+        assert!(e.starts_with("Timed out"), "{e}");
+        drop(held);
+        let done = async {
+            while m.slots.query.available_permits() < MAX_IN_FLIGHT {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(10), done).await.expect("the pending call finished");
+        m.timeout = TOOL_TIMEOUT;
+        let out = query(&m, "duck-pending", "SELECT count(*) FROM t").await.unwrap();
+        assert!(out.contains("\"0\""), "the timed-out INSERT ran anyway: {out}");
+    }
+
+    /// Hold every one of `drv`'s 4 pooled connections with `hold`, time an INSERT out while
+    /// it waits for one, free the pool, and check the INSERT never ran (`table` still has `n` rows).
+    async fn pool_held_timeout_never_runs(m: &mut TiqMcp, id: &str, drv: Arc<dyn SqlDriver>, hold: &str, table: &str, n: &str) {
+        let holders: Vec<_> = (0..4)
+            .map(|_| {
+                let (d, t, sql) = (drv.clone(), CancelToken::new(), hold.to_string());
+                let t2 = t.clone();
+                (t, tokio::spawn(async move { rows_of(d.as_ref(), &[sql], 1, &t2).await }))
+            })
+            .collect();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        m.timeout = Duration::from_millis(500);
+        let e = query(m, id, &format!("INSERT INTO {table} VALUES (99)")).await.unwrap_err();
+        assert!(e.starts_with("Timed out") && e.contains("cancelled"), "{e}");
+        for (t, _) in &holders {
+            let _ = drv.cancel(t).await;
+        }
+        for (_, h) in holders {
+            let _ = tokio::time::timeout(Duration::from_secs(10), h).await.expect("holder stopped");
+        }
+        let done = async {
+            while m.slots.query.available_permits() < MAX_IN_FLIGHT {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(10), done).await.expect("the queued insert finished");
+        m.timeout = TOOL_TIMEOUT;
+        let out = query(m, id, &format!("SELECT count(*) FROM {table}")).await.unwrap();
+        assert!(out.contains(&format!("\"{n}\"")), "the timed-out INSERT ran anyway: {out}");
+    }
+
+    /// The same on Postgres and MySQL, whose `run_statements` check the flag once they have a
+    /// connection. Live, gated on `TIQ_PG_URL` / `TIQ_MYSQL_URL`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_live_query_timed_out_waiting_for_a_connection_never_runs() {
+        let table = format!("tiq_i5_{}", std::process::id());
+        let pg = std::env::var("TIQ_PG_URL").ok().map(|u| ("postgres", u, "SELECT pg_sleep(30)"));
+        let my = std::env::var("TIQ_MYSQL_URL").ok().map(|u| ("mysql", u, "SELECT SLEEP(30)"));
+        if pg.is_none() && my.is_none() {
+            eprintln!("skipping: TIQ_PG_URL / TIQ_MYSQL_URL not set");
+        }
+        for (engine, url, hold) in pg.into_iter().chain(my) {
+            let drv: Arc<dyn SqlDriver> = match engine {
+                "postgres" => Arc::new(crate::drivers::postgres::PgDriver::connect(&url).await.unwrap()),
+                _ => Arc::new(crate::drivers::mysql::MySqlDriver::connect(&url).await.unwrap()),
+            };
+            drv.run_script(&format!("DROP TABLE IF EXISTS {table}; CREATE TABLE {table} (n INT)")).await.unwrap();
+            let id = format!("{engine}-busy");
+            let state = ConnState::with_configs(vec![cfg_of(&id, engine, "tableiq")]);
+            state.adopt_session(&id, drv.clone());
+            let cfg = McpConfig { connections: vec![McpConn { id: id.clone(), writes: true }], ..McpConfig::default() };
+            let mut m = TiqMcp::new(Arc::new(state), Arc::new(cfg), fresh_slots());
+            pool_held_timeout_never_runs(&mut m, &id, drv.clone(), hold, &table, "0").await;
+            drv.run_script(&format!("DROP TABLE {table}")).await.unwrap();
+        }
+    }
+
+    /// A call refused for want of a slot never ran, so it leaves no cancel key behind (⌘.
+    /// would otherwise find a "running" query that isn't).
+    #[tokio::test]
+    async fn a_refused_call_leaves_no_cancel_key_behind() {
+        let tmp = tempfile::tempdir().unwrap();
+        let m = mcp(vec![sqlite(&tmp, "full").await], &[("full", false)]);
+        let _held: Vec<_> = (0..MAX_IN_FLIGHT).map(|_| m.slots.query.clone().try_acquire_owned().unwrap()).collect();
+        assert!(query(&m, "full", "SELECT 1").await.unwrap_err().contains("already running"));
+        let prefix = ckey("full", "");
+        assert!(!crate::lk(&m.host.conns().cancels).keys().any(|k| k.starts_with(&prefix)), "a key leaked");
     }
 
     /// `TIQ_MSSQL_URL`'s ADO string, split the way `tests/sqlserver.rs` does.

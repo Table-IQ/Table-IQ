@@ -523,8 +523,13 @@ pub async fn switch_database(
     switch_inner(&state, id, database).await
 }
 
-/// `switch_database`'s body, callable without a tauri `State` (Restore reopens with it).
-pub(crate) async fn switch_inner(state: &ConnState, id: String, database: String) -> Result<ConnectedInfo, String> {
+/// `id`'s saved config on `database` (its saved one when `None`), the config to dial — at
+/// the SSH tunnel's local forward when one is open — and the password.
+fn session_target(
+    state: &ConnState,
+    id: &str,
+    database: Option<String>,
+) -> Result<(ConnConfig, ConnConfig, String), String> {
     // Look up the saved config; clone with the database swapped — we do not
     // mutate the persisted store so the user's saved default is preserved.
     let cfg = {
@@ -536,23 +541,63 @@ pub(crate) async fn switch_inner(state: &ConnState, id: String, database: String
             .cloned()
             .ok_or_else(|| "unknown connection".to_string())?
     };
-    let new_cfg = switch_target(&cfg, database)?;
+    let new_cfg = match database {
+        Some(db) => switch_target(&cfg, db)?,
+        None => cfg,
+    };
 
     let password = if new_cfg.is_file_engine() {
         String::new()
     } else {
-        connections::get_password(&id).unwrap_or_default()
+        connections::get_password(id).unwrap_or_default()
     };
 
     // Compute the effective config — if a tunnel is alive, retarget host/port at
     // its local forward (matching the original `connect` flow). Pull `local_addr`
     // out under the lock so we don't hold the guard across any awaits below.
-    let tunnel_local = lk(&state.tunnels).get(&id).map(|t| t.local_addr());
+    let tunnel_local = lk(&state.tunnels).get(id).map(|t| t.local_addr());
     let eff = if let Some(local) = tunnel_local {
         new_cfg.with_host_port(&local.ip().to_string(), local.port())
     } else {
         new_cfg.clone()
     };
+    Ok((new_cfg, eff, password))
+}
+
+/// A new SQL session for `id` on `database` (its saved one when `None`), through the
+/// connection's open SSH tunnel — opened, NOT installed: see [`replace_session`].
+pub(crate) async fn open_sql_session(
+    state: &ConnState,
+    id: &str,
+    database: Option<String>,
+) -> Result<Arc<dyn SqlDriver>, String> {
+    let (cfg, eff, password) = session_target(state, id, database)?;
+    if cfg.ssh.as_ref().is_some_and(|s| s.enabled) && !lk(&state.tunnels).contains_key(id) {
+        return Err("The SSH tunnel for this connection is not open — reconnect".into());
+    }
+    let drv = open_driver(&eff, &password).await?;
+    Ok(Arc::new(Logged { inner: drv, log: state.sql_log_for(id) }))
+}
+
+/// Install `new` as `id`'s SQL session — only if `old` is still the current one, so a
+/// session opened in the background never replaces one ⌘D or Reconnect installed while it
+/// was opening. Returns whether it did; the old session's results go with it.
+pub(crate) fn replace_session(state: &ConnState, id: &str, old: &Arc<dyn SqlDriver>, new: Arc<dyn SqlDriver>) -> bool {
+    {
+        let mut sessions = lk(&state.sessions);
+        match sessions.get_mut(id) {
+            // By address: the vtable half of the pointer is irrelevant.
+            Some(cur) if std::ptr::addr_eq(Arc::as_ptr(cur), Arc::as_ptr(old)) => *cur = new,
+            _ => return false, // `new` is dropped (closed) here
+        }
+    }
+    lk(&state.results).purge(id);
+    true
+}
+
+/// `switch_database`'s body, callable without a tauri `State` (Restore reopens with it).
+pub(crate) async fn switch_inner(state: &ConnState, id: String, database: String) -> Result<ConnectedInfo, String> {
+    let (new_cfg, eff, password) = session_target(state, &id, Some(database))?;
 
     // Connect to the NEW database first; only a successful session replaces the old one.
     // Tearing the old session down up front left a failed switch (typo'd/dropped database,
