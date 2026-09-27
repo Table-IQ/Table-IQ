@@ -203,6 +203,35 @@ describe("grantSql / revokeSql symmetry", () => {
     );
   });
 
+  // INSERT into a serial/identity column needs sequence privileges too — without them,
+  // nextval() on the column's sequence fails and the insert never happens.
+  it("postgres readwrite and all also grant/revoke sequence privileges; read does not", () => {
+    expect(grantSql("postgres", "readwrite", "bob", "app", "public")).toBe(
+      [
+        `GRANT CONNECT ON DATABASE "app" TO "bob";`,
+        `GRANT USAGE ON SCHEMA "public" TO "bob";`,
+        `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA "public" TO "bob";`,
+        `GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA "public" TO "bob";`,
+      ].join("\n"),
+    );
+    expect(revokeSql("postgres", "readwrite", "bob", "app", "public")).toBe(
+      [
+        `REVOKE USAGE, SELECT ON ALL SEQUENCES IN SCHEMA "public" FROM "bob";`,
+        `REVOKE SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA "public" FROM "bob";`,
+        `REVOKE USAGE ON SCHEMA "public" FROM "bob";`,
+        `REVOKE CONNECT ON DATABASE "app" FROM "bob";`,
+      ].join("\n"),
+    );
+    expect(grantSql("postgres", "all", "bob", "app", "public")).toContain(
+      `GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA "public" TO "bob";`,
+    );
+    expect(revokeSql("postgres", "all", "bob", "app", "public")).toContain(
+      `REVOKE USAGE, SELECT ON ALL SEQUENCES IN SCHEMA "public" FROM "bob";`,
+    );
+    expect(grantSql("postgres", "read", "bob", "app", "public")).not.toContain("SEQUENCES");
+    expect(revokeSql("postgres", "read", "bob", "app", "public")).not.toContain("SEQUENCES");
+  });
+
   it("postgres all grants ALL on every table", () => {
     expect(grantSql("postgres", "all", "bob", "app", "public")).toContain(
       "GRANT ALL ON ALL TABLES IN SCHEMA",

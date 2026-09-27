@@ -161,11 +161,18 @@ export function grantSql(
     case "postgres": {
       const u = quoteIdent(user);
       const sc = quoteIdent(schema);
-      return [
+      const stmts = [
         `GRANT CONNECT ON DATABASE ${quoteIdent(database)} TO ${u};`,
         `GRANT USAGE ON SCHEMA ${sc} TO ${u};`,
         `GRANT ${PG_PRIVS[preset]} ON ALL TABLES IN SCHEMA ${sc} TO ${u};`,
-      ].join("\n");
+      ];
+      // A serial/identity column's INSERT calls nextval() on its sequence — without USAGE
+      // on it, the insert fails even though the table grant above succeeded. `read` never
+      // inserts, so it needs no sequence privileges.
+      if (preset === "readwrite" || preset === "all") {
+        stmts.push(`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA ${sc} TO ${u};`);
+      }
+      return stmts.join("\n");
     }
     case "mysql":
       // MySQL grants target `user@host` specifically — the caller must pass the SAME host
@@ -194,11 +201,16 @@ export function revokeSql(
     case "postgres": {
       const u = quoteIdent(user);
       const sc = quoteIdent(schema);
-      return [
+      const stmts: string[] = [];
+      if (preset === "readwrite" || preset === "all") {
+        stmts.push(`REVOKE USAGE, SELECT ON ALL SEQUENCES IN SCHEMA ${sc} FROM ${u};`);
+      }
+      stmts.push(
         `REVOKE ${PG_PRIVS[preset]} ON ALL TABLES IN SCHEMA ${sc} FROM ${u};`,
         `REVOKE USAGE ON SCHEMA ${sc} FROM ${u};`,
         `REVOKE CONNECT ON DATABASE ${quoteIdent(database)} FROM ${u};`,
-      ].join("\n");
+      );
+      return stmts.join("\n");
     }
     case "mysql":
       return `REVOKE ${MYSQL_PRIVS[preset]} ON ${quoteIdent(database, "mysql")}.* FROM ${quoteLiteral(user, "mysql")}@${quoteLiteral(host, "mysql")};`;
