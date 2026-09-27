@@ -12,7 +12,7 @@ all 13 TablePlus ⌘K commands work.
   - MySQL / MariaDB uses `mysqldump` or `mariadb-dump`.
   - SQLite and DuckDB copy the file.
   - SQL Server runs `BACKUP … TO DISK` to a path on the server.
-  - You see a live log, the elapsed time and a Cancel button.
+  - You see a live log and the elapsed time, plus a Cancel button for Postgres and MySQL.
   - Settings → Backup tools finds `pg_dump` and `mysqldump` for you, or you can point it
     at a folder.
   - Passwords never appear on a command line.
@@ -24,7 +24,7 @@ all 13 TablePlus ⌘K commands work.
 - **MCP Server (Settings → MCP).** Claude Code or Claude Desktop can list and query the
   connections you tick.
   - It's local only, protected by a token and read-only by default.
-  - Queries are capped at 500 rows and 8 MB.
+  - Queries are capped at 500 rows by default (up to 10,000 in Settings) and 8 MB.
   - A ready-made `claude mcp add …` line is one click away.
 - **MCP Activity (⌘K).** Every agent call, with its time, client, tool, connection, SQL,
   rows, duration and result. The server status updates live.

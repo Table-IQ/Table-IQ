@@ -21,7 +21,7 @@ Metrics widgets (PR-B) now run through the same backend read-only wrapper, and t
 
 ## Tests
 - **Frontend:** `pnpm test` passes 628/628. `tsc` is clean.
-- **Rust:** `cargo test --lib` passes 305.
+- **Rust:** `cargo test --lib` passes 310.
 - **Live integration tests**, run with PG / MySQL / MSSQL and `TIQ_BACKUP_SHIM=1`:
   - `mcp_live` 6/6. These run over real HTTP on SQLite, DuckDB, PG and MySQL: auth, the allowlist, read-only enforcement, and refused file reads.
   - `restore_live` 11. Covers round-trips and wrong-target refusals, including a real two-database `--add-drop-database` dump, plus a scratch-only SQL Server restore.
@@ -50,6 +50,12 @@ The Opus final review of the whole branch returned "with fixes", 5 Important:
 
 All five were fixed in one wave and each fix was verified.
 
+The /ship pre-landing and adversarial review found one more (P1): on a shared SQLite connection with writes allowed, `VACUUM INTO` / `ATTACH` could create or open any file (a `~/.zshenv` payload was reproduced in a scratch dir). `ATTACH` and `VACUUM` are now refused on SQLite whatever the write setting. It also fixed:
+- SQL Server restore now closes only its own session.
+- The restore dump scans moved off the async workers.
+- MCP Activity's SQL column now has a width limit (QA ISSUE-002).
+- Two CHANGELOG overstatements were corrected.
+
 ## QA (real IPC bridge, never the mock)
 The real UI talked to real Rust commands on Docker SQLite / DuckDB / PG / SQL Server. The MCP endpoint was also probed with curl, the way an agent would call it.
 
@@ -70,7 +76,7 @@ The real UI talked to real Rust commands on Docker SQLite / DuckDB / PG / SQL Se
 | Issue | Severity | Status |
 |---|---|---|
 | ISSUE-001: one `backup_job` poll returned 400 after closing a finished dialog (didn't reproduce) | low | deferred |
-| ISSUE-002: MCP Activity's right-hand columns need horizontal scroll with no visible hint | low | deferred |
+| ISSUE-002: MCP Activity's right-hand columns need horizontal scroll with no visible hint | low | fixed in /ship |
 | ISSUE-003: the SQL log shows `VACUUM INTO` for a backup but nothing for a SQLite restore, which is a file swap, not SQL | low | informational |
 
 Not tested: Cancel partway through a job. Local backups finished in under 300 ms.

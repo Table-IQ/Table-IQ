@@ -22,8 +22,8 @@ export interface UseShellKeymapOptions {
 
 /**
  * The shell's global keyboard shortcuts (⌘K, ⌘O, ⌘⇧K, ⌘D, ⌘T, ⌘W, ⌘[, ⌘],
- * ⌘., ⌘⇧\, ⌘⇧C). Extracted from `MainShell` (Task 11b) so PR-C can add more
- * bindings without growing that file further; `shortcutFor` (`lib/shellKeymap.ts`)
+ * ⌘., ⌘⇧\, ⌘⇧C). Extracted from `MainShell` (Task 11b) so new bindings don't
+ * grow that file; `shortcutFor` (`lib/shellKeymap.ts`)
  * holds the pure binding table and is unit-tested there.
  */
 export function useShellKeymap(options: UseShellKeymapOptions): void {

@@ -208,7 +208,7 @@ function ActivityRow({
       <td className="max-w-[140px] truncate border-b border-border px-2 py-1" title={connLabel}>
         {connLabel}
       </td>
-      <td className="border-b border-border px-2 py-1 font-mono">
+      <td className="max-w-[28rem] border-b border-border px-2 py-1 font-mono">
         {a.sql === null ? (
           <span className="text-muted">—</span>
         ) : expanded ? (

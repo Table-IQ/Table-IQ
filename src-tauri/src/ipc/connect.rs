@@ -595,6 +595,16 @@ pub(crate) fn replace_session(state: &ConnState, id: &str, old: &Arc<dyn SqlDriv
     true
 }
 
+/// Remove `id`'s session only if it is still `old` (by address). False: it was replaced.
+fn remove_session_if(state: &ConnState, id: &str, old: &Arc<dyn SqlDriver>) -> bool {
+    let mut sessions = lk(&state.sessions);
+    let ours = sessions.get(id).is_some_and(|cur| std::ptr::addr_eq(Arc::as_ptr(cur), Arc::as_ptr(old)));
+    if ours {
+        sessions.remove(id);
+    }
+    ours
+}
+
 /// `switch_database`'s body, callable without a tauri `State` (Restore reopens with it).
 pub(crate) async fn switch_inner(state: &ConnState, id: String, database: String) -> Result<ConnectedInfo, String> {
     let (new_cfg, eff, password) = session_target(state, &id, Some(database))?;
@@ -2156,11 +2166,12 @@ async fn restore_inner(
             // A RESTORE that fails part-way (database left RESTORING / SUSPECT) can leave the
             // one pinned session on master while the UI shows `database`: reopen it there, or
             // close it — never leave it quietly querying master.
-            let res = if backup::mssql_on_database(drv.as_ref(), &database).await {
+            // Only the session this restore ran on is closed: a ⌘D / Reconnect meanwhile
+            // installed a newer one, which is the user's choice and stays.
+            let res = if backup::mssql_on_database(drv.as_ref(), &database).await || !remove_session_if(state, id, &drv) {
                 restored
             } else {
                 drop(drv);
-                lk(&state.sessions).remove(id);
                 lk(&state.results).purge(id);
                 let lost = |r: String| {
                     format!("the session had left {database:?} and could not be reopened ({r}) — reconnect once it is online")
@@ -2797,6 +2808,22 @@ mod tests {
         let all = rows_of(&drv, &stmt, 10, &CancelToken::new()).await.expect("uncapped read");
         assert_eq!(all.rows.len(), 5, "under the cap, every row comes back");
         assert!(!all.truncated);
+    }
+
+    /// A failed SQL Server restore closes only the session it ran on: one a ⌘D installed
+    /// meanwhile stays.
+    #[tokio::test]
+    async fn remove_session_if_spares_a_newer_session() {
+        let tmp = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        let old: Arc<dyn SqlDriver> = Arc::new(SqliteDriver::connect(&path).await.expect("connect"));
+        let newer: Arc<dyn SqlDriver> = Arc::new(SqliteDriver::connect(&path).await.expect("connect"));
+        let state = ConnState::default();
+        lk(&state.sessions).insert("c".into(), newer.clone());
+        assert!(!remove_session_if(&state, "c", &old));
+        assert!(lk(&state.sessions).contains_key("c"), "the newer session stays");
+        assert!(remove_session_if(&state, "c", &newer));
+        assert!(!lk(&state.sessions).contains_key("c"));
     }
 
     /// A `query_rows` call with a `query_id` (a metrics widget's fetch, the Users list) is

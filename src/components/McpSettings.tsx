@@ -290,6 +290,8 @@ export function McpSettings() {
           <span className="font-mono">pg_write_server_files</span> or{" "}
           <span className="font-mono">pg_execute_server_program</span>, granted only what agents should
           read. On MySQL use a user without the FILE privilege; on SQL Server one without sysadmin.
+          SQLite has no users: <span className="font-mono">ATTACH</span> and{" "}
+          <span className="font-mono">VACUUM</span> are always refused, even with writes allowed.
         </p>
         <p>
           On MySQL, DDL commits before the read-only transaction can refuse it — the guard is what

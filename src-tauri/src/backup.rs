@@ -1131,7 +1131,10 @@ pub async fn tool_restore(
             } else {
                 // Only ever the confirmed database: `\connect` would carry on elsewhere, an
                 // include runs another file, `\!` a shell. pg_dump writes none of them.
-                if let Some(found) = psql_forbidden_meta(Path::new(file))? {
+                let p = PathBuf::from(file);
+                // Reads the whole file: off the async workers.
+                let meta = tokio::task::spawn_blocking(move || psql_forbidden_meta(&p)).await.map_err(|e| e.to_string())??;
+                if let Some(found) = meta {
                     return Err(format!(
                         "{file} has a psql meta-command that could leave {:?} ({found}) — only a \
                          single-database plain dump can be restored. Nothing was restored",
@@ -1153,7 +1156,10 @@ pub async fn tool_restore(
                 return Err(format!("cannot restore into a database named {:?}", t.database));
             }
             // `--one-database` can't stop `DROP DATABASE other`: refuse such a file up front.
-            if let Some(found) = mysql_foreign_database(Path::new(file), &t.database)? {
+            let (p, db) = (PathBuf::from(file), t.database.clone());
+            let foreign =
+                tokio::task::spawn_blocking(move || mysql_foreign_database(&p, &db)).await.map_err(|e| e.to_string())??;
+            if let Some(found) = foreign {
                 return Err(format!(
                     "{file} reaches another database ({found}) — a multi-database dump can't be \
                      restored into {:?} alone. Nothing was restored",

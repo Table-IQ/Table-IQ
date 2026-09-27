@@ -93,6 +93,16 @@ fn guard(engine: &str, sql: &str, writes: bool, mcp: bool) -> Result<(), String>
             f.trim_matches('*')
         ));
     }
+    // SQLite's own file writers and readers: `VACUUM INTO '~/.zshenv'` creates any file,
+    // `ATTACH` opens any other database. Refused even when writes are allowed.
+    if engine == "sqlite" {
+        if let Some(k) = ["ATTACH", "VACUUM"].iter().find(|k| has_word(&upper, k)) {
+            return Err(format!(
+                "`{k}` is not allowed on this connection: it opens or writes other files \
+                 (refused anywhere in the text, even inside a string or comment)."
+            ));
+        }
+    }
     // `U&"pg\005fread\005ffile"` spells a name without its letters.
     if matches!(engine, "postgres" | "duckdb") && (upper.contains("U&'") || upper.contains("U&\"")) {
         return Err("Unicode-escaped names and strings (U&'…') are not allowed on this connection.".into());
@@ -661,6 +671,16 @@ mod tests {
             assert!(guard_sql(e, "/*!50000 DROP TABLE t */ SELECT 1", true).is_err(), "{e}");
             assert!(guard_sql(e, "", true).is_err(), "{e}");
         }
+    }
+
+    /// Sharing a SQLite database is not sharing the disk: `VACUUM INTO` / `ATTACH` stay
+    /// refused with writes allowed.
+    #[test]
+    fn sqlite_file_writers_refused_even_with_writes() {
+        for sql in ["VACUUM INTO '/Users/u/.zshenv'", "ATTACH '/tmp/x.db' AS x", "vacuum"] {
+            assert!(guard_sql("sqlite", sql, true).is_err(), "{sql:?} must be refused");
+        }
+        assert_eq!(guard_sql("sqlite", "SELECT attach_count FROM t", true), Ok(()));
     }
 
     /// The widget path is the user's own SQL on their own connection: DuckDB file reads that

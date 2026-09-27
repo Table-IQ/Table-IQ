@@ -1407,4 +1407,14 @@ mod tests {
         let after = host.conns().session("mssql-q").unwrap().run_query("SELECT 2", 1).await;
         assert!(after.is_ok(), "the connection was not abandoned: {:?}", after.err().map(|e| e.to_string()));
     }
+
+    /// A DuckDB instance whose configuration was locked with file access still on can't be
+    /// hardened: refused, never shared as it is.
+    #[tokio::test]
+    async fn duckdb_locked_with_file_access_is_refused() {
+        let d = crate::drivers::duckdb::DuckDriver::connect(":memory:").await.unwrap();
+        d.run_script("SET lock_configuration = true").await.unwrap();
+        let e = harden_duckdb(&d).await.unwrap_err();
+        assert!(e.contains("locked"), "{e}");
+    }
 }

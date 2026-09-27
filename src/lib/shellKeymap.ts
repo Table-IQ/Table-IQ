@@ -12,7 +12,7 @@ export interface KeymapEvent {
   defaultPrevented: boolean;
 }
 
-/** Every shell-level keyboard shortcut `useShellKeymap` dispatches. PR-C adds more. */
+/** Every shell-level keyboard shortcut `useShellKeymap` dispatches. */
 export type ShellAction =
   | "palette"
   | "open-connection"
@@ -39,7 +39,7 @@ export type ShellAction =
  *
  * Callers still own the actual dispatch and `e.preventDefault()` (only called
  * when an action is returned) — this only encodes the binding table, so it's
- * easy to test and easy to extend (PR-C adds more keys).
+ * easy to test and easy to extend.
  */
 export function shortcutFor(e: KeymapEvent, settingsOpen: boolean): ShellAction | null {
   if (e.defaultPrevented) return null;
