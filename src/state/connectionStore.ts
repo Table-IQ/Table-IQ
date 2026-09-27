@@ -12,6 +12,7 @@ import {
   type ForeignKey,
   type SchemaModel,
 } from "../lib/commands";
+import { confirmDialog } from "../lib/confirmDialog";
 import { markConnected } from "../lib/lastConnected";
 import { logError } from "../lib/report";
 import { persistForConnection } from "../lib/tabsPersist";
@@ -154,16 +155,7 @@ export async function canLeaveSession(
   labels?: { ok: string; cancel: string },
 ): Promise<boolean> {
   if (!useConnections.getState().editsPending) return true;
-  try {
-    const { confirm } = await import("@tauri-apps/plugin-dialog");
-    return await confirm(message, {
-      title: "Unsaved changes",
-      kind: "warning",
-      ...(labels ? { okLabel: labels.ok, cancelLabel: labels.cancel } : {}),
-    });
-  } catch {
-    return typeof window !== "undefined" ? window.confirm(message) : false;
-  }
+  return confirmDialog(message, "Unsaved changes", labels);
 }
 
 // ── lazy metadata caches ────────────────────────────────────────────────────

@@ -542,18 +542,10 @@ export function TableView({ connId, schema, object, view }: Props) {
         ? async () => {
             const name =
               useConnections.getState().saved.find((c) => c.id === connId)?.name ?? "production";
-            const message = productionCommitMessage(pendingCount, name);
-            try {
-              const { confirm } = await import("@tauri-apps/plugin-dialog");
-              return await confirm(message, {
-                title: "Production",
-                kind: "warning",
-                okLabel: "Commit to production",
-                cancelLabel: "Cancel",
-              });
-            } catch {
-              return window.confirm(message);
-            }
+            return confirmDialog(productionCommitMessage(pendingCount, name), "Production", {
+              ok: "Commit to production",
+              cancel: "Cancel",
+            });
           }
         : undefined,
     [env, connId, pendingCount],

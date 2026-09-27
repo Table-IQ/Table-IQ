@@ -6,7 +6,7 @@ export interface StagedApi {
   list: () => PendingEdit[];
   commit: () => void;
   discard: () => void;
-  /** The page's first-row offset (`page * pageSize`); `PendingEdit.row` is page-relative. */
+  /** The on-screen page's first-row offset (TableView's `firstRow`); `PendingEdit.row` is page-relative. */
   rowOffset: number;
 }
 
