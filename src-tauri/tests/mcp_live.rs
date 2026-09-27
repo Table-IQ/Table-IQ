@@ -32,6 +32,10 @@ fn config_dir() -> &'static std::path::Path {
         let mut store = ConnStore::default();
         store.upsert(sqlite_conn("lite", &db));
         store.upsert(sqlite_conn("hidden", &db));
+        let mut duck = sqlite_conn("duck", &dir.path().join("live.duckdb"));
+        duck.engine = "duckdb".into();
+        store.upsert(duck);
+        std::fs::write(dir.path().join("secret.csv"), "k,v\nkey,hunter2\n").unwrap();
         store.save().unwrap();
         dir
     })
@@ -72,7 +76,10 @@ async fn start() -> (String, CancellationToken) {
     let url = format!("http://{}/mcp", listener.local_addr().unwrap());
     let cfg = McpConfig {
         enabled: true,
-        connections: vec![McpConn { id: "lite".into(), writes: false }],
+        connections: vec![
+            McpConn { id: "lite".into(), writes: false },
+            McpConn { id: "duck".into(), writes: false },
+        ],
         ..McpConfig::default()
     };
     let host: Arc<dyn Host> = Arc::new(ConnState::new());
@@ -126,8 +133,9 @@ async fn sqlite_over_http_initialize_list_query_refuse() {
 
     let conns = call(&url, 3, "list_connections", json!({})).await;
     let shared: Value = serde_json::from_str(text(&conns)).unwrap();
-    assert_eq!(shared.as_array().unwrap().len(), 1, "only the shared one: {shared}");
-    assert_eq!(shared[0]["id"], "lite");
+    let ids: Vec<&str> = shared.as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap()).collect();
+    assert_eq!(ids.len(), 2, "only the shared ones: {shared}");
+    assert!(ids.contains(&"lite") && ids.contains(&"duck") && !ids.contains(&"hidden"));
 
     let ok = call(&url, 4, "run_query", json!({"connection_id": "lite", "sql": "SELECT n FROM t ORDER BY n"})).await;
     assert_ne!(ok["isError"], true, "{ok}");
@@ -145,6 +153,34 @@ async fn sqlite_over_http_initialize_list_query_refuse() {
 
     let tables = call(&url, 8, "list_tables", json!({"connection_id": "lite"})).await;
     assert!(text(&tables).contains("\"name\":\"t\""), "{tables}");
+    stop.cancel();
+}
+
+/// C1: an allowlisted DuckDB connection must not read local files — refused by the guard
+/// or, underneath it, by the instance MCP locked down on first use.
+#[tokio::test]
+async fn duckdb_over_http_cannot_read_files() {
+    let (url, stop) = start().await;
+    let dir = config_dir();
+    let secret = dir.join("secret.csv");
+    let ok = call(&url, 1, "run_query", json!({"connection_id": "duck", "sql": "SELECT 41 + 1 AS n"})).await;
+    assert!(text(&ok).contains("42"), "{ok}");
+    for (i, sql) in [
+        format!("SELECT * FROM read_text('{}')", secret.display()),
+        format!("SELECT * FROM read_csv('{}')", secret.display()),
+        format!("SELECT * FROM glob('{}/*')", dir.display()),
+        format!("SELECT * FROM '{}'", secret.display()),
+        format!("SELECT * FROM   '{}' AS s", secret.display()),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let r = call(&url, 10 + i as u32, "run_query", json!({"connection_id": "duck", "sql": sql})).await;
+        assert_eq!(r["isError"], true, "{sql}: {r}");
+        let t = text(&r).to_lowercase();
+        assert!(!t.contains("hunter2"), "{sql} leaked: {t}");
+        assert!(t.contains("not allowed") || t.contains("external access"), "{sql}: {t}");
+    }
     stop.cancel();
 }
 

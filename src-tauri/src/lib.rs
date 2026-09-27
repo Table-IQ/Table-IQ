@@ -129,7 +129,7 @@ pub fn run() {
         // The MCP server starts with the app when enabled. The QA bridge doesn't run this;
         // Settings → MCP starts it there.
         .setup(|app| {
-            mcp::autostart(app.handle().clone());
+            tauri::async_runtime::spawn(mcp::autostart(app.handle().clone()));
             Ok(())
         })
         .run(tauri::generate_context!())

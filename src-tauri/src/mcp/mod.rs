@@ -160,18 +160,32 @@ pub struct Activity {
 }
 
 const ACTIVITY_CAP: usize = 1000;
+/// Longest SQL an entry keeps, in bytes (the ring holds up to 1000 of them).
+const ACTIVITY_SQL_MAX: usize = 4 << 10;
 static ACTIVITY: Mutex<VecDeque<Activity>> = Mutex::new(VecDeque::new());
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Append to the ring, redacting the SQL and the error (a database error can quote it).
 fn record(mut a: Activity) {
-    a.sql = a.sql.map(|s| crate::sql_log::redact(&s).into_owned());
-    a.error = a.error.map(|s| crate::sql_log::redact(&s).into_owned());
+    a.sql = a.sql.map(|s| clip(&crate::sql_log::redact(&s), ACTIVITY_SQL_MAX));
+    a.error = a.error.map(|s| clip(&crate::sql_log::redact(&s), ACTIVITY_SQL_MAX));
     a.ts_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
     push(&mut lk(&ACTIVITY), a, ACTIVITY_CAP);
+}
+
+/// `s` cut to at most `max` bytes on a char boundary, with `…` when cut.
+fn clip(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
 }
 
 /// Number `a` and append it, dropping the oldest past `cap`. The seq is taken under the
@@ -224,8 +238,19 @@ pub fn status() -> McpStatus {
     }
 }
 
-/// Bind `127.0.0.1:<port>` — never any other interface — and serve in the background.
-pub fn start<R: Runtime>(app: AppHandle<R>, cfg: &McpConfig) -> Result<(), String> {
+/// Start, stop and config saves run one at a time: two overlapping Settings changes must
+/// not race to bind the port or write `mcp.json` (the atomic write's temp name is per process).
+static LIFECYCLE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Bind `127.0.0.1:<port>` — never any other interface — and serve in the background,
+/// stopping a running server first.
+pub async fn start<R: Runtime>(app: AppHandle<R>, cfg: &McpConfig) -> Result<(), String> {
+    let _one = LIFECYCLE.lock().await;
+    stop_unlocked().await;
+    start_unlocked(app, cfg)
+}
+
+fn start_unlocked<R: Runtime>(app: AppHandle<R>, cfg: &McpConfig) -> Result<(), String> {
     let res = start_inner(app, cfg);
     *lk(&LAST_ERROR) = res.as_ref().err().cloned();
     res
@@ -255,6 +280,11 @@ fn start_inner<R: Runtime>(app: AppHandle<R>, cfg: &McpConfig) -> Result<(), Str
 
 /// Stop the server and wait (briefly) for it to let go of its port.
 pub async fn stop() {
+    let _one = LIFECYCLE.lock().await;
+    stop_unlocked().await;
+}
+
+async fn stop_unlocked() {
     let running = lk(&SERVER).take();
     if let Some(r) = running {
         r.stop.cancel();
@@ -263,10 +293,10 @@ pub async fn stop() {
 }
 
 /// Start at launch when enabled (`lib.rs` `.setup`); a failure shows in Settings → MCP.
-pub fn autostart<R: Runtime>(app: AppHandle<R>) {
+pub async fn autostart<R: Runtime>(app: AppHandle<R>) {
     let cfg = load_config();
     if cfg.enabled {
-        if let Err(e) = start(app, &cfg) {
+        if let Err(e) = start(app, &cfg).await {
             crate::applog::log("error", &format!("MCP server did not start: {e}"));
         }
     }
@@ -284,11 +314,12 @@ pub fn mcp_get_config() -> McpConfig {
 #[tauri::command]
 pub async fn mcp_set_config<R: Runtime>(app: AppHandle<R>, cfg: McpConfig) -> Result<McpStatus, String> {
     cfg.validate()?;
+    let _one = LIFECYCLE.lock().await;
     save_config(&cfg)?;
-    stop().await;
+    stop_unlocked().await;
     *lk(&LAST_ERROR) = None;
     if cfg.enabled {
-        let _ = start(app, &cfg);
+        let _ = start_unlocked(app, &cfg);
     }
     Ok(status())
 }
@@ -379,6 +410,17 @@ mod tests {
         assert!(!sql.contains("hunter2") && sql.contains("PASSWORD"), "{sql}");
         assert!(!err.contains("hunter2"), "{err}");
         assert!(got[0].seq > 0 && got[0].ts_ms > 0);
+    }
+
+    #[test]
+    fn activity_keeps_at_most_4_kb_of_sql() {
+        let conn = "activity-long";
+        let long = format!("SELECT '{}'", "é".repeat(10_000));
+        record(entry(conn, &long, None));
+        let got: Vec<Activity> = activity_since(0).into_iter().filter(|a| a.conn_id.as_deref() == Some(conn)).collect();
+        let sql = got[0].sql.clone().unwrap();
+        assert!(sql.len() <= ACTIVITY_SQL_MAX + "…".len(), "{} bytes", sql.len());
+        assert!(sql.starts_with("SELECT 'éé") && sql.ends_with('…'));
     }
 
     #[test]

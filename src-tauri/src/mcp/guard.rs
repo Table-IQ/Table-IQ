@@ -29,28 +29,62 @@ const TSQL_KEYWORDS: [&str; 20] = [
     "ENABLE", "DISABLE",
 ];
 
-/// May `sql` run on an `engine` connection over MCP? `writes`: the connection allows writes,
-/// which lifts the keyword checks but never the one-statement rule.
+/// Functions that read files, reach other servers or act on other sessions — refused for
+/// every connection, writes allowed or not (sharing a database is not sharing the disk).
+/// `X*` matches any name starting with `X`, `*X` any name ending with it.
+fn engine_functions(engine: &str) -> &'static [&'static str] {
+    match engine {
+        // DuckDB has no users, so these reach whatever the app can read. Sharing a DuckDB
+        // connection also turns external access off on its instance (`mcp::server`).
+        "duckdb" => &["READ_*", "GLOB", "*_SCAN", "SNIFF_CSV", "PARQUET_*", "QUERY", "QUERY_TABLE", "GETENV"],
+        "postgres" => &[
+            "PG_READ_FILE", "PG_READ_BINARY_FILE", "PG_LS_*", "PG_STAT_FILE", "LO_IMPORT", "LO_EXPORT",
+            "DBLINK*", "PG_TERMINATE_BACKEND", "PG_CANCEL_BACKEND", "PG_RELOAD_CONF", "PG_ADVISORY_*",
+        ],
+        "mysql" => &["LOAD_FILE", "GET_LOCK"],
+        "sqlserver" => &["OPENROWSET", "OPENDATASOURCE", "OPENQUERY", "XP_*"],
+        _ => &[],
+    }
+}
+
+/// May `sql` run as a read on an `engine` connection (MCP, Metrics widgets)? `writes`: the
+/// connection allows writes, which lifts the keyword checks but never the one-statement
+/// rule or the function denylist.
 pub fn guard_sql(engine: &str, sql: &str, writes: bool) -> Result<(), String> {
     if sql.trim().is_empty() {
         return Err("Empty SQL.".into());
     }
     single_statement(engine, sql)?;
+    let upper = sql.to_uppercase();
+    if let Some(f) = engine_functions(engine).iter().find(|f| has_pattern(&upper, f)) {
+        return Err(format!(
+            "`{}` is not allowed on this connection: it reads files or acts outside the query \
+             (refused anywhere in the text, even inside a string or comment).",
+            f.trim_matches('*')
+        ));
+    }
+    // `U&"pg\005fread\005ffile"` spells a name without its letters.
+    if matches!(engine, "postgres" | "duckdb") && (upper.contains("U&'") || upper.contains("U&\"")) {
+        return Err("Unicode-escaped names and strings (U&'…') are not allowed on this connection.".into());
+    }
+    // `FROM '/etc/hosts'`: DuckDB reads a file named in a table position.
+    if engine == "duckdb" && quoted_table(&upper) {
+        return Err("A quoted name after FROM/JOIN (a file path to DuckDB) is not allowed on this connection.".into());
+    }
     if writes {
         return Ok(());
     }
-    let upper = sql.to_uppercase();
     let tsql: &[&str] = if engine == "sqlserver" { &TSQL_KEYWORDS } else { &[] };
     if let Some(k) = WRITE_KEYWORDS.iter().chain(tsql).find(|k| has_word(&upper, k)) {
         return Err(format!(
-            "This connection is read-only over MCP: `{k}` is not allowed (it is refused anywhere \
-             in the text, even inside a string or comment)."
+            "Only read-only SQL is allowed here: `{k}` is not allowed (it is refused anywhere in \
+             the text, even inside a string or comment)."
         ));
     }
     let first = first_keyword(sql);
     if !READ_FIRST.contains(&first.as_str()) {
         return Err(format!(
-            "This connection is read-only over MCP: a statement must start with one of {}, not `{first}`.",
+            "Only read-only SQL is allowed here: a statement must start with one of {}, not `{first}`.",
             READ_FIRST.join("/")
         ));
     }
@@ -60,11 +94,48 @@ pub fn guard_sql(engine: &str, sql: &str, writes: bool) -> Result<(), String> {
 /// `kw` as a whole word in `upper`. The left boundary is a letter or `_` only — never a
 /// digit, so `SELECT 1DELETE` (which SQL Server runs as a DELETE) still matches.
 fn has_word(upper: &str, kw: &str) -> bool {
+    matches_at(upper, kw, true, true)
+}
+
+/// [`has_word`] with a `*` wildcard at either end: `READ_*` needs only the left boundary,
+/// `*_SCAN` only the right one.
+fn has_pattern(upper: &str, pat: &str) -> bool {
+    let (left, right) = (!pat.starts_with('*'), !pat.ends_with('*'));
+    matches_at(upper, pat.trim_matches('*'), left, right)
+}
+
+fn matches_at(upper: &str, kw: &str, left: bool, right: bool) -> bool {
     let b = upper.as_bytes();
     upper.match_indices(kw).any(|(i, _)| {
-        let left_ok = i == 0 || !(b[i - 1].is_ascii_uppercase() || b[i - 1] == b'_');
-        let right = b.get(i + kw.len());
-        left_ok && !right.is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_')
+        let left_ok = !left || i == 0 || !(b[i - 1].is_ascii_uppercase() || b[i - 1] == b'_');
+        let after = b.get(i + kw.len());
+        let right_ok = !right || !after.is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_');
+        left_ok && right_ok
+    })
+}
+
+/// A `'` or `"` right after a whole-word `FROM` or `JOIN`, past whitespace and comments.
+fn quoted_table(upper: &str) -> bool {
+    let b = upper.as_bytes();
+    ["FROM", "JOIN"].iter().any(|kw| {
+        upper.match_indices(kw).any(|(i, _)| {
+            let left_ok = i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_');
+            let mut rest = &upper[i + kw.len()..];
+            if !left_ok || rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
+                return false;
+            }
+            loop {
+                rest = rest.trim_start();
+                if let Some(r) = rest.strip_prefix("--") {
+                    rest = r.find('\n').map_or("", |n| &r[n..]);
+                } else if let Some(r) = rest.strip_prefix("/*") {
+                    rest = r.find("*/").map_or("", |n| &r[n + 2..]);
+                } else {
+                    break;
+                }
+            }
+            rest.starts_with(['\'', '"'])
+        })
     })
 }
 
@@ -327,6 +398,84 @@ mod tests {
             ("postgres", "SELECT 'a;b', \"c;d\" FROM t;"),
         ] {
             assert_eq!(single_statement(e, sql), Ok(()), "{e}: {sql:?}");
+        }
+    }
+
+    /// Functions that read files or reach outside the query, per engine — refused anywhere
+    /// as a whole word (digit-safe), writes allowed or not.
+    #[test]
+    fn guard_sql_refuses_file_and_side_effect_functions() {
+        let reject: &[(&str, &str)] = &[
+            ("duckdb", "SELECT * FROM read_text('/Users/x/.ssh/id_rsa')"),
+            ("duckdb", "SELECT * FROM read_csv('/etc/hosts')"),
+            ("duckdb", "SELECT * FROM read_csv_auto('/etc/hosts')"),
+            ("duckdb", "SELECT * FROM READ_PARQUET('x.parquet')"),
+            ("duckdb", "SELECT * FROM glob('/Users/x/.ssh/*')"),
+            ("duckdb", "SELECT * FROM sqlite_scan('/x.db', 't')"),
+            ("duckdb", "SELECT * FROM parquet_scan('x')"),
+            ("duckdb", "SELECT * FROM parquet_metadata('x')"),
+            ("duckdb", "SELECT * FROM sniff_csv('/etc/hosts')"),
+            ("duckdb", "SELECT * FROM query('SELECT 1')"),
+            ("duckdb", "SELECT * FROM query_table('t')"),
+            ("duckdb", "SELECT getenv('HOME')"),
+            ("duckdb", "SELECT 1 AS a, main.read_text('/etc/hosts')"),
+            ("duckdb", "SELECT 1READ_TEXT('/etc/hosts')"),
+            ("duckdb", "SELECT * FROM '/etc/hosts'"),
+            ("duckdb", "SELECT * FROM   \"/tmp/data.csv\""),
+            ("duckdb", "SELECT * FROM t JOIN '/tmp/x.csv' USING (a)"),
+            ("duckdb", "SELECT * FROM /* c */ '/etc/hosts'"),
+            ("duckdb", "SELECT * FROM\n-- c\n'/etc/hosts'"),
+            ("postgres", "SELECT pg_read_file('/etc/passwd')"),
+            ("postgres", "SELECT pg_read_binary_file('/etc/passwd')"),
+            ("postgres", "SELECT * FROM pg_ls_dir('.')"),
+            ("postgres", "SELECT * FROM pg_ls_waldir()"),
+            ("postgres", "SELECT pg_stat_file('x')"),
+            ("postgres", "SELECT lo_import('/etc/passwd')"),
+            ("postgres", "SELECT lo_export(1, '/tmp/x')"),
+            ("postgres", "SELECT * FROM dblink('db', 'DELETE FROM t') AS x(a int)"),
+            ("postgres", "SELECT dblink_exec('db', 'x')"),
+            ("postgres", "SELECT pg_terminate_backend(123)"),
+            ("postgres", "SELECT pg_cancel_backend(123)"),
+            ("postgres", "SELECT pg_reload_conf()"),
+            ("postgres", "SELECT pg_advisory_lock(1)"),
+            ("postgres", "SELECT pg_advisory_xact_lock_shared(1)"),
+            ("postgres", "SELECT \"pg_read_file\"('/etc/passwd')"),
+            ("postgres", "SELECT pg_catalog.pg_read_file('/etc/passwd')"),
+            // a Unicode-escaped identifier could spell any of these without the letters
+            ("postgres", "SELECT U&\"pg\\005fread\\005ffile\"('/etc/passwd')"),
+            ("mysql", "SELECT LOAD_FILE('/etc/passwd')"),
+            ("mysql", "SELECT GET_LOCK('x', 10)"),
+            ("sqlserver", "SELECT * FROM OPENROWSET('SQLNCLI', 'x', 'SELECT 1')"),
+            ("sqlserver", "SELECT * FROM OPENDATASOURCE('x', 'y').db.dbo.t"),
+            ("sqlserver", "SELECT * FROM OPENQUERY(srv, 'SELECT 1')"),
+            ("sqlserver", "SELECT * FROM master..xp_dirtree('C:\\')"),
+        ];
+        for (e, sql) in reject {
+            assert!(guard_sql(e, sql, false).is_err(), "{e}: {sql:?} must be refused");
+            assert!(guard_sql(e, sql, true).is_err(), "{e}: {sql:?} must be refused with writes allowed too");
+        }
+        for (e, sql) in [
+            ("duckdb", "SELECT reader, readme FROM t"),
+            ("duckdb", "SELECT * FROM t WHERE name = 'x'"),
+            ("duckdb", "SELECT 'a' FROM t"),
+            ("postgres", "SELECT pg_backend_pid(), pg_size_pretty(1)"),
+            ("postgres", "SELECT 'x' FROM t"),
+            ("mysql", "SELECT load_count FROM t"),
+            ("sqlserver", "SELECT xpos FROM t"),
+            // another engine's names are ordinary identifiers
+            ("postgres", "SELECT read_count FROM t"),
+        ] {
+            assert_eq!(guard_sql(e, sql, false), Ok(()), "{e}: {sql:?} must be allowed");
+        }
+    }
+
+    /// The same refusal reads right in a Metrics widget as over MCP.
+    #[test]
+    fn refusals_do_not_mention_mcp() {
+        for (e, sql) in [("postgres", "DELETE FROM t"), ("postgres", "PRAGMA x"), ("mysql", "SELECT LOAD_FILE('x')")] {
+            let msg = guard_sql(e, sql, false).unwrap_err();
+            assert!(!msg.contains("MCP"), "{msg}");
+            assert!(msg.contains("read-only") || msg.contains("not allowed on this connection"), "{msg}");
         }
     }
 

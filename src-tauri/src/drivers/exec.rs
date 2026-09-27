@@ -143,7 +143,8 @@ fn read_only(stmt: &str) -> bool {
 
 /// Run `stmts` one at a time over `conn`, each sent verbatim via the simple/text protocol.
 ///
-/// Collects up to `cap` rows per statement. The **last** statement, when [`read_only`], stops
+/// Collects up to `cap` rows per statement. The **last** statement (or one followed only by
+/// `ROLLBACK`, whose ROLLBACK is then skipped), when [`read_only`], stops
 /// reading at the first row past the cap and reports `total_rows: None` — `SELECT * FROM` a
 /// trillion-row table must not read every row to count them — and asks for `reset`, since the
 /// connection is left mid-result: closing it ends the server's work too. Any other statement
@@ -183,7 +184,11 @@ where
             crate::sql_log::note(stmt);
         }
         reset |= touches_session(stmt);
-        let stop_at_cap = si + 1 == stmts.len() && read_only(stmt);
+        // Last, or followed only by ROLLBACK (the read-only wrapper): nothing after it needs
+        // the connection, so stopping early loses nothing — the ROLLBACK is skipped and the
+        // connection closed, which rolls back just the same.
+        let only_rollback_after = stmts[si + 1..].iter().all(|s| first_keyword(s) == "ROLLBACK");
+        let stop_at_cap = only_rollback_after && read_only(stmt);
         let mut stopped = false;
         let start = std::time::Instant::now();
         let (mut names, mut types): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
@@ -238,6 +243,7 @@ where
         }
         let exec_ms = start.elapsed().as_millis() as u64;
         reset |= stopped;
+        let skip_rest = stopped && si + 1 < stmts.len();
         if let Some(e) = failed {
             let err = classify(e, stmt)?;
             reset = true;
@@ -281,6 +287,9 @@ where
                 )
             }),
         });
+        if skip_rest {
+            break;
+        }
     }
     // An unterminated BEGIN dies with the connection (which `reset` closes), so say so.
     if left_open(&stmts[..outs.len()]) {

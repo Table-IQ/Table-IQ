@@ -463,7 +463,7 @@ pub async fn switch_database(
 }
 
 /// `switch_database`'s body, callable without a tauri `State` (Restore reopens with it).
-async fn switch_inner(state: &ConnState, id: String, database: String) -> Result<ConnectedInfo, String> {
+pub(crate) async fn switch_inner(state: &ConnState, id: String, database: String) -> Result<ConnectedInfo, String> {
     // Look up the saved config; clone with the database swapped — we do not
     // mutate the persisted store so the user's saved default is preserved.
     let cfg = {
@@ -2602,9 +2602,7 @@ mod tests {
     /// Tauri-free pieces (`keys_for`, `cancel_all_for`) plus the outcome decision itself.
     #[tokio::test]
     async fn cancel_all_reports_unsupported_when_the_engine_cant_cancel() {
-        let tmp = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
-        let path = tmp.path().to_str().unwrap().to_string();
-        let drv = SqliteDriver::connect(&path).await.expect("connect"); // default cancel() is NotImplemented
+        let drv = DuckDriver::connect(":memory:").await.expect("connect"); // default cancel() is NotImplemented
 
         let mut map = HashMap::new();
         map.insert(ckey("conn1", "table:public.users"), CancelToken::new());
@@ -2613,7 +2611,7 @@ mod tests {
         let had_running = !keys_for(&lk(&cancels), "conn1").is_empty();
         assert!(had_running);
         let n = cancel_all_for(&cancels, &drv, "conn1").await;
-        assert_eq!(n, 0, "the sqlite driver can't cancel, so nothing counts as stopped");
+        assert_eq!(n, 0, "the duckdb driver can't cancel, so nothing counts as stopped");
 
         let outcome = cancel_all_outcome(n, had_running);
         assert_eq!(outcome, Err("Cancellation is not supported for this engine.".to_string()));
@@ -2728,5 +2726,25 @@ mod tests {
         let rows = rows_of(&drv, &ok, 10, &CancelToken::new()).await.expect("wrapped read");
         assert_eq!(rows.rows[0][0].as_deref(), Some("1"));
         drv.run_script("INSERT INTO t VALUES (2)").await.expect("write after the failed wrap");
+    }
+
+    /// A wrapped read stops at the cap like a bare one: the SELECT is not the last statement
+    /// (ROLLBACK follows), but nothing after it needs the connection, so reading on to count
+    /// millions of rows nobody will see would only make MCP and Metrics slow.
+    #[tokio::test]
+    async fn a_wrapped_read_stops_at_the_cap() {
+        let tmp = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
+        let drv = SqliteDriver::connect(tmp.path().to_str().unwrap()).await.expect("connect");
+        let big = "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 3000000) SELECT x FROM c";
+        let stmts = crate::mcp::guard::read_only_stmts("sqlite", big).unwrap();
+        let outs = drv.run_statements(&stmts, 10, &CancelToken::new()).await.expect("run");
+        let read = outs.iter().find(|o| o.batch.is_some()).expect("the read's result");
+        assert_eq!(read.row_count, 10);
+        assert_eq!(read.total_rows, None, "stopped at the cap instead of counting every row");
+        assert!(read.truncated);
+        // The skipped ROLLBACK is implied: the connection was closed, and it said so.
+        assert!(outs.last().unwrap().notice.as_deref().unwrap_or("").contains("rolled back"));
+        let rows = rows_of(&drv, &stmts, 10, &CancelToken::new()).await.expect("rows");
+        assert_eq!(rows.rows.len(), 10);
     }
 }

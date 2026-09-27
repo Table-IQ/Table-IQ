@@ -7,7 +7,7 @@
 //! its slot until it really ends, so a retrying agent can't pile queries onto the pools.
 
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use axum::extract::{Request, State};
@@ -28,12 +28,36 @@ use super::guard::{guard_sql, read_only_stmts};
 use super::{record, Activity, McpConfig};
 use crate::connections::ConnConfig;
 use crate::drivers::{DriverError, SqlDriver};
-use crate::ipc::connect::{cancel_registered, ckey, connect_inner, registered_rows, ConnState};
+use crate::ipc::connect::{
+    cancel_registered, ckey, connect_inner, registered_rows, rows_of, switch_inner, ConnState, Rows,
+};
+use crate::drivers::CancelToken;
 
-/// Most tool calls running at once, across every agent.
+/// Most `run_query` calls running at once, across every agent.
 pub(crate) const MAX_IN_FLIGHT: usize = 4;
 /// Longest a tool call may take before the agent gets a timeout.
 pub(crate) const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
+/// Largest serialized tool response; `run_query` drops rows (and says `truncated`) to fit.
+pub(crate) const MAX_RESPONSE_BYTES: usize = 8 << 20;
+
+/// Query slots, process-wide so they hold across a stop/start: a query that outlived its
+/// timeout (DuckDB can't be interrupted) still counts after Settings restarts the server.
+static QUERY_SLOTS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(MAX_IN_FLIGHT)));
+/// The metadata tools' own slots, so they keep answering while queries are stuck.
+static META_SLOTS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(MAX_IN_FLIGHT)));
+
+/// The two in-flight caps a server's handlers share.
+#[derive(Clone)]
+pub(crate) struct Slots {
+    query: Arc<Semaphore>,
+    meta: Arc<Semaphore>,
+}
+
+impl Slots {
+    fn process() -> Self {
+        Self { query: QUERY_SLOTS.clone(), meta: META_SLOTS.clone() }
+    }
+}
 
 const SQL_ENGINES: [&str; 5] = ["postgres", "mysql", "sqlite", "duckdb", "sqlserver"];
 
@@ -69,8 +93,7 @@ pub async fn serve(
     stop: CancellationToken,
 ) -> std::io::Result<()> {
     let cfg = Arc::new(cfg);
-    // One cap per server, shared by every request's handler.
-    let in_flight = Arc::new(Semaphore::new(MAX_IN_FLIGHT));
+    let slots = Slots::process();
     let config = StreamableHttpServerConfig::default()
         // Stateless, plain-JSON replies: no sessions to hold or exhaust.
         .with_legacy_session_mode(false)
@@ -79,7 +102,7 @@ pub async fn serve(
         .enforce_origin_validation()
         .with_cancellation_token(stop.child_token());
     let service = StreamableHttpService::new(
-        move || Ok(TiqMcp::new(host.clone(), cfg.clone(), in_flight.clone())),
+        move || Ok(TiqMcp::new(host.clone(), cfg.clone(), slots.clone())),
         Arc::new(NeverSessionManager::default()),
         config,
     );
@@ -119,30 +142,36 @@ fn ct_eq(a: &[u8], b: &[u8]) -> bool {
 
 /// Run `work` under the in-flight cap and the timeout. The work runs on its own task and
 /// holds its permit until it finishes — past a timeout too — so timed-out queries still
-/// count against the cap. `on_timeout` fires once if the deadline passes first.
+/// count against the cap. Never dropped mid-way, either: a sqlx connection dropped inside
+/// `BEGIN` would go back to its pool mid-transaction. If the deadline passes first,
+/// `on_timeout` gets the task (to abort, where that is the only way to stop it) and says
+/// what happened to the query.
 pub(crate) async fn bounded<T: Send + 'static>(
     sem: &Arc<Semaphore>,
     limit: Duration,
     work: impl Future<Output = Result<T, String>> + Send + 'static,
-    on_timeout: impl FnOnce(),
+    on_timeout: impl FnOnce(&tokio::task::AbortHandle) -> String,
 ) -> Result<T, String> {
     let permit = sem.clone().try_acquire_owned().map_err(|_| {
-        format!("TableIQ is already running {MAX_IN_FLIGHT} MCP requests; try again when one finishes.")
+        format!("TableIQ is already running {MAX_IN_FLIGHT} MCP requests of this kind; try again when one finishes.")
     })?;
-    let task = tokio::spawn(async move {
+    let mut task = tokio::spawn(async move {
         let r = work.await;
         drop(permit);
         r
     });
-    match tokio::time::timeout(limit, task).await {
+    match tokio::time::timeout(limit, &mut task).await {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => Err(format!("The request failed: {e}")),
         Err(_) => {
-            on_timeout();
-            Err(format!("Timed out after {}s; the query was cancelled where the database allows it.", limit.as_secs()))
+            let what = on_timeout(&task.abort_handle());
+            Err(format!("Timed out after {}s. {what}", limit.as_secs()))
         }
     }
 }
+
+/// What a timeout did to a query that has no way to be stopped.
+const NOTHING_TO_STOP: &str = "Nothing was running on the database.";
 
 // ── Tools ─────────────────────────────────────────────────────────────────
 
@@ -194,7 +223,9 @@ struct TableSummary {
 pub(crate) struct TiqMcp {
     host: Arc<dyn Host>,
     cfg: Arc<McpConfig>,
-    in_flight: Arc<Semaphore>,
+    slots: Slots,
+    /// [`TOOL_TIMEOUT`]; shorter in tests.
+    timeout: Duration,
     tool_router: ToolRouter<Self>,
 }
 
@@ -206,11 +237,13 @@ fn json<T: Serialize>(v: &T) -> Result<String, String> {
 }
 
 impl TiqMcp {
-    fn new(host: Arc<dyn Host>, cfg: Arc<McpConfig>, in_flight: Arc<Semaphore>) -> Self {
-        Self { host, cfg, in_flight, tool_router: Self::tool_router() }
+    fn new(host: Arc<dyn Host>, cfg: Arc<McpConfig>, slots: Slots) -> Self {
+        Self { host, cfg, slots, timeout: TOOL_TIMEOUT, tool_router: Self::tool_router() }
     }
 
-    /// Run a tool body bounded, and record it in the activity ring whatever the outcome.
+    /// Run a tool body bounded — on the query slots for `run_query`, the metadata slots
+    /// otherwise — and record it in the activity ring whatever the outcome.
+    #[allow(clippy::too_many_arguments)]
     async fn call(
         &self,
         ext: &Extensions,
@@ -218,10 +251,17 @@ impl TiqMcp {
         conn: Option<&str>,
         sql: Option<&str>,
         work: impl Future<Output = Done> + Send + 'static,
-        on_timeout: impl FnOnce(),
+        on_timeout: impl FnOnce(&tokio::task::AbortHandle) -> String,
     ) -> Result<String, String> {
         let t0 = Instant::now();
-        let res = bounded(&self.in_flight, TOOL_TIMEOUT, work, on_timeout).await;
+        let sem = if tool == "run_query" { &self.slots.query } else { &self.slots.meta };
+        let res = bounded(sem, self.timeout, work, on_timeout).await.and_then(|(s, n)| {
+            if s.len() > MAX_RESPONSE_BYTES {
+                Err(format!("The response is larger than {} MB; narrow the request.", MAX_RESPONSE_BYTES >> 20))
+            } else {
+                Ok((s, n))
+            }
+        });
         record(Activity {
             seq: 0,
             ts_ms: 0,
@@ -265,14 +305,52 @@ fn allowed(host: &dyn Host, cfg: &McpConfig, id: &str) -> Result<(ConnConfig, bo
     Ok((conn, entry.writes))
 }
 
-/// The live session for `id`, connecting on demand.
-async fn session(host: &dyn Host, id: &str) -> Result<Arc<dyn SqlDriver>, String> {
+/// The live session for `conn`, connecting on demand. A DuckDB one is hardened first.
+async fn session(host: &dyn Host, conn: &ConnConfig) -> Result<Arc<dyn SqlDriver>, String> {
     let state = host.conns();
-    if let Ok(d) = state.session(id) {
-        return Ok(d);
+    let drv = match state.session(&conn.id) {
+        Ok(d) => d,
+        Err(_) => {
+            connect_inner(state, &conn.id).await?;
+            state.session(&conn.id)?
+        }
+    };
+    if conn.engine == "duckdb" {
+        harden_duckdb(drv.as_ref()).await?;
     }
-    connect_inner(state, id).await?;
-    state.session(id)
+    Ok(drv)
+}
+
+/// DuckDB has no users: a table function can read any file the app can (`read_text`,
+/// `glob`, `FROM '/path'`) or fetch over HTTP. Before MCP touches a DuckDB instance, turn
+/// external access and extension auto-loading off and lock the configuration — for the
+/// whole instance, the user's own tabs included, until TableIQ restarts. Checked on every
+/// use rather than cached, so a reopened instance (a reconnect) is hardened again.
+async fn harden_duckdb(drv: &dyn SqlDriver) -> Result<(), String> {
+    static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _one = ONE_AT_A_TIME.lock().await;
+    let probe = "SELECT current_setting('enable_external_access')::VARCHAR, \
+                 current_setting('lock_configuration')::VARCHAR"
+        .to_string();
+    let now = rows_of(drv, &[probe], 1, &CancelToken::new()).await?;
+    let row = now.rows.first().cloned().unwrap_or_default();
+    let (external, locked) = (row.first().cloned().flatten(), row.get(1).cloned().flatten());
+    match (external.as_deref(), locked.as_deref()) {
+        (Some("false"), Some("true")) => Ok(()),
+        (_, Some("true")) => Err("This DuckDB connection's configuration is locked with file access \
+                                  on, so it cannot be shared safely. Restart TableIQ and try again."
+            .into()),
+        _ => {
+            let set = [
+                "SET enable_external_access = false",
+                "SET autoinstall_known_extensions = false",
+                "SET autoload_known_extensions = false",
+                "SET lock_configuration = true",
+            ]
+            .map(String::from);
+            rows_of(drv, &set, 1, &CancelToken::new()).await.map(|_| ())
+        }
+    }
 }
 
 fn list_connections_body(host: &dyn Host, cfg: &McpConfig) -> Done {
@@ -288,16 +366,16 @@ fn list_connections_body(host: &dyn Host, cfg: &McpConfig) -> Done {
 }
 
 async fn list_databases_body(host: Arc<dyn Host>, cfg: Arc<McpConfig>, id: String) -> Done {
-    allowed(host.as_ref(), &cfg, &id)?;
-    let drv = session(host.as_ref(), &id).await?;
+    let (conn, _) = allowed(host.as_ref(), &cfg, &id)?;
+    let drv = session(host.as_ref(), &conn).await?;
     let dbs = drv.list_databases().await.map_err(|e| e.to_string())?;
     let n = dbs.len();
     Ok((json(&dbs)?, Some(n)))
 }
 
 async fn list_tables_body(host: Arc<dyn Host>, cfg: Arc<McpConfig>, a: ListTablesArgs) -> Done {
-    allowed(host.as_ref(), &cfg, &a.connection_id)?;
-    let drv = session(host.as_ref(), &a.connection_id).await?;
+    let (conn, _) = allowed(host.as_ref(), &cfg, &a.connection_id)?;
+    let drv = session(host.as_ref(), &conn).await?;
     let model = drv.introspect().await.map_err(|e| e.to_string())?;
     let tables: Vec<TableSummary> = model
         .schemas
@@ -313,8 +391,8 @@ async fn list_tables_body(host: Arc<dyn Host>, cfg: Arc<McpConfig>, a: ListTable
 }
 
 async fn describe_table_body(host: Arc<dyn Host>, cfg: Arc<McpConfig>, a: DescribeArgs) -> Done {
-    allowed(host.as_ref(), &cfg, &a.connection_id)?;
-    let drv = session(host.as_ref(), &a.connection_id).await?;
+    let (conn, _) = allowed(host.as_ref(), &cfg, &a.connection_id)?;
+    let drv = session(host.as_ref(), &conn).await?;
     match drv.describe_table(&a.schema, &a.table).await {
         Ok(t) => Ok((json(&t)?, Some(t.columns.len()))),
         // Engines without a Structure query still know the columns from introspection.
@@ -335,7 +413,16 @@ async fn describe_table_body(host: Arc<dyn Host>, cfg: Arc<McpConfig>, a: Descri
     }
 }
 
-async fn run_query_body(host: Arc<dyn Host>, cfg: Arc<McpConfig>, a: RunQueryArgs, key: String) -> Done {
+/// `db`: where a SQL Server session is, filled in before the query runs — a timeout that
+/// has to reconnect puts the session back on that database (it may differ from the saved
+/// one after ⌘D).
+async fn run_query_body(
+    host: Arc<dyn Host>,
+    cfg: Arc<McpConfig>,
+    a: RunQueryArgs,
+    key: String,
+    db: Arc<std::sync::Mutex<Option<String>>>,
+) -> Done {
     let (conn, writes) = allowed(host.as_ref(), &cfg, &a.connection_id)?;
     let stmts = if writes {
         guard_sql(&conn.engine, &a.sql, true)?;
@@ -344,14 +431,51 @@ async fn run_query_body(host: Arc<dyn Host>, cfg: Arc<McpConfig>, a: RunQueryArg
         read_only_stmts(&conn.engine, &a.sql)?
     };
     let cap = a.max_rows.unwrap_or(cfg.row_cap).min(cfg.row_cap);
-    let drv = session(host.as_ref(), &a.connection_id).await?;
+    let drv = session(host.as_ref(), &conn).await?;
+    if conn.engine == "sqlserver" {
+        let now = rows_of(drv.as_ref(), &["SELECT DB_NAME()".to_string()], 1, &CancelToken::new()).await?;
+        *crate::lk(&db) = now.rows.first().and_then(|r| r.first().cloned().flatten());
+    }
     let rows = registered_rows(&host.conns().cancels, drv.as_ref(), Some(&key), &stmts, cap).await;
     if writes {
         drv.forget_meta(); // it may have been DDL, as in `run_query`
     }
-    let rows = rows?;
+    let mut rows = rows?;
+    fit_rows(&mut rows, MAX_RESPONSE_BYTES);
     let n = rows.rows.len();
     Ok((json(&rows)?, Some(n)))
+}
+
+/// Drop trailing rows until `rows` serializes within `budget` bytes, flagging `truncated`.
+fn fit_rows(rows: &mut Rows, budget: usize) {
+    // `{"columns":…,"rows":[…],"truncated":false}` around the rows.
+    let mut used = serde_json::to_string(&rows.columns).map_or(0, |s| s.len()) + 48;
+    let keep = rows
+        .rows
+        .iter()
+        .take_while(|r| {
+            used += serde_json::to_string(r).map_or(usize::MAX / 2, |s| s.len()) + 1;
+            used <= budget
+        })
+        .count();
+    if keep < rows.rows.len() {
+        rows.rows.truncate(keep);
+        rows.truncated = true;
+    }
+}
+
+/// Put a SQL Server session back after a timeout: the driver has one pinned connection and
+/// no cancel, so the stuck query was aborted and the connection is replaced (dropping the old
+/// one ends the query server-side and rolls its transaction back).
+async fn reconnect(host: Arc<dyn Host>, id: String, db: Option<String>) {
+    let state = host.conns();
+    let res = match db {
+        Some(db) => switch_inner(state, id.clone(), db).await,
+        None => connect_inner(state, &id).await,
+    };
+    if let Err(e) = res {
+        crate::applog::log("error", &format!("MCP: reconnecting {id} after a timeout failed: {e}"));
+    }
 }
 
 #[tool_router]
@@ -362,14 +486,14 @@ impl TiqMcp {
     )]
     async fn list_connections(&self, ext: Extensions) -> Result<String, String> {
         let done = list_connections_body(self.host.as_ref(), &self.cfg);
-        self.call(&ext, "list_connections", None, None, async move { done }, || {}).await
+        self.call(&ext, "list_connections", None, None, async move { done }, |_| NOTHING_TO_STOP.into()).await
     }
 
     #[tool(description = "List the databases on a shared connection's server.", annotations(read_only_hint = true))]
     async fn list_databases(&self, ext: Extensions, Parameters(a): Parameters<ConnArgs>) -> Result<String, String> {
         let id = a.connection_id;
         let work = list_databases_body(self.host.clone(), self.cfg.clone(), id.clone());
-        self.call(&ext, "list_databases", Some(&id), None, work, || {}).await
+        self.call(&ext, "list_databases", Some(&id), None, work, |_| NOTHING_TO_STOP.into()).await
     }
 
     #[tool(
@@ -379,14 +503,14 @@ impl TiqMcp {
     async fn list_tables(&self, ext: Extensions, Parameters(a): Parameters<ListTablesArgs>) -> Result<String, String> {
         let id = a.connection_id.clone();
         let work = list_tables_body(self.host.clone(), self.cfg.clone(), a);
-        self.call(&ext, "list_tables", Some(&id), None, work, || {}).await
+        self.call(&ext, "list_tables", Some(&id), None, work, |_| NOTHING_TO_STOP.into()).await
     }
 
     #[tool(description = "Describe one table: columns, indexes and triggers.", annotations(read_only_hint = true))]
     async fn describe_table(&self, ext: Extensions, Parameters(a): Parameters<DescribeArgs>) -> Result<String, String> {
         let id = a.connection_id.clone();
         let work = describe_table_body(self.host.clone(), self.cfg.clone(), a);
-        self.call(&ext, "describe_table", Some(&id), None, work, || {}).await
+        self.call(&ext, "describe_table", Some(&id), None, work, |_| NOTHING_TO_STOP.into()).await
     }
 
     #[tool(description = "Run exactly one SQL statement on a shared connection and return its rows as JSON \
@@ -395,18 +519,38 @@ impl TiqMcp {
                           transaction control are refused.")]
     async fn run_query(&self, ext: Extensions, Parameters(a): Parameters<RunQueryArgs>) -> Result<String, String> {
         let (id, sql) = (a.connection_id.clone(), a.sql.clone());
+        let engine = allowed(self.host.as_ref(), &self.cfg, &id).map(|(c, _)| c.engine).unwrap_or_default();
         // Registered like any query, so ⌘. (Cancel Running Queries) stops MCP queries too.
         let key = ckey(&id, &format!("mcp:{}", uuid::Uuid::new_v4()));
-        let work = run_query_body(self.host.clone(), self.cfg.clone(), a, key.clone());
+        let db = Arc::new(std::sync::Mutex::new(None));
+        let work = run_query_body(self.host.clone(), self.cfg.clone(), a, key.clone(), db.clone());
         let (host, conn_id) = (self.host.clone(), id.clone());
-        let cancel = move || {
-            tokio::spawn(async move {
-                if let Ok(drv) = host.conns().session(&id) {
-                    let _ = cancel_registered(&host.conns().cancels, drv.as_ref(), &key).await;
+        let on_timeout = move |task: &tokio::task::AbortHandle| -> String {
+            match engine.as_str() {
+                "sqlserver" => {
+                    task.abort();
+                    crate::lk(&host.conns().cancels).remove(&key);
+                    let db = crate::lk(&db).clone();
+                    tokio::spawn(reconnect(host, id, db));
+                    "SQL Server cannot cancel a running query, so TableIQ closed its connection \
+                     (rolling back anything uncommitted) and is reconnecting."
+                        .into()
                 }
-            });
+                "duckdb" => "DuckDB cannot interrupt a running query: it keeps running, and keeps one \
+                             of the query slots, until it finishes."
+                    .into(),
+                // Postgres/MySQL cancel server-side; SQLite interrupts at its next step.
+                _ => {
+                    tokio::spawn(async move {
+                        if let Ok(drv) = host.conns().session(&id) {
+                            let _ = cancel_registered(&host.conns().cancels, drv.as_ref(), &key).await;
+                        }
+                    });
+                    "The query was cancelled.".into()
+                }
+            }
         };
-        self.call(&ext, "run_query", Some(&conn_id), Some(&sql), work, cancel).await
+        self.call(&ext, "run_query", Some(&conn_id), Some(&sql), work, on_timeout).await
     }
 }
 
@@ -457,12 +601,17 @@ mod tests {
             connections: allow.iter().map(|(id, w)| McpConn { id: (*id).into(), writes: *w }).collect(),
             ..McpConfig::default()
         };
-        TiqMcp::new(Arc::new(ConnState::with_configs(conns)), Arc::new(cfg), Arc::new(Semaphore::new(MAX_IN_FLIGHT)))
+        TiqMcp::new(Arc::new(ConnState::with_configs(conns)), Arc::new(cfg), fresh_slots())
     }
 
     async fn query(m: &TiqMcp, id: &str, sql: &str) -> Result<String, String> {
         let args = RunQueryArgs { connection_id: id.into(), sql: sql.into(), max_rows: None };
         m.run_query(Extensions::new(), Parameters(args)).await
+    }
+
+    /// Slots of this test's own, so parallel tests never share the process-wide caps.
+    fn fresh_slots() -> Slots {
+        Slots { query: Arc::new(Semaphore::new(MAX_IN_FLIGHT)), meta: Arc::new(Semaphore::new(MAX_IN_FLIGHT)) }
     }
 
     #[test]
@@ -600,7 +749,7 @@ mod tests {
         let m = TiqMcp::new(
             Arc::new(ConnState::with_configs(vec![sqlite(&tmp, "c").await])),
             Arc::new(cfg),
-            Arc::new(Semaphore::new(MAX_IN_FLIGHT)),
+            fresh_slots(),
         );
         let args = RunQueryArgs { connection_id: "c".into(), sql: "SELECT n FROM t".into(), max_rows: Some(100) };
         let v: serde_json::Value = serde_json::from_str(&m.run_query(Extensions::new(), Parameters(args)).await.unwrap()).unwrap();
@@ -635,7 +784,7 @@ mod tests {
         for _ in 0..MAX_IN_FLIGHT {
             let (sem, mut rx) = (sem.clone(), tx.subscribe());
             running.push(tokio::spawn(async move {
-                bounded(&sem, Duration::from_secs(10), async move { rx.recv().await.map_err(|e| e.to_string()) }, || {}).await
+                bounded(&sem, Duration::from_secs(10), async move { rx.recv().await.map_err(|e| e.to_string()) }, |_| NOTHING_TO_STOP.into()).await
             }));
         }
         let all_taken = async {
@@ -644,14 +793,14 @@ mod tests {
             }
         };
         tokio::time::timeout(Duration::from_secs(5), all_taken).await.expect("every running call holds a slot");
-        let e = bounded(&sem, Duration::from_secs(10), async { Ok(()) }, || {}).await.unwrap_err();
+        let e = bounded(&sem, Duration::from_secs(10), async { Ok(()) }, |_| NOTHING_TO_STOP.into()).await.unwrap_err();
         assert!(e.contains("already running 4"), "{e}");
 
         tx.send(()).unwrap();
         for r in running {
             r.await.unwrap().unwrap();
         }
-        assert_eq!(bounded(&sem, Duration::from_secs(10), async { Ok(7) }, || {}).await, Ok(7));
+        assert_eq!(bounded(&sem, Duration::from_secs(10), async { Ok(7) }, |_| NOTHING_TO_STOP.into()).await, Ok(7));
     }
 
     /// A call past its deadline answers with a timeout at once, fires the cancel, and keeps
@@ -666,7 +815,10 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(400)).await;
             Ok(())
         };
-        let e = bounded(&sem, Duration::from_millis(50), slow, move || f.store(true, std::sync::atomic::Ordering::SeqCst))
+        let e = bounded(&sem, Duration::from_millis(50), slow, move |_| {
+            f.store(true, std::sync::atomic::Ordering::SeqCst);
+            "cancelled".into()
+        })
             .await
             .unwrap_err();
         assert!(e.starts_with("Timed out"), "{e}");
@@ -675,5 +827,102 @@ mod tests {
         assert_eq!(sem.available_permits(), MAX_IN_FLIGHT - 1, "still holding its slot");
         tokio::time::sleep(Duration::from_millis(600)).await;
         assert_eq!(sem.available_permits(), MAX_IN_FLIGHT, "released once the work ended");
+    }
+
+    const RUNAWAY: &str = "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 1000000000) \
+                           SELECT count(*) FROM c";
+
+    /// A SQLite query past its deadline is interrupted — not left running with its slot
+    /// taken — so four runaway queries can't wedge the server for good.
+    #[tokio::test]
+    async fn a_timed_out_sqlite_query_is_interrupted_and_frees_its_slot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut m = mcp(vec![sqlite(&tmp, "slow").await], &[("slow", false)]);
+        m.timeout = Duration::from_millis(300);
+        let t0 = Instant::now();
+        let e = query(&m, "slow", RUNAWAY).await.unwrap_err();
+        assert!(e.starts_with("Timed out") && e.contains("cancelled"), "{e}");
+        let freed = async {
+            while m.slots.query.available_permits() < MAX_IN_FLIGHT {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(5), freed).await.expect("the interrupted query gave its slot back");
+        assert!(t0.elapsed() < Duration::from_secs(5));
+        m.timeout = TOOL_TIMEOUT;
+        assert!(query(&m, "slow", "SELECT count(*) FROM t").await.unwrap().contains("\"3\""), "the connection still works");
+    }
+
+    /// Metadata tools answer from their own slots while every query slot is taken.
+    #[tokio::test]
+    async fn metadata_tools_answer_while_query_slots_are_full() {
+        let tmp = tempfile::tempdir().unwrap();
+        let m = mcp(vec![sqlite(&tmp, "busy").await], &[("busy", false)]);
+        let _held: Vec<_> = (0..MAX_IN_FLIGHT).map(|_| m.slots.query.clone().try_acquire_owned().unwrap()).collect();
+        assert!(query(&m, "busy", "SELECT 1").await.unwrap_err().contains("already running"));
+        let lt = ListTablesArgs { connection_id: "busy".into(), schema: None };
+        assert!(m.list_tables(Extensions::new(), Parameters(lt)).await.unwrap().contains("\"t\""));
+        assert!(m.list_connections(Extensions::new()).await.is_ok());
+    }
+
+    /// A response is held to `MAX_RESPONSE_BYTES`: rows past it are dropped and flagged.
+    #[tokio::test]
+    async fn run_query_responses_are_capped_in_bytes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let m = mcp(vec![sqlite(&tmp, "big").await], &[("big", false)]);
+        // 40 rows of ~300 KB: ~12 MB of JSON.
+        let sql = "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 40) \
+                   SELECT x, hex(zeroblob(150000)) AS blob FROM c";
+        let out = query(&m, "big", sql).await.unwrap();
+        assert!(out.len() <= MAX_RESPONSE_BYTES, "{} bytes", out.len());
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let n = v["rows"].as_array().unwrap().len();
+        assert!(n > 0 && n < 40, "{n} rows");
+        assert_eq!(v["truncated"], true);
+    }
+
+    #[test]
+    fn fit_rows_keeps_what_fits_and_flags_the_rest() {
+        let mut rows = Rows {
+            columns: vec!["a".into()],
+            rows: (0..10).map(|i| vec![Some(format!("{i:0>20}"))]).collect(),
+            truncated: false,
+        };
+        fit_rows(&mut rows, 10_000);
+        assert_eq!((rows.rows.len(), rows.truncated), (10, false), "all fit");
+        fit_rows(&mut rows, 150);
+        assert!(rows.truncated && rows.rows.len() < 10 && !rows.rows.is_empty(), "{}", rows.rows.len());
+        assert!(serde_json::to_string(&rows).unwrap().len() <= 150);
+    }
+
+    /// Sharing a DuckDB connection turns file and network access off on its instance — for
+    /// SQL the guard would pass, and for the user's own tabs too — and locks it that way.
+    #[tokio::test]
+    async fn a_shared_duckdb_instance_loses_external_access() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("d.duckdb");
+        let hosts = tmp.path().join("hosts.csv");
+        std::fs::write(&hosts, "a,b\n1,2\n").unwrap();
+        let m = mcp(vec![cfg_of("duck", "duckdb", path.to_str().unwrap())], &[("duck", false)]);
+
+        let e = query(&m, "duck", &format!("SELECT * FROM read_csv('{}')", hosts.display())).await.unwrap_err();
+        assert!(e.contains("not allowed"), "{e}");
+        assert!(query(&m, "duck", "SELECT 42").await.unwrap().contains("42"));
+
+        // Underneath the guard: the instance itself refuses, and can't be switched back.
+        let drv = m.host.conns().session("duck").unwrap();
+        for sql in [
+            format!("SELECT * FROM read_csv('{}')", hosts.display()),
+            format!("SELECT * FROM '{}'", hosts.display()),
+            format!("SELECT * FROM glob('{}/*')", tmp.path().display()),
+        ] {
+            let e = rows_of(drv.as_ref(), std::slice::from_ref(&sql), 10, &CancelToken::new()).await.err().expect("refused");
+            assert!(e.to_lowercase().contains("external access") || e.contains("disabled"), "{sql}: {e}");
+        }
+        let set = ["SET enable_external_access = true".to_string()];
+        let e = rows_of(drv.as_ref(), &set, 10, &CancelToken::new()).await.err().expect("locked");
+        assert!(e.to_lowercase().contains("lock") || e.to_lowercase().contains("cannot"), "{e}");
+        // A second call finds it hardened already and carries on.
+        assert!(query(&m, "duck", "SELECT 1").await.is_ok());
     }
 }
