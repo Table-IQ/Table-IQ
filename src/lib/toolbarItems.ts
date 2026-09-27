@@ -21,10 +21,12 @@ export const TOOLBAR_ITEMS: ToolbarItemInfo[] = [
   { id: "theme-toggle", label: "Theme" },
   { id: "help", label: "Help / Show tour" },
   { id: "workspace-overview", label: "Workspace Overview" },
+  { id: "sql-log", label: "SQL log" },
+  { id: "metrics", label: "Metrics Board" },
 ];
 
 /** Items hidden until the user opts in from Settings → Toolbar. */
-export const DEFAULT_HIDDEN_TOOLBAR_IDS: string[] = ["workspace-overview"];
+export const DEFAULT_HIDDEN_TOOLBAR_IDS: string[] = ["workspace-overview", "metrics"];
 
 export const DEFAULT_TOOLBAR_PREF: ToolbarPref = {
   order: TOOLBAR_ITEMS.map((i) => i.id),

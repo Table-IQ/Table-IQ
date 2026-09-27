@@ -23,6 +23,7 @@ import {
   type TableStructure,
 } from "../lib/commands";
 import { buildEdit, writeOutcomeMessage } from "../lib/edit";
+import { confirmDialog } from "../lib/confirmDialog";
 import { outgoingForeignKeys } from "../lib/fk";
 import { decodeWindow, type DecodedWindow } from "../lib/arrowWindow";
 import { pageCursor } from "../lib/keyset";
@@ -88,17 +89,6 @@ interface Props {
   object: ObjectInfo;
   /** Which sub-view the tab is on. Owned by the tab so it survives tab switches. */
   view: "data" | "structure";
-}
-
-/** Native confirm via the Tauri dialog plugin (desktop), falling back to the
- *  browser dialog when running outside the webview (vite preview / tests). */
-async function confirmDestructive(message: string): Promise<boolean> {
-  try {
-    const { confirm } = await import("@tauri-apps/plugin-dialog");
-    return await confirm(message, { title: "Delete row", kind: "warning" });
-  } catch {
-    return typeof window !== "undefined" ? window.confirm(message) : false;
-  }
 }
 
 export function TableView({ connId, schema, object, view }: Props) {
@@ -1161,8 +1151,9 @@ export function TableView({ connId, schema, object, view }: Props) {
           const deleteRowAction = async () => {
             if (!pk || pk.length === 0 || !srv) return;
             const pkPairs = pk.map((c) => [c, srv[c] ?? null] as [string, string | null]);
-            const ok = await confirmDestructive(
+            const ok = await confirmDialog(
               `Delete this row from ${qualified}? This cannot be undone.`,
+              "Delete row",
             );
             if (!ok) return;
             setNotice(null);

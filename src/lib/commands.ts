@@ -654,6 +654,20 @@ export async function cancelAll(id: string): Promise<number> {
   return invoke<number>("cancel_all", { id });
 }
 
+/** One statement the app ran on a connection. `seq` rises across every connection. */
+export type SqlLogEntry = { seq: number; ts_us: number; sql: string };
+
+/** Connection `id`'s SQL log after `afterSeq` (0 = all of it), oldest first. */
+export async function sqlLog(id: string, afterSeq: number): Promise<SqlLogEntry[]> {
+  if (!inTauri()) return []; // mock: no statements run
+  return invoke<SqlLogEntry[]>("sql_log", { id, afterSeq });
+}
+
+export async function clearSqlLog(id: string): Promise<void> {
+  if (!inTauri()) return;
+  await invoke("clear_sql_log", { id });
+}
+
 export async function fetchResultWindow(
   resultId: string,
   offset: number,
@@ -714,6 +728,27 @@ export async function runScript(id: string, sql: string): Promise<{ rowsAffected
   if (!inTauri()) return { rowsAffected: 0 };
   const r = await invoke<{ rows_affected: number }>("run_script", { id, sql });
   return { rowsAffected: r.rows_affected };
+}
+
+/** Plain rows from `query_rows` (Task 10 Users list, Task 11 metrics, Task 14 MCP) — capped
+ *  at 1000, no history, no `ResultStore` entry. */
+export interface Rows {
+  columns: string[];
+  rows: (string | null)[][];
+  truncated: boolean;
+}
+
+/** Run `sql` and return its rows, capped at `maxRows` (never above 1000). With a `queryId`,
+ *  `cancelQuery(id, queryId)` — and ⌘. (`cancelAll`) — can stop it while it runs. */
+export async function queryRows(
+  id: string,
+  sql: string,
+  maxRows?: number,
+  queryId?: string,
+): Promise<Rows> {
+  if (!inTauri())
+    return { columns: ["label", "value"], rows: [["a", "3"], ["b", "5"]], truncated: false };
+  return invoke<Rows>("query_rows", { id, sql, maxRows: maxRows ?? null, queryId: queryId ?? null });
 }
 
 // ── WASM plugins (Extism) ──────────────────────────────────────────────────

@@ -145,13 +145,15 @@ saturated than our previous indigo-tinted dark.
 - `<Wordmark>` + active-connection dot + name (left)
 - Breadcrumb: `connection · database · schema · table` (center, font-mono)
 - Right icon strip: refresh schema, switch database, command palette, theme, help, Workspace
-  Overview (hidden by default), inspector toggle, disconnect. User-reorderable and hideable
-  (Settings → Toolbar, or right-click the title bar) except the fixed inspector-toggle/disconnect
-  pair.
+  Overview (hidden by default), SQL Log, Metrics Board (hidden by default), inspector toggle,
+  disconnect. User-reorderable and hideable (Settings → Toolbar, or right-click the title bar)
+  except the fixed inspector-toggle/disconnect pair.
 
 ### Tab strip (26px)
 - `<` `>` history navigation
-- Tab list — kind glyph (◇ query / ◫ ERD / ▦ table) + title
+- Tab list — kind glyph (◇ query / ◫ ERD / ▦ table / ▤ users / ◨ metrics) + title. ERD is the
+  only one of these five drawn in `--accent`; the rest use the neutral tab-glyph token (see
+  the accent rule above — AI surfaces only).
 - Active tab: subtler highlight (no top-border accent)
 - Right-edge `+` for new query
 

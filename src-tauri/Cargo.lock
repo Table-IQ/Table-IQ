@@ -7126,7 +7126,7 @@ dependencies = [
 
 [[package]]
 name = "tableiq"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "arrow 53.4.1",
  "async-trait",
@@ -7154,6 +7154,8 @@ dependencies = [
  "tiberius",
  "tokio",
  "tokio-util",
+ "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 

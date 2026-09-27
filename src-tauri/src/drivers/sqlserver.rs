@@ -16,6 +16,8 @@ use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
+use crate::sql_log::note;
+
 use super::{
     build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
     ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec, ForeignKey, IndexInfo,
@@ -24,6 +26,8 @@ use super::{
 };
 
 type Conn = Client<Compat<TcpStream>>;
+
+// tiberius logs nothing, so every call site below `note`s its SQL for the SQL log first.
 
 fn db<E: std::fmt::Display>(e: E) -> DriverError {
     DriverError::Db(e.to_string())
@@ -175,14 +179,18 @@ async fn restore_database(c: &mut Conn, database: &str) {
     if database.is_empty() {
         return;
     }
-    if let Ok(mut s) = c.simple_query(format!("USE {}", quote_ident(database))).await {
+    let sql = format!("USE {}", quote_ident(database));
+    note(&sql);
+    if let Ok(mut s) = c.simple_query(sql).await {
         while s.next().await.is_some() {}
     }
 }
 
 async fn rollback_orphan_tx(c: &mut Conn) {
     use futures_util::StreamExt;
-    if let Ok(mut s) = c.simple_query("IF @@TRANCOUNT > 0 ROLLBACK").await {
+    const SQL: &str = "IF @@TRANCOUNT > 0 ROLLBACK";
+    note(SQL);
+    if let Ok(mut s) = c.simple_query(SQL).await {
         while s.next().await.is_some() {}
     }
 }
@@ -263,13 +271,17 @@ fn plain_select(stmt: &str) -> bool {
 /// `SET ROWCOUNT n` on the pinned session (`0` lifts it).
 async fn set_rowcount(c: &mut Conn, n: usize) {
     use futures_util::StreamExt;
-    if let Ok(mut s) = c.simple_query(format!("SET ROWCOUNT {n}")).await {
+    let sql = format!("SET ROWCOUNT {n}");
+    note(&sql);
+    if let Ok(mut s) = c.simple_query(sql).await {
         while s.next().await.is_some() {}
     }
 }
 
 async fn rowcount(c: &mut Conn) -> Option<u64> {
-    let row = c.simple_query("SELECT @@ROWCOUNT").await.ok()?.into_row().await.ok()??;
+    const SQL: &str = "SELECT @@ROWCOUNT";
+    note(SQL);
+    let row = c.simple_query(SQL).await.ok()?.into_row().await.ok()??;
     row.try_get::<i32, _>(0).ok().flatten().map(|n| n.max(0) as u64)
 }
 
@@ -432,6 +444,7 @@ impl SqlServerDriver {
         let mut c = self.client.lock().await;
         let q = "SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS \
                  WHERE TABLE_SCHEMA = @P1 AND TABLE_NAME = @P2 ORDER BY ORDINAL_POSITION";
+        note(q);
         let rows = c
             .query(q, &[&schema, &table])
             .await
@@ -455,6 +468,7 @@ impl SqlServerDriver {
         use futures_util::StreamExt;
         use tiberius::QueryItem;
         let mut c = self.client.lock().await;
+        note(sql);
         let mut stream = c.simple_query(sql).await.map_err(db)?;
         let mut columns: Vec<std::string::String> = Vec::new();
         let mut data: Vec<Vec<Option<std::string::String>>> = Vec::new();
@@ -528,6 +542,7 @@ impl SqlDriver for SqlServerDriver {
                 set_rowcount(&mut c, cap + 1).await;
             }
 
+            note(stmt);
             match c.simple_query(stmt.as_str()).await {
                 // An error before any metadata is raised by `simple_query` itself.
                 Err(e) => failed = Some(e),
@@ -718,6 +733,7 @@ impl SqlDriver for SqlServerDriver {
         let params: Vec<&dyn tiberius::ToSql> =
             owned.iter().map(|o| o as &dyn tiberius::ToSql).collect();
         let mut c = self.client.lock().await;
+        note(&q);
         let rows = c
             .query(q, &params)
             .await
@@ -758,6 +774,7 @@ impl SqlDriver for SqlServerDriver {
                    ON tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME AND tc.TABLE_SCHEMA = kcu.TABLE_SCHEMA \
                  WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY' AND tc.TABLE_SCHEMA = @P1 AND tc.TABLE_NAME = @P2 \
                  ORDER BY kcu.ORDINAL_POSITION";
+        note(q);
         let rows = c.query(q, &[&schema, &table]).await.map_err(db)?.into_first_result().await.map_err(db)?;
         let mut pk = Vec::with_capacity(rows.len());
         for r in &rows {
@@ -801,6 +818,7 @@ impl SqlDriver for SqlServerDriver {
         let params: Vec<&dyn tiberius::ToSql> = owned.iter().map(|o| o as &dyn tiberius::ToSql).collect();
 
         let mut c = self.client.lock().await;
+        note(&sql);
         let res = c.execute(sql, &params).await.map_err(db)?;
         Ok(res.total())
     }
@@ -835,6 +853,7 @@ impl SqlDriver for SqlServerDriver {
         let params: Vec<&dyn tiberius::ToSql> =
             owned.iter().map(|o| o as &dyn tiberius::ToSql).collect();
         let mut c = self.client.lock().await;
+        note(&sql);
         let res = c.execute(sql, &params).await.map_err(db)?;
         Ok(res.total())
     }
@@ -845,6 +864,7 @@ impl SqlDriver for SqlServerDriver {
 
     async fn run_script(&self, sql: &str) -> DResult<u64> {
         let mut c = self.client.lock().await;
+        note(sql);
         let res = c.execute(sql, &[]).await;
         // Same shared connection, same hazard — and a script that dies midway leaks its
         // transaction just as a successful one does, so probe either way. There is no
@@ -895,6 +915,7 @@ impl SqlDriver for SqlServerDriver {
         let params: Vec<&dyn tiberius::ToSql> =
             owned.iter().map(|o| o as &dyn tiberius::ToSql).collect();
         let mut c = self.client.lock().await;
+        note(&q);
         let rows = c
             .query(q, &params)
             .await
@@ -930,6 +951,7 @@ impl SqlDriver for SqlServerDriver {
         let params: Vec<&dyn tiberius::ToSql> =
             owned.iter().map(|o| o as &dyn tiberius::ToSql).collect();
         let mut c = self.client.lock().await;
+        note(&sql);
         let res = c.execute(sql, &params).await.map_err(db)?;
         Ok(res.total())
     }
@@ -975,6 +997,7 @@ impl SqlDriver for SqlServerDriver {
     async fn describe_table(&self, schema: &str, table: &str) -> DResult<TableStructure> {
         let qualified = format!("{}.{}", quote_ident(schema), quote_ident(table));
         let mut c = self.client.lock().await;
+        note(STRUCT_COLUMNS_SQL);
         let col_rows = c
             .query(STRUCT_COLUMNS_SQL, &[&qualified])
             .await
@@ -982,6 +1005,7 @@ impl SqlDriver for SqlServerDriver {
             .into_first_result()
             .await
             .map_err(db)?;
+        note(STRUCT_INDEXES_SQL);
         let idx_rows = c
             .query(STRUCT_INDEXES_SQL, &[&qualified])
             .await
@@ -989,6 +1013,7 @@ impl SqlDriver for SqlServerDriver {
             .into_first_result()
             .await
             .map_err(db)?;
+        note(STRUCT_TRIGGERS_SQL);
         let trg_rows = c
             .query(STRUCT_TRIGGERS_SQL, &[&qualified])
             .await

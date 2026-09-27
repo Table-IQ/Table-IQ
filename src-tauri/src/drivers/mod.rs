@@ -14,6 +14,7 @@ pub mod doc_mongo;
 pub mod duckdb;
 pub mod exec;
 pub mod kv_redis;
+pub mod logged;
 pub mod mysql;
 pub mod postgres;
 pub mod sqlite;
@@ -589,6 +590,9 @@ fn like_escape(term: &str) -> String {
 }
 
 /// SQL engines (PG/MySQL/MariaDB/SQLite/SQL Server). Results stream as Arrow.
+///
+/// Adding a method? Forward it in `drivers/logged.rs` — defaulted ones too, or `Logged` runs
+/// the default instead of the engine's override.
 #[async_trait]
 pub trait SqlDriver: Send + Sync {
     /// Browse the connection's schemas → tables/views → columns.

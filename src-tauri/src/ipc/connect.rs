@@ -14,11 +14,12 @@ use arrow::record_batch::RecordBatch;
 use crate::connections::{self, ConnConfig, ConnStore};
 use crate::lk;
 use crate::drivers::{
-    doc_mongo::MongoDriver, duckdb::DuckDriver, kv_redis::RedisDriver, mysql::MySqlDriver,
+    doc_mongo::MongoDriver, duckdb::DuckDriver, kv_redis::RedisDriver, logged::Logged, mysql::MySqlDriver,
     postgres::PgDriver, sqlite::SqliteDriver, sqlserver::SqlServerDriver, CancelToken,
     ColumnFilter, DocumentDriver, DriverError, EditSpec, KeyInfo, KvDriver, KvValue, SchemaModel,
     SortKey, SqlDriver,
 };
+use crate::sql_log::SqlLog;
 use crate::ssh::tunnel::{RemoteTarget, Tunnel};
 use crate::ssh::SshAuth;
 
@@ -81,6 +82,9 @@ pub struct ConnState {
     cancels: Mutex<HashMap<String, CancelToken>>,
     /// Saved queries + searchable run history (persisted JSON).
     library: Mutex<crate::library::QueryLibrary>,
+    /// Per-connection SQL logs (the bottom panel). Keyed by conn id, not by session, so a
+    /// log outlives ⌘D's session swap; disconnect drops it.
+    sql_logs: Mutex<HashMap<String, Arc<SqlLog>>>,
 }
 
 /// If `cfg` has SSH enabled, open a tunnel to the bastion forwarding to the remote DB and return
@@ -167,10 +171,16 @@ impl ConnState {
             tunnels: Mutex::new(HashMap::new()),
             cancels: Mutex::new(HashMap::new()),
             library: Mutex::new(crate::library::QueryLibrary::load()),
+            sql_logs: Mutex::new(HashMap::new()),
         }
     }
 
-    fn session(&self, id: &str) -> Result<Arc<dyn SqlDriver>, String> {
+    /// The connection's SQL log, created on first use.
+    pub(crate) fn sql_log_for(&self, id: &str) -> Arc<SqlLog> {
+        lk(&self.sql_logs).entry(id.to_string()).or_default().clone()
+    }
+
+    pub(crate) fn session(&self, id: &str) -> Result<Arc<dyn SqlDriver>, String> {
         lk(&self.sessions)
             .get(id)
             .cloned()
@@ -267,6 +277,7 @@ pub fn delete_connection(state: State<ConnState>, id: String) -> Result<(), Stri
     lk(&state.doc_sessions).remove(&id);
     lk(&state.tunnels).remove(&id);
     lk(&state.results).purge(&id);
+    lk(&state.sql_logs).remove(&id);
     // Remove both the DB password and any SSH secret for this connection.
     let _ = connections::delete_password(&connections::ssh_secret_account(&id));
     connections::delete_password(&id)
@@ -288,6 +299,12 @@ pub async fn test_connection(cfg: ConnConfig, password: String) -> Result<(), St
 
 #[tauri::command]
 pub async fn connect(state: State<'_, ConnState>, id: String) -> Result<ConnectedInfo, String> {
+    connect_inner(&state, &id).await
+}
+
+/// `connect`'s body, callable without a tauri `State` (the MCP server reuses it).
+pub(crate) async fn connect_inner(state: &ConnState, id: &str) -> Result<ConnectedInfo, String> {
+    let id = id.to_string();
     let cfg = {
         let store = lk(&state.store);
         store
@@ -321,6 +338,7 @@ pub async fn connect(state: State<'_, ConnState>, id: String) -> Result<Connecte
             lk(&state.doc_sessions).insert(id.clone(), Arc::new(drv));
         } else {
             let drv = open_driver(&eff, &password).await?;
+            let drv = Arc::new(Logged { inner: drv, log: state.sql_log_for(&id) });
             lk(&state.sessions).insert(id.clone(), drv);
         }
         Ok(())
@@ -352,6 +370,25 @@ pub fn disconnect(state: State<ConnState>, id: String) {
     // Dropping the Tunnel aborts its listener task and disconnects the SSH session.
     lk(&state.tunnels).remove(&id);
     lk(&state.results).purge(&id);
+    lk(&state.sql_logs).remove(&id);
+}
+
+/// The connection's SQL log entries after `after_seq` (0 = all), oldest first — the bottom
+/// panel polls with the last seq it has.
+#[tauri::command]
+pub fn sql_log(state: State<ConnState>, id: String, after_seq: u64) -> Vec<crate::sql_log::Entry> {
+    // Clone the log out first: copying up to 2000 entries must not hold the map lock that
+    // every connect, disconnect and ⌘D takes.
+    let log = lk(&state.sql_logs).get(&id).cloned();
+    log.map(|l| l.since(after_seq)).unwrap_or_default()
+}
+
+#[tauri::command]
+pub fn clear_sql_log(state: State<ConnState>, id: String) {
+    let log = lk(&state.sql_logs).get(&id).cloned();
+    if let Some(l) = log {
+        l.clear();
+    }
 }
 
 /// Enumerate the databases reachable from the active session for `id`. Routes
@@ -448,7 +485,8 @@ pub async fn switch_database(
                 .map_err(|e| e.to_string())?,
         ))
     } else {
-        NewSession::Sql(open_driver(&eff, &password).await?)
+        let drv = open_driver(&eff, &password).await?;
+        NewSession::Sql(Arc::new(Logged { inner: drv, log: state.sql_log_for(&id) }))
     };
 
     // Swap: drop whatever the old session was, then install the new one.
@@ -1001,6 +1039,92 @@ pub async fn run_script(
     let res = drv.run_script(&sql).await;
     drv.forget_meta(); // the script may have been DDL, as in run_query
     Ok(ScriptResult { rows_affected: res.map_err(|e| e.to_string())? })
+}
+
+/// Plain rows for an internal caller that must not touch history or the `ResultStore` —
+/// the Users list (Task 10), periodic metrics widgets (Task 11) and the MCP server (Task
+/// 14). Capped, no side effects.
+#[derive(Serialize)]
+pub struct Rows {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<Option<String>>>,
+    pub truncated: bool,
+}
+
+/// Run `stmts` on `drv`, capped at `cap` rows, and return the LAST statement that produced a
+/// result set as plain string rows (mirrors [`SqlDriver::run_query`]'s default impl, which
+/// takes the first — callers here are single trailing SELECTs, so last-with-a-batch is the
+/// one they mean). No history, no `ResultStore` entry: [`run_query`] is for callers that
+/// want either.
+pub async fn rows_of(
+    drv: &dyn SqlDriver,
+    stmts: &[String],
+    cap: usize,
+    token: &CancelToken,
+) -> Result<Rows, String> {
+    let outs = drv.run_statements(stmts, cap, token).await.map_err(|e| match e {
+        DriverError::Cancelled => "Query cancelled".to_string(),
+        other => other.to_string(),
+    })?;
+    if let Some(e) = outs.iter().find_map(|o| o.error.as_ref()) {
+        return Err(e.message.clone());
+    }
+    match outs.into_iter().rev().find(|o| o.batch.is_some()) {
+        Some(o) => {
+            let batch = o.batch.expect("filtered on is_some");
+            let columns = batch.schema().fields().iter().map(|f| f.name().clone()).collect();
+            Ok(Rows { columns, rows: batch_to_rows(&batch), truncated: o.truncated })
+        }
+        // Every statement was DML/DDL with no result set.
+        None => Ok(Rows { columns: vec![], rows: vec![], truncated: false }),
+    }
+}
+
+/// Run `sql` and return its rows, capped at `max_rows` (never above 1000 regardless of what
+/// the caller asks for). No history recording, no `ResultStore` insert — for
+/// internal/periodic reads (the Users list, metrics widgets, MCP) that must not pollute the
+/// user's query history or hold a result-window handle.
+///
+/// `sql` is handed to the driver as one string, not re-split here — but that is not a
+/// one-statement guarantee: Postgres and MySQL run every statement in it (sqlx `raw_sql`),
+/// and SQL Server runs it as one batch. Callers that must stay read-only check the text
+/// first (`metrics.ts`'s `isReadOnlyWidgetSql`); `rows_of` returns the last result set.
+///
+/// With a `query_id`, the run is registered under `ckey(id, query_id)` like [`run_query`],
+/// so `cancel_query` and ⌘. (`cancel_all`) can stop it.
+#[tauri::command]
+pub async fn query_rows(
+    state: State<'_, ConnState>,
+    id: String,
+    sql: String,
+    max_rows: Option<usize>,
+    query_id: Option<String>,
+) -> Result<Rows, String> {
+    let drv = state.session(&id)?;
+    let cap = max_rows.unwrap_or(1000).min(1000);
+    let key = query_id.map(|q| ckey(&id, &q));
+    registered_rows(&state.cancels, drv.as_ref(), key.as_deref(), &[sql], cap).await
+}
+
+/// The body of [`query_rows`], outside Tauri so it can be tested: [`rows_of`] with a cancel
+/// token registered under `key` (inserted before, removed after, as in [`run_query`]).
+/// `None` runs unregistered.
+pub async fn registered_rows(
+    cancels: &Mutex<HashMap<String, CancelToken>>,
+    drv: &dyn SqlDriver,
+    key: Option<&str>,
+    stmts: &[String],
+    cap: usize,
+) -> Result<Rows, String> {
+    let token = CancelToken::new();
+    if let Some(k) = key {
+        lk(cancels).insert(k.to_string(), token.clone());
+    }
+    let res = rows_of(drv, stmts, cap, &token).await;
+    if let Some(k) = key {
+        lk(cancels).remove(k);
+    }
+    res
 }
 
 #[tauri::command]
@@ -1898,5 +2022,68 @@ mod tests {
 
         let outcome = cancel_all_outcome(n, had_running);
         assert_eq!(outcome, Err("Cancellation is not supported for this engine.".to_string()));
+    }
+
+    /// `rows_of` caps at `cap` and reports `truncated` exactly when the statement had more
+    /// rows than the cap — the two things `query_rows` promises its callers (Task 10/11/14).
+    #[tokio::test]
+    async fn rows_of_caps_and_flags_truncation() {
+        let tmp = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        let drv = SqliteDriver::connect(&path).await.expect("connect");
+        drv.run_script("CREATE TABLE t (n INTEGER); INSERT INTO t VALUES (1),(2),(3),(4),(5)")
+            .await
+            .expect("seed");
+
+        let stmt = vec!["SELECT n FROM t ORDER BY n".to_string()];
+        let capped = rows_of(&drv, &stmt, 3, &CancelToken::new()).await.expect("capped read");
+        assert_eq!(capped.columns, vec!["n".to_string()]);
+        assert_eq!(capped.rows.len(), 3, "reading stops at the cap");
+        assert!(capped.truncated, "5 rows read at cap 3 must report truncated");
+
+        let all = rows_of(&drv, &stmt, 10, &CancelToken::new()).await.expect("uncapped read");
+        assert_eq!(all.rows.len(), 5, "under the cap, every row comes back");
+        assert!(!all.truncated);
+    }
+
+    /// A `query_rows` call with a `query_id` (a metrics widget's fetch, the Users list) is
+    /// registered under the connection's namespace while it runs — so `cancel_query` and ⌘.
+    /// (`cancel_all`, via `keys_for`) reach it — and unregistered once it's done.
+    #[tokio::test]
+    async fn registered_rows_is_cancellable_while_running() {
+        let tmp = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        let drv = Arc::new(SqliteDriver::connect(&path).await.expect("connect"));
+        let cancels = Arc::new(Mutex::new(HashMap::new()));
+        let slow = vec![
+            "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 2000000) \
+             SELECT count(*) FROM c"
+                .to_string(),
+        ];
+
+        let run = {
+            let (cancels, drv) = (cancels.clone(), drv.clone());
+            tokio::spawn(async move {
+                registered_rows(&cancels, drv.as_ref(), Some(&ckey("conn1", "w1")), &slow, 10).await
+            })
+        };
+        let mut seen = false;
+        for _ in 0..10_000 {
+            if !keys_for(&lk(&cancels), "conn1").is_empty() {
+                seen = true;
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(seen, "the running query's token must be registered under conn1");
+
+        let rows = run.await.expect("join").expect("query");
+        assert_eq!(rows.rows[0][0].as_deref(), Some("2000000"));
+        assert!(keys_for(&lk(&cancels), "conn1").is_empty(), "unregistered once done");
+
+        // No query_id: nothing is registered (the old behaviour, for callers without one).
+        let stmt = vec!["SELECT 1".to_string()];
+        registered_rows(&cancels, drv.as_ref(), None, &stmt, 10).await.expect("unregistered read");
+        assert!(lk(&cancels).is_empty());
     }
 }

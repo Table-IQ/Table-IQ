@@ -177,6 +177,11 @@ where
     let mut outs: Vec<StmtOutput> = Vec::with_capacity(stmts.len());
     let mut reset = false;
     for (si, stmt) in stmts.iter().enumerate() {
+        // sqlx-sqlite runs (and logs) the statement on its own worker thread, outside the SQL
+        // log's task-local scope; Postgres and MySQL reach the log through sqlx's own event.
+        if DB::NAME == "SQLite" {
+            crate::sql_log::note(stmt);
+        }
         reset |= touches_session(stmt);
         let stop_at_cap = si + 1 == stmts.len() && read_only(stmt);
         let mut stopped = false;

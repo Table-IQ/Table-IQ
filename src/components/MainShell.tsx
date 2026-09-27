@@ -17,6 +17,7 @@ import { DatabasePicker } from "./DatabasePicker";
 import { isFileEngine } from "./ConnectionManager";
 import { Onboarding } from "./Onboarding";
 import { WorkspaceOverview } from "./WorkspaceOverview";
+import { SqlLogPanel } from "./SqlLogPanel";
 import { useSettingsUi } from "./Settings";
 import { Inspector } from "./Inspector";
 import { ContextMenu, type ContextMenuItem } from "./ui/ContextMenu";
@@ -39,6 +40,7 @@ import {
   IconHelp,
   IconImport,
   IconLink,
+  IconMetrics,
   IconOverview,
   IconPlay,
   IconPlus,
@@ -46,9 +48,11 @@ import {
   IconSidebar,
   IconSidebarRight,
   IconSliders,
+  IconSqlLog,
   IconStop,
   IconStructure,
   IconTable,
+  IconUsers,
   IconView,
 } from "./ui/Icon";
 import {
@@ -60,7 +64,7 @@ import {
   switchDatabaseFlow,
   useConnections,
 } from "../state/connectionStore";
-import { useTabs } from "../state/tabsStore";
+import { useTabs, viewGlyph, viewGlyphClass } from "../state/tabsStore";
 import type { Tab } from "../state/tabsStore";
 import {
   cancelAll,
@@ -85,6 +89,9 @@ import {
   selectStarter,
   type ScriptColumn,
 } from "../lib/tableScript";
+import { supportsUserMgmt } from "../lib/userMgmt";
+import { UsersView } from "./UsersView";
+import { MetricsBoard } from "./MetricsBoard";
 import { Elapsed } from "./ui/Elapsed";
 import { applyToolbar, loadToolbar } from "../lib/toolbarPrefs";
 import { DEFAULT_HIDDEN_TOOLBAR_IDS, DEFAULT_TOOLBAR_PREF, TOOLBAR_ITEMS } from "../lib/toolbarItems";
@@ -133,7 +140,7 @@ export function MainShell() {
   // Header color chip resolves from the saved ConnConfig (ConnectedInfo doesn't carry color).
   const activeColor = active ? saved.find((c) => c.id === active.id)?.color ?? null : null;
   const tabsState = useTabs();
-  const { tabs, activeKey, openTable, openQuery, openErd, close, setActive: setActiveTab } =
+  const { tabs, activeKey, openTable, openQuery, openErd, openView, close, setActive: setActiveTab } =
     tabsState;
   const [showStructure, setShowStructure] = useState(false);
   const [showImport, setShowImport] = useState(false);
@@ -145,6 +152,22 @@ export function MainShell() {
   // ⌘K palette's Queries group — lazily fetched on open, same list SidebarLibrary
   // uses, filtered through `savedQueriesForConn` below.
   const [paletteSaved, setPaletteSaved] = useState<SavedQuery[]>([]);
+  // ⌘⇧C SQL log panel (Task 9, TablePlus parity) — open state persists like
+  // the sidebar tab below, so a relaunch keeps the panel where the user left it.
+  const [showSqlLog, setShowSqlLog] = useState(() => {
+    try {
+      return window.localStorage.getItem("tiq:sqllog:open") === "1";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("tiq:sqllog:open", showSqlLog ? "1" : "0");
+    } catch {
+      // quota / private mode — ignore, it's just a UI pref
+    }
+  }, [showSqlLog]);
   // ⌘O Open Connection palette (TablePlus-style switcher; replaces the left-edge rail).
   const [showConnPicker, setShowConnPicker] = useState(false);
   // ⌘D Switch Database — opens the per-server database picker (TablePlus parity).
@@ -426,6 +449,13 @@ export function MainShell() {
         // physical-key fallback so this still fires on other layouts.
         e.preventDefault();
         setShowWorkspaceOverview((v) => !v);
+      } else if (meta && e.shiftKey && e.key.toLowerCase() === "c") {
+        // ⌘⇧C SQL log (TablePlus parity). Doesn't collide with any binding in
+        // this app's own keymap or CodeMirror's (grepped both); a browser
+        // devtools inspector shortcut on the same combo only exists with
+        // devtools enabled, which the shipped app doesn't expose.
+        e.preventDefault();
+        setShowSqlLog((v) => !v);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -435,6 +465,25 @@ export function MainShell() {
   const commands = useMemo<Command[]>(() => {
     const list: Command[] = [
       { id: "act:erd", label: "Diagram", group: "Commands", icon: <IconErd />, run: openErd },
+      // Hidden for engines with no user-management SQL (sqlite/duckdb/mongodb/redis).
+      ...((active && supportsUserMgmt(active.engine as Engine)
+        ? [
+            {
+              id: "act:users",
+              label: "Database User Management",
+              group: "Commands",
+              icon: <IconUsers />,
+              run: () => openView("users", "Users"),
+            },
+          ]
+        : []) as Command[]),
+      {
+        id: "act:metrics",
+        label: "Metrics Board",
+        group: "Commands",
+        icon: <IconMetrics />,
+        run: () => openView("metrics", "Metrics Board"),
+      },
       {
         id: "act:open-conn",
         label: "Open Connection",
@@ -463,6 +512,14 @@ export function MainShell() {
         group: "Commands",
         shortcut: "⌘⇧\\",
         run: () => setShowWorkspaceOverview(true),
+      },
+      {
+        id: "act:sql-log",
+        label: "Toggle SQL Log",
+        group: "Commands",
+        icon: <IconSqlLog />,
+        shortcut: "⌘⇧C",
+        run: () => setShowSqlLog((v) => !v),
       },
       {
         id: "act:settings",
@@ -560,7 +617,7 @@ export function MainShell() {
     // Recomputing on every unrelated render (e.g. a keystroke) would churn the
     // palette unnecessarily.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [schema, openTable, openQuery, openErd, dbList.items, paletteSaved]);
+  }, [schema, openTable, openQuery, openErd, openView, dbList.items, paletteSaved]);
 
   // Until this connection's tabs are hydrated the tab store may still hold the
   // previous connection's — never render (or persist) those under this one.
@@ -782,6 +839,16 @@ export function MainShell() {
           <ErdView connId={active.id} schema={schema} focusTable={erdFocus} />
         </ErrorBoundary>
       )}
+      {activeTab?.kind === "users" && (
+        <ErrorBoundary key={activeTab.key} label={`users tab ${activeTab.key}`}>
+          <UsersView connId={active.id} engine={active.engine as Engine} database={active.database} />
+        </ErrorBoundary>
+      )}
+      {activeTab?.kind === "metrics" && (
+        <ErrorBoundary key={activeTab.key} label={`metrics tab ${activeTab.key}`}>
+          <MetricsBoard connId={active.id} engine={active.engine as Engine} />
+        </ErrorBoundary>
+      )}
       {activeTab?.kind === "table" &&
         (activeObj ? (
           <ErrorBoundary key={activeTab.key} label={`table tab ${activeTab.key}`}>
@@ -864,7 +931,15 @@ export function MainShell() {
   // for items that are already their own stateful component (ThemeToggle).
   const titlebarActions: Record<
     string,
-    { icon?: ReactNode; onClick?: () => void; shortcut?: string; when?: boolean; render?: () => ReactNode }
+    {
+      icon?: ReactNode;
+      onClick?: () => void;
+      shortcut?: string;
+      when?: boolean;
+      /** Pressed state, for items that toggle a panel. */
+      active?: boolean;
+      render?: () => ReactNode;
+    }
   > = {
     "refresh-schema": {
       icon: <IconRefresh size={16} className={refreshingSchema ? "animate-spin" : undefined} />,
@@ -887,6 +962,16 @@ export function MainShell() {
       icon: <IconOverview size={16} />,
       shortcut: "⌘⇧\\",
       onClick: () => setShowWorkspaceOverview(true),
+    },
+    "sql-log": {
+      icon: <IconSqlLog size={16} />,
+      shortcut: "⌘⇧C",
+      active: showSqlLog,
+      onClick: () => setShowSqlLog((v) => !v),
+    },
+    metrics: {
+      icon: <IconMetrics size={16} />,
+      onClick: () => openView("metrics", "Metrics Board"),
     },
   };
   const visibleTitlebarIds = applyToolbar(
@@ -939,6 +1024,7 @@ export function MainShell() {
                 icon={action.icon}
                 label={item.label}
                 shortcut={action.shortcut}
+                active={action.active}
                 onClick={action.onClick}
               />
             );
@@ -1248,7 +1334,9 @@ export function MainShell() {
                 >
                   <button onClick={() => setActiveTab(t.key)} className="font-mono">
                     {t.kind === "query" ? <span className="text-primary">◇ </span> : null}
-                    {t.kind === "erd" ? <span className="text-accent">◫ </span> : null}
+                    {viewGlyph(t.kind) ? (
+                      <span className={viewGlyphClass(t.kind)}>{viewGlyph(t.kind)} </span>
+                    ) : null}
                     {t.title}
                   </button>
                   <button
@@ -1271,11 +1359,18 @@ export function MainShell() {
 
           <div className="min-h-0 flex-1">{renderActive()}</div>
 
+          {/* ⌘⇧C SQL log (Task 9, TablePlus parity) — docked between the tab
+              body and the status bar, only while toggled open. */}
+          {showSqlLog && <SqlLogPanel connId={active.id} />}
+
           {/* Bottom status bar (workspace-level fallback). Table + Query tabs render
               their own content-rich status bar, so this generic one only shows on
               the welcome state and the ERD tab — never stacked two-deep (TablePlus
               has a single bottom bar). */}
-          {(!activeTab || activeTab.kind === "erd") && (
+          {(!activeTab ||
+            activeTab.kind === "erd" ||
+            activeTab.kind === "users" ||
+            activeTab.kind === "metrics") && (
             <StatusBar
               left={
                 <>
@@ -1518,13 +1613,14 @@ export function MainShell() {
             {
               id: "duplicate",
               label: "Duplicate",
+              // View tabs (ERD, Users, Metrics…) are singletons — "duplicating" one would
+              // only re-activate it, so the item is off rather than silently doing nothing.
+              disabled: tabMenu.tab.kind !== "table" && tabMenu.tab.kind !== "query",
               onSelect: () => {
                 if (tabMenu.tab.kind === "table" && tabMenu.tab.schema && tabMenu.tab.table) {
                   openTable(tabMenu.tab.schema, tabMenu.tab.table);
                 } else if (tabMenu.tab.kind === "query") {
                   openQuery(tabMenu.tab.sql);
-                } else if (tabMenu.tab.kind === "erd") {
-                  openErd();
                 }
               },
             },
