@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTabs, viewGlyph } from "./tabsStore";
+import { useTabs, viewGlyph, viewGlyphClass } from "./tabsStore";
 
 describe("tabsStore", () => {
   beforeEach(() => {
@@ -112,5 +112,19 @@ describe("viewGlyph", () => {
     expect(viewGlyph("metrics")).toBe("▦");
     expect(viewGlyph("table")).toBeUndefined();
     expect(viewGlyph("query")).toBeUndefined();
+  });
+});
+
+// DESIGN.md reserves `--accent` for AI surfaces only. ERD already used it before this fix
+// and keeps doing so; users/metrics must move to the same neutral token the query glyph
+// (`◇`) already uses in the tab strip, not the AI accent.
+describe("viewGlyphClass", () => {
+  it("keeps ERD on the accent token", () => {
+    expect(viewGlyphClass("erd")).toBe("text-accent");
+  });
+
+  it("users and metrics use the neutral token, not the AI accent", () => {
+    expect(viewGlyphClass("users")).toBe("text-primary");
+    expect(viewGlyphClass("metrics")).toBe("text-primary");
   });
 });

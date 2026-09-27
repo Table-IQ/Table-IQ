@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { canLeaveSession, useConnections } from "../state/connectionStore";
-import { useTabs, viewGlyph, type Tab } from "../state/tabsStore";
+import { useTabs, viewGlyph, viewGlyphClass, type Tab } from "../state/tabsStore";
 import { closeTabForConnection, focusTabForConnection, hydrateForConnection } from "../lib/tabsPersist";
 import { IconClose, IconTable } from "./ui/Icon";
 import { ColorDot } from "./ui/Chip";
@@ -143,7 +143,7 @@ export function WorkspaceOverview({ onClose }: { onClose: () => void }) {
                     <div className="flex items-center gap-1.5 text-[12px] text-text">
                       {card.tab.kind === "query" && <span className="text-primary">◇ </span>}
                       {viewGlyph(card.tab.kind) && (
-                        <span className="text-accent">{viewGlyph(card.tab.kind)} </span>
+                        <span className={viewGlyphClass(card.tab.kind)}>{viewGlyph(card.tab.kind)} </span>
                       )}
                       {card.tab.kind === "table" && <IconTable size={12} className="shrink-0 text-muted" />}
                       <span className="truncate font-mono">{card.tab.title}</span>

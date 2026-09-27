@@ -7,8 +7,22 @@ export type ViewKind = "erd" | "users" | "metrics" | "mcp";
 /** The glyph before a view tab's title — shared by the tab strip and Workspace Overview. */
 const VIEW_GLYPHS: Partial<Record<ViewKind, string>> = { erd: "◫", users: "▤", metrics: "▦" };
 
+/** `--accent` (DESIGN.md) is reserved for AI surfaces only, never ordinary chrome. ERD
+ *  already rendered in accent before this fix and keeps doing so; users/metrics move to
+ *  `text-primary`, the same neutral token the query glyph (`◇`) already uses in the tab
+ *  strip — the one non-AI, non-default glyph color already established there. */
+const VIEW_GLYPH_CLASS: Partial<Record<ViewKind, string>> = {
+  erd: "text-accent",
+  users: "text-primary",
+  metrics: "text-primary",
+};
+
 export function viewGlyph(kind: Tab["kind"]): string | undefined {
   return VIEW_GLYPHS[kind as ViewKind];
+}
+
+export function viewGlyphClass(kind: Tab["kind"]): string {
+  return VIEW_GLYPH_CLASS[kind as ViewKind] ?? "text-primary";
 }
 
 export interface Tab {

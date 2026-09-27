@@ -64,7 +64,7 @@ import {
   switchDatabaseFlow,
   useConnections,
 } from "../state/connectionStore";
-import { useTabs, viewGlyph } from "../state/tabsStore";
+import { useTabs, viewGlyph, viewGlyphClass } from "../state/tabsStore";
 import type { Tab } from "../state/tabsStore";
 import {
   cancelAll,
@@ -1334,7 +1334,9 @@ export function MainShell() {
                 >
                   <button onClick={() => setActiveTab(t.key)} className="font-mono">
                     {t.kind === "query" ? <span className="text-primary">◇ </span> : null}
-                    {viewGlyph(t.kind) ? <span className="text-accent">{viewGlyph(t.kind)} </span> : null}
+                    {viewGlyph(t.kind) ? (
+                      <span className={viewGlyphClass(t.kind)}>{viewGlyph(t.kind)} </span>
+                    ) : null}
                     {t.title}
                   </button>
                   <button
