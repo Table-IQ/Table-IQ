@@ -201,6 +201,14 @@ impl ConnState {
         }
     }
 
+    /// Install an already-open SQL session for `id`, as `connect` would, without the
+    /// keychain. For tests that bring their own driver (a live-database URL).
+    #[doc(hidden)]
+    pub fn adopt_session(&self, id: &str, drv: Arc<dyn SqlDriver>) {
+        let drv = Arc::new(Logged { inner: drv, log: self.sql_log_for(id) });
+        lk(&self.sessions).insert(id.to_string(), drv);
+    }
+
     /// Every saved connection's config (a snapshot).
     pub(crate) fn configs(&self) -> Vec<ConnConfig> {
         lk(&self.store).connections.clone()

@@ -36,6 +36,13 @@ fn config_dir() -> &'static std::path::Path {
         duck.engine = "duckdb".into();
         store.upsert(duck);
         std::fs::write(dir.path().join("secret.csv"), "k,v\nkey,hunter2\n").unwrap();
+        // Live-database connections: their sessions are adopted from a test URL, so the saved
+        // host/user are placeholders (and no keychain is read).
+        for (id, engine) in [("pg", "postgres"), ("mssql", "sqlserver")] {
+            let mut c = sqlite_conn(id, &db);
+            c.engine = engine.into();
+            store.upsert(c);
+        }
         store.save().unwrap();
         dir
     })
@@ -71,18 +78,22 @@ fn sqlite_conn(id: &str, db: &std::path::Path) -> ConnConfig {
 }
 
 async fn start() -> (String, CancellationToken) {
+    start_with(|_| {}).await
+}
+
+/// A server sharing `lite`, `duck`, `pg` and `mssql`; `prep` can adopt sessions first.
+async fn start_with(prep: impl FnOnce(&ConnState)) -> (String, CancellationToken) {
     config_dir();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/mcp", listener.local_addr().unwrap());
     let cfg = McpConfig {
         enabled: true,
-        connections: vec![
-            McpConn { id: "lite".into(), writes: false },
-            McpConn { id: "duck".into(), writes: false },
-        ],
+        connections: ["lite", "duck", "pg", "mssql"].iter().map(|id| McpConn { id: (*id).into(), writes: false }).collect(),
         ..McpConfig::default()
     };
-    let host: Arc<dyn Host> = Arc::new(ConnState::new());
+    let state = ConnState::new();
+    prep(&state);
+    let host: Arc<dyn Host> = Arc::new(state);
     let stop = CancellationToken::new();
     let token = Arc::new(|| Some(TOKEN.to_string()));
     tokio::spawn(serve(listener, host, cfg, token, stop.clone()));
@@ -134,7 +145,7 @@ async fn sqlite_over_http_initialize_list_query_refuse() {
     let conns = call(&url, 3, "list_connections", json!({})).await;
     let shared: Value = serde_json::from_str(text(&conns)).unwrap();
     let ids: Vec<&str> = shared.as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap()).collect();
-    assert_eq!(ids.len(), 2, "only the shared ones: {shared}");
+    assert_eq!(ids.len(), 4, "only the shared ones: {shared}");
     assert!(ids.contains(&"lite") && ids.contains(&"duck") && !ids.contains(&"hidden"));
 
     let ok = call(&url, 4, "run_query", json!({"connection_id": "lite", "sql": "SELECT n FROM t ORDER BY n"})).await;
@@ -180,6 +191,80 @@ async fn duckdb_over_http_cannot_read_files() {
         let t = text(&r).to_lowercase();
         assert!(!t.contains("hunter2"), "{sql} leaked: {t}");
         assert!(t.contains("not allowed") || t.contains("external access"), "{sql}: {t}");
+    }
+    stop.cancel();
+}
+
+/// I1: Postgres built-ins that execute SQL text they are handed. The text is assembled at
+/// run time, so no name check sees `pg_read_file` inside it — the functions themselves are
+/// refused. Over real HTTP against a live session.
+#[tokio::test]
+async fn postgres_over_http_refuses_sql_executing_builtins() {
+    let Ok(pg_url) = std::env::var("TIQ_PG_URL") else {
+        eprintln!("skipping: TIQ_PG_URL not set");
+        return;
+    };
+    let pg = tableiq_lib::drivers::postgres::PgDriver::connect(&pg_url).await.unwrap();
+    let (url, stop) = start_with(|s| s.adopt_session("pg", Arc::new(pg))).await;
+    let ok = call(&url, 1, "run_query", json!({"connection_id": "pg", "sql": "SELECT 40 + 2 AS n"})).await;
+    assert!(text(&ok).contains("42"), "{ok}");
+    for (i, sql) in [
+        "SELECT query_to_xml('SELECT pg_read_'||'file(''/etc/hosts'') AS x',true,true,'')",
+        "SELECT * FROM ts_stat('SELECT to_tsvector(''simple'', pg_read_'||'file(''/etc/hostname''))')",
+        "SELECT query_to_xml(concat('SELECT pg_terminate_','backend(0)'),true,true,'')",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let r = call(&url, 10 + i as u32, "run_query", json!({"connection_id": "pg", "sql": sql})).await;
+        assert_eq!(r["isError"], true, "{sql}: {r}");
+        let t = text(&r);
+        assert!(t.contains("not allowed"), "{sql}: {t}");
+        assert!(!t.contains("localhost") && !t.contains("<x>"), "{sql} ran: {t}");
+    }
+    stop.cancel();
+}
+
+/// SQL Server over HTTP: a read answers; T-SQL's no-semicolon second statement and the
+/// linked-server/file functions are refused. (The timeout path — abandon, KILL, reconnect —
+/// needs a short timeout and lives in `mcp::server`'s tests, also gated on this URL.)
+#[tokio::test]
+async fn sqlserver_over_http_reads_and_refuses() {
+    let Ok(ado) = std::env::var("TIQ_MSSQL_URL") else {
+        eprintln!("skipping: TIQ_MSSQL_URL not set");
+        return;
+    };
+    let (mut host, mut port, mut user, mut pass) = ("127.0.0.1".to_string(), 1433u16, String::new(), String::new());
+    for kv in ado.split(';') {
+        let Some((k, v)) = kv.split_once('=') else { continue };
+        match k.trim().to_lowercase().as_str() {
+            "server" => {
+                let addr = v.trim().strip_prefix("tcp:").unwrap_or(v.trim());
+                let (h, p) = addr.split_once(',').unwrap_or((addr, "1433"));
+                (host, port) = (h.to_string(), p.parse().unwrap_or(1433));
+            }
+            "user id" => user = v.trim().to_string(),
+            "password" => pass = v.trim().to_string(),
+            _ => {}
+        }
+    }
+    let drv = tableiq_lib::drivers::sqlserver::SqlServerDriver::connect(&host, port, "master", &user, &pass, "prefer")
+        .await
+        .unwrap();
+    let (url, stop) = start_with(|s| s.adopt_session("mssql", Arc::new(drv))).await;
+    let ok = call(&url, 1, "run_query", json!({"connection_id": "mssql", "sql": "SELECT 40 + 2 AS n"})).await;
+    assert!(text(&ok).contains("42"), "{ok}");
+    for (i, sql) in [
+        "SELECT 1 DROP TABLE t",
+        "SELECT 1 USE tempdb",
+        "SELECT * FROM OPENROWSET('SQLNCLI', 'x', 'SELECT 1')",
+        "SELECT * FROM master..xp_dirtree('C:\\')",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let r = call(&url, 10 + i as u32, "run_query", json!({"connection_id": "mssql", "sql": sql})).await;
+        assert_eq!(r["isError"], true, "{sql}: {r}");
     }
     stop.cancel();
 }

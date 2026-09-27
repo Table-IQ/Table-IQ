@@ -37,9 +37,17 @@ fn engine_functions(engine: &str) -> &'static [&'static str] {
         // DuckDB has no users, so these reach whatever the app can read. Sharing a DuckDB
         // connection also turns external access off on its instance (`mcp::server`).
         "duckdb" => &["READ_*", "GLOB", "*_SCAN", "SNIFF_CSV", "PARQUET_*", "QUERY", "QUERY_TABLE", "GETENV"],
+        // Files, other servers and other sessions — and every built-in that executes SQL text
+        // it is handed (`query_to_xml('SELECT pg_read_'||'file(…)')`), since a name check
+        // can't see inside a string that is only assembled at run time. From `pg_proc`: the
+        // `*_to_xml*` family, `ts_stat`/`ts_rewrite`, plus admin functions with side effects.
         "postgres" => &[
-            "PG_READ_FILE", "PG_READ_BINARY_FILE", "PG_LS_*", "PG_STAT_FILE", "LO_IMPORT", "LO_EXPORT",
+            "PG_READ_FILE*", "PG_READ_BINARY_FILE", "PG_LS_*", "PG_STAT_FILE", "PG_FILE_*", "LO_*",
             "DBLINK*", "PG_TERMINATE_BACKEND", "PG_CANCEL_BACKEND", "PG_RELOAD_CONF", "PG_ADVISORY_*",
+            "*_TO_XML*", "TS_STAT", "TS_REWRITE", "SET_CONFIG", "PG_SWITCH_WAL", "PG_EXECUTE_*",
+            "PG_PROMOTE", "PG_ROTATE_LOGFILE", "PG_LOG_BACKEND_MEMORY_CONTEXTS", "*_REPLICATION_SLOT",
+            "PG_REPLICATION_SLOT_*", "PG_LOGICAL_SLOT_*", "PG_CREATE_RESTORE_POINT", "PG_BACKUP_*",
+            "BINARY_UPGRADE_*",
         ],
         "mysql" => &["LOAD_FILE", "GET_LOCK"],
         "sqlserver" => &["OPENROWSET", "OPENDATASOURCE", "OPENQUERY", "XP_*"],
@@ -69,7 +77,9 @@ pub fn guard_sql(engine: &str, sql: &str, writes: bool) -> Result<(), String> {
     }
     // `FROM '/etc/hosts'`: DuckDB reads a file named in a table position.
     if engine == "duckdb" && quoted_table(&upper) {
-        return Err("A quoted name after FROM/JOIN (a file path to DuckDB) is not allowed on this connection.".into());
+        return Err("A quoted name in a table position (FROM, JOIN, a FROM list, DESCRIBE, SUMMARIZE, \
+                    PIVOT — a file path to DuckDB) is not allowed on this connection."
+            .into());
     }
     if writes {
         return Ok(());
@@ -98,7 +108,7 @@ fn has_word(upper: &str, kw: &str) -> bool {
 }
 
 /// [`has_word`] with a `*` wildcard at either end: `READ_*` needs only the left boundary,
-/// `*_SCAN` only the right one.
+/// `*_SCAN` only the right one, `*_TO_XML*` neither.
 fn has_pattern(upper: &str, pat: &str) -> bool {
     let (left, right) = (!pat.starts_with('*'), !pat.ends_with('*'));
     matches_at(upper, pat.trim_matches('*'), left, right)
@@ -114,29 +124,57 @@ fn matches_at(upper: &str, kw: &str, left: bool, right: bool) -> bool {
     })
 }
 
-/// A `'` or `"` right after a whole-word `FROM` or `JOIN`, past whitespace and comments.
+/// Words after which DuckDB takes a table — and so a quoted file path.
+const TABLE_WORDS: [&str; 6] = ["FROM", "JOIN", "DESCRIBE", "SUMMARIZE", "PIVOT", "UNPIVOT"];
+/// Words that end a FROM list.
+const FROM_ENDS: [&str; 12] =
+    ["WHERE", "GROUP", "HAVING", "ORDER", "LIMIT", "QUALIFY", "WINDOW", "UNION", "EXCEPT", "INTERSECT", "OFFSET", "SELECT"];
+
+/// A `'` or `"` in a DuckDB table position: right after one of [`TABLE_WORDS`], or after a
+/// `,` inside a FROM list (`FROM t, '/p'`). Fail-closed: a FROM list runs to the next
+/// [`FROM_ENDS`] word, so an `IN ('a', 'b')` inside a JOIN's ON is refused too.
 fn quoted_table(upper: &str) -> bool {
-    let b = upper.as_bytes();
-    ["FROM", "JOIN"].iter().any(|kw| {
+    let word_at = |i: usize, kw: &str| {
+        let b = upper.as_bytes();
+        (i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_'))
+            && !upper[i + kw.len()..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+    };
+    let quoted_next = |rest: &str| skip_blank(rest).starts_with(['\'', '"']);
+    TABLE_WORDS.iter().any(|kw| {
         upper.match_indices(kw).any(|(i, _)| {
-            let left_ok = i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_');
-            let mut rest = &upper[i + kw.len()..];
-            if !left_ok || rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
+            if !word_at(i, kw) {
                 return false;
             }
-            loop {
-                rest = rest.trim_start();
-                if let Some(r) = rest.strip_prefix("--") {
-                    rest = r.find('\n').map_or("", |n| &r[n..]);
-                } else if let Some(r) = rest.strip_prefix("/*") {
-                    rest = r.find("*/").map_or("", |n| &r[n + 2..]);
-                } else {
-                    break;
-                }
+            let rest = &upper[i + kw.len()..];
+            if quoted_next(rest) {
+                return true;
             }
-            rest.starts_with(['\'', '"'])
+            if *kw != "FROM" {
+                return false;
+            }
+            // The FROM list: up to the first word that ends it.
+            let end = FROM_ENDS
+                .iter()
+                .filter_map(|e| rest.match_indices(e).map(|(j, _)| j).find(|&j| word_at(i + kw.len() + j, e)))
+                .min()
+                .unwrap_or(rest.len());
+            rest[..end].match_indices(',').any(|(j, _)| quoted_next(&rest[j + 1..end]))
         })
     })
+}
+
+/// `s` past leading whitespace and comments.
+fn skip_blank(mut s: &str) -> &str {
+    loop {
+        s = s.trim_start();
+        if let Some(r) = s.strip_prefix("--") {
+            s = r.find('\n').map_or("", |n| &r[n..]);
+        } else if let Some(r) = s.strip_prefix("/*") {
+            s = r.find("*/").map_or("", |n| &r[n + 2..]);
+        } else {
+            return s;
+        }
+    }
 }
 
 /// Exactly one statement: nothing but whitespace after the first `;` outside a literal,
@@ -425,6 +463,12 @@ mod tests {
             ("duckdb", "SELECT * FROM t JOIN '/tmp/x.csv' USING (a)"),
             ("duckdb", "SELECT * FROM /* c */ '/etc/hosts'"),
             ("duckdb", "SELECT * FROM\n-- c\n'/etc/hosts'"),
+            ("duckdb", "SELECT * FROM t, '/etc/hosts'"),
+            ("duckdb", "SELECT * FROM t AS a,\n  \"/tmp/x.csv\" AS b WHERE a.k = b.k"),
+            ("duckdb", "DESCRIBE '/etc/hosts'"),
+            ("duckdb", "SELECT * FROM (DESCRIBE '/etc/hosts')"),
+            ("duckdb", "SELECT * FROM (SUMMARIZE '/etc/hosts')"),
+            ("duckdb", "SELECT * FROM (PIVOT '/tmp/x.csv' ON a USING sum(b))"),
             ("postgres", "SELECT pg_read_file('/etc/passwd')"),
             ("postgres", "SELECT pg_read_binary_file('/etc/passwd')"),
             ("postgres", "SELECT * FROM pg_ls_dir('.')"),
@@ -443,6 +487,28 @@ mod tests {
             ("postgres", "SELECT pg_catalog.pg_read_file('/etc/passwd')"),
             // a Unicode-escaped identifier could spell any of these without the letters
             ("postgres", "SELECT U&\"pg\\005fread\\005ffile\"('/etc/passwd')"),
+            // SQL text executed by a built-in: the name denylist can't see inside the string
+            ("postgres", "SELECT query_to_xml('SELECT pg_read_'||'file(''/etc/hosts'') AS x',true,true,'')"),
+            ("postgres", "SELECT * FROM ts_stat('SELECT to_tsvector(''simple'', pg_read_'||'file(''/etc/hostname''))')"),
+            ("postgres", "SELECT query_to_xml(concat('SELECT pg_terminate_','backend(0)'), true, true, '')"),
+            ("postgres", "SELECT query_to_xmlschema('SELECT 1', true, true, '')"),
+            ("postgres", "SELECT query_to_xml_and_xmlschema('SELECT 1', true, true, '')"),
+            ("postgres", "SELECT cursor_to_xml('c', 1, true, true, '')"),
+            ("postgres", "SELECT table_to_xml('t', true, true, '')"),
+            ("postgres", "SELECT schema_to_xmlschema('public', true, true, '')"),
+            ("postgres", "SELECT database_to_xml(true, true, '')"),
+            ("postgres", "SELECT ts_rewrite('a'::tsquery, 'SELECT ''a''::tsquery, ''b''::tsquery')"),
+            ("postgres", "SELECT set_config('statement_timeout', '0', false)"),
+            ("postgres", "SELECT pg_switch_wal()"),
+            ("postgres", "SELECT pg_file_write('x', 'y', false)"),
+            ("postgres", "SELECT pg_execute_server_program_x()"),
+            ("postgres", "SELECT pg_read_file_old('x', 0, 1)"),
+            ("postgres", "SELECT lo_get(1)"),
+            ("postgres", "SELECT pg_promote()"),
+            ("postgres", "SELECT pg_rotate_logfile()"),
+            ("postgres", "SELECT * FROM pg_create_logical_replication_slot('s', 'test_decoding')"),
+            ("postgres", "SELECT * FROM pg_logical_slot_get_changes('s', NULL, NULL)"),
+            ("postgres", "SELECT pg_log_backend_memory_contexts(1)"),
             ("mysql", "SELECT LOAD_FILE('/etc/passwd')"),
             ("mysql", "SELECT GET_LOCK('x', 10)"),
             ("sqlserver", "SELECT * FROM OPENROWSET('SQLNCLI', 'x', 'SELECT 1')"),
@@ -459,6 +525,10 @@ mod tests {
             ("duckdb", "SELECT * FROM t WHERE name = 'x'"),
             ("duckdb", "SELECT 'a' FROM t"),
             ("postgres", "SELECT pg_backend_pid(), pg_size_pretty(1)"),
+            ("postgres", "SELECT xmlelement(name x), to_tsvector('simple', 'a b'), current_setting('x')"),
+            ("duckdb", "SELECT * FROM t WHERE a IN ('x', 'y') ORDER BY b"),
+            ("duckdb", "SELECT 'a', 'b' FROM t"),
+            ("duckdb", "DESCRIBE t"),
             ("postgres", "SELECT 'x' FROM t"),
             ("mysql", "SELECT load_count FROM t"),
             ("sqlserver", "SELECT xpos FROM t"),

@@ -413,15 +413,18 @@ async fn describe_table_body(host: Arc<dyn Host>, cfg: Arc<McpConfig>, a: Descri
     }
 }
 
-/// `db`: where a SQL Server session is, filled in before the query runs — a timeout that
-/// has to reconnect puts the session back on that database (it may differ from the saved
-/// one after ⌘D).
+/// Which database a SQL Server session is on, recorded before an MCP query runs: a timeout
+/// that has to reconnect puts the session back there (it may differ from the saved one
+/// after ⌘D).
+type MssqlSpot = Arc<std::sync::Mutex<Option<String>>>;
+
+/// `db`: see [`MssqlSpot`].
 async fn run_query_body(
     host: Arc<dyn Host>,
     cfg: Arc<McpConfig>,
     a: RunQueryArgs,
     key: String,
-    db: Arc<std::sync::Mutex<Option<String>>>,
+    db: MssqlSpot,
 ) -> Done {
     let (conn, writes) = allowed(host.as_ref(), &cfg, &a.connection_id)?;
     let stmts = if writes {
@@ -465,8 +468,8 @@ fn fit_rows(rows: &mut Rows, budget: usize) {
 }
 
 /// Put a SQL Server session back after a timeout: the driver has one pinned connection and
-/// no cancel, so the stuck query was aborted and the connection is replaced (dropping the old
-/// one ends the query server-side and rolls its transaction back).
+/// no cancel, so the old one was abandoned (`SqlDriver::abandon` kills and closes it) and is
+/// replaced here.
 async fn reconnect(host: Arc<dyn Host>, id: String, db: Option<String>) {
     let state = host.conns();
     let res = match db {
@@ -522,12 +525,17 @@ impl TiqMcp {
         let engine = allowed(self.host.as_ref(), &self.cfg, &id).map(|(c, _)| c.engine).unwrap_or_default();
         // Registered like any query, so ⌘. (Cancel Running Queries) stops MCP queries too.
         let key = ckey(&id, &format!("mcp:{}", uuid::Uuid::new_v4()));
-        let db = Arc::new(std::sync::Mutex::new(None));
+        let db: MssqlSpot = Arc::default();
         let work = run_query_body(self.host.clone(), self.cfg.clone(), a, key.clone(), db.clone());
         let (host, conn_id) = (self.host.clone(), id.clone());
         let on_timeout = move |task: &tokio::task::AbortHandle| -> String {
             match engine.as_str() {
                 "sqlserver" => {
+                    // Fail everything queued on the old connection first, then drop the stuck
+                    // query (which releases the lock, so the connection can close).
+                    if let Ok(old) = host.conns().session(&id) {
+                        old.abandon();
+                    }
                     task.abort();
                     crate::lk(&host.conns().cancels).remove(&key);
                     let db = crate::lk(&db).clone();
@@ -924,5 +932,83 @@ mod tests {
         assert!(e.to_lowercase().contains("lock") || e.to_lowercase().contains("cannot"), "{e}");
         // A second call finds it hardened already and carries on.
         assert!(query(&m, "duck", "SELECT 1").await.is_ok());
+    }
+
+    /// `TIQ_MSSQL_URL`'s ADO string, split the way `tests/sqlserver.rs` does.
+    fn mssql_parts(ado: &str) -> (String, u16, String, String, String) {
+        let (mut host, mut port) = ("127.0.0.1".to_string(), 1433u16);
+        let (mut database, mut user, mut pass) = (String::new(), String::new(), String::new());
+        for kv in ado.split(';') {
+            let Some((k, v)) = kv.split_once('=') else { continue };
+            match k.trim().to_lowercase().as_str() {
+                "server" => {
+                    let addr = v.trim().strip_prefix("tcp:").unwrap_or(v.trim());
+                    let (h, p) = addr.split_once(',').unwrap_or((addr, "1433"));
+                    (host, port) = (h.to_string(), p.parse().unwrap_or(1433));
+                }
+                "user id" | "uid" | "user" => user = v.trim().to_string(),
+                "password" | "pwd" => pass = v.trim().to_string(),
+                "database" | "initial catalog" => database = v.trim().to_string(),
+                _ => {}
+            }
+        }
+        (host, port, database, user, pass)
+    }
+
+    async fn mssql(ado: &str) -> crate::drivers::sqlserver::SqlServerDriver {
+        let (host, port, db, user, pass) = mssql_parts(ado);
+        crate::drivers::sqlserver::SqlServerDriver::connect(&host, port, &db, &user, &pass, "prefer").await.unwrap()
+    }
+
+    /// SQL Server can't cancel, so an MCP timeout abandons the pinned connection. A call
+    /// already queued on it must fail fast instead of reading the half-read stream (it used
+    /// to hang 90s+), and the old server session must end. Live, gated on `TIQ_MSSQL_URL`.
+    #[tokio::test]
+    async fn a_sql_server_timeout_fails_queued_calls_fast_and_ends_the_session() {
+        let Ok(ado) = std::env::var("TIQ_MSSQL_URL") else {
+            eprintln!("skipping: TIQ_MSSQL_URL not set");
+            return;
+        };
+        let drv = mssql(&ado).await;
+        let spid = drv.run_query("SELECT CAST(@@SPID AS varchar(10))", 1).await.unwrap();
+        let spid = arrow::util::display::array_value_to_string(spid.batch.column(0), 0).unwrap();
+        let state = ConnState::with_configs(vec![cfg_of("mssql-live", "sqlserver", "master")]);
+        state.adopt_session("mssql-live", Arc::new(drv));
+        let host: Arc<dyn Host> = Arc::new(state);
+        let cfg = McpConfig { connections: vec![McpConn { id: "mssql-live".into(), writes: false }], ..McpConfig::default() };
+        let mut m = TiqMcp::new(host.clone(), Arc::new(cfg), fresh_slots());
+        m.timeout = Duration::from_millis(1500);
+
+        let runaway = "SELECT count_big(*) FROM sys.all_objects a CROSS JOIN sys.all_objects b \
+                       CROSS JOIN sys.all_objects c CROSS JOIN sys.all_objects d";
+        let mcp_call = tokio::spawn(async move { query(&m, "mssql-live", runaway).await });
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        // A UI call (the grid, a query tab) queued behind the stuck query on the same connection.
+        let old = host.conns().session("mssql-live").unwrap();
+        let waiter = tokio::spawn(async move {
+            let t0 = Instant::now();
+            (old.run_query("SELECT 1", 1).await.err().map(|e| e.to_string()), t0.elapsed())
+        });
+
+        let e = mcp_call.await.unwrap().unwrap_err();
+        assert!(e.starts_with("Timed out") && e.contains("reconnecting"), "{e}");
+        let (err, waited) = tokio::time::timeout(Duration::from_secs(10), waiter).await.expect("the waiter hung").unwrap();
+        let err = err.expect("the queued call must fail, not read the abandoned stream");
+        assert!(err.contains("closed"), "{err}");
+        assert!(waited < Duration::from_secs(8), "{waited:?}");
+
+        // The old server-side session ends once its connection is closed.
+        let probe = mssql(&ado).await;
+        let sql = format!("SELECT count(*) FROM sys.dm_exec_sessions WHERE session_id = {spid}");
+        let mut gone = false;
+        for _ in 0..40 {
+            let r = probe.run_query(&sql, 1).await.unwrap();
+            if arrow::util::display::array_value_to_string(r.batch.column(0), 0).unwrap() == "0" {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        assert!(gone, "session {spid} still alive 10s after its connection was closed");
     }
 }

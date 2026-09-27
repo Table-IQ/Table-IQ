@@ -762,6 +762,11 @@ pub trait SqlDriver: Send + Sync {
         Err(DriverError::NotImplemented)
     }
 
+    /// Give up on the session now: calls waiting on it, and every later one, fail at once and
+    /// the connection is closed. For an engine that cannot cancel a stuck query (SQL Server's
+    /// one pinned connection) — the caller then opens a new session. Default: nothing to do.
+    fn abandon(&self) {}
+
     /// Release the session's hold on its database, waiting for in-flight work — Restore
     /// swaps a file engine's file only after this. Default: nothing to close (the driver
     /// lets go when its last `Arc` drops).

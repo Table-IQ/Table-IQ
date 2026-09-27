@@ -102,6 +102,9 @@ impl SqlDriver for Logged {
     fn forget_meta(&self) {
         self.inner.forget_meta()
     }
+    fn abandon(&self) {
+        self.inner.abandon()
+    }
     async fn primary_key(&self, schema: &str, table: &str) -> DResult<Vec<String>> {
         CURRENT.scope(self.log.clone(), self.inner.primary_key(schema, table)).await
     }

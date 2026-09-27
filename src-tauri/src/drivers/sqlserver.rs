@@ -339,7 +339,16 @@ WHERE tr.parent_id = OBJECT_ID(@P1) AND tr.is_ms_shipped = 0 \
 ORDER BY tr.name, te.type";
 
 pub struct SqlServerDriver {
-    client: Mutex<Conn>,
+    /// `None` once [`SqlDriver::abandon`]ed: the connection was closed.
+    client: Arc<Mutex<Option<Conn>>>,
+    /// Set by `abandon` before it waits for the lock, so every call already queued on the
+    /// connection fails at once instead of reading the stream the stuck query left half-read.
+    abandoned: Arc<std::sync::atomic::AtomicBool>,
+    /// How this session connected (credentials included, as sqlx's pools keep theirs): only
+    /// [`SqlDriver::abandon`] uses it, to `KILL` a stuck session from a second connection.
+    config: Config,
+    /// This session's `@@SPID`, for that `KILL`.
+    spid: i16,
     /// The database this session belongs to, read back with `DB_NAME()` at connect (the
     /// configured name may be empty, meaning "the login's default"). Everything outside the
     /// query tab — browse, edit, delete — emits two-part names that resolve inside whatever
@@ -348,6 +357,19 @@ pub struct SqlServerDriver {
     database: std::string::String,
     /// Per table for the browse path (see [`super::MetaCache`]).
     meta: super::MetaCache<Meta>,
+}
+
+const ABANDONED: &str =
+    "This SQL Server connection was closed after a query ran past its time limit; reconnect to continue.";
+
+/// Open one TDS connection for `config`, bounded by [`CONNECT_TIMEOUT`].
+async fn open(config: &Config) -> DResult<Conn> {
+    let tcp = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(config.get_addr()))
+        .await
+        .map_err(|_| DriverError::Db(format!("connection to {} timed out", config.get_addr())))?
+        .map_err(db)?;
+    tcp.set_nodelay(true).ok();
+    Client::connect(config.clone(), tcp.compat_write()).await.map_err(db)
 }
 
 /// How long to wait for the TCP connect before giving up. Without it an unreachable host
@@ -395,15 +417,10 @@ impl SqlServerDriver {
         if trust {
             config.trust_cert();
         }
-        let tcp = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(config.get_addr()))
-            .await
-            .map_err(|_| DriverError::Db(format!("connection to {host}:{port} timed out")))?
-            .map_err(db)?;
-        tcp.set_nodelay(true).ok();
-        let mut client = Client::connect(config, tcp.compat_write()).await.map_err(db)?;
+        let mut client = open(&config).await?;
         // Ask the server rather than trusting `database`: it may be empty (the login's default).
         let row = client
-            .simple_query("SELECT DB_NAME()")
+            .simple_query("SELECT DB_NAME(), @@SPID")
             .await
             .map_err(db)?
             .into_row()
@@ -414,7 +431,24 @@ impl SqlServerDriver {
             .and_then(|r| r.try_get::<&str, _>(0).ok().flatten())
             .unwrap_or_default()
             .to_string();
-        Ok(Self { client: Mutex::new(client), database, meta: Default::default() })
+        let spid = row.as_ref().and_then(|r| r.try_get::<i16, _>(1).ok().flatten()).unwrap_or(0);
+        Ok(Self {
+            client: Arc::new(Mutex::new(Some(client))),
+            abandoned: Default::default(),
+            config,
+            spid,
+            database,
+            meta: Default::default(),
+        })
+    }
+
+    /// The pinned connection, or an error once it has been abandoned.
+    async fn lock(&self) -> DResult<tokio::sync::MappedMutexGuard<'_, Conn>> {
+        let guard = self.client.lock().await;
+        if self.abandoned.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(DriverError::Db(ABANDONED.into()));
+        }
+        tokio::sync::MutexGuard::try_map(guard, Option::as_mut).map_err(|_| DriverError::Db(ABANDONED.into()))
     }
 
     /// Cached `(columns, pk)` for the browse path. A missing relation is an error and is
@@ -441,7 +475,7 @@ impl SqlServerDriver {
         schema: &str,
         table: &str,
     ) -> DResult<Vec<(std::string::String, std::string::String)>> {
-        let mut c = self.client.lock().await;
+        let mut c = self.lock().await?;
         let q = "SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS \
                  WHERE TABLE_SCHEMA = @P1 AND TABLE_NAME = @P2 ORDER BY ORDINAL_POSITION";
         note(q);
@@ -467,7 +501,7 @@ impl SqlServerDriver {
     async fn query_text(&self, sql: &str) -> DResult<(Vec<std::string::String>, Vec<Vec<Option<std::string::String>>>)> {
         use futures_util::StreamExt;
         use tiberius::QueryItem;
-        let mut c = self.client.lock().await;
+        let mut c = self.lock().await?;
         note(sql);
         let mut stream = c.simple_query(sql).await.map_err(db)?;
         let mut columns: Vec<std::string::String> = Vec::new();
@@ -509,6 +543,27 @@ fn to_batch(columns: &[std::string::String], data: &[Vec<Option<std::string::Str
 
 #[async_trait]
 impl SqlDriver for SqlServerDriver {
+    /// Fail every queued and later call at once, then close the TCP connection (dropping
+    /// the client) as soon as the lock is free — which ends and rolls back the server-side
+    /// session. The caller's task holding the lock mid-query must be aborted for that.
+    fn abandon(&self) {
+        self.abandoned.store(true, std::sync::atomic::Ordering::SeqCst);
+        let (client, config, spid) = (self.client.clone(), self.config.clone(), self.spid);
+        tokio::spawn(async move {
+            // SQL Server notices a closed connection only when it next writes to it, so a
+            // long query would run on. KILL ends it (and rolls it back) at once — where the
+            // login may (ALTER ANY CONNECTION); otherwise it ends with its query.
+            if spid > 0 {
+                if let Ok(mut side) = open(&config).await {
+                    let sql = format!("KILL {spid}");
+                    note(&sql);
+                    let _ = side.simple_query(sql).await;
+                }
+            }
+            drop(client.lock().await.take());
+        });
+    }
+
     /// One `simple_query` batch per statement, streamed: rows past `cap` are counted but never
     /// materialised. tiberius only surfaces a server error at the *end* of the response, so the
     /// stream is always drained to the end — which is also what leaves the connection clean.
@@ -528,7 +583,7 @@ impl SqlDriver for SqlServerDriver {
         use tiberius::QueryItem;
 
         // One pinned connection, so BEGIN/…/COMMIT across statements lands on the same session.
-        let mut c = self.client.lock().await;
+        let mut c = self.lock().await?;
         let mut outs = Vec::with_capacity(stmts.len());
         for stmt in stmts {
             let start = std::time::Instant::now();
@@ -732,7 +787,7 @@ impl SqlDriver for SqlServerDriver {
         let owned: Vec<Option<std::string::String>> = binds.to_vec();
         let params: Vec<&dyn tiberius::ToSql> =
             owned.iter().map(|o| o as &dyn tiberius::ToSql).collect();
-        let mut c = self.client.lock().await;
+        let mut c = self.lock().await?;
         note(&q);
         let rows = c
             .query(q, &params)
@@ -768,7 +823,7 @@ impl SqlDriver for SqlServerDriver {
     }
 
     async fn primary_key(&self, schema: &str, table: &str) -> DResult<Vec<std::string::String>> {
-        let mut c = self.client.lock().await;
+        let mut c = self.lock().await?;
         let q = "SELECT kcu.COLUMN_NAME FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc \
                  JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu \
                    ON tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME AND tc.TABLE_SCHEMA = kcu.TABLE_SCHEMA \
@@ -817,7 +872,7 @@ impl SqlDriver for SqlServerDriver {
         owned.push(edit.orig_value.clone());
         let params: Vec<&dyn tiberius::ToSql> = owned.iter().map(|o| o as &dyn tiberius::ToSql).collect();
 
-        let mut c = self.client.lock().await;
+        let mut c = self.lock().await?;
         note(&sql);
         let res = c.execute(sql, &params).await.map_err(db)?;
         Ok(res.total())
@@ -852,7 +907,7 @@ impl SqlDriver for SqlServerDriver {
         let owned: Vec<Option<std::string::String>> = pk.iter().map(|(_, v)| v.clone()).collect();
         let params: Vec<&dyn tiberius::ToSql> =
             owned.iter().map(|o| o as &dyn tiberius::ToSql).collect();
-        let mut c = self.client.lock().await;
+        let mut c = self.lock().await?;
         note(&sql);
         let res = c.execute(sql, &params).await.map_err(db)?;
         Ok(res.total())
@@ -863,7 +918,7 @@ impl SqlDriver for SqlServerDriver {
     }
 
     async fn run_script(&self, sql: &str) -> DResult<u64> {
-        let mut c = self.client.lock().await;
+        let mut c = self.lock().await?;
         note(sql);
         let res = c.execute(sql, &[]).await;
         // Same shared connection, same hazard — and a script that dies midway leaks its
@@ -914,7 +969,7 @@ impl SqlDriver for SqlServerDriver {
         let owned: Vec<Option<std::string::String>> = binds.to_vec();
         let params: Vec<&dyn tiberius::ToSql> =
             owned.iter().map(|o| o as &dyn tiberius::ToSql).collect();
-        let mut c = self.client.lock().await;
+        let mut c = self.lock().await?;
         note(&q);
         let rows = c
             .query(q, &params)
@@ -950,7 +1005,7 @@ impl SqlDriver for SqlServerDriver {
         let owned: Vec<Option<std::string::String>> = binds.to_vec();
         let params: Vec<&dyn tiberius::ToSql> =
             owned.iter().map(|o| o as &dyn tiberius::ToSql).collect();
-        let mut c = self.client.lock().await;
+        let mut c = self.lock().await?;
         note(&sql);
         let res = c.execute(sql, &params).await.map_err(db)?;
         Ok(res.total())
@@ -996,7 +1051,7 @@ impl SqlDriver for SqlServerDriver {
     /// join keys; `tests/sqlserver.rs` checks the result against the QA seed.
     async fn describe_table(&self, schema: &str, table: &str) -> DResult<TableStructure> {
         let qualified = format!("{}.{}", quote_ident(schema), quote_ident(table));
-        let mut c = self.client.lock().await;
+        let mut c = self.lock().await?;
         note(STRUCT_COLUMNS_SQL);
         let col_rows = c
             .query(STRUCT_COLUMNS_SQL, &[&qualified])
