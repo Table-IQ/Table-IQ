@@ -10,6 +10,7 @@ import { ErdView } from "./ErdView";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { StructureEditor } from "./StructureEditor";
 import { ImportDialog } from "./ImportDialog";
+import { BackupRestoreDialog } from "./BackupRestoreDialog";
 import { DiffView } from "./DiffView";
 import { CommandPalette } from "./CommandPalette";
 import { ConnectionPicker } from "./ConnectionPicker";
@@ -143,6 +144,7 @@ export function MainShell() {
     tabsState;
   const [showStructure, setShowStructure] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [showBackup, setShowBackup] = useState(false);
   const [showDiff, setShowDiff] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
   // ⌘⇧\ Workspace Overview (TablePlus parity) — a grid of every open tab
@@ -429,6 +431,7 @@ export function MainShell() {
     setShowStructure,
     setShowImport,
     setShowDiff,
+    setShowBackup,
     cancelAllQueries,
   });
 
@@ -1241,6 +1244,16 @@ export function MainShell() {
           engine={active.engine as Engine}
           schema={schema}
           onClose={() => setShowImport(false)}
+        />
+      )}
+      {showBackup && (
+        <BackupRestoreDialog
+          mode="backup"
+          connId={active.id}
+          connName={active.name}
+          engine={active.engine as Engine}
+          database={active.database}
+          onClose={() => setShowBackup(false)}
         />
       )}
       {showDiff && (

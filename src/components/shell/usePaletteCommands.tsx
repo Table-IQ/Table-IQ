@@ -6,6 +6,7 @@ import {
   IconDatabase,
   IconDiff,
   IconErd,
+  IconExport,
   IconImport,
   IconLink,
   IconMetrics,
@@ -23,6 +24,7 @@ import {
 import type { ConnectedInfo, Engine, SavedQuery, SchemaModel } from "../../lib/commands";
 import { savedQueriesForConn } from "../../lib/history";
 import { supportsUserMgmt } from "../../lib/userMgmt";
+import { supportsBackup } from "../../lib/backup";
 import type { ViewKind } from "../../state/tabsStore";
 
 export interface UsePaletteCommandsOptions {
@@ -42,6 +44,7 @@ export interface UsePaletteCommandsOptions {
   setShowStructure: Dispatch<SetStateAction<boolean>>;
   setShowImport: Dispatch<SetStateAction<boolean>>;
   setShowDiff: Dispatch<SetStateAction<boolean>>;
+  setShowBackup: Dispatch<SetStateAction<boolean>>;
   cancelAllQueries: () => Promise<void>;
 }
 
@@ -68,6 +71,7 @@ export function usePaletteCommands(options: UsePaletteCommandsOptions): Command[
     setShowStructure,
     setShowImport,
     setShowDiff,
+    setShowBackup,
     cancelAllQueries,
   } = options;
 
@@ -174,6 +178,18 @@ export function usePaletteCommands(options: UsePaletteCommandsOptions): Command[
         icon: <IconDiff />,
         run: () => setShowDiff(true),
       },
+      // Hidden for mongodb/redis, which have no backup here.
+      ...((active && supportsBackup(active.engine as Engine)
+        ? [
+            {
+              id: "act:backup",
+              label: "Backup Database",
+              group: "Commands",
+              icon: <IconExport />,
+              run: () => setShowBackup(true),
+            },
+          ]
+        : []) as Command[]),
       {
         id: "act:cancel-all",
         label: "Cancel Running Queries",

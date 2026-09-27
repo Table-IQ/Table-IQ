@@ -668,6 +668,76 @@ export async function clearSqlLog(id: string): Promise<void> {
   await invoke("clear_sql_log", { id });
 }
 
+// ── Backup Database ───────────────────────────────────────────────────────
+/** A backup job's stderr lines from `after` on (`next` = where to poll from), and — once
+ *  `done` — its outcome. Mirrors Rust `backup::JobStatus`. */
+export interface BackupJobStatus {
+  lines: string[];
+  next: number;
+  done: boolean;
+  ok: boolean;
+  error: string | null;
+}
+export interface BackupToolInfo {
+  name: string;
+  path: string | null;
+  version: string | null;
+}
+
+/** True where a native Save/Open dialog exists (the packaged app) — not in the browser mock
+ *  or the QA bridge, where the user types the path. */
+export function hasNativeFileDialog(): boolean {
+  return inTauri() && !BRIDGE;
+}
+
+/** The native Save dialog for a backup file; null when cancelled. */
+export async function pickBackupPath(defaultPath: string, extensions: string[]): Promise<string | null> {
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  return save({ defaultPath, filters: [{ name: "Backup", extensions }] });
+}
+
+const mockBackupPolls = new Map<string, number>();
+
+/** Start backing up `database` into `path` (on the server for SQL Server); returns the job
+ *  id for `backupJob`. `format` is Postgres' "custom" | "plain"; `toolDir` overrides where
+ *  pg_dump/mysqldump are looked for ("" = PATH and the usual install dirs). */
+export async function backupDatabase(
+  id: string,
+  database: string,
+  path: string,
+  format: string,
+  toolDir: string,
+): Promise<string> {
+  if (!inTauri()) {
+    const job = `mock-backup-${mockBackupPolls.size + 1}`;
+    mockBackupPolls.set(job, 0);
+    return job;
+  }
+  return invoke<string>("backup_database", { id, database, path, format, toolDir: toolDir || null });
+}
+
+export async function backupJob(jobId: string, after: number): Promise<BackupJobStatus> {
+  if (!inTauri()) {
+    const n = (mockBackupPolls.get(jobId) ?? 0) + 1;
+    mockBackupPolls.set(jobId, n);
+    const done = n >= 2;
+    const lines = n === 1 ? ["(browser mock) dumping…"] : ["(browser mock) done"];
+    return { lines, next: after + lines.length, done, ok: done, error: null };
+  }
+  return invoke<BackupJobStatus>("backup_job", { jobId, after });
+}
+
+export async function cancelBackupJob(jobId: string): Promise<void> {
+  if (!inTauri()) return;
+  await invoke("cancel_backup_job", { jobId });
+}
+
+export async function detectBackupTools(toolDir: string): Promise<BackupToolInfo[]> {
+  if (!inTauri())
+    return [{ name: "pg_dump", path: "/opt/homebrew/opt/libpq/bin/pg_dump", version: "pg_dump (PostgreSQL) 17.0" }];
+  return invoke<BackupToolInfo[]>("detect_backup_tools", { toolDir: toolDir || null });
+}
+
 export async function fetchResultWindow(
   resultId: string,
   offset: number,

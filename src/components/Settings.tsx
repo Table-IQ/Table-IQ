@@ -14,6 +14,8 @@ import type { ThemeChoice } from "../lib/theme";
 import { Panel } from "./ui/Panel";
 import { loadToolbar, orderedIds, saveToolbar, type ToolbarPref } from "../lib/toolbarPrefs";
 import { DEFAULT_HIDDEN_TOOLBAR_IDS, DEFAULT_TOOLBAR_PREF, TOOLBAR_ITEMS } from "../lib/toolbarItems";
+import { loadBackupToolDir, saveBackupToolDir } from "../lib/backup";
+import { detectBackupTools, type BackupToolInfo } from "../lib/commands";
 
 export type Section = "general" | "editor" | "ai" | "toolbar" | "backup" | "mcp";
 
@@ -311,8 +313,84 @@ function ToolbarSection() {
   );
 }
 
+/**
+ * Where Backup Database finds pg_dump / mysqldump. A macOS app doesn't inherit the shell's
+ * PATH, so the backend also searches Homebrew, libpq, mysql-client and Postgres.app; this
+ * folder (`tiq:backup:toolDir`) is searched first. Detect lists what it finds.
+ */
 function BackupSection() {
-  return <Placeholder text="Backup tools are coming in a later release." />;
+  const [dir, setDir] = useState(loadBackupToolDir);
+  const [tools, setTools] = useState<BackupToolInfo[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const detect = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      setTools(await detectBackupTools(dir.trim()));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4 p-4">
+      <p className="text-xs text-muted">
+        Postgres and MySQL backups run <span className="font-mono">pg_dump</span> /{" "}
+        <span className="font-mono">mysqldump</span>. TableIQ looks in this folder first, then
+        PATH, Homebrew and Postgres.app.
+      </p>
+      <Field label="Tools folder">
+        <input
+          className={`${selectField} w-72 font-mono`}
+          value={dir}
+          spellCheck={false}
+          placeholder="/opt/homebrew/opt/libpq/bin"
+          onChange={(e) => {
+            setDir(e.target.value);
+            saveBackupToolDir(e.target.value);
+          }}
+        />
+      </Field>
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={() => void detect()}
+          disabled={busy}
+          className="rounded-md border border-border px-3 py-1 text-sm text-text hover:bg-surface-2 disabled:opacity-50"
+        >
+          {busy ? "Detecting…" : "Detect"}
+        </button>
+        {error && <span className="text-xs text-danger">{error}</span>}
+      </div>
+      {tools && (
+        <table className="w-full text-xs">
+          <tbody>
+            {tools.map((t) => (
+              <tr key={t.name} className="border-t border-border">
+                <td className="py-1 pr-3 font-mono text-text">{t.name}</td>
+                <td className="py-1 text-muted">
+                  {t.path ? (
+                    <>
+                      <div className="font-mono text-text">{t.version ?? "found"}</div>
+                      <div className="truncate font-mono" title={t.path}>
+                        {t.path}
+                      </div>
+                    </>
+                  ) : (
+                    "not found"
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
 }
 
 function McpSection() {
