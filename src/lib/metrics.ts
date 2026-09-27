@@ -97,6 +97,19 @@ export type WidgetValue =
   | { kind: "series"; points: Point[] }
   | { kind: "table"; columns: string[]; rows: (string | null)[][] };
 
+/** Table widget's display slice (`widgetValue` below) — kept as one constant so the fetch
+ *  cap and the display slice can't drift apart. */
+const TABLE_DISPLAY_ROWS = 20;
+
+/** Rows to request from `query_rows` for a widget's own kind, instead of the flat 1000-row
+ *  ceiling — a widget re-fetches unattended every refresh tick, so asking for far more rows
+ *  than it will ever display just wastes bandwidth and driver work. */
+export function widgetRowCap(kind: WidgetKind): number {
+  if (kind === "number") return 1;
+  if (kind === "bar" || kind === "line") return MAX_BARS;
+  return TABLE_DISPLAY_ROWS;
+}
+
 /** Shape a `query_rows` result for display, per widget kind:
  *  - number: the first cell of the first row, or "—" when there's no row or it's null.
  *  - bar/line: col0 as the label, col1 as the numeric value (non-numeric rows dropped),
@@ -112,7 +125,7 @@ export function widgetValue(rows: Rows, kind: WidgetKind): WidgetValue {
     const values = rows.rows.map((r) => r[1] ?? "");
     return { kind: "series", points: buildSeries(labels, values).slice(0, MAX_BARS) };
   }
-  return { kind: "table", columns: rows.columns, rows: rows.rows.slice(0, 20) };
+  return { kind: "table", columns: rows.columns, rows: rows.rows.slice(0, TABLE_DISPLAY_ROWS) };
 }
 
 /** First SQL keyword of `stmt`, skipping leading `--` line comments and block

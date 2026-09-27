@@ -4,6 +4,7 @@ import {
   isReadOnlyWidgetSql,
   loadBoard,
   saveBoard,
+  widgetRowCap,
   widgetValue,
   MIN_REFRESH_SEC,
   type Board,
@@ -158,7 +159,7 @@ function WidgetCard({
       inFlight = queryId;
       setLoading(true);
       try {
-        const r = await queryRows(connId, widget.sql, 1000, queryId);
+        const r = await queryRows(connId, widget.sql, widgetRowCap(widget.kind), queryId);
         if (shouldApply(gen, genRef.current) && !stopped) {
           setRows(r);
           setError(null);

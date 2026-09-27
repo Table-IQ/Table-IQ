@@ -4,6 +4,7 @@ import {
   loadBoard,
   MIN_REFRESH_SEC,
   saveBoard,
+  widgetRowCap,
   widgetValue,
   type Board,
   type Widget,
@@ -150,6 +151,23 @@ describe("widgetValue point cap", () => {
     const v = widgetValue(rows, "bar");
     expect(v.kind === "series" && v.points.length).toBe(50);
     expect(v.kind === "series" && v.points[49]).toEqual({ label: "k49", value: 49 });
+  });
+});
+
+// A widget re-runs its SQL unattended every refresh tick — fetching 1000 rows every time
+// (the `query_rows` cap) is wasteful for kinds that only ever display a handful.
+describe("widgetRowCap", () => {
+  it("number needs exactly one row", () => {
+    expect(widgetRowCap("number")).toBe(1);
+  });
+
+  it("bar/line cap matches MAX_BARS, the most points ever rendered", () => {
+    expect(widgetRowCap("bar")).toBe(50);
+    expect(widgetRowCap("line")).toBe(50);
+  });
+
+  it("table caps at the 20 rows widgetValue displays", () => {
+    expect(widgetRowCap("table")).toBe(20);
   });
 });
 
