@@ -178,6 +178,12 @@ fn open_instances() -> &'static Mutex<HashMap<String, Weak<Mutex<Connection>>>> 
     OPEN.get_or_init(Default::default)
 }
 
+/// True while some driver still holds the instance for `path` open (Restore waits for this
+/// to go false before swapping the file).
+pub(crate) fn instance_open(path: &str) -> bool {
+    crate::lk(open_instances()).get(path).is_some_and(|w| w.strong_count() > 0)
+}
+
 pub struct DuckDriver {
     conn: Arc<Mutex<Connection>>,
     meta: MetaCache<ColsPk>,

@@ -1911,6 +1911,106 @@ pub fn cancel_backup_job(job_id: String) -> Result<(), String> {
     backup::cancel_job(&job_id)
 }
 
+// ── Restore Database ───────────────────────────────────────────────────────
+
+/// A restore source: a local backup file the app could have written (absolute, a backup
+/// extension) that exists and is a regular file.
+fn check_restore_source(path: &str) -> Result<(), String> {
+    let p = std::path::Path::new(path);
+    if path.is_empty() || !p.is_absolute() {
+        return Err(format!("{path:?}: choose the backup file to restore (an absolute path)"));
+    }
+    match p.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase) {
+        Some(ext) if BACKUP_EXTS.contains(&ext.as_str()) => {}
+        _ => return Err(format!("{path}: a backup must end in {}", BACKUP_EXTS.join(", "))),
+    }
+    match std::fs::metadata(p) {
+        Ok(m) if m.is_file() => Ok(()),
+        Ok(_) => Err(format!("{path} is not a file")),
+        Err(e) => Err(format!("{path}: {e}")),
+    }
+}
+
+/// Restore `database` on connection `id` from the backup at `path` and return the job id
+/// `backup_job` polls. DESTRUCTIVE: `confirm` — the name the user typed — must equal
+/// `database`, and that is checked before anything else. Postgres runs `pg_restore` (custom
+/// archives) or `psql` (plain SQL), MySQL/MariaDB `mysql` with the dump on stdin, SQL Server
+/// `RESTORE … WITH REPLACE` from a path ON THE SERVER; SQLite/DuckDB close the session, swap
+/// the file in atomically and reopen.
+#[tauri::command]
+pub async fn restore_database(
+    state: State<'_, ConnState>,
+    id: String,
+    database: String,
+    path: String,
+    confirm: String,
+    tool_dir: Option<String>,
+) -> Result<String, String> {
+    restore_inner(&state, &id, database, path, &confirm, tool_dir.as_deref()).await
+}
+
+async fn restore_inner(
+    state: &ConnState,
+    id: &str,
+    database: String,
+    path: String,
+    confirm: &str,
+    tool_dir: Option<&str>,
+) -> Result<String, String> {
+    // Destructive: the typed name is checked before anything is looked up, read or closed.
+    backup::check_confirm(&database, confirm)?;
+    let cfg = {
+        let store = lk(&state.store);
+        store.connections.iter().find(|c| c.id == id).cloned().ok_or_else(|| "unknown connection".to_string())?
+    };
+    match cfg.engine.as_str() {
+        "postgres" | "mysql" => {
+            check_restore_source(&path)?;
+            state.session(id)?;
+            let tunnel = lk(&state.tunnels).get(id).map(|t| t.local_addr());
+            if tunnel.is_none() && cfg.ssh.as_ref().is_some_and(|s| s.enabled) {
+                return Err("The SSH tunnel for this connection is not open — reconnect, then restore".into());
+            }
+            let (host, port) = backup::endpoint(&cfg.host, cfg.port, tunnel);
+            let target = backup::Target {
+                host,
+                port,
+                user: cfg.username.clone(),
+                database,
+                sslmode: cfg.sslmode.clone(),
+            };
+            let password = connections::get_password(id).unwrap_or_default();
+            backup::tool_restore(&cfg.engine, &target, &password, &path, tool_dir).await
+        }
+        "sqlserver" => {
+            let drv = state.session(id)?;
+            check_server_backup_path(&path)?;
+            Ok(backup::spawn_future(async move { backup::sql_restore(drv, &database, &path).await }))
+        }
+        "sqlite" | "duckdb" => {
+            // The file engines replace the connection's own file: that is what was confirmed.
+            if database != cfg.database {
+                return Err(format!("Confirm with this connection's own file, {:?}", cfg.database));
+            }
+            check_restore_source(&path)?;
+            let drv = state.session(id)?;
+            lk(&state.sessions).remove(id);
+            // Results belong to the database being replaced.
+            lk(&state.results).purge(id);
+            let restored = backup::file_restore(drv, &cfg.engine, &cfg.database, &path).await;
+            // Reopen whatever happened: the old file after a failure, the restored one after success.
+            let reopened = connect_inner(state, id).await;
+            let res = match (restored, reopened) {
+                (Err(e), _) => Err(e),
+                (Ok(()), Err(e)) => Err(format!("Restored, but reopening the database failed: {e}")),
+                (Ok(()), Ok(_)) => Ok(()),
+            };
+            Ok(backup::spawn_future(async move { res }))
+        }
+        _ => Err("Restore is not supported for this engine".into()),
+    }
+}
+
 /// The backup/restore client tools found (Settings → Backup tools).
 #[tauri::command]
 pub async fn detect_backup_tools(tool_dir: Option<String>) -> Result<Vec<backup::ToolInfo>, String> {
@@ -2076,6 +2176,136 @@ mod tests {
         assert_eq!(check_server_backup_path(r"C:\Backups\it's.bak"), Ok(()));
         assert!(check_server_backup_path("  ").is_err());
         assert!(check_server_backup_path("/x\0.bak").is_err(), "NUL");
+    }
+
+    /// A restore reads the file, so the source-side rules: absolute, a backup extension,
+    /// and an existing regular file.
+    #[test]
+    fn restore_source_must_be_an_existing_backup_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ok = tmp.path().join("shop.dump");
+        std::fs::write(&ok, "PGDMP").unwrap();
+        assert_eq!(check_restore_source(ok.to_str().unwrap()), Ok(()));
+        let sh = tmp.path().join("evil.sh");
+        std::fs::write(&sh, "#!/bin/sh").unwrap();
+        assert!(check_restore_source(sh.to_str().unwrap()).is_err(), ".sh");
+        assert!(check_restore_source("").is_err(), "empty");
+        assert!(check_restore_source("shop.dump").is_err(), "relative");
+        assert!(check_restore_source(tmp.path().join("missing.sql").to_str().unwrap()).is_err(), "missing");
+        let dir = tmp.path().join("folder.sql");
+        std::fs::create_dir(&dir).unwrap();
+        assert!(check_restore_source(dir.to_str().unwrap()).is_err(), "a directory");
+    }
+
+    /// A `ConnState` over an in-memory store holding `cfgs` — nothing read from or saved to disk.
+    fn state_with(cfgs: Vec<ConnConfig>) -> ConnState {
+        let mut store = ConnStore::default();
+        for c in cfgs {
+            store.upsert(c);
+        }
+        ConnState {
+            store: Mutex::new(store),
+            sessions: Mutex::new(HashMap::new()),
+            kv_sessions: Mutex::new(HashMap::new()),
+            doc_sessions: Mutex::new(HashMap::new()),
+            results: Mutex::new(ResultStore::default()),
+            tunnels: Mutex::new(HashMap::new()),
+            cancels: Mutex::new(HashMap::new()),
+            library: Mutex::new(Default::default()),
+            sql_logs: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn sqlite_cfg(id: &str, file: &std::path::Path) -> ConnConfig {
+        ConnConfig {
+            id: id.into(),
+            name: id.into(),
+            color: None,
+            engine: "sqlite".into(),
+            host: String::new(),
+            port: 0,
+            database: file.to_str().unwrap().into(),
+            username: String::new(),
+            sslmode: "prefer".into(),
+            ssh: None,
+        }
+    }
+
+    async fn job_result(id: &str) -> backup::JobStatus {
+        for _ in 0..200 {
+            let s = backup::job_status(id, 0).unwrap();
+            if s.done {
+                return s;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        panic!("restore job {id} did not finish");
+    }
+
+    async fn scalar(state: &ConnState, id: &str, sql: &str) -> Result<String, String> {
+        let r = state.session(id)?.run_query(sql, 1).await.map_err(|e| e.to_string())?;
+        Ok(arrow::util::display::array_value_to_string(r.batch.column(0), 0).unwrap())
+    }
+
+    /// Destructive: a typed name that doesn't match is refused before the connection is
+    /// looked up, the backup read or the session closed.
+    #[tokio::test]
+    async fn restore_refuses_a_mismatched_confirm_before_any_io() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("live.db");
+        let bak = tmp.path().join("old.sqlite");
+        std::fs::write(&bak, "not even a database").unwrap();
+        let state = state_with(vec![sqlite_cfg("c1", &db)]);
+        connect_inner(&state, "c1").await.unwrap();
+        state.session("c1").unwrap().run_script("CREATE TABLE t (x); INSERT INTO t VALUES (7)").await.unwrap();
+        let name = db.to_str().unwrap().to_string();
+
+        for typed in ["", "live.db", &format!("{name} ")] {
+            let e = restore_inner(&state, "c1", name.clone(), bak.to_str().unwrap().into(), typed, None)
+                .await
+                .unwrap_err();
+            assert!(e.contains("does not match"), "{e}");
+        }
+        // Even an unknown connection and a missing file answer with the confirm error first.
+        let e = restore_inner(&state, "nope", "shop".into(), "/nonexistent/x.dump".into(), "shp", None)
+            .await
+            .unwrap_err();
+        assert!(e.contains("does not match"), "{e}");
+        assert_eq!(scalar(&state, "c1", "SELECT x FROM t").await.unwrap(), "7", "session and data untouched");
+    }
+
+    /// The SQLite path end to end through the command's body: backup, DROP TABLE, restore —
+    /// the session is reopened on the restored file and the table is back.
+    #[tokio::test]
+    async fn sqlite_restore_swaps_the_file_and_reopens_the_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("live.db");
+        let bak = tmp.path().join("snap.sqlite");
+        let state = state_with(vec![sqlite_cfg("c1", &db)]);
+        connect_inner(&state, "c1").await.unwrap();
+        let drv = state.session("c1").unwrap();
+        drv.run_script("CREATE TABLE items (id INTEGER PRIMARY KEY); INSERT INTO items VALUES (1),(2),(3)")
+            .await
+            .unwrap();
+        let name = db.to_str().unwrap().to_string();
+        backup::sql_backup(drv.clone(), "sqlite", &name, bak.to_str().unwrap()).await.unwrap();
+        drv.run_script("DROP TABLE items").await.unwrap();
+        drop(drv);
+        assert!(scalar(&state, "c1", "SELECT COUNT(*) FROM items").await.is_err(), "dropped");
+
+        // A file engine confirms its own file: another name is refused even when it matches.
+        let e = restore_inner(&state, "c1", "other.db".into(), bak.to_str().unwrap().into(), "other.db", None)
+            .await
+            .unwrap_err();
+        assert!(e.contains("file"), "{e}");
+
+        let job = restore_inner(&state, "c1", name.clone(), bak.to_str().unwrap().into(), &name, None)
+            .await
+            .unwrap();
+        let s = job_result(&job).await;
+        assert!(s.ok, "{s:?}");
+        assert_eq!(scalar(&state, "c1", "SELECT COUNT(*) FROM items").await.unwrap(), "3", "the table is back");
+        assert!(bak.exists(), "the backup itself is only read");
     }
 
     /// A file engine's `database` is its file path: "switching" to the catalog name the

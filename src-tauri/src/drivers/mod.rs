@@ -761,6 +761,11 @@ pub trait SqlDriver: Send + Sync {
     async fn list_databases(&self) -> DResult<Vec<String>> {
         Err(DriverError::NotImplemented)
     }
+
+    /// Release the session's hold on its database, waiting for in-flight work — Restore
+    /// swaps a file engine's file only after this. Default: nothing to close (the driver
+    /// lets go when its last `Arc` drops).
+    async fn close(&self) {}
 }
 
 /// Document stores (MongoDB). The third data-model trait (plan spec #1).

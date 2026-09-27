@@ -131,6 +131,9 @@ impl SqlDriver for Logged {
     async fn list_databases(&self) -> DResult<Vec<String>> {
         CURRENT.scope(self.log.clone(), self.inner.list_databases()).await
     }
+    async fn close(&self) {
+        CURRENT.scope(self.log.clone(), self.inner.close()).await
+    }
 }
 
 #[cfg(test)]
@@ -270,6 +273,9 @@ mod tests {
             rec("list_databases");
             Ok(vec!["list_databases".into()])
         }
+        async fn close(&self) {
+            rec("close");
+        }
     }
 
     fn tag(b: &RecordBatch) -> String {
@@ -311,6 +317,7 @@ mod tests {
         assert_eq!(ok(d.foreign_keys().await)[0].constraint, "foreign_keys");
         ok(d.describe_table("s", "t").await);
         assert_eq!(ok(d.list_databases().await), ["list_databases"]);
+        d.close().await;
 
         let logged: Vec<String> = log.since(0).into_iter().map(|e| e.sql).collect();
         assert_eq!(
@@ -319,7 +326,7 @@ mod tests {
                 "introspect", "count_rows", "estimate_rows", "open_window_filtered",
                 "open_window_cancellable", "open_window", "insert_row", "run_statements",
                 "run_query", "cancel", "primary_key", "apply_edit", "delete_row", "run_script",
-                "explain_json", "foreign_keys", "describe_table", "list_databases",
+                "explain_json", "foreign_keys", "describe_table", "list_databases", "close",
             ],
             "every call ran inside the log's scope"
         );

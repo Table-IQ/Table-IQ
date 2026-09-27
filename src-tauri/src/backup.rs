@@ -66,14 +66,18 @@ pub fn pg_dump_args(host: &str, port: u16, user: &str, db: &str, format: PgForma
         PgFormat::Custom => "c",
         PgFormat::Plain => "p",
     };
-    let dbname = format!("dbname='{}'", db.replace('\\', "\\\\").replace('\'', "\\'"));
     [
-        "-h", host, "-p", &port.to_string(), "-U", user, "-d", &dbname, "-F", fmt, "--no-password",
+        "-h", host, "-p", &port.to_string(), "-U", user, "-d", &pg_dbname(db), "-F", fmt, "--no-password",
         "--verbose", "-f", out,
     ]
     .iter()
     .map(|s| s.to_string())
     .collect()
+}
+
+/// `-d` for every libpq tool: a conninfo holding only `dbname` (see `pg_dump_args`).
+fn pg_dbname(db: &str) -> String {
+    format!("dbname='{}'", db.replace('\\', "\\\\").replace('\'', "\\'"))
 }
 
 /// `mysqldump` / `mariadb-dump` arguments. Takes no password by design: it travels in
@@ -99,7 +103,14 @@ pub fn mysqldump_args(
     .iter()
     .map(|s| s.to_string())
     .collect();
-    let ssl: &[&str] = match (mariadb, sslmode) {
+    a.extend(mysql_ssl_flags(sslmode, mariadb).iter().map(|s| s.to_string()));
+    a.push(db.to_string());
+    a
+}
+
+/// The MySQL client flags for the connection's (Postgres-style) `sslmode`.
+fn mysql_ssl_flags(sslmode: &str, mariadb: bool) -> &'static [&'static str] {
+    match (mariadb, sslmode) {
         (false, "disable") => &["--ssl-mode=DISABLED"],
         (false, "require") => &["--ssl-mode=REQUIRED"],
         (false, "verify-ca") => &["--ssl-mode=VERIFY_CA"],
@@ -109,10 +120,7 @@ pub fn mysqldump_args(
         (true, "verify-ca" | "verify-full") => &["--ssl", "--ssl-verify-server-cert"],
         // `prefer`/`allow`: the client's own default already prefers TLS.
         _ => &[],
-    };
-    a.extend(ssl.iter().map(|s| s.to_string()));
-    a.push(db.to_string());
-    a
+    }
 }
 
 /// Replace every occurrence of each non-empty secret with `********`.
@@ -569,6 +577,203 @@ pub async fn detect(override_dir: Option<&str>) -> Result<Vec<ToolInfo>, String>
     Ok(out)
 }
 
+// ── Restore Database ──────────────────────────────────────────────────────
+
+/// Restore is destructive: the name the user typed must be exactly the database it replaces.
+/// Checked first, before anything is looked up, read or closed.
+pub fn check_confirm(database: &str, confirm: &str) -> Result<(), String> {
+    if database.is_empty() {
+        return Err("no database to restore".into());
+    }
+    if confirm != database {
+        return Err(format!("The typed name does not match {database:?} — nothing was restored"));
+    }
+    Ok(())
+}
+
+/// SQL Server: take the database to single-user (dropping everyone else), restore over it,
+/// then reopen it. One batch; `USE master` first so this session isn't the one in the way.
+pub fn mssql_restore_sql(database: &str, path: &str) -> String {
+    let db = format!("[{}]", database.replace(']', "]]"));
+    format!(
+        "USE master; ALTER DATABASE {db} SET SINGLE_USER WITH ROLLBACK IMMEDIATE; \
+         RESTORE DATABASE {db} FROM DISK = N{} WITH REPLACE; \
+         ALTER DATABASE {db} SET MULTI_USER; USE {db};",
+        lit(path)
+    )
+}
+
+/// True when `path` is a `pg_dump` custom-format archive (it starts with `PGDMP`); anything
+/// else is treated as plain SQL for `psql`.
+pub fn is_pg_custom_dump(path: &Path) -> Result<bool, String> {
+    starts_with(path, 0, b"PGDMP")
+}
+
+/// Whether the file at `path` holds `magic` at byte `offset` (a short file doesn't).
+fn starts_with(path: &Path, offset: usize, magic: &[u8]) -> Result<bool, String> {
+    use std::io::Read;
+    let mut head = Vec::with_capacity(offset + magic.len());
+    std::fs::File::open(path)
+        .and_then(|f| f.take((offset + magic.len()) as u64).read_to_end(&mut head))
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(head.get(offset..) == Some(magic))
+}
+
+/// `pg_restore` arguments (custom-format archives). No password: it travels in `PGPASSWORD`.
+pub fn pg_restore_args(host: &str, port: u16, user: &str, db: &str, file: &str) -> Vec<String> {
+    [
+        "--clean", "--if-exists", "--no-owner", "--no-privileges", "--no-password", "--verbose", "-h", host,
+        "-p", &port.to_string(), "-U", user, "-d", &pg_dbname(db), file,
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+/// `psql` arguments for a plain SQL dump. No password: it travels in `PGPASSWORD`. `-X`: a
+/// user's `~/.psqlrc` (`\set AUTOCOMMIT off`, `ON_ERROR_STOP off`) must not change what the
+/// restore does.
+pub fn psql_args(host: &str, port: u16, user: &str, db: &str, file: &str) -> Vec<String> {
+    [
+        "-X", "-v", "ON_ERROR_STOP=1", "--no-password", "-h", host, "-p", &port.to_string(), "-U", user, "-d",
+        &pg_dbname(db), "-f", file,
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+/// `mysql` / `mariadb` arguments; the dump arrives on stdin. No password: `MYSQL_PWD`.
+pub fn mysql_args(host: &str, port: u16, user: &str, db: &str, sslmode: &str, mariadb: bool) -> Vec<String> {
+    let mut a: Vec<String> = ["-h", host, "-P", &port.to_string(), "-u", user, "--protocol=TCP"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    a.extend(mysql_ssl_flags(sslmode, mariadb).iter().map(|s| s.to_string()));
+    a.push(db.to_string());
+    a
+}
+
+/// Start `pg_restore` / `psql` / `mysql` against `t` as a job, reading `file`.
+pub async fn tool_restore(
+    engine: &str,
+    t: &Target,
+    password: &str,
+    file: &str,
+    tool_dir: Option<&str>,
+) -> Result<String, String> {
+    let tool_dir = check_tool_dir(tool_dir)?;
+    match engine {
+        "postgres" => {
+            let (tool, args) = if is_pg_custom_dump(Path::new(file))? {
+                ("pg_restore", pg_restore_args(&t.host, t.port, &t.user, &t.database, file))
+            } else {
+                ("psql", psql_args(&t.host, t.port, &t.user, &t.database, file))
+            };
+            let bin = resolve_tool(tool, tool_dir).ok_or_else(|| missing(tool, "libpq"))?;
+            let mut env = vec![("PGSSLMODE", t.sslmode.clone())];
+            if !password.is_empty() {
+                env.push(("PGPASSWORD", password.to_string()));
+            }
+            spawn_tool(&bin, args, env, None, None)
+        }
+        "mysql" => {
+            // The database is mysql's positional argument: a leading `-` would be an option.
+            if t.database.is_empty() || t.database.starts_with('-') {
+                return Err(format!("cannot restore into a database named {:?}", t.database));
+            }
+            let bin = resolve_first(&["mysql", "mariadb"], tool_dir).ok_or_else(|| missing("mysql", "mysql-client"))?;
+            let mariadb = tool_version(&bin).await.is_some_and(|v| v.contains("MariaDB"));
+            let stdin = std::fs::File::open(file).map_err(|e| format!("{file}: {e}"))?;
+            let env = if password.is_empty() { vec![] } else { vec![("MYSQL_PWD", password.to_string())] };
+            let args = mysql_args(&t.host, t.port, &t.user, &t.database, &t.sslmode, mariadb);
+            spawn_tool(&bin, args, env, Some(stdin), None)
+        }
+        _ => Err(RESTORE_UNSUPPORTED.into()),
+    }
+}
+
+const RESTORE_UNSUPPORTED: &str = "Restore is not supported for this engine";
+
+/// SQL Server: restore `database` from `path` (a path ON THE SERVER).
+pub async fn sql_restore(drv: Arc<dyn SqlDriver>, database: &str, path: &str) -> Result<(), String> {
+    drv.run_script(&mssql_restore_sql(database, path)).await.map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// Copy `src` into a temp file beside `target`, fsync it, then rename it over `target`. A
+/// failed copy removes the temp file and never touches `target`.
+fn swap_in(src: &mut dyn std::io::Read, target: &Path) -> std::io::Result<()> {
+    let mut name = target.file_name().unwrap_or_default().to_os_string();
+    name.push(".tiq-restore");
+    let tmp = target.with_file_name(name);
+    let copied = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        std::io::copy(src, &mut f)?;
+        f.sync_all()?;
+        // Keep the database's own permissions, not the temp file's defaults.
+        if let Ok(m) = std::fs::metadata(target) {
+            std::fs::set_permissions(&tmp, m.permissions())?;
+        }
+        Ok(())
+    })();
+    if let Err(e) = copied {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    std::fs::rename(&tmp, target).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })?;
+    // Make the rename itself durable.
+    if let Some(dir) = target.parent() {
+        let _ = std::fs::File::open(dir).and_then(|d| d.sync_all());
+    }
+    Ok(())
+}
+
+/// SQLite / DuckDB: replace the connection's file `db_path` with the backup at `backup`.
+/// Closes `drv` first (the caller has already taken it out of the session map and reopens
+/// afterwards, whatever happens here).
+pub async fn file_restore(drv: Arc<dyn SqlDriver>, engine: &str, db_path: &str, backup: &str) -> Result<(), String> {
+    if db_path.is_empty() || db_path == ":memory:" {
+        return Err("An in-memory database has no file to restore into".into());
+    }
+    // The wrong kind of file would replace the database with something that can't open.
+    let (offset, magic, sidecars, kind): (usize, &[u8], &[&str], &str) = match engine {
+        "sqlite" => (0, b"SQLite format 3\0", &["-wal", "-shm", "-journal"], "SQLite"),
+        "duckdb" => (8, b"DUCK", &[".wal"], "DuckDB"),
+        _ => return Err(RESTORE_UNSUPPORTED.into()),
+    };
+    if !starts_with(Path::new(backup), offset, magic)? {
+        return Err(format!("{backup} is not a {kind} database — nothing was restored"));
+    }
+
+    drv.close().await;
+    drop(drv);
+    if engine == "duckdb" {
+        // The instance closes with its last driver; one still running a query holds it open.
+        let mut waited = 0;
+        while crate::drivers::duckdb::instance_open(db_path) {
+            if waited >= 100 {
+                return Err("The database is still in use — try again once running queries finish".into());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            waited += 1;
+        }
+    }
+
+    let (from, to) = (PathBuf::from(backup), PathBuf::from(db_path));
+    tokio::task::spawn_blocking(move || std::fs::File::open(&from).and_then(|mut f| swap_in(&mut f, &to)))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("{db_path}: {e}"))?;
+    // A journal left beside the file belongs to the database that was just replaced;
+    // replayed into the restored one it would corrupt it.
+    for suffix in sidecars {
+        let _ = std::fs::remove_file(format!("{db_path}{suffix}"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -929,5 +1134,190 @@ mod tests {
         assert_eq!(s.error.as_deref(), Some("disk full"));
         let ok = wait(&spawn_future(async { Ok(()) })).await;
         assert!(ok.ok && ok.error.is_none(), "{ok:?}");
+    }
+
+    // ── restore ──
+
+    #[test]
+    fn restore_confirm_must_be_the_exact_database_name() {
+        assert_eq!(check_confirm("shop", "shop"), Ok(()));
+        for typed in ["", "Shop", "shop ", " shop", "sho", "shop2"] {
+            let e = check_confirm("shop", typed).unwrap_err();
+            assert!(e.contains("shop"), "the message names the database: {e}");
+        }
+        assert!(check_confirm("", "").is_err(), "no database, nothing to confirm");
+    }
+
+    #[test]
+    fn mssql_restore_sql_quotes_the_name_and_the_path() {
+        assert_eq!(
+            mssql_restore_sql("sh]op", "C:\\bk\\it's.bak"),
+            "USE master; ALTER DATABASE [sh]]op] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; \
+             RESTORE DATABASE [sh]]op] FROM DISK = N'C:\\bk\\it''s.bak' WITH REPLACE; \
+             ALTER DATABASE [sh]]op] SET MULTI_USER; USE [sh]]op];"
+        );
+    }
+
+    #[test]
+    fn pg_custom_dumps_are_sniffed_by_their_pgdmp_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let write = |name: &str, bytes: &[u8]| {
+            let p = dir.path().join(name);
+            std::fs::write(&p, bytes).unwrap();
+            p
+        };
+        assert_eq!(is_pg_custom_dump(&write("a.dump", b"PGDMP\x01\x0e\x00")), Ok(true));
+        assert_eq!(is_pg_custom_dump(&write("b.sql", b"--\n-- PostgreSQL database dump\n")), Ok(false));
+        assert_eq!(is_pg_custom_dump(&write("c.dump", b"PGD")), Ok(false), "shorter than the magic");
+        assert_eq!(is_pg_custom_dump(&write("d.sql", b"")), Ok(false));
+        assert!(is_pg_custom_dump(&dir.path().join("missing.dump")).is_err());
+    }
+
+    #[test]
+    fn restore_argv_carries_no_password_and_quotes_the_database() {
+        assert_eq!(
+            pg_restore_args("127.0.0.1", 61234, "alice", "shop", "/tmp/shop.dump"),
+            [
+                "--clean", "--if-exists", "--no-owner", "--no-privileges", "--no-password", "--verbose",
+                "-h", "127.0.0.1", "-p", "61234", "-U", "alice", "-d", "dbname='shop'", "/tmp/shop.dump",
+            ]
+        );
+        assert_eq!(
+            psql_args("127.0.0.1", 61234, "alice", "x' host=evil", "/tmp/shop.sql"),
+            [
+                "-X", "-v", "ON_ERROR_STOP=1", "--no-password", "-h", "127.0.0.1", "-p", "61234", "-U",
+                "alice", "-d", r"dbname='x\' host=evil'", "-f", "/tmp/shop.sql",
+            ]
+        );
+        assert_eq!(
+            mysql_args("127.0.0.1", 61234, "root", "shop", "require", false),
+            ["-h", "127.0.0.1", "-P", "61234", "-u", "root", "--protocol=TCP", "--ssl-mode=REQUIRED", "shop"]
+        );
+        assert_eq!(
+            mysql_args("h", 1, "u", "d", "verify-full", true),
+            ["-h", "h", "-P", "1", "-u", "u", "--protocol=TCP", "--ssl", "--ssl-verify-server-cert", "d"]
+        );
+    }
+
+    /// Fake `pg_restore` / `psql` / `mysql` that report their name, argv and the first bytes
+    /// of stdin on stderr — enough to see which tool the file was routed to, and how.
+    #[cfg(unix)]
+    fn echo_tool(dir: &Path, name: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let p = dir.join(name);
+        std::fs::write(
+            &p,
+            format!(
+                "#!/bin/sh\n[ \"$1\" = --version ] && {{ echo '{name} Ver 8.4.0'; exit 0; }}\n\
+                 echo \"{name} $*\" >&2\necho \"pw=[$PGPASSWORD$MYSQL_PWD]\" >&2\n\
+                 echo \"stdin=[$(head -c 5)]\" >&2\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn tool_restore_routes_by_engine_and_dump_format() {
+        let tools = tempfile::tempdir().unwrap();
+        for name in ["pg_restore", "psql", "mysql"] {
+            echo_tool(tools.path(), name);
+        }
+        let files = tempfile::tempdir().unwrap();
+        let custom = files.path().join("a.dump");
+        std::fs::write(&custom, b"PGDMP-archive").unwrap();
+        let plain = files.path().join("a.sql");
+        std::fs::write(&plain, b"CREATE TABLE t (x int);").unwrap();
+        let t = Target { host: "h".into(), port: 1, user: "u".into(), database: "shop".into(), sslmode: "prefer".into() };
+        let dir = tools.path().to_str();
+        let run = |engine: &'static str, file: PathBuf| {
+            let t = t.clone();
+            async move { wait(&tool_restore(engine, &t, "s3cr3t", file.to_str().unwrap(), dir).await.unwrap()).await }
+        };
+
+        let s = run("postgres", custom.clone()).await;
+        assert!(s.ok, "{s:?}");
+        assert!(s.lines[0].starts_with("pg_restore --clean"), "{:?}", s.lines);
+        assert!(s.lines[0].ends_with(custom.to_str().unwrap()), "the archive is the last argument");
+        assert_eq!(s.lines[1], "pw=[********]", "the password arrives in env, scrubbed from the log");
+
+        let s = run("postgres", plain.clone()).await;
+        assert!(s.lines[0].starts_with("psql -X -v ON_ERROR_STOP=1"), "{:?}", s.lines);
+
+        let s = run("mysql", plain.clone()).await;
+        assert!(s.lines[0].starts_with("mysql -h h -P 1 -u u --protocol=TCP"), "{:?}", s.lines);
+        assert!(s.lines[0].ends_with(" shop"), "{:?}", s.lines);
+        assert_eq!(s.lines[2], "stdin=[CREAT]", "the dump is mysql's stdin");
+    }
+
+    #[tokio::test]
+    async fn tool_restore_rejects_unsupported_engines_bad_names_and_tool_dirs() {
+        let t = |db: &str| Target {
+            host: "127.0.0.1".into(),
+            port: 1,
+            user: "u".into(),
+            database: db.into(),
+            sslmode: "prefer".into(),
+        };
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let f = file.path().to_str().unwrap().to_string();
+        assert!(tool_restore("redis", &t("d"), "", &f, None).await.unwrap_err().contains("not supported"));
+        assert!(tool_restore("mysql", &t("--init-command=x"), "", &f, None).await.is_err());
+        assert!(tool_restore("mysql", &t(""), "", &f, None).await.is_err());
+        assert!(tool_restore("postgres", &t("d"), "", &f, Some("rel/bin")).await.unwrap_err().contains("absolute"));
+        if resolve_tool("pg_restore", None).is_none() && resolve_tool("psql", None).is_none() {
+            let e = tool_restore("postgres", &t("d"), "", &f, Some("/nonexistent")).await.unwrap_err();
+            assert!(e.contains("Settings"), "{e}");
+        }
+    }
+
+    /// A reader that hands out `n` bytes of `x`, then fails — a disk error mid-copy.
+    struct FailAfter(usize);
+    impl std::io::Read for FailAfter {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.0 == 0 {
+                return Err(std::io::Error::other("simulated read error"));
+            }
+            let n = self.0.min(buf.len());
+            buf[..n].fill(b'x');
+            self.0 -= n;
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn a_failed_copy_never_touches_the_original() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("live.db");
+        std::fs::write(&db, b"the original database").unwrap();
+        let e = swap_in(&mut FailAfter(10_000), &db).unwrap_err();
+        assert!(e.to_string().contains("simulated"), "{e}");
+        assert_eq!(std::fs::read(&db).unwrap(), b"the original database", "original untouched");
+        let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(left, [std::ffi::OsString::from("live.db")], "the temp copy is removed");
+
+        swap_in(&mut &b"the restored database"[..], &db).unwrap();
+        assert_eq!(std::fs::read(&db).unwrap(), b"the restored database");
+        let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(left.len(), 1, "no temp file left behind: {left:?}");
+    }
+
+    #[tokio::test]
+    async fn file_restore_refuses_memory_and_a_backup_of_the_wrong_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("live.db");
+        let drv: Arc<dyn SqlDriver> =
+            Arc::new(crate::drivers::sqlite::SqliteDriver::connect(db.to_str().unwrap()).await.unwrap());
+        drv.run_script("CREATE TABLE t (x); INSERT INTO t VALUES (1)").await.unwrap();
+        let not_sqlite = dir.path().join("dump.sql");
+        std::fs::write(&not_sqlite, b"CREATE TABLE t (x);").unwrap();
+        let mem = Arc::new(crate::drivers::sqlite::SqliteDriver::connect(":memory:").await.unwrap());
+        let e = file_restore(mem, "sqlite", ":memory:", not_sqlite.to_str().unwrap()).await.unwrap_err();
+        assert!(e.contains("memory"), "{e}");
+        let e = file_restore(drv, "sqlite", db.to_str().unwrap(), not_sqlite.to_str().unwrap()).await.unwrap_err();
+        assert!(e.contains("not a SQLite database"), "{e}");
+        let check = crate::drivers::sqlite::SqliteDriver::connect(db.to_str().unwrap()).await.unwrap();
+        assert!(check.run_script("SELECT x FROM t").await.is_ok(), "the database is untouched");
     }
 }

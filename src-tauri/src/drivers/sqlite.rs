@@ -558,6 +558,12 @@ impl SqlDriver for SqliteDriver {
     async fn list_databases(&self) -> DResult<Vec<String>> {
         Ok(Vec::new())
     }
+
+    /// Waits for checked-out connections to come back, then closes every one — the last
+    /// close checkpoints the WAL into the file, so nothing of it is left to replay.
+    async fn close(&self) {
+        self.pool.close().await
+    }
 }
 
 
