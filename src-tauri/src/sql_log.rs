@@ -196,8 +196,14 @@ pub fn redact(sql: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
+// ASCII-only: every keyword this module looks for (`password`, `secret`, `identified`,
+// `with`, `by`, `as`, `replace`, `for`) is ASCII, and a UTF-8 continuation byte is always
+// `>= 0x80` too — counting it as a word char used to glue it onto the end of a keyword
+// (`PASSWORD<U+00A0>` scanned as one "word"), so the keyword never matched. Non-ASCII bytes
+// inside an *identifier* (e.g. a role named `café`) still end the scan correctly: they just
+// stop being lumped into a keyword comparison that could never match them anyway.
 fn is_word(c: u8) -> bool {
-    c.is_ascii_alphanumeric() || c == b'_' || c >= 0x80
+    c.is_ascii_alphanumeric() || c == b'_'
 }
 
 /// `w` is `kw` or ends in `_kw` (`OLD_PASSWORD`, `CLIENT_SECRET`), case-insensitively.
@@ -209,11 +215,17 @@ fn is_kw(w: &[u8], kw: &[u8]) -> bool {
 }
 
 /// Skip whitespace and comments (`-- …` to the line end, `/* … */`; unterminated runs to
-/// the end).
+/// the end). Whitespace is `char::is_whitespace`, not just ASCII — SQL Server accepts a
+/// non-breaking space (U+00A0) anywhere plain whitespace is legal — decoded one char at a
+/// time so `i` only ever advances by a whole char and stays on a char boundary (`b` is the
+/// UTF-8 bytes of the original `&str`, so `&b[i..]` is always valid UTF-8 there).
 fn skip_ws(b: &[u8], mut i: usize) -> usize {
     loop {
-        while i < b.len() && b[i].is_ascii_whitespace() {
-            i += 1;
+        while i < b.len() {
+            match std::str::from_utf8(&b[i..]).ok().and_then(|s| s.chars().next()) {
+                Some(c) if c.is_whitespace() => i += c.len_utf8(),
+                _ => break,
+            }
         }
         let rest = b.get(i..).unwrap_or_default();
         if rest.starts_with(b"--") {
@@ -406,6 +418,23 @@ mod tests {
         assert_eq!(
             redact("ALTER LOGIN a WITH PASSWORD = 'new' OLD_PASSWORD = 'old'"),
             "ALTER LOGIN a WITH PASSWORD = '***' OLD_PASSWORD = '***'"
+        );
+    }
+
+    /// SQL Server accepts a non-breaking space (U+00A0) anywhere plain whitespace is legal,
+    /// so `PASSWORD` followed by one, or `=` followed by one, must still find its value.
+    /// Byte-wise, U+00A0 is `0xC2 0xA0` — both continuation bytes are `>= 0x80`, which used to
+    /// make the keyword scanner treat them as *part of* the keyword (`is_word` counted any
+    /// high bit as a word char), so `w` never matched `"password"` and nothing was masked.
+    #[test]
+    fn redacts_sql_server_password_next_to_a_non_breaking_space() {
+        assert_eq!(
+            redact("ALTER LOGIN a WITH PASSWORD\u{00A0}= N'secret'"),
+            "ALTER LOGIN a WITH PASSWORD\u{00A0}= N'***'"
+        );
+        assert_eq!(
+            redact("ALTER LOGIN a WITH PASSWORD =\u{00A0}N'secret'"),
+            "ALTER LOGIN a WITH PASSWORD =\u{00A0}N'***'"
         );
     }
 
