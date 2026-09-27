@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { cancelQuery, queryRows, type Engine, type Rows } from "../lib/commands";
+import { cancelQuery, type Engine, type Rows } from "../lib/commands";
 import {
+  fetchWidgetRows,
   isReadOnlyWidgetSql,
   loadBoard,
   saveBoard,
-  widgetRowCap,
   widgetValue,
   MIN_REFRESH_SEC,
   type Board,
@@ -159,7 +159,7 @@ function WidgetCard({
       inFlight = queryId;
       setLoading(true);
       try {
-        const r = await queryRows(connId, widget.sql, widgetRowCap(widget.kind), queryId);
+        const r = await fetchWidgetRows(connId, widget, queryId);
         if (shouldApply(gen, genRef.current) && !stopped) {
           setRows(r);
           setError(null);

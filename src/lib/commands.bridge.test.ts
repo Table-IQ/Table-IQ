@@ -52,6 +52,18 @@ describe("IPC bridge invoke", () => {
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ resultId: "r1", offset: 0, len: 10 });
   });
 
+  it("sends query_rows' readOnly flag (Metrics widgets run read-only)", async () => {
+    reply(JSON.stringify({ columns: [], rows: [], truncated: false }), 200, "application/json");
+    await cmds.queryRows("c1", "SELECT 1", 1, "q1", true);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      id: "c1",
+      sql: "SELECT 1",
+      maxRows: 1,
+      queryId: "q1",
+      readOnly: true,
+    });
+  });
+
   it("throws the parsed body on a non-ok response, so Rust Err(String) arrives as that string", async () => {
     reply(JSON.stringify("unknown connection"), 400, "application/json");
     await expect(cmds.connect("nope")).rejects.toBe("unknown connection");

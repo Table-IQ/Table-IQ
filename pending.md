@@ -128,7 +128,7 @@ Full account in `docs/finalize/2026-09-27-sql-log-users-metrics.md`. PR-C (Backu
 
 | Item | Why |
 |---|---|
-| **Widgets can still run side-effecting SELECTs** | The keyword guard rejects writes, DDL and exec, but a SELECT that calls a function with side effects (`pg_terminate_backend`, `setval`, `… FOR SHARE`) still runs on every refresh. The structural fix is to run widget `query_rows` inside a READ ONLY transaction (PG/MySQL) or with `query_only` (SQLite). PR-C's MCP server builds that wrapper; Metrics adopts it then. |
+| ~~**Widgets can still run side-effecting SELECTs**~~ | **Closed in PR-C (Task 14).** Widgets call `query_rows` with `read_only: true`: the backend re-checks the SQL with the MCP guard (`mcp::guard::guard_sql`) and runs it inside `BEGIN TRANSACTION READ ONLY` (PG) / `START TRANSACTION READ ONLY` (MySQL) / `BEGIN … ROLLBACK` (SQLite, DuckDB, SQL Server), so `setval`/`nextval` fail on PG and writes are undone elsewhere. Still reachable: side effects no transaction can refuse (`pg_terminate_backend`, advisory locks, `dblink`). |
 | **SQL log misses some statements** | Statements run before the driver is wrapped (on connect), `test_connection`, schema-diff temp drivers, SQLite PRAGMAs run when a connection opens, and pool background tasks are not logged. |
 | **SQL log fills with widget refreshes** | Several fast widgets can fill the 2000-entry ring in minutes and push out the user's own statements. A `source` tag (user/app/widget) plus a panel filter would fix it. |
 | **`redact` edge cases** | Not masked yet: a PG nested comment between keyword and value, PG adjacent-literal continuation, MySQL `#` comments, `CONCAT('a','b')` passwords (only `'a'` is masked), and connection-string passwords (`dblink`). |

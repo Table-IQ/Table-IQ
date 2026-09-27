@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  fetchWidgetRows,
   isReadOnlyWidgetSql,
   loadBoard,
   MIN_REFRESH_SEC,
@@ -309,5 +310,22 @@ describe("isReadOnlyWidgetSql", () => {
   it("still scans code that follows a closed literal", () => {
     expect(isReadOnlyWidgetSql("SELECT 'x' DROP TABLE t", "sqlserver")).toBe(false);
     expect(isReadOnlyWidgetSql("SELECT 1 /* c */ EXEC sp_who", "sqlserver")).toBe(false);
+  });
+});
+
+describe("fetchWidgetRows", () => {
+  // Widgets re-run unattended, so the backend must run them inside a read-only
+  // transaction too — a side-effecting SELECT (setval, pg_terminate_backend…) the
+  // keyword guard can't see must not repeat every refresh.
+  it("asks query_rows for a read-only run, capped for the widget's kind", async () => {
+    const calls: unknown[][] = [];
+    const rows: Rows = { columns: ["n"], rows: [["1"]], truncated: false };
+    const run = async (...args: unknown[]) => {
+      calls.push(args);
+      return rows;
+    };
+    const w: Widget = { id: "w", title: "t", sql: "SELECT 1", kind: "number", refreshSec: 5 };
+    await expect(fetchWidgetRows("c1", w, "q1", run)).resolves.toBe(rows);
+    expect(calls).toEqual([["c1", "SELECT 1", 1, "q1", true]]);
   });
 });
