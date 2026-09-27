@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { DataGrid, type DataGridHandle, type GridSource } from "./DataGrid";
 import {
   applyEdit,
@@ -60,10 +60,12 @@ import {
   isSuperseded,
   retrySuperseded,
   MANUAL_FILTER_OPS,
-  removeFilter,
   searchTerm,
-  upsertFilter,
-  withSearch,
+  ANY_COLUMN,
+  RAW_SQL,
+  ruleToFilter,
+  rulesToFilters,
+  type FilterRule,
 } from "../lib/filterBuilder";
 import {
   IconChevronLeft,
@@ -73,15 +75,21 @@ import {
   IconFilter,
   IconLink,
   IconRefresh,
-  IconSearch,
 } from "./ui/Icon";
 
 /** Rows-per-page choices; one more row than the page is fetched — the extra row
  *  is how we know a next page exists without a second query. */
 const PAGE_SIZES = [100, 300, 1000, 5000] as const;
 const DEFAULT_PAGE_SIZE = 300;
-/** Typing pause before the search box re-queries. */
-const SEARCH_DEBOUNCE_MS = 300;
+let ruleSeq = 0;
+/** A blank filter-bar row. Defaults to Any column — the old search box's job. */
+const newRule = (column = ANY_COLUMN, op: FilterOp = "Eq", value = ""): FilterRule => ({
+  id: ++ruleSeq,
+  enabled: true,
+  column,
+  op,
+  value,
+});
 
 interface Props {
   connId: string;
@@ -131,16 +139,18 @@ export function TableView({ connId, schema, object, view }: Props) {
     key: "",
     map: new Map(),
   });
-  /** The search box (its text is local to {@link SearchBox}; the applied term
-   *  lives in `filters` as one Search filter). */
-  const searchRef = useRef<HTMLInputElement>(null);
+  /** The filter bar, for focusing a row's value input. */
+  const barRef = useRef<HTMLDivElement>(null);
   /** An exact COUNT(*) the user asked for, cancellable by `token`. */
   const [counting, setCounting] = useState<{ token: string; started: number } | null>(null);
   const countingRef = useRef<string | null>(null);
   const [dirty, setDirty] = useState(0);
   const [refreshKey, setRefreshKey] = useState(0);
+  /** The applied filters — what the grid is fetched with. */
   const [filters, setFilters] = useState<ColumnFilter[]>([]);
-  const [filterDraft, setFilterDraft] = useState<{ column: string; op: FilterOp; value: string } | null>(null);
+  /** The filter bar's rows (TablePlus parity); only Apply turns them into `filters`. */
+  const [rules, setRules] = useState<FilterRule[]>([]);
+  const [barOpen, setBarOpen] = useState(false);
   const [draft, setDraft] = useState<Record<string, string | null | undefined> | null>(null);
   const [cellMenu, setCellMenu] = useState<{
     x: number;
@@ -399,16 +409,30 @@ export function TableView({ connId, schema, object, view }: Props) {
     };
   }, [connId, schema, object.name, page, pageSize, pageKey, filters, order, requestKey, refreshKey]);
 
-  // Search box → one Search filter. A no-op when the term is unchanged
-  // (withSearch returns the same array), so nothing refetches or re-pages.
-  const onSearch = useCallback(
-    (text: string) => {
-      const next = withSearch(filters, text);
-      if (next !== filters) applyFilters(next);
-    },
-    [filters, applyFilters],
-  );
-  // ⌘F (Ctrl+F off macOS) focuses the search box — only the active tab's view is
+  /** Focus a filter-bar row's value input (the first row's by default), once
+   *  the render that adds the row has landed. */
+  const focusRule = useCallback((id?: number) => {
+    requestAnimationFrame(() => {
+      const row = id === undefined ? "" : `[data-rule="${id}"] `;
+      barRef.current?.querySelector<HTMLInputElement>(`${row}input[type=text]`)?.select();
+    });
+  }, []);
+  /** Show the filter bar with at least one row, and focus it. */
+  const openBar = useCallback(() => {
+    setBarOpen(true);
+    setRules((r) => (r.length ? r : [newRule()]));
+    focusRule();
+  }, [focusRule]);
+  /** Hide the filter bar, dropping its rows and whatever they applied. */
+  const closeBar = useCallback(() => {
+    if (filters.length) {
+      if (blockedByEdits()) return;
+      applyFilters([]);
+    }
+    setRules([]);
+    setBarOpen(false);
+  }, [filters.length, blockedByEdits, applyFilters]);
+  // ⌘F (Ctrl+F off macOS) opens the filter bar — only the active tab's view is
   // mounted. Not while a modal / panel is open over it: that owns the keyboard.
   useEffect(() => {
     if (view !== "data") return;
@@ -416,13 +440,12 @@ export function TableView({ connId, schema, object, view }: Props) {
     const onKey = (e: KeyboardEvent) => {
       if (isFindShortcut(e, mac) && !document.querySelector(".tiq-overlay")) {
         e.preventDefault();
-        searchRef.current?.focus();
-        searchRef.current?.select();
+        openBar();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [view]);
+  }, [view, openBar]);
 
   // Re-sync the grid when a cell is edited from the Inspector panel (Slice 33),
   // so the data grid reflects the committed value.
@@ -549,109 +572,159 @@ export function TableView({ connId, schema, object, view }: Props) {
     setNotice(null);
   }, []);
 
-  /** Filter builder + chip rail (Slice 21 #1). Declared before the early returns
-   *  so the error view can show it too — a filter that the engine rejects has to
-   *  stay visible and removable, or the tab is stuck. */
+  /** Filter bar (TablePlus parity): one row per rule. Enter / Apply applies that
+   *  row alone; ⌘↵ / Apply All applies every ticked row. Declared before the early
+   *  returns so the error view can show it too — a filter that the engine rejects
+   *  has to stay visible and removable, or the tab is stuck. */
+  const setRule = (id: number, patch: Partial<FilterRule>) =>
+    setRules((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  const applyRule = (r: FilterRule) => {
+    const f = ruleToFilter({ ...r, enabled: true });
+    setRule(r.id, { enabled: true });
+    applyFilters(f ? [f] : []);
+  };
+  const applyAll = () => applyFilters(rulesToFilters(rules));
+  const ctl =
+    "h-6 rounded-md border border-border bg-surface px-1.5 text-[11px] text-text focus:border-primary focus:outline-none";
+  const btn = "h-6 rounded-md border border-border px-2 text-[11px] text-muted hover:text-text";
   const filterRail =
-    filterDraft || filters.length > 0 ? (
-        <div className="tiq-rail flex flex-wrap items-center gap-1.5 border-b border-border bg-bg px-3 py-1.5">
-          <IconFilter size={11} className="text-primary" />
-          <span className="text-[10px] uppercase tracking-wider text-muted">filters</span>
-          {filters.map((f) => (
-            <Chip
-              key={`${f.column}-${f.op}`}
-              tone="primary"
-              onClick={() => applyFilters(removeFilter(filters, f.column, f.op))}
-              title="Click to remove"
-            >
-              {chipLabel(f)} ×
-            </Chip>
-          ))}
-          {filterDraft && (
-            <div className="flex items-center gap-1">
+    barOpen || filters.length > 0 ? (
+      <div
+        ref={barRef}
+        className="tiq-rail flex flex-col gap-1 border-b border-border bg-bg px-3 py-1.5"
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            e.stopPropagation();
+            applyAll();
+          }
+        }}
+      >
+        {rules.map((r) => {
+          const raw = r.column === RAW_SQL;
+          return (
+            <div key={r.id} data-rule={r.id} className="flex items-center gap-1">
+              <input
+                type="checkbox"
+                checked={r.enabled}
+                onChange={(e) => setRule(r.id, { enabled: e.target.checked })}
+                aria-label="Include in Apply All"
+                title="Include in Apply All"
+                className="accent-[var(--primary)]"
+              />
               <select
-                value={filterDraft.column}
-                onChange={(e) => setFilterDraft({ ...filterDraft, column: e.target.value })}
-                className="rounded-md border border-border bg-surface px-1.5 py-0.5 text-[11px] text-text"
+                value={r.column}
+                onChange={(e) => setRule(r.id, { column: e.target.value })}
+                aria-label="Filter column"
+                className={`${ctl} max-w-44`}
               >
                 {object.columns.map((c) => (
                   <option key={c.name} value={c.name}>
                     {c.name}
                   </option>
                 ))}
+                <option disabled>──────────</option>
+                <option value={ANY_COLUMN}>Any column</option>
+                <option value={RAW_SQL}>Raw SQL</option>
               </select>
-              <select
-                value={filterDraft.op}
-                onChange={(e) =>
-                  setFilterDraft({ ...filterDraft, op: e.target.value as FilterOp })
-                }
-                className="rounded-md border border-border bg-surface px-1.5 py-0.5 text-[11px] text-text"
-              >
-                {MANUAL_FILTER_OPS.map((op) => (
-                  <option key={op} value={op}>
-                    {FILTER_OP_LABEL[op]}
-                  </option>
-                ))}
-              </select>
-              {!isNullOp(filterDraft.op) && (
+              {r.column === ANY_COLUMN ? (
+                <span className="w-16 text-center text-[11px] text-muted">contains</span>
+              ) : (
+                !raw && (
+                  <select
+                    value={r.op}
+                    onChange={(e) => setRule(r.id, { op: e.target.value as FilterOp })}
+                    aria-label="Filter operator"
+                    className={ctl}
+                  >
+                    {MANUAL_FILTER_OPS.map((op) => (
+                      <option key={op} value={op}>
+                        {FILTER_OP_LABEL[op]}
+                      </option>
+                    ))}
+                  </select>
+                )
+              )}
+              {raw || !isNullOp(r.op) || r.column === ANY_COLUMN ? (
                 <input
-                  autoFocus
-                  value={filterDraft.value}
-                  onChange={(e) => setFilterDraft({ ...filterDraft, value: e.target.value })}
+                  type="text"
+                  value={r.value}
+                  onChange={(e) => setRule(r.id, { value: e.target.value })}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      applyFilters(
-                        upsertFilter(filters, {
-                          column: filterDraft.column,
-                          op: filterDraft.op,
-                          value: filterDraft.value === "" ? null : filterDraft.value,
-                        }),
-                      );
-                      setFilterDraft(null);
-                    } else if (e.key === "Escape") {
-                      setFilterDraft(null);
+                    if (e.key === "Enter" && !e.metaKey && !e.ctrlKey) {
+                      e.preventDefault();
+                      applyRule(r);
+                    } else if (e.key === "Escape" && filters.length === 0) {
+                      // Nothing applied: Esc cancels the bar, as it cancelled the old draft.
+                      e.preventDefault();
+                      e.stopPropagation();
+                      closeBar();
                     }
                   }}
-                  placeholder="value…"
-                  className="w-32 rounded-md border border-border bg-surface px-1.5 py-0.5 text-[11px] text-text placeholder:text-muted"
+                  aria-label={raw ? "Raw SQL WHERE expression" : "Filter value"}
+                  spellCheck={false}
+                  placeholder={raw ? "WHERE … e.g. id > 10 AND name LIKE 'a%'" : r.column === ANY_COLUMN ? "Search rows" : "value…"}
+                  className={`${ctl} min-w-0 flex-1 placeholder:text-muted ${raw ? "font-mono" : ""}`}
                 />
+              ) : (
+                <span className="flex-1" />
               )}
+              <button onClick={() => applyRule(r)} className={btn} title="Apply this filter only (↵)">
+                Apply
+              </button>
+              <button
+                onClick={() => (rules.length > 1 ? setRules((rs) => rs.filter((x) => x.id !== r.id)) : closeBar())}
+                className={`${btn} w-6 px-0`}
+                aria-label="Remove filter row"
+                title="Remove filter row"
+              >
+                −
+              </button>
               <button
                 onClick={() => {
-                  applyFilters(
-                    upsertFilter(filters, {
-                      column: filterDraft.column,
-                      op: filterDraft.op,
-                      value: isNullOp(filterDraft.op)
-                        ? null
-                        : filterDraft.value === ""
-                          ? null
-                          : filterDraft.value,
-                    }),
-                  );
-                  setFilterDraft(null);
+                  const next = newRule(r.column === RAW_SQL ? ANY_COLUMN : r.column, r.op);
+                  setRules((rs) => rs.flatMap((x) => (x.id === r.id ? [x, next] : [x])));
+                  focusRule(next.id);
                 }}
-                className="rounded-md bg-primary px-2 py-0.5 text-[11px] font-medium text-white hover:opacity-90"
+                className={`${btn} w-6 px-0`}
+                aria-label="Add filter row"
+                title="Add filter row"
               >
-                Add
-              </button>
-              <button
-                onClick={() => setFilterDraft(null)}
-                className="rounded-md border border-border px-1.5 py-0.5 text-[11px] text-muted hover:text-text"
-              >
-                <IconClose size={9} />
+                +
               </button>
             </div>
-          )}
-          {filters.length > 0 && (
-            <button
-              onClick={() => applyFilters([])}
-              className="ml-auto text-[10px] text-muted hover:text-text"
-              title="Clear all filters"
-            >
-              clear all
-            </button>
-          )}
+          );
+        })}
+        <div className="flex items-center gap-1.5">
+          <IconFilter size={11} className="text-primary" />
+          <span className="text-[10px] text-muted">
+            {filters.length > 0 ? filters.map(chipLabel).join(" AND ") : "no filter applied"}
+          </span>
+          <span className="flex-1" />
+          <button
+            onClick={() => {
+              if (filters.length) {
+                if (blockedByEdits()) return;
+                applyFilters([]);
+              }
+              setRules([newRule()]);
+              focusRule();
+            }}
+            className={btn}
+          >
+            Clear
+          </button>
+          <button
+            onClick={applyAll}
+            className="h-6 rounded-md bg-primary px-2 text-[11px] font-medium text-white hover:opacity-90"
+            title="Apply every ticked filter"
+          >
+            Apply All <span className="opacity-70">{isMacPlatform() ? "⌘↵" : "Ctrl ↵"}</span>
+          </button>
+          <button onClick={closeBar} className={`${btn} w-6 px-0`} aria-label="Close filter bar" title="Close filter bar">
+            <IconClose size={9} className="mx-auto" />
+          </button>
+        </div>
       </div>
     ) : null;
 
@@ -727,14 +800,6 @@ export function TableView({ connId, schema, object, view }: Props) {
           <ToolbarButton label="Alter" onClick={() => setShowAlter(true)} />
         )}
         <ToolbarSpacer />
-        {view === "data" && (
-          <SearchBox
-            term={searchTerm(filters)}
-            onSearch={onSearch}
-            disabled={locked}
-            inputRef={searchRef}
-          />
-        )}
         {(["csv", "json"] as ExportFormat[]).map((fmt) => (
           <ToolbarButton
             key={fmt}
@@ -1038,19 +1103,9 @@ export function TableView({ connId, schema, object, view }: Props) {
               )
             )}
             <StatusBarButton
-              onClick={() =>
-                setFilterDraft(
-                  filterDraft
-                    ? null
-                    : {
-                        column: object.columns[0]?.name ?? "",
-                        op: "Eq",
-                        value: "",
-                      },
-                )
-              }
-              active={filterDraft !== null || filters.length > 0}
-              title="Filter rows"
+              onClick={() => (barOpen && filters.length === 0 ? closeBar() : openBar())}
+              active={barOpen || filters.length > 0}
+              title={`Filter rows (${isMacPlatform() ? "⌘F" : "Ctrl F"})`}
             >
               Filters{filters.length > 0 ? ` · ${filters.length}` : ""}
             </StatusBarButton>
@@ -1230,10 +1285,15 @@ export function TableView({ connId, schema, object, view }: Props) {
             {
               id: "quick-filter",
               label: `Filter "${cellMenu.col}" = ${cellMenu.value ?? "NULL"}`,
-              onSelect: () =>
-                applyFilters(
-                  upsertFilter(filters, { column: cellMenu.col, op: "Eq", value: cellMenu.value }),
-                ),
+              onSelect: () => {
+                // `= NULL` matches nothing; a NULL cell filters as IS NULL.
+                const r = newRule(cellMenu.col, cellMenu.value === null ? "IsNull" : "Eq", cellMenu.value ?? "");
+                const f = ruleToFilter(r);
+                if (!f || blockedByEdits()) return;
+                setRules((rs) => [...rs, r]);
+                setBarOpen(true);
+                applyFilters([...filters, f]);
+              },
             },
             {
               id: "copy-delete",
@@ -1466,73 +1526,6 @@ function Ellipsis({ text }: { text: string | null }) {
   );
 }
 
-/** The toolbar's all-column search. Its text is local state, so a keystroke
- *  re-renders only this box — never the table view or the grid. The term is
- *  applied after a typing pause, or at once on Enter; Esc clears the box. */
-function SearchBox({
-  term,
-  onSearch,
-  disabled,
-  inputRef,
-}: {
-  /** The applied term (from the filters). */
-  term: string;
-  onSearch: (text: string) => void;
-  disabled: boolean;
-  inputRef: RefObject<HTMLInputElement | null>;
-}) {
-  const [text, setText] = useState(term);
-  const onSearchRef = useRef(onSearch);
-  onSearchRef.current = onSearch;
-  // The last term this box applied. When the applied term moves to anything
-  // else (its chip removed, "clear all"), the box follows — but the echo of its
-  // own apply must not clobber what the user has typed since.
-  const pushed = useRef(term);
-  useEffect(() => {
-    if (term === pushed.current) return;
-    pushed.current = term;
-    setText(term);
-  }, [term]);
-  const apply = (t: string) => {
-    pushed.current = t.trim();
-    onSearchRef.current(t);
-  };
-  // `disabled` re-arms it: a term typed just before an edit was staged applies
-  // once the edit is committed or discarded.
-  useEffect(() => {
-    if (disabled || text.trim() === term) return;
-    const id = window.setTimeout(() => apply(text), SEARCH_DEBOUNCE_MS);
-    return () => window.clearTimeout(id);
-  }, [text, term, disabled]);
-  return (
-    <label className="mr-1 flex h-6 w-52 items-center gap-1.5 rounded-[var(--radius)] border border-border bg-bg px-1.5 text-muted focus-within:border-primary focus-within:text-text">
-      <IconSearch size={11} />
-      <input
-        ref={inputRef}
-        type="search"
-        aria-label="Search all columns"
-        value={text}
-        disabled={disabled}
-        title={disabled ? "Commit or discard your changes to search" : undefined}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            apply(text);
-          } else if (e.key === "Escape") {
-            // Clearing the box is this Esc's whole job — no panel above may close on it.
-            e.preventDefault();
-            e.stopPropagation();
-            setText("");
-          }
-        }}
-        placeholder="Search rows"
-        className="min-w-0 flex-1 bg-transparent text-[11px] text-text outline-none placeholder:text-muted [&::-webkit-search-cancel-button]:hidden"
-      />
-      {text === "" && <span className="tiq-kbd">{isMacPlatform() ? "⌘F" : "Ctrl F"}</span>}
-    </label>
-  );
-}
 
 /** TablePlus-style row pager — `‹ 1–300 of 1,234 ›`. The label is built by the
  *  tested {@link pagerLabel}; this only draws it. */

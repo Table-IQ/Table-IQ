@@ -323,6 +323,9 @@ pub enum FilterOp {
     /// All-column "contains" search: `column` is ignored (the UI sends `"*"`) and `value`
     /// is the raw term. See [`build_where_clause`].
     Search,
+    /// A raw SQL boolean expression typed by the user, spliced into the WHERE as-is:
+    /// `column` is ignored (the UI sends `"*"`). Checked by [`validate_filters`].
+    Raw,
 }
 
 /// One AND-clause in a per-column filter set (Slice 21 #1).
@@ -531,6 +534,10 @@ pub fn build_where_clause(
         match f.op {
             FilterOp::IsNull => parts.push(format!("{col} IS NULL")),
             FilterOp::IsNotNull => parts.push(format!("{col} IS NOT NULL")),
+            FilterOp::Raw => match f.value.as_deref().map(str::trim) {
+                Some(sql) if !sql.is_empty() => parts.push(format!("({sql})")),
+                _ => {}
+            },
             FilterOp::Search if columns.is_empty() => parts.push("1 = 0".into()),
             FilterOp::Search => {
                 let pat = format!("%{}%", like_escape(f.value.as_deref().unwrap_or("")));
@@ -574,6 +581,17 @@ pub fn build_where_clause(
         }
     }
     (parts.join(" AND "), binds)
+}
+
+/// Refuse a [`FilterOp::Raw`] that holds more than one statement: SQLite and SQL Server
+/// run every statement of a batch, so `1=1); DROP TABLE t; --` would do just that.
+// ponytail: refuses any `;`, even one inside a string literal — parse it if that bites.
+pub fn validate_filters(filters: &[ColumnFilter]) -> Result<(), String> {
+    let stacked = |f: &ColumnFilter| f.op == FilterOp::Raw && f.value.as_deref().is_some_and(|v| v.contains(';'));
+    if filters.iter().any(stacked) {
+        return Err("Raw filter must be a single expression (no `;`)".into());
+    }
+    Ok(())
 }
 
 /// Escape a term's LIKE metacharacters with `!` so it matches literally: `%`, `_`, the
@@ -1021,6 +1039,39 @@ mod tests {
         let (sql, binds) = build_where_clause(&search("q"), &[], &pg_ident, &pg_ph, &pg_text, 1);
         assert_eq!(sql, "1 = 0");
         assert!(binds.is_empty());
+    }
+
+    fn raw(sql: &str) -> ColumnFilter {
+        ColumnFilter { column: "*".into(), op: FilterOp::Raw, value: Some(sql.into()) }
+    }
+
+    /// A raw WHERE fragment is spliced in parenthesized — so its own OR can't escape the
+    /// AND chain — with no binds, and the numbering of later binds carries on from it.
+    #[test]
+    fn where_clause_raw_wraps_in_parens_no_binds() {
+        let f = vec![
+            raw("a = 1 OR b = 2"),
+            ColumnFilter { column: "c".into(), op: FilterOp::Eq, value: Some("x".into()) },
+        ];
+        let (sql, binds) = build_where_clause(&f, &[], &pg_ident, &sqlite_ph, &pg_ident, 1);
+        assert_eq!(sql, "(a = 1 OR b = 2) AND \"c\" = ?1");
+        assert_eq!(binds, vec![Some("x".into())]);
+    }
+
+    #[test]
+    fn where_clause_blank_raw_is_skipped() {
+        let (sql, binds) = build_where_clause(&[raw("  ")], &[], &pg_ident, &pg_ph, &pg_text, 1);
+        assert_eq!(sql, "");
+        assert!(binds.is_empty());
+    }
+
+    #[test]
+    fn validate_filters_refuses_stacked_statements() {
+        assert!(validate_filters(&[raw("id > 1")]).is_ok());
+        assert!(validate_filters(&[raw("1=1); DROP TABLE t; --")]).is_err());
+        // Only Raw is checked: a bound value may hold anything.
+        let bound = ColumnFilter { column: "a".into(), op: FilterOp::Eq, value: Some(";".into()) };
+        assert!(validate_filters(&[bound]).is_ok());
     }
 
     #[test]

@@ -6,10 +6,12 @@ import {
   isSuperseded,
   MANUAL_FILTER_OPS,
   searchTerm,
-  withSearch,
   isNullOp,
-  removeFilter,
-  upsertFilter,
+  ANY_COLUMN,
+  RAW_SQL,
+  ruleToFilter,
+  rulesToFilters,
+  type FilterRule,
 } from "./filterBuilder";
 import type { ColumnFilter } from "./commands";
 
@@ -33,67 +35,59 @@ describe("filterBuilder", () => {
     expect(chipLabel({ column: "x", op: "Eq", value: null })).toBe("x = ∅");
   });
 
-  it("upsert replaces existing filter on same column+op", () => {
-    const init: ColumnFilter[] = [{ column: "x", op: "Eq", value: "a" }];
-    const next = upsertFilter(init, { column: "x", op: "Eq", value: "b" });
-    expect(next).toHaveLength(1);
-    expect(next[0].value).toBe("b");
+  it("labels a search and a raw clause by what they are, not as a `*` column", () => {
+    expect(chipLabel({ column: "*", op: "Search", value: "ada" })).toBe('search "ada"');
+    expect(chipLabel({ column: "*", op: "Raw", value: "id > 1" })).toBe("where (id > 1)");
   });
 
-  it("upsert appends when column+op pair is new", () => {
-    const init: ColumnFilter[] = [{ column: "x", op: "Eq", value: "a" }];
-    const next = upsertFilter(init, { column: "x", op: "Ne", value: "b" });
-    expect(next).toHaveLength(2);
-  });
-
-  it("remove drops a specific column+op", () => {
-    const init: ColumnFilter[] = [
-      { column: "x", op: "Eq", value: "a" },
-      { column: "y", op: "Eq", value: "b" },
-    ];
-    expect(removeFilter(init, "x", "Eq")).toEqual([{ column: "y", op: "Eq", value: "b" }]);
+  it("keeps Search and Raw out of the manual filter ops", () => {
+    expect(MANUAL_FILTER_OPS).not.toContain("Search");
+    expect(MANUAL_FILTER_OPS).not.toContain("Raw");
+    expect(MANUAL_FILTER_OPS).toContain("Eq");
   });
 });
 
-describe("table search", () => {
-  const eq: ColumnFilter = { column: "x", op: "Eq", value: "a" };
-
-  it("sets one Search filter next to the column filters", () => {
-    const next = withSearch([eq], "ada");
-    expect(next).toEqual([eq, { column: "*", op: "Search", value: "ada" }]);
-    expect(searchTerm(next)).toBe("ada");
+describe("filter rules", () => {
+  const rule = (over: Partial<FilterRule>): FilterRule => ({
+    id: 1,
+    enabled: true,
+    column: "name",
+    op: "Eq",
+    value: "Ada",
+    ...over,
   });
 
-  it("replaces the previous term instead of stacking a second one", () => {
-    const next = withSearch(withSearch([eq], "ad"), "ada");
-    expect(next.filter((f) => f.op === "Search")).toHaveLength(1);
-    expect(searchTerm(next)).toBe("ada");
+  it("maps a column rule to its filter", () => {
+    expect(ruleToFilter(rule({}))).toEqual({ column: "name", op: "Eq", value: "Ada" });
   });
 
-  it("an empty or blank term removes the search", () => {
-    expect(withSearch(withSearch([eq], "ada"), "")).toEqual([eq]);
-    expect(withSearch(withSearch([eq], "ada"), "   ")).toEqual([eq]);
-    expect(searchTerm([eq])).toBe("");
+  it("a null op sends no value, an empty value sends null", () => {
+    expect(ruleToFilter(rule({ op: "IsNull", value: "x" }))).toEqual({ column: "name", op: "IsNull", value: null });
+    expect(ruleToFilter(rule({ value: "" }))?.value).toBeNull();
   });
 
-  it("trims the term", () => {
-    expect(searchTerm(withSearch([], "  ada "))).toBe("ada");
+  it("Any column becomes the all-column Search, Raw SQL the Raw op — both trimmed", () => {
+    expect(ruleToFilter(rule({ column: ANY_COLUMN, value: " ada " }))).toEqual({ column: "*", op: "Search", value: "ada" });
+    expect(ruleToFilter(rule({ column: RAW_SQL, value: " id > 1 " }))).toEqual({ column: "*", op: "Raw", value: "id > 1" });
   });
 
-  it("returns the same array when the term is unchanged, so nothing refetches", () => {
-    const f = withSearch([eq], "ada");
-    expect(withSearch(f, "ada ")).toBe(f);
-    const plain = [eq];
-    expect(withSearch(plain, "")).toBe(plain);
+  it("drops disabled rules and blank Any/Raw rules", () => {
+    expect(ruleToFilter(rule({ enabled: false }))).toBeNull();
+    expect(ruleToFilter(rule({ column: ANY_COLUMN, value: "  " }))).toBeNull();
+    expect(ruleToFilter(rule({ column: RAW_SQL, value: "" }))).toBeNull();
   });
 
-  it("labels the chip as a search, not as a `*` column", () => {
-    expect(chipLabel({ column: "*", op: "Search", value: "ada" })).toBe('search "ada"');
-  });
-
-  it("keeps Search out of the manual filter ops", () => {
-    expect(MANUAL_FILTER_OPS).not.toContain("Search");
-    expect(MANUAL_FILTER_OPS).toContain("Eq");
+  it("rulesToFilters keeps order and skips what ruleToFilter drops", () => {
+    const f = rulesToFilters([
+      rule({ id: 1, column: ANY_COLUMN, value: "ada" }),
+      rule({ id: 2, enabled: false }),
+      rule({ id: 3, column: "age", op: "Ge", value: "18" }),
+    ]);
+    expect(f).toEqual([
+      { column: "*", op: "Search", value: "ada" },
+      { column: "age", op: "Ge", value: "18" },
+    ]);
+    expect(searchTerm(f)).toBe("ada");
   });
 });
 

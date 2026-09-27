@@ -8,8 +8,8 @@ bastion, with host-key verification) — no required cloud dependency.
 ## Supported engines
 
 PostgreSQL, MySQL/MariaDB, SQL Server, SQLite, and DuckDB (a `.duckdb` file or `:memory:`)
-get the full relational experience: connect, browse (a paged, sortable, filterable grid with
-⌘F search across every column and a row total), run arbitrary SQL (including DDL,
+get the full relational experience: connect, browse (a paged, sortable grid with a
+TablePlus-style ⌘F filter bar — stacked rules, any-column search, raw SQL WHERE — and a row total), run arbitrary SQL (including DDL,
 multi-statement scripts, and NULL-safe inline edits), Structure (real columns/indexes/
 triggers per engine), and an ERD with FK-accurate connectors.
 

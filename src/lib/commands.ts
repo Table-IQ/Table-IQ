@@ -429,7 +429,9 @@ export type FilterOp =
   | "IsNull"
   | "IsNotNull"
   /** All-column "contains" search; `column` is "*" and `value` is the raw term. */
-  | "Search";
+  | "Search"
+  /** A raw SQL WHERE expression; `column` is "*" and `value` is the SQL. */
+  | "Raw";
 
 export interface ColumnFilter {
   column: string;
