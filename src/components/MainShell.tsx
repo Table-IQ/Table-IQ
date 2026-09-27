@@ -96,6 +96,7 @@ import {
 } from "../lib/toolbarItems";
 import { useShellKeymap } from "./shell/useShellKeymap";
 import { usePaletteCommands } from "./shell/usePaletteCommands";
+import { loadPins, savePins, livePins } from "../lib/pins";
 
 /** The schema a connection should open on. Every engine has a conventional
  *  "your stuff lives here" schema; alphabetical order picks `auth` over
@@ -274,6 +275,9 @@ export function MainShell() {
     window.addEventListener("tiq:toolbar", onToolbarEvent);
     return () => window.removeEventListener("tiq:toolbar", onToolbarEvent);
   }, []);
+  useEffect(() => {
+    if (active) setPinned(loadPins(active.id));
+  }, [active?.id]);
   // A failed export from the object context menu has nowhere else to land: the menu is gone
   // by the time the write fails, and the Table/Query status bars belong to a tab body that
   // may not even be open. One message, one strip — not a toast system.
@@ -516,7 +520,11 @@ export function MainShell() {
 
   const togglePin = (s: string, name: string) => {
     const key = `${s}.${name}`;
-    setPinned((p) => (p.includes(key) ? p.filter((x) => x !== key) : [...p, key]));
+    setPinned((p) => {
+      const next = p.includes(key) ? p.filter((x) => x !== key) : [...p, key];
+      if (active) savePins(active.id, next);
+      return next;
+    });
   };
 
   const engine = active.engine as Engine;
@@ -1017,7 +1025,7 @@ export function MainShell() {
                 <ObjectTree
                   schema={schema}
                   activeKey={activeKey}
-                  pinned={pinned}
+                  pinned={livePins(pinned, schema)}
                   onlySchema={activeSchema}
                   onOpen={(schemaName, obj) => openTable(schemaName, obj.name)}
                   onContext={(e, schemaName, obj) => {
