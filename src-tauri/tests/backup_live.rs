@@ -188,7 +188,7 @@ async fn pg_dump_custom_format_real_tool() {
         return;
     };
     seed_pg(&url).await;
-    let tool = backup::detect(None).await.into_iter().find(|t| t.name == "pg_dump").and_then(|t| t.version);
+    let tool = backup::detect(None).await.unwrap().into_iter().find(|t| t.name == "pg_dump").and_then(|t| t.version);
     let server: i64 = {
         use sqlx::Connection;
         let mut c = sqlx::PgConnection::connect(&url).await.unwrap();
@@ -332,27 +332,39 @@ exec docker exec -i -e PGPASSWORD tableiq-pg sh -c 'exec pg_dump -h "{IP}" --no-
     assert!(!out.exists(), "the empty/partial output is removed");
 }
 
-#[tokio::test]
-async fn mysqldump_through_the_docker_shim() {
-    let Some(url) = shim_gate("TIQ_MYSQL_URL", "tableiq-mysql") else { return };
-    seed_mysql(&url).await;
-    let shim = tempfile::tempdir().unwrap();
+/// The mysqldump shim: forwards the app's argv unchanged except `-h`/`-P` (replaced by the
+/// container's own IP) and `--result-file` (written by the redirect), so what is tested is
+/// exactly the flags `mysqldump_args` builds.
+fn mysql_shim(dir: &Path) {
     write_shim(
-        shim.path(),
+        dir,
         "mysqldump",
         &format!(
             r#"if [ "$1" = --version ]; then exec docker exec tableiq-mysql mysqldump --version; fi
 printf '%s\n' "$@" > "$HERE/argv"
 [ -n "$MYSQL_PWD" ] && echo MYSQL_PWD > "$HERE/env"
-for a in "$@"; do
-  case "$a" in --result-file=*) out=${{a#--result-file=}};; esac
-  db=$a
+skip=0
+for a do
+  shift
+  if [ $skip = 1 ]; then skip=0; continue; fi
+  case "$a" in
+    -h|-P) skip=1; continue;;
+    --result-file=*) out=${{a#--result-file=}}; continue;;
+  esac
+  set -- "$@" "$a"
 done
-while [ $# -gt 0 ]; do case "$1" in -u) user=$2; shift 2;; *) shift;; esac; done
-exec docker exec -i -e MYSQL_PWD tableiq-mysql sh -c 'exec mysqldump -h "{IP}" --protocol=TCP "$@"' sh -u "$user" --single-transaction --routines --triggers --verbose "$db" > "$out"
+exec docker exec -i -e MYSQL_PWD tableiq-mysql sh -c 'exec mysqldump -h "{IP}" "$@"' sh "$@" > "$out"
 "#
         ),
     );
+}
+
+#[tokio::test]
+async fn mysqldump_through_the_docker_shim() {
+    let Some(url) = shim_gate("TIQ_MYSQL_URL", "tableiq-mysql") else { return };
+    seed_mysql(&url).await;
+    let shim = tempfile::tempdir().unwrap();
+    mysql_shim(shim.path());
     let (s, lines, bytes, pass) =
         tool_backup("mysql", &url, PgFormat::Custom, "db.sql", shim.path().to_str()).await;
     assert!(s.ok, "{s:?}\n{}", lines.join("\n"));
@@ -363,6 +375,50 @@ exec docker exec -i -e MYSQL_PWD tableiq-mysql sh -c 'exec mysqldump -h "{IP}" -
     let argv = std::fs::read_to_string(shim.path().join("argv")).unwrap();
     assert!(!argv.contains(&pass), "password in argv:\n{argv}");
     assert_eq!(std::fs::read_to_string(shim.path().join("env")).unwrap().trim(), "MYSQL_PWD");
+}
+
+/// A least-privilege user — no global PROCESS, as on managed MySQL — backs up its database
+/// cleanly. Without `--no-tablespaces`, mysqldump ≥ 8.0.21 reads INFORMATION_SCHEMA.FILES,
+/// which needs PROCESS.
+#[tokio::test]
+async fn mysqldump_shim_works_without_the_process_privilege() {
+    use sqlx::{Connection, Executor};
+    let Some(url) = shim_gate("TIQ_MYSQL_URL", "tableiq-mysql") else { return };
+    seed_mysql(&url).await;
+    const USER: &str = "tiq_bk_noproc";
+    const PW: &str = "Np-7c1f-Backup";
+    let mut root = sqlx::MySqlConnection::connect(&url).await.unwrap();
+    root.execute(format!("DROP USER IF EXISTS '{USER}'@'%'").as_str()).await.unwrap();
+    root.execute(format!("CREATE USER '{USER}'@'%' IDENTIFIED BY '{PW}'").as_str()).await.unwrap();
+    root.execute(
+        format!("GRANT SELECT, SHOW VIEW, TRIGGER, LOCK TABLES, EVENT ON {TEST_DB}.* TO '{USER}'@'%'").as_str(),
+    )
+    .await
+    .unwrap();
+
+    let shim = tempfile::tempdir().unwrap();
+    mysql_shim(shim.path());
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("np.sql");
+    let (mut t, _) = target(&url);
+    t.user = USER.into();
+    let id = backup::tool_backup("mysql", &t, PW, PgFormat::Custom, out.to_str().unwrap(), shim.path().to_str())
+        .await
+        .unwrap();
+    let (s, lines) = wait(&id).await;
+    let bytes = std::fs::read(&out).unwrap_or_default();
+    // Drop the user before asserting, so a failure doesn't leave it behind.
+    root.execute(format!("DROP USER IF EXISTS '{USER}'@'%'").as_str()).await.unwrap();
+
+    assert!(s.ok, "{s:?}\n{}", lines.join("\n"));
+    assert!(String::from_utf8_lossy(&bytes).contains("CREATE TABLE `tiq_bk_items`"));
+    // 8.4 prints this as an `Error:` and still exits 0; earlier 8.0 clients fail outright.
+    assert!(
+        lines.iter().all(|l| !l.contains("PROCESS privilege")),
+        "tablespace dump needed PROCESS:\n{}",
+        lines.join("\n")
+    );
+    assert!(lines.iter().all(|l| !l.contains(PW)), "password leaked into the log");
 }
 
 // ── SQL Server ────────────────────────────────────────────────────────────

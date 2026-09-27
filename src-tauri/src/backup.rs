@@ -90,9 +90,11 @@ pub fn mysqldump_args(
 ) -> Vec<String> {
     // `--protocol=TCP`: with `-h localhost` the client would otherwise use the Unix socket —
     // possibly a different server than the one the app is connected to over TCP.
+    // `--no-tablespaces`: since 8.0.21 the tablespace dump reads INFORMATION_SCHEMA.FILES, which
+    // needs the global PROCESS privilege that managed and least-privilege users don't have.
     let mut a: Vec<String> = [
         "-h", host, "-P", &port.to_string(), "-u", user, "--protocol=TCP", "--single-transaction",
-        "--routines", "--triggers", "--verbose", &format!("--result-file={out}"),
+        "--no-tablespaces", "--routines", "--triggers", "--verbose", &format!("--result-file={out}"),
     ]
     .iter()
     .map(|s| s.to_string())
@@ -159,11 +161,14 @@ fn resolve_in(
     fallbacks: &[PathBuf],
 ) -> Option<PathBuf> {
     let on_path = path_var.map(|p| std::env::split_paths(p).collect::<Vec<_>>()).unwrap_or_default();
+    // Absolute dirs only: an empty or relative entry (`::`, `.`, `bin`) would resolve against
+    // the app's working directory. The override is checked by `check_tool_dir` already; this
+    // keeps the rule even if a caller forgets.
     override_dir
-        .filter(|d| !d.trim().is_empty())
         .map(PathBuf::from)
         .into_iter()
         .chain(on_path)
+        .filter(|d| d.is_absolute())
         .chain(fallbacks.iter().cloned())
         .flat_map(|d| names.iter().map(move |n| d.join(n)))
         .find(|p| is_executable(p))
@@ -178,6 +183,15 @@ fn is_executable(p: &Path) -> bool {
 #[cfg(not(unix))]
 fn is_executable(p: &Path) -> bool {
     p.is_file()
+}
+
+/// The Settings tools folder: blank means none; anything else must be absolute.
+pub fn check_tool_dir(dir: Option<&str>) -> Result<Option<&str>, String> {
+    match dir.map(str::trim) {
+        None | Some("") => Ok(None),
+        Some(d) if Path::new(d).is_absolute() => Ok(Some(d)),
+        Some(d) => Err(format!("The backup tools folder must be an absolute path (got {d:?})")),
+    }
 }
 
 // ── job registry ──────────────────────────────────────────────────────────
@@ -290,6 +304,13 @@ pub fn spawn_tool(
     let secrets: Vec<String> =
         env.iter().filter(|(k, _)| SECRET_ENV.contains(k)).map(|(_, v)| v.clone()).collect();
     let mut cmd = tokio::process::Command::new(bin);
+    // A password var inherited from the app's own environment must not silently apply when
+    // this connection has none stored: only what `env` passes reaches the tool.
+    for key in SECRET_ENV {
+        if !env.iter().any(|(k, _)| k == key) {
+            cmd.env_remove(key);
+        }
+    }
     cmd.args(&args)
         .envs(env)
         .stdin(stdin.map(Stdio::from).unwrap_or_else(Stdio::null))
@@ -469,6 +490,7 @@ pub async fn tool_backup(
     out: &str,
     tool_dir: Option<&str>,
 ) -> Result<String, String> {
+    let tool_dir = check_tool_dir(tool_dir)?;
     let partial = Some(PathBuf::from(out));
     match engine {
         "postgres" => {
@@ -529,7 +551,8 @@ pub struct ToolInfo {
 }
 
 /// Every client tool backup/restore can use, found or not, with its `--version` line.
-pub async fn detect(override_dir: Option<&str>) -> Vec<ToolInfo> {
+pub async fn detect(override_dir: Option<&str>) -> Result<Vec<ToolInfo>, String> {
+    let override_dir = check_tool_dir(override_dir)?;
     let mut out = Vec::new();
     for name in ["pg_dump", "pg_restore", "psql", "mysqldump", "mysql", "mariadb-dump", "mariadb"] {
         let path = resolve_tool(name, override_dir);
@@ -543,7 +566,7 @@ pub async fn detect(override_dir: Option<&str>) -> Vec<ToolInfo> {
             version,
         });
     }
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -595,7 +618,7 @@ mod tests {
             args,
             [
                 "-h", "127.0.0.1", "-P", "61234", "-u", "root", "--protocol=TCP",
-                "--single-transaction", "--routines", "--triggers", "--verbose",
+                "--single-transaction", "--no-tablespaces", "--routines", "--triggers", "--verbose",
                 "--result-file=/tmp/shop.sql", "shop",
             ]
         );
@@ -634,6 +657,57 @@ mod tests {
         std::fs::write(&p, "#!/bin/sh\nexit 0\n").unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
         p
+    }
+
+    /// Only an absolute tool dir is honoured: a relative one would resolve against whatever
+    /// the app's working directory happens to be.
+    #[test]
+    fn tool_dir_must_be_absolute() {
+        assert_eq!(check_tool_dir(None), Ok(None));
+        assert_eq!(check_tool_dir(Some("  ")), Ok(None), "blank = no override");
+        assert_eq!(check_tool_dir(Some("/opt/homebrew/opt/libpq/bin")), Ok(Some("/opt/homebrew/opt/libpq/bin")));
+        assert!(check_tool_dir(Some("bin")).is_err());
+        assert!(check_tool_dir(Some("./tools")).is_err());
+    }
+
+    /// `path` relative to the current directory (`../..` up to `/`, then down).
+    #[cfg(unix)]
+    fn relative_to_cwd(path: &Path) -> String {
+        let depth = std::env::current_dir().unwrap().components().count() - 1;
+        format!("{}{}", "../".repeat(depth), path.strip_prefix("/").unwrap().display())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_tool_skips_relative_and_empty_path_entries_and_a_relative_override() {
+        let dir = tempfile::tempdir().unwrap();
+        fake_tool(dir.path(), "pg_dump");
+        let rel = relative_to_cwd(dir.path());
+        assert!(Path::new(&rel).join("pg_dump").exists(), "the relative path really reaches the tool");
+        let path_var = std::ffi::OsString::from(format!("{rel}::."));
+        assert_eq!(resolve_tool_in("pg_dump", None, Some(&path_var), &[]), None, "relative PATH entry");
+        assert_eq!(resolve_tool_in("pg_dump", Some(&rel), None, &[]), None, "relative override");
+    }
+
+    /// A PGPASSWORD / MYSQL_PWD inherited from the app's own environment must not silently
+    /// authenticate a connection that has no stored password.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn inherited_password_env_is_removed_when_none_is_passed() {
+        std::env::set_var("PGPASSWORD", "inherited-pg-secret");
+        std::env::set_var("MYSQL_PWD", "inherited-my-secret");
+        let id = spawn_tool(
+            Path::new("/bin/sh"),
+            sh(r#"echo "pg=[${PGPASSWORD-unset}] my=[${MYSQL_PWD-unset}]" >&2"#),
+            vec![("PGSSLMODE", "prefer".into())],
+            None,
+            None,
+        )
+        .unwrap();
+        std::env::remove_var("PGPASSWORD");
+        std::env::remove_var("MYSQL_PWD");
+        let s = wait(&id).await;
+        assert_eq!(s.lines, ["pg=[unset] my=[unset]"]);
     }
 
     #[cfg(unix)]
@@ -818,6 +892,7 @@ mod tests {
         // A leading `-` would be read as an option by mysqldump (the name is positional).
         assert!(run("mysql", "--result-file=/etc/x", None).await.is_err());
         assert!(run("mysql", "", None).await.is_err());
+        assert!(run("postgres", "d", Some("relative/bin")).await.unwrap_err().contains("absolute"));
         if resolve_tool("pg_dump", None).is_none() {
             let e = run("postgres", "d", Some("/nonexistent")).await.unwrap_err();
             assert!(e.contains("pg_dump") && e.contains("Settings"), "{e}");
@@ -832,7 +907,8 @@ mod tests {
         let p = dir.path().join("pg_dump");
         std::fs::write(&p, "#!/bin/sh\necho 'pg_dump (PostgreSQL) 99.1'\n").unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let tools = detect(dir.path().to_str()).await;
+        assert!(detect(Some("relative/dir")).await.is_err(), "same rule as backups");
+        let tools = detect(dir.path().to_str()).await.unwrap();
         let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, ["pg_dump", "pg_restore", "psql", "mysqldump", "mysql", "mariadb-dump", "mariadb"]);
         assert_eq!(tools[0].path.as_deref(), p.to_str());

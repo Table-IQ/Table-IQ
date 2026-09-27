@@ -1913,7 +1913,7 @@ pub fn cancel_backup_job(job_id: String) -> Result<(), String> {
 
 /// The backup/restore client tools found (Settings → Backup tools).
 #[tauri::command]
-pub async fn detect_backup_tools(tool_dir: Option<String>) -> Vec<backup::ToolInfo> {
+pub async fn detect_backup_tools(tool_dir: Option<String>) -> Result<Vec<backup::ToolInfo>, String> {
     backup::detect(tool_dir.as_deref()).await
 }
 
