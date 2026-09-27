@@ -1,6 +1,7 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { synthWindowIpc, MOCK_TOTAL_ROWS } from "./mockSource";
 import type { SshConfig } from "./ssh";
+import { restoreConfirmName } from "./backup";
 
 // ── connection-loss detection ────────────────────────────────────────────
 // Every Rust command returns its error as `e.to_string()`, so sqlx / the
@@ -734,7 +735,10 @@ export async function restoreDatabase(
   toolDir: string,
 ): Promise<string> {
   if (!inTauri()) {
-    if (confirm !== database) throw new Error(`The typed name does not match "${database}" — nothing was restored`);
+    // The mock has no file connections to look up: a path-like database is a file engine's,
+    // confirmed by its file name — as the Rust command does.
+    const expected = /[/\\]/.test(database) ? restoreConfirmName("sqlite", database) : database;
+    if (confirm !== expected) throw new Error(`The typed name does not match "${expected}" — nothing was restored`);
     const job = `mock-restore-${mockBackupPolls.size + 1}`;
     mockBackupPolls.set(job, 0);
     return job;

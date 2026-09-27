@@ -31,6 +31,15 @@ describe("backup commands (mock)", () => {
     expect(second).toMatchObject({ done: true, ok: true, error: null });
   });
 
+  it("confirms a file database by its file name, not the whole path", async () => {
+    await expect(restoreDatabase("mock-sqlite", "/tmp/demo.db", "/tmp/b.sqlite", "/tmp/demo.db", "")).rejects.toThrow(
+      /does not match/,
+    );
+    await expect(restoreDatabase("mock-sqlite", "/tmp/demo.db", "/tmp/b.sqlite", "demo.db", "")).resolves.toMatch(
+      /^mock-restore-/,
+    );
+  });
+
   it("cancel and detect resolve", async () => {
     await expect(cancelBackupJob("x")).resolves.toBeUndefined();
     const tools = await detectBackupTools("");

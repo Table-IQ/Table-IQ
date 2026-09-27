@@ -593,14 +593,72 @@ pub fn check_confirm(database: &str, confirm: &str) -> Result<(), String> {
 
 /// SQL Server: take the database to single-user (dropping everyone else), restore over it,
 /// then reopen it. One batch; `USE master` first so this session isn't the one in the way.
+/// A failed RESTORE goes back to multi-user before the error is rethrown.
 pub fn mssql_restore_sql(database: &str, path: &str) -> String {
     let db = format!("[{}]", database.replace(']', "]]"));
     format!(
         "USE master; ALTER DATABASE {db} SET SINGLE_USER WITH ROLLBACK IMMEDIATE; \
-         RESTORE DATABASE {db} FROM DISK = N{} WITH REPLACE; \
+         BEGIN TRY RESTORE DATABASE {db} FROM DISK = N{} WITH REPLACE; END TRY \
+         BEGIN CATCH ALTER DATABASE {db} SET MULTI_USER; THROW; END CATCH; \
          ALTER DATABASE {db} SET MULTI_USER; USE {db};",
         lit(path)
     )
+}
+
+/// SQL Server: the backup's header — which database it is a backup of.
+pub fn mssql_headeronly_sql(path: &str) -> String {
+    format!("RESTORE HEADERONLY FROM DISK = N{}", lit(path))
+}
+
+/// True when a plain SQL file has a psql `\c` / `\connect` line: psql would switch to
+/// another database and run the rest of the file there. `\copy`, `\conninfo` and PG 17.6+'s
+/// `\restrict` / `\unrestrict` are not switches; a COPY data line can't match (its backslashes
+/// are doubled).
+pub fn psql_switches_database(path: &Path) -> Result<bool, String> {
+    use std::io::BufRead;
+    let f = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut r = std::io::BufReader::new(f);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        match r.read_until(b'\n', &mut buf) {
+            Ok(0) => return Ok(false),
+            Ok(_) => {
+                let line = String::from_utf8_lossy(&buf);
+                let line = line.trim_start_matches('\u{feff}').trim_start();
+                if let Some(rest) = line.strip_prefix('\\') {
+                    if matches!(rest.split(char::is_whitespace).next(), Some("c" | "connect")) {
+                        return Ok(true);
+                    }
+                }
+            }
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        }
+    }
+}
+
+/// What a file engine's backup must look like: the magic bytes at their offset, and the
+/// journal files beside the database that belong to it.
+fn file_kind(engine: &str) -> Option<(usize, &'static [u8], &'static [&'static str], &'static str)> {
+    match engine {
+        "sqlite" => Some((0, b"SQLite format 3\0", &["-wal", "-shm", "-journal"], "SQLite")),
+        "duckdb" => Some((8, b"DUCK", &[".wal"], "DuckDB")),
+        _ => None,
+    }
+}
+
+/// SQLite / DuckDB: everything that can be known before the session is touched — there is a
+/// file to restore into, and the backup is that engine's database (the wrong kind of file
+/// would replace the database with one that cannot open).
+pub fn check_file_backup(engine: &str, db_path: &str, backup: &str) -> Result<(), String> {
+    if db_path.is_empty() || db_path == ":memory:" {
+        return Err("An in-memory database has no file to restore into".into());
+    }
+    let (offset, magic, _, kind) = file_kind(engine).ok_or(RESTORE_UNSUPPORTED)?;
+    if !starts_with(Path::new(backup), offset, magic)? {
+        return Err(format!("{backup} is not a {kind} database — nothing was restored"));
+    }
+    Ok(())
 }
 
 /// True when `path` is a `pg_dump` custom-format archive (it starts with `PGDMP`); anything
@@ -645,7 +703,10 @@ pub fn psql_args(host: &str, port: u16, user: &str, db: &str, file: &str) -> Vec
 
 /// `mysql` / `mariadb` arguments; the dump arrives on stdin. No password: `MYSQL_PWD`.
 pub fn mysql_args(host: &str, port: u16, user: &str, db: &str, sslmode: &str, mariadb: bool) -> Vec<String> {
-    let mut a: Vec<String> = ["-h", host, "-P", &port.to_string(), "-u", user, "--protocol=TCP"]
+    // `--one-database`: statements run only while the named database is the default, so a
+    // dump's `USE other_db` can't redirect the rest of it. It filters on the default database
+    // only — a fully qualified `INSERT INTO other.t` still runs.
+    let mut a: Vec<String> = ["-h", host, "-P", &port.to_string(), "-u", user, "--protocol=TCP", "--one-database"]
         .iter()
         .map(|s| s.to_string())
         .collect();
@@ -668,6 +729,14 @@ pub async fn tool_restore(
             let (tool, args) = if is_pg_custom_dump(Path::new(file))? {
                 ("pg_restore", pg_restore_args(&t.host, t.port, &t.user, &t.database, file))
             } else {
+                // Only ever the confirmed database: `\connect` would carry on somewhere else.
+                if psql_switches_database(Path::new(file))? {
+                    return Err(format!(
+                        "{file} switches database with \\connect (a pg_dumpall or pg_dump --create \
+                         file) — it can't be restored into {:?} alone. Nothing was restored",
+                        t.database
+                    ));
+                }
                 ("psql", psql_args(&t.host, t.port, &t.user, &t.database, file))
             };
             let bin = resolve_tool(tool, tool_dir).ok_or_else(|| missing(tool, "libpq"))?;
@@ -695,19 +764,54 @@ pub async fn tool_restore(
 
 const RESTORE_UNSUPPORTED: &str = "Restore is not supported for this engine";
 
-/// SQL Server: restore `database` from `path` (a path ON THE SERVER).
+/// SQL Server: restore `database` from `path` (a path ON THE SERVER). Only a backup OF
+/// `database` is accepted: `WITH REPLACE` and no `MOVE` would restore another database's
+/// backup onto that database's own files.
 pub async fn sql_restore(drv: Arc<dyn SqlDriver>, database: &str, path: &str) -> Result<(), String> {
-    drv.run_script(&mssql_restore_sql(database, path)).await.map(|_| ()).map_err(|e| e.to_string())
+    let err = |e: crate::drivers::DriverError| e.to_string();
+    let r = drv.run_query(&mssql_headeronly_sql(path), 1).await.map_err(err)?;
+    let from = match r.batch.schema().index_of("DatabaseName") {
+        Ok(i) if r.batch.num_rows() > 0 => {
+            arrow::util::display::array_value_to_string(r.batch.column(i), 0).map_err(|e| e.to_string())?
+        }
+        _ => return Err(format!("{path}: SQL Server reported no database in this backup — nothing was restored")),
+    };
+    if from != database {
+        return Err(format!(
+            "{path} is a backup of {from:?}, not {database:?} — restoring it here could overwrite \
+             {from:?}'s files. Nothing was restored"
+        ));
+    }
+    drv.run_script(&mssql_restore_sql(database, path)).await.map(|_| ()).map_err(err)
 }
 
-/// Copy `src` into a temp file beside `target`, fsync it, then rename it over `target`. A
-/// failed copy removes the temp file and never touches `target`.
-fn swap_in(src: &mut dyn std::io::Read, target: &Path) -> std::io::Result<()> {
-    let mut name = target.file_name().unwrap_or_default().to_os_string();
-    name.push(".tiq-restore");
-    let tmp = target.with_file_name(name);
+/// Whether the session is on `database` (after a restore that may have left it on master).
+pub async fn mssql_on_database(drv: &dyn SqlDriver, database: &str) -> bool {
+    match drv.run_query("SELECT DB_NAME()", 1).await {
+        Ok(r) if r.batch.num_rows() > 0 && r.batch.num_columns() > 0 => {
+            arrow::util::display::array_value_to_string(r.batch.column(0), 0).is_ok_and(|d| d == database)
+        }
+        _ => false,
+    }
+}
+
+/// Copy `src` into a temp file beside `target`, fsync it, remove `target`'s stale `sidecars`
+/// (journal files that would replay into the new file), then rename it over `target`. A
+/// failed copy removes the temp file and touches neither `target` nor its sidecars.
+fn swap_in(src: &mut dyn std::io::Read, target: &Path, sidecars: &[&str]) -> std::io::Result<()> {
+    let with_suffix = |suffix: &str| {
+        let mut name = target.as_os_str().to_os_string();
+        name.push(suffix);
+        PathBuf::from(name)
+    };
+    let tmp = with_suffix(".tiq-restore");
+    // A temp file from a crashed run: replaced, never written through (`create_new`).
+    match std::fs::remove_file(&tmp) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
     let copied = (|| {
-        let mut f = std::fs::File::create(&tmp)?;
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
         std::io::copy(src, &mut f)?;
         f.sync_all()?;
         // Keep the database's own permissions, not the temp file's defaults.
@@ -719,6 +823,15 @@ fn swap_in(src: &mut dyn std::io::Read, target: &Path) -> std::io::Result<()> {
     if let Err(e) = copied {
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
+    }
+    for suffix in sidecars {
+        match std::fs::remove_file(with_suffix(suffix)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(e);
+            }
+            _ => {}
+        }
     }
     std::fs::rename(&tmp, target).inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
@@ -734,18 +847,9 @@ fn swap_in(src: &mut dyn std::io::Read, target: &Path) -> std::io::Result<()> {
 /// Closes `drv` first (the caller has already taken it out of the session map and reopens
 /// afterwards, whatever happens here).
 pub async fn file_restore(drv: Arc<dyn SqlDriver>, engine: &str, db_path: &str, backup: &str) -> Result<(), String> {
-    if db_path.is_empty() || db_path == ":memory:" {
-        return Err("An in-memory database has no file to restore into".into());
-    }
-    // The wrong kind of file would replace the database with something that can't open.
-    let (offset, magic, sidecars, kind): (usize, &[u8], &[&str], &str) = match engine {
-        "sqlite" => (0, b"SQLite format 3\0", &["-wal", "-shm", "-journal"], "SQLite"),
-        "duckdb" => (8, b"DUCK", &[".wal"], "DuckDB"),
-        _ => return Err(RESTORE_UNSUPPORTED.into()),
-    };
-    if !starts_with(Path::new(backup), offset, magic)? {
-        return Err(format!("{backup} is not a {kind} database — nothing was restored"));
-    }
+    // The caller checks this before touching the session too; kept here for any other caller.
+    check_file_backup(engine, db_path, backup)?;
+    let (_, _, sidecars, _) = file_kind(engine).ok_or(RESTORE_UNSUPPORTED)?;
 
     drv.close().await;
     drop(drv);
@@ -762,16 +866,10 @@ pub async fn file_restore(drv: Arc<dyn SqlDriver>, engine: &str, db_path: &str, 
     }
 
     let (from, to) = (PathBuf::from(backup), PathBuf::from(db_path));
-    tokio::task::spawn_blocking(move || std::fs::File::open(&from).and_then(|mut f| swap_in(&mut f, &to)))
+    tokio::task::spawn_blocking(move || std::fs::File::open(&from).and_then(|mut f| swap_in(&mut f, &to, sidecars)))
         .await
         .map_err(|e| e.to_string())?
-        .map_err(|e| format!("{db_path}: {e}"))?;
-    // A journal left beside the file belongs to the database that was just replaced;
-    // replayed into the restored one it would corrupt it.
-    for suffix in sidecars {
-        let _ = std::fs::remove_file(format!("{db_path}{suffix}"));
-    }
-    Ok(())
+        .map_err(|e| format!("{db_path}: {e}"))
 }
 
 #[cfg(test)]
@@ -1153,9 +1251,11 @@ mod tests {
         assert_eq!(
             mssql_restore_sql("sh]op", "C:\\bk\\it's.bak"),
             "USE master; ALTER DATABASE [sh]]op] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; \
-             RESTORE DATABASE [sh]]op] FROM DISK = N'C:\\bk\\it''s.bak' WITH REPLACE; \
+             BEGIN TRY RESTORE DATABASE [sh]]op] FROM DISK = N'C:\\bk\\it''s.bak' WITH REPLACE; END TRY \
+             BEGIN CATCH ALTER DATABASE [sh]]op] SET MULTI_USER; THROW; END CATCH; \
              ALTER DATABASE [sh]]op] SET MULTI_USER; USE [sh]]op];"
         );
+        assert_eq!(mssql_headeronly_sql("/b/it's.bak"), "RESTORE HEADERONLY FROM DISK = N'/b/it''s.bak'");
     }
 
     #[test]
@@ -1191,11 +1291,14 @@ mod tests {
         );
         assert_eq!(
             mysql_args("127.0.0.1", 61234, "root", "shop", "require", false),
-            ["-h", "127.0.0.1", "-P", "61234", "-u", "root", "--protocol=TCP", "--ssl-mode=REQUIRED", "shop"]
+            [
+                "-h", "127.0.0.1", "-P", "61234", "-u", "root", "--protocol=TCP", "--one-database",
+                "--ssl-mode=REQUIRED", "shop",
+            ]
         );
         assert_eq!(
             mysql_args("h", 1, "u", "d", "verify-full", true),
-            ["-h", "h", "-P", "1", "-u", "u", "--protocol=TCP", "--ssl", "--ssl-verify-server-cert", "d"]
+            ["-h", "h", "-P", "1", "-u", "u", "--protocol=TCP", "--one-database", "--ssl", "--ssl-verify-server-cert", "d"]
         );
     }
 
@@ -1245,6 +1348,12 @@ mod tests {
         let s = run("postgres", plain.clone()).await;
         assert!(s.lines[0].starts_with("psql -X -v ON_ERROR_STOP=1"), "{:?}", s.lines);
 
+        // A plain file that switches database is refused before psql starts.
+        let other = files.path().join("all.sql");
+        std::fs::write(&other, "CREATE TABLE a (x int);\n\\connect other_db\nDROP TABLE b;\n").unwrap();
+        let e = tool_restore("postgres", &t, "pw", other.to_str().unwrap(), dir).await.unwrap_err();
+        assert!(e.contains("\\connect"), "{e}");
+
         let s = run("mysql", plain.clone()).await;
         assert!(s.lines[0].starts_with("mysql -h h -P 1 -u u --protocol=TCP"), "{:?}", s.lines);
         assert!(s.lines[0].ends_with(" shop"), "{:?}", s.lines);
@@ -1286,21 +1395,72 @@ mod tests {
         }
     }
 
+    fn names_in(dir: &Path) -> Vec<String> {
+        let mut v: Vec<String> =
+            std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        v.sort();
+        v
+    }
+
     #[test]
     fn a_failed_copy_never_touches_the_original() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("live.db");
         std::fs::write(&db, b"the original database").unwrap();
-        let e = swap_in(&mut FailAfter(10_000), &db).unwrap_err();
+        std::fs::write(dir.path().join("live.db-wal"), b"old wal").unwrap();
+        // A temp file left by a crashed run is replaced, not appended to or refused.
+        std::fs::write(dir.path().join("live.db.tiq-restore"), b"stale partial copy").unwrap();
+        let e = swap_in(&mut FailAfter(10_000), &db, &["-wal"]).unwrap_err();
         assert!(e.to_string().contains("simulated"), "{e}");
         assert_eq!(std::fs::read(&db).unwrap(), b"the original database", "original untouched");
-        let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
-        assert_eq!(left, [std::ffi::OsString::from("live.db")], "the temp copy is removed");
+        assert_eq!(names_in(dir.path()), ["live.db", "live.db-wal"], "temp removed, the WAL kept with its database");
 
-        swap_in(&mut &b"the restored database"[..], &db).unwrap();
+        swap_in(&mut &b"the restored database"[..], &db, &["-wal", "-shm"]).unwrap();
         assert_eq!(std::fs::read(&db).unwrap(), b"the restored database");
-        let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
-        assert_eq!(left.len(), 1, "no temp file left behind: {left:?}");
+        assert_eq!(names_in(dir.path()), ["live.db"], "no temp file or stale WAL left behind");
+    }
+
+    /// psql meta-commands that switch database — never `\copy` or the PG 17.6+
+    /// `\restrict` / `\unrestrict` guard lines, or text that merely mentions `\c`.
+    #[test]
+    fn plain_dumps_that_switch_database_are_detected() {
+        let dir = tempfile::tempdir().unwrap();
+        let check = |body: &str| {
+            let p = dir.path().join("x.sql");
+            std::fs::write(&p, body).unwrap();
+            psql_switches_database(&p).unwrap()
+        };
+        for yes in ["\\connect other\n", "SET x;\n  \\c other\n", "\\c\n", "\\connect", "\t\\c -reuse-previous=on dbname=x\n"] {
+            assert!(check(yes), "{yes:?}");
+        }
+        for no in [
+            "CREATE TABLE t (x int);\n",
+            "\\copy t FROM 'x.csv'\n",
+            "\\restrict AbC123\nCREATE TABLE t (x int);\n\\unrestrict AbC123\n",
+            "SELECT '\\c other';\n",
+            "COPY t (x) FROM stdin;\n\\\\connect\n\\.\n",
+            "\\conninfo\n",
+        ] {
+            assert!(!check(no), "{no:?}");
+        }
+        assert!(psql_switches_database(&dir.path().join("missing.sql")).is_err());
+    }
+
+    #[test]
+    fn file_backups_are_checked_before_anything_closes() {
+        let dir = tempfile::tempdir().unwrap();
+        let sqlite = dir.path().join("a.sqlite");
+        std::fs::write(&sqlite, b"SQLite format 3\0rest").unwrap();
+        let duck = dir.path().join("a.duckdb");
+        std::fs::write(&duck, b"\0\0\0\0\0\0\0\0DUCKrest").unwrap();
+        let (s, d) = (sqlite.to_str().unwrap(), duck.to_str().unwrap());
+        assert_eq!(check_file_backup("sqlite", "/x/app.db", s), Ok(()));
+        assert_eq!(check_file_backup("duckdb", "/x/app.duckdb", d), Ok(()));
+        assert!(check_file_backup("sqlite", "/x/app.db", d).unwrap_err().contains("not a SQLite"));
+        assert!(check_file_backup("duckdb", "/x/app.duckdb", s).unwrap_err().contains("not a DuckDB"));
+        assert!(check_file_backup("sqlite", ":memory:", s).unwrap_err().contains("memory"));
+        assert!(check_file_backup("duckdb", "", d).is_err());
+        assert!(check_file_backup("postgres", "/x", s).is_err());
     }
 
     #[tokio::test]

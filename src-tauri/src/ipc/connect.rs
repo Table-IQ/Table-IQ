@@ -434,6 +434,11 @@ pub async fn switch_database(
     id: String,
     database: String,
 ) -> Result<ConnectedInfo, String> {
+    switch_inner(&state, id, database).await
+}
+
+/// `switch_database`'s body, callable without a tauri `State` (Restore reopens with it).
+async fn switch_inner(state: &ConnState, id: String, database: String) -> Result<ConnectedInfo, String> {
     // Look up the saved config; clone with the database swapped — we do not
     // mutate the persisted store so the user's saved default is preserved.
     let cfg = {
@@ -1957,12 +1962,21 @@ async fn restore_inner(
     confirm: &str,
     tool_dir: Option<&str>,
 ) -> Result<String, String> {
-    // Destructive: the typed name is checked before anything is looked up, read or closed.
-    backup::check_confirm(&database, confirm)?;
     let cfg = {
         let store = lk(&state.store);
         store.connections.iter().find(|c| c.id == id).cloned().ok_or_else(|| "unknown connection".to_string())?
     };
+    // Destructive: the typed name is checked before anything is read, closed or run. A file
+    // engine confirms with its file's name — the whole path is a lot to type.
+    let expected = if cfg.is_file_engine() {
+        std::path::Path::new(&cfg.database)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| cfg.database.clone())
+    } else {
+        database.clone()
+    };
+    backup::check_confirm(&expected, confirm)?;
     match cfg.engine.as_str() {
         "postgres" | "mysql" => {
             check_restore_source(&path)?;
@@ -1985,14 +1999,36 @@ async fn restore_inner(
         "sqlserver" => {
             let drv = state.session(id)?;
             check_server_backup_path(&path)?;
-            Ok(backup::spawn_future(async move { backup::sql_restore(drv, &database, &path).await }))
+            let restored = backup::sql_restore(drv.clone(), &database, &path).await;
+            // A RESTORE that fails part-way (database left RESTORING / SUSPECT) can leave the
+            // one pinned session on master while the UI shows `database`: reopen it there, or
+            // close it — never leave it quietly querying master.
+            let res = if backup::mssql_on_database(drv.as_ref(), &database).await {
+                restored
+            } else {
+                drop(drv);
+                lk(&state.sessions).remove(id);
+                lk(&state.results).purge(id);
+                let lost = |r: String| {
+                    format!("the session had left {database:?} and could not be reopened ({r}) — reconnect once it is online")
+                };
+                match (restored, switch_inner(state, id.to_string(), database.clone()).await) {
+                    (Err(e), Ok(_)) => Err(format!("{e} — the session had left {database:?} and was reopened on it")),
+                    (Err(e), Err(r)) => Err(format!("{e} — {}", lost(r))),
+                    (Ok(()), Err(r)) => Err(format!("Restored, but {}", lost(r))),
+                    (Ok(()), Ok(_)) => Ok(()),
+                }
+            };
+            Ok(backup::spawn_future(async move { res }))
         }
         "sqlite" | "duckdb" => {
             // The file engines replace the connection's own file: that is what was confirmed.
             if database != cfg.database {
-                return Err(format!("Confirm with this connection's own file, {:?}", cfg.database));
+                return Err(format!("Restore replaces this connection's own file, {:?}", cfg.database));
             }
             check_restore_source(&path)?;
+            // Everything knowable up front, before the session is taken out and closed.
+            backup::check_file_backup(&cfg.engine, &cfg.database, &path)?;
             let drv = state.session(id)?;
             lk(&state.sessions).remove(id);
             // Results belong to the database being replaced.
@@ -2001,8 +2037,9 @@ async fn restore_inner(
             // Reopen whatever happened: the old file after a failure, the restored one after success.
             let reopened = connect_inner(state, id).await;
             let res = match (restored, reopened) {
-                (Err(e), _) => Err(e),
-                (Ok(()), Err(e)) => Err(format!("Restored, but reopening the database failed: {e}")),
+                (Err(e), Err(r)) => Err(format!("{e} — and the connection could not be reopened: {r}")),
+                (Err(e), Ok(_)) => Err(e),
+                (Ok(()), Err(r)) => Err(format!("Restored, but reopening the database failed: {r}")),
                 (Ok(()), Ok(_)) => Ok(()),
             };
             Ok(backup::spawn_future(async move { res }))
@@ -2247,8 +2284,8 @@ mod tests {
         Ok(arrow::util::display::array_value_to_string(r.batch.column(0), 0).unwrap())
     }
 
-    /// Destructive: a typed name that doesn't match is refused before the connection is
-    /// looked up, the backup read or the session closed.
+    /// Destructive: a typed name that doesn't match is refused before the backup is read or
+    /// the session closed. A file engine confirms with its file's name, not the whole path.
     #[tokio::test]
     async fn restore_refuses_a_mismatched_confirm_before_any_io() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2258,20 +2295,62 @@ mod tests {
         let state = state_with(vec![sqlite_cfg("c1", &db)]);
         connect_inner(&state, "c1").await.unwrap();
         state.session("c1").unwrap().run_script("CREATE TABLE t (x); INSERT INTO t VALUES (7)").await.unwrap();
+        let before = state.session("c1").unwrap();
         let name = db.to_str().unwrap().to_string();
 
-        for typed in ["", "live.db", &format!("{name} ")] {
+        for typed in ["", "LIVE.db", "live.db ", "live", name.as_str()] {
             let e = restore_inner(&state, "c1", name.clone(), bak.to_str().unwrap().into(), typed, None)
                 .await
                 .unwrap_err();
-            assert!(e.contains("does not match"), "{e}");
+            assert!(e.contains("does not match") && e.contains("live.db"), "{typed:?}: {e}");
         }
-        // Even an unknown connection and a missing file answer with the confirm error first.
-        let e = restore_inner(&state, "nope", "shop".into(), "/nonexistent/x.dump".into(), "shp", None)
+        // A missing backup answers with the confirm error: the path is never looked at first.
+        let e = restore_inner(&state, "c1", name.clone(), "/nonexistent/x.sqlite".into(), "nope", None)
             .await
             .unwrap_err();
         assert!(e.contains("does not match"), "{e}");
-        assert_eq!(scalar(&state, "c1", "SELECT x FROM t").await.unwrap(), "7", "session and data untouched");
+        assert!(Arc::ptr_eq(&before, &state.session("c1").unwrap()), "the same session, never closed");
+        assert_eq!(scalar(&state, "c1", "SELECT x FROM t").await.unwrap(), "7", "data untouched");
+    }
+
+    /// `:memory:` has no file: refused before the session is taken out and closed — which
+    /// would have thrown the in-memory database away.
+    #[tokio::test]
+    async fn restore_into_an_in_memory_database_leaves_it_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bak = tmp.path().join("snap.duckdb");
+        std::fs::write(&bak, b"\0\0\0\0\0\0\0\0DUCK").unwrap();
+        // DuckDB's `:memory:` is one instance the session holds (a sqlx SQLite `:memory:` pool
+        // gives every pooled connection its own), so losing the session loses the data.
+        let mut cfg = sqlite_cfg("m", &tmp.path().join("unused"));
+        cfg.engine = "duckdb".into();
+        cfg.database = ":memory:".into();
+        let state = state_with(vec![cfg]);
+        connect_inner(&state, "m").await.unwrap();
+        state.session("m").unwrap().run_script("CREATE TABLE t (x INTEGER); INSERT INTO t VALUES (42)").await.unwrap();
+        let before = state.session("m").unwrap();
+        let e = restore_inner(&state, "m", ":memory:".into(), bak.to_str().unwrap().into(), ":memory:", None)
+            .await
+            .unwrap_err();
+        assert!(e.contains("memory"), "{e}");
+        assert!(Arc::ptr_eq(&before, &state.session("m").unwrap()), "the session was never taken out");
+        assert_eq!(scalar(&state, "m", "SELECT x FROM t").await.unwrap(), "42", "the in-memory data survives");
+    }
+
+    /// The wrong kind of backup is refused before the session is recycled.
+    #[tokio::test]
+    async fn restore_of_the_wrong_kind_of_file_keeps_the_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("live.db");
+        let dump = tmp.path().join("dump.sql");
+        std::fs::write(&dump, "CREATE TABLE t (x);").unwrap();
+        let state = state_with(vec![sqlite_cfg("c1", &db)]);
+        connect_inner(&state, "c1").await.unwrap();
+        let before = state.session("c1").unwrap();
+        let name = db.to_str().unwrap().to_string();
+        let e = restore_inner(&state, "c1", name, dump.to_str().unwrap().into(), "live.db", None).await.unwrap_err();
+        assert!(e.contains("not a SQLite database"), "{e}");
+        assert!(Arc::ptr_eq(&before, &state.session("c1").unwrap()), "not closed and reopened");
     }
 
     /// The SQLite path end to end through the command's body: backup, DROP TABLE, restore —
@@ -2293,19 +2372,150 @@ mod tests {
         drop(drv);
         assert!(scalar(&state, "c1", "SELECT COUNT(*) FROM items").await.is_err(), "dropped");
 
-        // A file engine confirms its own file: another name is refused even when it matches.
-        let e = restore_inner(&state, "c1", "other.db".into(), bak.to_str().unwrap().into(), "other.db", None)
+        // The target is the connection's own file, whatever `database` claims.
+        let e = restore_inner(&state, "c1", "/elsewhere/live.db".into(), bak.to_str().unwrap().into(), "live.db", None)
             .await
             .unwrap_err();
         assert!(e.contains("file"), "{e}");
 
-        let job = restore_inner(&state, "c1", name.clone(), bak.to_str().unwrap().into(), &name, None)
+        let job = restore_inner(&state, "c1", name.clone(), bak.to_str().unwrap().into(), "live.db", None)
             .await
             .unwrap();
         let s = job_result(&job).await;
         assert!(s.ok, "{s:?}");
         assert_eq!(scalar(&state, "c1", "SELECT COUNT(*) FROM items").await.unwrap(), "3", "the table is back");
         assert!(bak.exists(), "the backup itself is only read");
+    }
+
+    /// A SQL Server session: answers HEADERONLY with `backup_of`, `DB_NAME()` with `on`, and
+    /// records every script it is asked to run.
+    struct FakeMssql {
+        backup_of: &'static str,
+        on: &'static str,
+        scripts: Mutex<Vec<String>>,
+    }
+
+    fn one_cell(col: &str, v: &str) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new(col, DataType::Utf8, true)]));
+        RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(vec![v]))]).unwrap()
+    }
+
+    #[async_trait::async_trait]
+    impl SqlDriver for FakeMssql {
+        async fn introspect(&self) -> crate::drivers::DResult<crate::drivers::SchemaModel> {
+            unimplemented!()
+        }
+        async fn count_rows(
+            &self,
+            _: &str,
+            _: &str,
+            _: &[crate::drivers::ColumnFilter],
+            _: Option<&CancelToken>,
+        ) -> crate::drivers::DResult<crate::drivers::RowCount> {
+            unimplemented!()
+        }
+        async fn open_window_filtered(
+            &self,
+            _: &str,
+            _: &str,
+            _: usize,
+            _: usize,
+            _: &[crate::drivers::ColumnFilter],
+            _: &[crate::drivers::SortKey],
+            _: Option<&[Option<String>]>,
+        ) -> crate::drivers::DResult<RecordBatch> {
+            unimplemented!()
+        }
+        async fn primary_key(&self, _: &str, _: &str) -> crate::drivers::DResult<Vec<String>> {
+            unimplemented!()
+        }
+        async fn apply_edit(&self, _: &str, _: &str, _: &crate::drivers::EditSpec) -> crate::drivers::DResult<u64> {
+            unimplemented!()
+        }
+        async fn run_statements(
+            &self,
+            _: &[String],
+            _: usize,
+            _: &CancelToken,
+        ) -> crate::drivers::DResult<Vec<crate::drivers::StmtOutput>> {
+            unimplemented!()
+        }
+        async fn run_script(&self, sql: &str) -> crate::drivers::DResult<u64> {
+            lk(&self.scripts).push(sql.to_string());
+            Ok(0)
+        }
+        async fn run_query(&self, sql: &str, _: usize) -> crate::drivers::DResult<crate::drivers::QueryResult> {
+            let batch = if sql.starts_with("RESTORE HEADERONLY") {
+                one_cell("DatabaseName", self.backup_of)
+            } else {
+                one_cell("db", self.on)
+            };
+            Ok(crate::drivers::QueryResult { batch, truncated: false, exec_ms: 0 })
+        }
+    }
+
+    fn mssql_state(fake: FakeMssql) -> (ConnState, Arc<FakeMssql>) {
+        let cfg = ConnConfig {
+            id: "ms".into(),
+            name: "ms".into(),
+            color: None,
+            engine: "sqlserver".into(),
+            // Nothing listens here: a reopen fails fast.
+            host: "127.0.0.1".into(),
+            port: 1,
+            database: "shop".into(),
+            username: "sa".into(),
+            sslmode: "prefer".into(),
+            ssh: None,
+        };
+        let state = state_with(vec![cfg]);
+        let fake = Arc::new(fake);
+        lk(&state.sessions).insert("ms".into(), fake.clone());
+        (state, fake)
+    }
+
+    /// `WITH REPLACE` without `MOVE` would put another database's backup onto its files:
+    /// only a backup OF the target is accepted, before anything runs.
+    #[tokio::test]
+    async fn sqlserver_restore_refuses_a_backup_of_another_database() {
+        let (state, fake) =
+            mssql_state(FakeMssql { backup_of: "payroll", on: "shop", scripts: Mutex::new(vec![]) });
+        let job = restore_inner(&state, "ms", "shop".into(), "/var/opt/mssql/data/p.bak".into(), "shop", None)
+            .await
+            .unwrap();
+        let s = job_result(&job).await;
+        assert!(!s.ok);
+        assert!(s.error.as_deref().unwrap_or("").contains("payroll"), "{s:?}");
+        assert!(lk(&fake.scripts).is_empty(), "no RESTORE ran");
+        assert!(state.session("ms").is_ok());
+    }
+
+    /// A restore that leaves the pinned session on master (database RESTORING / SUSPECT)
+    /// must not leave the app querying master while it shows `shop`: the session is reopened
+    /// on `shop` — or, when that fails, closed — and the error says so.
+    #[tokio::test]
+    async fn sqlserver_session_left_on_another_database_is_reopened_or_closed() {
+        let (state, fake) =
+            mssql_state(FakeMssql { backup_of: "shop", on: "master", scripts: Mutex::new(vec![]) });
+        let job = restore_inner(&state, "ms", "shop".into(), "/var/opt/mssql/data/s.bak".into(), "shop", None)
+            .await
+            .unwrap();
+        let s = job_result(&job).await;
+        assert_eq!(lk(&fake.scripts).len(), 1, "the restore batch ran");
+        assert!(!s.ok);
+        let e = s.error.unwrap_or_default();
+        assert!(e.contains("could not be reopened"), "{e}");
+        assert!(state.session("ms").is_err(), "not left connected to master");
+
+        // On the database afterwards: fine, same session.
+        let (state, fake) = mssql_state(FakeMssql { backup_of: "shop", on: "shop", scripts: Mutex::new(vec![]) });
+        let before = state.session("ms").unwrap();
+        let job = restore_inner(&state, "ms", "shop".into(), "/var/opt/mssql/data/s.bak".into(), "shop", None)
+            .await
+            .unwrap();
+        assert!(job_result(&job).await.ok);
+        assert!(lk(&fake.scripts)[0].contains("RESTORE DATABASE [shop]"));
+        assert!(Arc::ptr_eq(&before, &state.session("ms").unwrap()));
     }
 
     /// A file engine's `database` is its file path: "switching" to the catalog name the

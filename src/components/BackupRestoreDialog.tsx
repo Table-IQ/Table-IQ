@@ -17,6 +17,7 @@ import {
   loadBackupToolDir,
   mssqlBackupPath,
   needsTypedPath,
+  restoreConfirmName,
   restoreExtensions,
   type BackupFormat,
 } from "../lib/backup";
@@ -39,6 +40,21 @@ const POLL_MS = 500;
 const LOG_CAP = 500;
 
 type Outcome = { ok: boolean; error: string | null };
+
+/** What restoring does to `database` on each engine — the warning must be accurate: only
+ *  SQL Server and the file engines replace the whole database. */
+function restoreWarning(engine: Engine): string {
+  switch (engine) {
+    case "postgres":
+      return "A custom-format archive (.dump) drops and recreates the objects it contains; anything not in it is kept. A plain .sql file runs on top of what is there and stops at the first error. Either way, a restore that fails part-way can leave the database partly changed.";
+    case "mysql":
+      return "The .sql file runs on top of what is there: the tables in the dump are dropped and recreated, other tables are kept. Only statements while this database is selected run (mysql --one-database) — but a fully qualified name such as other_db.table in the file still runs. A restore that fails or is cancelled part-way leaves it partly restored.";
+    case "sqlserver":
+      return "The whole database is replaced by the backup, which must be a backup of this database. Other sessions on it are disconnected and their open transactions rolled back.";
+    default:
+      return "The database file is replaced by the backup. Anything written since the backup is lost.";
+  }
+}
 
 /**
  * TablePlus "Backup Database" / "Restore Database". Both pick a file (native dialog, or a
@@ -79,12 +95,15 @@ export function BackupRestoreDialog({
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(false);
   const [confirm, setConfirm] = useState("");
+  const [startedAt, setStartedAt] = useState(0);
   const logRef = useRef<HTMLPreElement>(null);
   const onRestoredRef = useRef(onRestored);
   onRestoredRef.current = onRestored;
   // A file-engine restore runs inside the start call itself (close, swap, reopen).
   const running = starting || (job !== null && outcome === null);
-  const confirmed = confirm === database;
+  // A file database is confirmed by its file name; the Rust command checks the same.
+  const confirmName = restoreConfirmName(engine, database);
+  const confirmed = confirm === confirmName;
 
   // SQL Server writes on the server: seed the path from the instance's default backup dir.
   useEffect(() => {
@@ -156,6 +175,7 @@ export function BackupRestoreDialog({
     setLines([]);
     setOutcome(null);
     setStarting(true);
+    setStartedAt(performance.now());
     try {
       const id = restore
         ? await restoreDatabase(connId, database, path.trim(), confirm, loadBackupToolDir())
@@ -190,7 +210,7 @@ export function BackupRestoreDialog({
               <span className="inline-flex items-center gap-1.5 text-muted">
                 <IconRefresh size={11} className="animate-spin text-primary" aria-hidden />
                 {restore ? "Restoring…" : "Backing up…"}{" "}
-                {job && <Elapsed since={job.since} className="tabular-nums" />}
+                <Elapsed since={job?.since ?? startedAt} className="tabular-nums" />
               </span>
             )}
             {outcome?.ok && (
@@ -254,8 +274,8 @@ export function BackupRestoreDialog({
 
         {restore && (
           <p className="rounded-md border border-danger/30 bg-danger/10 px-2 py-1.5 text-danger">
-            Restoring replaces the contents of <span className="font-mono font-semibold">{database}</span> with the
-            backup. Anything written since the backup is lost. This cannot be undone.
+            Restoring into <span className="font-mono font-semibold">{database}</span>. {restoreWarning(engine)} This
+            cannot be undone.
           </p>
         )}
 
@@ -313,15 +333,8 @@ export function BackupRestoreDialog({
           {engine === "sqlserver" && (
             <div className="text-muted">
               {restore
-                ? "SQL Server reads the file on the database server, at this path. Other sessions on the database are disconnected, and a restore runs to the end once started."
+                ? "SQL Server reads the file on the database server, at this path. A restore runs to the end once started."
                 : "SQL Server writes the file on the database server, at this path. Backups run to the end once started."}
-            </div>
-          )}
-          {restore && (engine === "postgres" || engine === "mysql") && (
-            <div className="text-muted">
-              {engine === "postgres"
-                ? "A custom-format archive is restored with pg_restore --clean (its objects are dropped first); a plain .sql file runs through psql and stops at the first error."
-                : "The .sql file runs through mysql. Cancelling part-way leaves the database partly restored."}
             </div>
           )}
           {hint && <div className="text-muted">{hint}</div>}
@@ -330,7 +343,7 @@ export function BackupRestoreDialog({
         {restore && (
           <label className="block space-y-1 text-text">
             <span>
-              Type <span className="select-all font-mono font-semibold">{database}</span> to confirm
+              Type <span className="select-all font-mono font-semibold">{confirmName}</span> to confirm
             </span>
             <input
               aria-label="Type the database name to confirm the restore"

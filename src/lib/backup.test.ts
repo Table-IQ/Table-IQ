@@ -7,6 +7,7 @@ import {
   loadBackupToolDir,
   mssqlBackupPath,
   needsTypedPath,
+  restoreConfirmName,
   restoreExtensions,
   saveBackupToolDir,
   supportsBackup,
@@ -64,6 +65,13 @@ describe("restore engine rules", () => {
     expect(supportsRestore("duckdb", ":memory:")).toBe(false);
     expect(supportsRestore("redis", "0")).toBe(false);
     expect(supportsRestore("mongodb", "shop")).toBe(false);
+  });
+
+  it("a file database is confirmed by its file name, a server database by its name", () => {
+    expect(restoreConfirmName("sqlite", "/Users/me/data/app.db")).toBe("app.db");
+    expect(restoreConfirmName("duckdb", "C:\\data\\x.duckdb")).toBe("x.duckdb");
+    expect(restoreConfirmName("postgres", "shop")).toBe("shop");
+    expect(restoreConfirmName("sqlserver", "a/b")).toBe("a/b");
   });
 
   it("opens the file types the Rust allowlist accepts", () => {

@@ -41,6 +41,12 @@ export function supportsRestore(engine: Engine, database: string): boolean {
   return supportsBackup(engine) && !(isFile(engine) && (database === ":memory:" || database === ""));
 }
 
+/** What the user types to confirm a restore: a file database's file name (the whole path
+ *  is a lot to type — the Rust command checks the same), a server database's name. */
+export function restoreConfirmName(engine: Engine, database: string): string {
+  return isFile(engine) ? (database.split(/[/\\]/).pop() ?? database) : database;
+}
+
 /** File types for the Open dialog: every kind the engine's restore reads (Postgres sniffs a
  *  custom archive vs plain SQL itself). */
 export function restoreExtensions(engine: Engine): string[] {
