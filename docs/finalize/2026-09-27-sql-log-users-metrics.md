@@ -34,6 +34,16 @@ Every task had a spec-and-quality review with fix rounds, all logged in the SDD 
 
 The re-review then found that the quote/comment-aware widget guard had **regressed**: tokenizer over-blanking let PG `a$x$`, MySQL `--1`, SQLite `[a']` and MariaDB `/*M!` through. **Fixed fail-closed**: the keyword scan now runs on the raw SQL. As a trade-off, SQL containing a keyword inside a string, such as `WHERE op = 'UPDATE'` or `SHOW CREATE TABLE`, is also rejected.
 
+The `/ship` pre-landing review (Opus) found one more **critical** issue. JavaScript's `\b` treats digits as word characters, so `SELECT 1DELETE FROM t` passed the widget guard, and on SQL Server it really deleted rows. **Fixed**: the keyword boundary now ignores a preceding digit. That review also fixed:
+- `redact` next to a non-breaking space
+- SQL Server drop now aborts before `DROP LOGIN` if `DROP USER` fails
+- Postgres read/write grants now include sequences
+- widget row caps are set by widget kind
+- the user name is trimmed before it's sent
+- the users/metrics glyphs no longer use the AI accent colour
+
+Coverage audit: 92%. It added an XSS-escaping test for the SQL-log panel.
+
 ## QA (real IPC bridge, never the mock)
 The real UI ran against real Rust commands on Docker PG, MySQL and **SQL Server**, and every `/__ipc/*` call was checked.
 - **SQL log panel:** PASS on all 3 engines. Per-connection isolation, clear, highlighting, resize and persist all work.

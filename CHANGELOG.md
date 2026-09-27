@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.6.0 — 2026-09-27
+
+See every statement the app sends to your database, manage database users without
+writing SQL, and keep a live dashboard of the numbers you care about.
+
+### Added
+- **SQL log (⌘⇧C).** A bottom panel, toggled from the title bar, ⌘K or ⌘⇧C, that shows
+  every statement TableIQ runs on the current connection. That includes the catalog,
+  count and page queries behind each table you open. Each statement gets its own
+  `-- 2026-09-27 11:28:58.4900` timestamp. Passwords are always shown as `'***'`. Trash
+  clears the log, syntax highlighting is one checkbox away, and the panel keeps its
+  height. It works on Postgres, MySQL, SQLite, DuckDB and SQL Server.
+- **Database User Management.** From ⌘K, list the roles or logins on Postgres, MySQL
+  and SQL Server. Create a user, change a password, grant or revoke read, read/write or
+  full access to the current database, or drop a user. Every action previews its SQL
+  first, with the password hidden, and asks before it runs. None of it is saved to
+  query history.
+- **Metrics Board.** From ⌘K, a per-connection dashboard of small widgets. Each one
+  shows a number, a bar chart, a line chart or a table from a query and refreshes every
+  few seconds while you're looking at it. ⌘. stops a slow one. Widgets are read-only:
+  queries that change data, schema or permissions are refused, so a dashboard can't
+  modify your database.
+
+### Fixed
+- Postgres read/write and full-access grants now include the table's sequences, so
+  inserting into an auto-numbered table works for the new user.
+- Dropping a SQL Server login no longer reports an error after it has already dropped
+  the login. If the login's database user can't be dropped, nothing is dropped.
+
 ## 0.5.0 — 2026-09-27
 
 Connecting never looks frozen now, and the sidebar's Queries and History tabs work. ⌘K

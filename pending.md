@@ -122,6 +122,22 @@ Full account in `docs/finalize/2026-09-27-palette-sqllog-settings.md`. PR-B (SQL
 | **Title-bar action map isn't type-linked to `TOOLBAR_ITEMS`** | A new toolbar item without an action is dropped silently. |
 | **`StorageLike`/`defaultStorage` duplicated** | `src/lib/prefs.ts` and `src/lib/toolbarPrefs.ts` carry the same 9 lines. |
 
+### 2g. Deferred from the `sql-log-users-metrics` branch, PR-B (0.6.0)
+
+Full account in `docs/finalize/2026-09-27-sql-log-users-metrics.md`. PR-C (Backup/Restore, MCP Server/Activity) is the rest of this plan.
+
+| Item | Why |
+|---|---|
+| **Widgets can still run side-effecting SELECTs** | The keyword guard rejects writes, DDL and exec, but a SELECT that calls a function with side effects (`pg_terminate_backend`, `setval`, `… FOR SHARE`) still runs on every refresh. The structural fix is to run widget `query_rows` inside a READ ONLY transaction (PG/MySQL) or with `query_only` (SQLite). PR-C's MCP server builds that wrapper; Metrics adopts it then. |
+| **SQL log misses some statements** | Statements run before the driver is wrapped (on connect), `test_connection`, schema-diff temp drivers, SQLite PRAGMAs run when a connection opens, and pool background tasks are not logged. |
+| **SQL log fills with widget refreshes** | Several fast widgets can fill the 2000-entry ring in minutes and push out the user's own statements. A `source` tag (user/app/widget) plus a panel filter would fix it. |
+| **`redact` edge cases** | Not masked yet: a PG nested comment between keyword and value, PG adjacent-literal continuation, MySQL `#` comments, `CONCAT('a','b')` passwords (only `'a'` is masked), and connection-string passwords (`dblink`). |
+| **SQL Server slow widgets hold the only connection** | The SQL Server driver has one pinned connection and no cancel, so a slow widget makes grid and query tabs queue behind it. Needs the SQL Server pool work in §2a. |
+| **PG passwords sent in plaintext** | `CREATE ROLE … PASSWORD '…'` could land in the server log under `log_statement=ddl`. psql's `\password` hashes client-side (SCRAM); we could do the same. |
+| **Users view polish** | No refresh indicator; row buttons lack per-user `aria-label`s; modal boilerplate is repeated; a MySQL grant with no current database targets `` ``.* ``; PG "revoke read" also revokes USAGE/CONNECT. |
+| **Users Submit button with pasted input** | QA ISSUE-002, low confidence (likely a harness artifact). Needs a manual paste check. |
+| **SQLite log detection by engine name** | `exec.rs` branches on `DB::NAME == "SQLite"`. |
+
 ---
 
 ## 3. Other pending work (pre-existing, not touched by this branch)
