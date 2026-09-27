@@ -145,9 +145,9 @@ saturated than our previous indigo-tinted dark.
 - `<Wordmark>` + active-connection dot + name (left)
 - Breadcrumb: `connection · database · schema · table` (center, font-mono)
 - Right icon strip: refresh schema, switch database, command palette, theme, help, Workspace
-  Overview (hidden by default), inspector toggle, disconnect. User-reorderable and hideable
-  (Settings → Toolbar, or right-click the title bar) except the fixed inspector-toggle/disconnect
-  pair.
+  Overview (hidden by default), SQL Log, Metrics Board (hidden by default), inspector toggle,
+  disconnect. User-reorderable and hideable (Settings → Toolbar, or right-click the title bar)
+  except the fixed inspector-toggle/disconnect pair.
 
 ### Tab strip (26px)
 - `<` `>` history navigation

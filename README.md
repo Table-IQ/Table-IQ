@@ -25,7 +25,8 @@ than the SQL grid and ERD.
 
 ⌘K opens a TablePlus-style command palette: search tables, databases and saved queries in one
 place, or jump straight to Open Connection (⌘O), Open Database (⌘D), Settings (⌘,), Cancel
-Running Queries (⌘.), Workspace Overview (⌘⇧\), or Customize Toolbar. The sidebar's Queries
+Running Queries (⌘.), Workspace Overview (⌘⇧\), Toggle SQL Log (⌘⇧C), Database User
+Management, Metrics Board, or Customize Toolbar. The sidebar's Queries
 and History tabs list saved queries and past runs per connection. Settings (⌘,) holds theme,
 the connection-rail label, editor font size and your AI provider in one page; the title bar's
 right icon group is reorderable and hideable from Settings → Toolbar or a right-click.
@@ -33,6 +34,13 @@ right icon group is reorderable and hideable from Settings → Toolbar or a righ
 AI features (NL→SQL, explain/optimize/fix) are opt-in and bring-your-own-key
 (Anthropic/OpenAI/Gemini), or local via Ollama — nothing is sent anywhere unless you
 configure a provider.
+
+The title bar (or ⌘K) also opens three diagnostic/admin surfaces: a **SQL log** (⌘⇧C)
+showing every statement the app just sent to your database, with passwords always
+masked as `'***'`; **Database User Management**, to list, create, drop or change access
+for roles/logins on Postgres, MySQL and SQL Server, previewing the SQL before it runs;
+and a **Metrics Board**, a per-connection dashboard of read-only widgets (number, bar,
+line or table) that refresh on a timer and reject any query that would write data.
 
 ## Development
 
