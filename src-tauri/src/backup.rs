@@ -610,30 +610,430 @@ pub fn mssql_headeronly_sql(path: &str) -> String {
     format!("RESTORE HEADERONLY FROM DISK = N{}", lit(path))
 }
 
-/// True when a plain SQL file has a psql `\c` / `\connect` line: psql would switch to
-/// another database and run the rest of the file there. `\copy`, `\conninfo` and PG 17.6+'s
-/// `\restrict` / `\unrestrict` are not switches; a COPY data line can't match (its backslashes
-/// are doubled).
-pub fn psql_switches_database(path: &Path) -> Result<bool, String> {
+/// Stream `path` line by line (lossily: a dump need not be UTF-8), stopping at the first
+/// line `f` flags. Returns `line N: <what f said>`.
+fn scan_lines(path: &Path, mut f: impl FnMut(&str) -> Option<String>) -> Result<Option<String>, String> {
     use std::io::BufRead;
-    let f = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut r = std::io::BufReader::new(f);
+    let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut r = std::io::BufReader::new(file);
     let mut buf = Vec::new();
-    loop {
+    for n in 1.. {
         buf.clear();
         match r.read_until(b'\n', &mut buf) {
-            Ok(0) => return Ok(false),
+            Ok(0) => break,
             Ok(_) => {
-                let line = String::from_utf8_lossy(&buf);
-                let line = line.trim_start_matches('\u{feff}').trim_start();
-                if let Some(rest) = line.strip_prefix('\\') {
-                    if matches!(rest.split(char::is_whitespace).next(), Some("c" | "connect")) {
-                        return Ok(true);
-                    }
+                if let Some(what) = f(&String::from_utf8_lossy(&buf)) {
+                    return Ok(Some(format!("line {n}: {what}")));
                 }
             }
             Err(e) => return Err(format!("{}: {e}", path.display())),
         }
+    }
+    Ok(None)
+}
+
+/// The first psql meta-command line in a plain SQL file that would leave the confirmed
+/// database: `\c` / `\connect` (switch database), `\i` / `\ir` / `\include` /
+/// `\include_relative` (run another file), `\!` (a shell). `pg_dump` writes none of them;
+/// `\copy`, `\conninfo` and PG 17.6+'s `\restrict` / `\unrestrict` pass, and a COPY data line
+/// can't match (its backslashes are doubled).
+pub fn psql_forbidden_meta(path: &Path) -> Result<Option<String>, String> {
+    scan_lines(path, |line| {
+        let rest = line.trim_start_matches('\u{feff}').trim_start().strip_prefix('\\')?;
+        if rest.starts_with('!') {
+            return Some("\\!".into());
+        }
+        let cmd = rest.split(char::is_whitespace).next().unwrap_or("");
+        matches!(cmd, "c" | "connect" | "i" | "ir" | "include" | "include_relative").then(|| format!("\\{cmd}"))
+    })
+}
+
+/// A token of a MySQL script, as the database-switch scan sees it.
+#[derive(Debug, Clone)]
+enum MyTok {
+    /// An unquoted word (keyword or name).
+    Word(String),
+    /// A `backtick`-quoted name, or a string literal.
+    Quoted(String),
+    Other,
+}
+
+/// Where the MySQL scanner is inside the script.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum MySt {
+    Code,
+    Word,
+    Quoted(u8),
+    QuotedEsc(u8),
+    QuotedEnd(u8),
+    LineComment,
+    BlockComment,
+    BlockCommentStar,
+    Slash,
+    SlashStar,
+    SlashStarM,
+    VersionDigits,
+    Star,
+    Dash,
+    Dash2,
+    Backslash,
+}
+
+enum Verdict {
+    Pending,
+    Fine,
+    Refuse(String),
+}
+
+fn is_my_word(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'$' || b >= 0x80
+}
+
+/// A streaming, quote- and comment-aware scan of a MySQL script for anything that would reach
+/// a database other than `target`. Versioned comments (`/*!40000 … */`, MariaDB's `/*M!…*/`)
+/// are code, as the server treats them. A statement is checked from its start (after `;`)
+/// AND from the first token of every line, so a line-based client command or a custom
+/// `DELIMITER` can't slip past; that errs towards refusing.
+struct MyScan<'a> {
+    target: &'a str,
+    st: MySt,
+    versioned: bool,
+    text: Vec<u8>,
+    line: usize,
+    /// The heads of statements (and lines) still being read, each until it is known whether
+    /// it names a database.
+    heads: Vec<Vec<MyTok>>,
+}
+
+impl<'a> MyScan<'a> {
+    fn new(target: &'a str) -> Self {
+        MyScan { target, st: MySt::Code, versioned: false, text: Vec::new(), line: 1, heads: vec![vec![]] }
+    }
+
+    fn refuse(&self, what: String) -> Option<String> {
+        Some(format!("line {}: {what}", self.line))
+    }
+
+    /// Does the head of a statement name another database? `done`: the statement ended.
+    fn verdict(&self, toks: &[MyTok], done: bool) -> Verdict {
+        let wait = |what: &str| {
+            if done {
+                Verdict::Refuse(format!("{what} without a database name"))
+            } else {
+                Verdict::Pending
+            }
+        };
+        let kw = |t: Option<&MyTok>, k: &str| matches!(t, Some(MyTok::Word(w)) if w.eq_ignore_ascii_case(k));
+        let named = |t: &MyTok, what: &str| match t {
+            MyTok::Word(n) | MyTok::Quoted(n) if n == self.target => Verdict::Fine,
+            MyTok::Word(n) | MyTok::Quoted(n) => Verdict::Refuse(format!("{what} `{n}`")),
+            MyTok::Other => Verdict::Refuse(format!("{what} with an unreadable database name")),
+        };
+        let first = match toks.first() {
+            None => return Verdict::Pending,
+            Some(MyTok::Word(w)) => w.to_ascii_uppercase(),
+            Some(_) => return Verdict::Fine,
+        };
+        match first.as_str() {
+            "USE" => match toks.get(1) {
+                None => wait("USE"),
+                Some(t) => named(t, "USE"),
+            },
+            // mysql client commands: reconnect elsewhere, run another file, a shell.
+            "CONNECT" | "SOURCE" | "SYSTEM" => Verdict::Refuse(format!("the mysql client command {first}")),
+            "DROP" | "CREATE" => {
+                let what = match toks.get(1) {
+                    None => return if done { Verdict::Fine } else { Verdict::Pending },
+                    Some(MyTok::Word(w)) if w.eq_ignore_ascii_case("DATABASE") || w.eq_ignore_ascii_case("SCHEMA") => {
+                        format!("{first} {}", w.to_ascii_uppercase())
+                    }
+                    Some(_) => return Verdict::Fine,
+                };
+                let mut i = 2;
+                if kw(toks.get(i), "IF") {
+                    i += 1;
+                    if kw(toks.get(i), "NOT") {
+                        i += 1;
+                    }
+                    match toks.get(i) {
+                        None => return wait(&what),
+                        Some(_) if kw(toks.get(i), "EXISTS") => i += 1,
+                        Some(_) => return Verdict::Refuse(format!("{what} with an unreadable database name")),
+                    }
+                }
+                match toks.get(i) {
+                    None => wait(&what),
+                    Some(t) => named(t, &what),
+                }
+            }
+            _ => Verdict::Fine,
+        }
+    }
+
+    /// Feed a token to every open head.
+    fn token(&mut self, t: MyTok) -> Option<String> {
+        let mut heads = std::mem::take(&mut self.heads);
+        let mut refused = None;
+        heads.retain_mut(|h| {
+            h.push(t.clone());
+            match self.verdict(h, false) {
+                Verdict::Pending => true,
+                Verdict::Fine => false,
+                Verdict::Refuse(w) => {
+                    refused.get_or_insert(w);
+                    false
+                }
+            }
+        });
+        self.heads = heads;
+        refused.and_then(|w| self.refuse(w))
+    }
+
+    /// A new head begins (a statement, or a line).
+    fn open_head(&mut self) {
+        if self.heads.last().is_none_or(|h| !h.is_empty()) {
+            self.heads.push(Vec::new());
+        }
+    }
+
+    /// The statement ended: whatever is still undecided is decided now.
+    fn end_statement(&mut self) -> Option<String> {
+        for h in std::mem::take(&mut self.heads) {
+            if let Verdict::Refuse(w) = self.verdict(&h, true) {
+                return self.refuse(w);
+            }
+        }
+        self.open_head();
+        None
+    }
+
+    /// Keep a word's or quoted name's bytes only while some statement head could use them —
+    /// never a whole INSERT's multi-megabyte string literal.
+    fn keep(&mut self, b: u8) {
+        if !self.heads.is_empty() {
+            self.text.push(b);
+        }
+    }
+
+    fn take_text(&mut self) -> String {
+        String::from_utf8_lossy(&std::mem::take(&mut self.text)).into_owned()
+    }
+
+    fn byte(&mut self, b: u8) -> Option<String> {
+        loop {
+            match self.st {
+                MySt::Code => {
+                    match b {
+                        b'\n' => {
+                            self.line += 1;
+                            self.open_head();
+                        }
+                        _ if is_my_word(b) => {
+                            self.keep(b);
+                            self.st = MySt::Word;
+                        }
+                        b'\'' | b'"' | b'`' => self.st = MySt::Quoted(b),
+                        b'#' => self.st = MySt::LineComment,
+                        b'-' => self.st = MySt::Dash,
+                        b'/' => self.st = MySt::Slash,
+                        b'*' if self.versioned => self.st = MySt::Star,
+                        b'\\' => self.st = MySt::Backslash,
+                        b';' => return self.end_statement(),
+                        _ if b.is_ascii_whitespace() => {}
+                        _ => return self.token(MyTok::Other),
+                    }
+                    return None;
+                }
+                MySt::Word => {
+                    if is_my_word(b) {
+                        self.keep(b);
+                        return None;
+                    }
+                    self.st = MySt::Code;
+                    let w = self.take_text();
+                    if let Some(r) = self.token(MyTok::Word(w)) {
+                        return Some(r);
+                    }
+                }
+                MySt::Quoted(q) => {
+                    if b == b'\n' {
+                        self.line += 1;
+                    }
+                    if b == q {
+                        self.st = MySt::QuotedEnd(q);
+                    } else if b == b'\\' && q != b'`' {
+                        self.st = MySt::QuotedEsc(q);
+                    } else {
+                        self.keep(b);
+                    }
+                    return None;
+                }
+                MySt::QuotedEsc(q) => {
+                    if b == b'\n' {
+                        self.line += 1;
+                    }
+                    self.keep(b);
+                    self.st = MySt::Quoted(q);
+                    return None;
+                }
+                MySt::QuotedEnd(q) => {
+                    if b == q {
+                        // A doubled quote is the quote itself.
+                        self.keep(q);
+                        self.st = MySt::Quoted(q);
+                        return None;
+                    }
+                    self.st = MySt::Code;
+                    let t = self.take_text();
+                    if let Some(r) = self.token(MyTok::Quoted(t)) {
+                        return Some(r);
+                    }
+                }
+                MySt::LineComment => {
+                    if b != b'\n' {
+                        return None;
+                    }
+                    self.st = MySt::Code;
+                }
+                MySt::BlockComment => {
+                    if b == b'\n' {
+                        self.line += 1;
+                    }
+                    if b == b'*' {
+                        self.st = MySt::BlockCommentStar;
+                    }
+                    return None;
+                }
+                MySt::BlockCommentStar => {
+                    self.st = match b {
+                        b'/' => MySt::Code,
+                        b'*' => MySt::BlockCommentStar,
+                        _ => {
+                            if b == b'\n' {
+                                self.line += 1;
+                            }
+                            MySt::BlockComment
+                        }
+                    };
+                    return None;
+                }
+                MySt::Slash => {
+                    if b == b'*' {
+                        self.st = MySt::SlashStar;
+                        return None;
+                    }
+                    self.st = MySt::Code;
+                    if let Some(r) = self.token(MyTok::Other) {
+                        return Some(r);
+                    }
+                }
+                MySt::SlashStar => match b {
+                    // `/*!NNNNN code */`: the server runs the code.
+                    b'!' => {
+                        self.versioned = true;
+                        self.st = MySt::VersionDigits;
+                        return None;
+                    }
+                    b'M' => {
+                        self.st = MySt::SlashStarM;
+                        return None;
+                    }
+                    _ => self.st = MySt::BlockComment,
+                },
+                MySt::SlashStarM => {
+                    if b == b'!' {
+                        self.versioned = true;
+                        self.st = MySt::VersionDigits;
+                        return None;
+                    }
+                    self.st = MySt::BlockComment;
+                }
+                MySt::VersionDigits => {
+                    if b.is_ascii_digit() {
+                        return None;
+                    }
+                    self.st = MySt::Code;
+                }
+                MySt::Star => {
+                    self.st = MySt::Code;
+                    if b == b'/' {
+                        self.versioned = false;
+                        return None;
+                    }
+                    if let Some(r) = self.token(MyTok::Other) {
+                        return Some(r);
+                    }
+                }
+                MySt::Dash => {
+                    if b == b'-' {
+                        self.st = MySt::Dash2;
+                        return None;
+                    }
+                    self.st = MySt::Code;
+                    if let Some(r) = self.token(MyTok::Other) {
+                        return Some(r);
+                    }
+                }
+                MySt::Dash2 => {
+                    // `-- ` needs whitespace (or a control char) after it to be a comment.
+                    if b.is_ascii_whitespace() || b.is_ascii_control() {
+                        self.st = MySt::LineComment;
+                    } else {
+                        self.st = MySt::Code;
+                        if let Some(r) = self.token(MyTok::Other).or_else(|| self.token(MyTok::Other)) {
+                            return Some(r);
+                        }
+                    }
+                }
+                MySt::Backslash => {
+                    self.st = MySt::Code;
+                    return match b {
+                        // The mysql client's `\u db`, `\r db`, `\. file`, `\! cmd`.
+                        b'u' | b'r' | b'.' | b'!' => self.refuse(format!("the mysql client command \\{}", b as char)),
+                        // `\g` / `\G` end a statement like `;`.
+                        b'g' | b'G' => self.end_statement(),
+                        _ => self.token(MyTok::Other),
+                    };
+                }
+            }
+        }
+    }
+
+    /// End of file: a last word or name, then the last statement.
+    fn finish(&mut self) -> Option<String> {
+        let last = match self.st {
+            MySt::Word => Some(MyTok::Word(self.take_text())),
+            MySt::QuotedEnd(_) => Some(MyTok::Quoted(self.take_text())),
+            _ => None,
+        };
+        if let Some(r) = last.and_then(|t| self.token(t)) {
+            return Some(r);
+        }
+        self.end_statement()
+    }
+}
+
+/// The first statement in a MySQL restore file that creates, drops or switches to a database
+/// other than `target` (`DROP`/`CREATE DATABASE|SCHEMA`, `USE`), or a mysql client command
+/// that reconnects, runs another file or a shell. `--one-database` does not stop these:
+/// `DROP DATABASE other` runs while `target` is still the default. Streams the file.
+pub fn mysql_foreign_database(path: &Path, target: &str) -> Result<Option<String>, String> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut r = std::io::BufReader::with_capacity(1 << 16, file);
+    let mut scan = MyScan::new(target);
+    loop {
+        let buf = r.fill_buf().map_err(|e| format!("{}: {e}", path.display()))?;
+        if buf.is_empty() {
+            return Ok(scan.finish());
+        }
+        let n = buf.len();
+        for &b in buf {
+            if let Some(found) = scan.byte(b) {
+                return Ok(Some(found));
+            }
+        }
+        r.consume(n);
     }
 }
 
@@ -729,11 +1129,12 @@ pub async fn tool_restore(
             let (tool, args) = if is_pg_custom_dump(Path::new(file))? {
                 ("pg_restore", pg_restore_args(&t.host, t.port, &t.user, &t.database, file))
             } else {
-                // Only ever the confirmed database: `\connect` would carry on somewhere else.
-                if psql_switches_database(Path::new(file))? {
+                // Only ever the confirmed database: `\connect` would carry on elsewhere, an
+                // include runs another file, `\!` a shell. pg_dump writes none of them.
+                if let Some(found) = psql_forbidden_meta(Path::new(file))? {
                     return Err(format!(
-                        "{file} switches database with \\connect (a pg_dumpall or pg_dump --create \
-                         file) — it can't be restored into {:?} alone. Nothing was restored",
+                        "{file} has a psql meta-command that could leave {:?} ({found}) — only a \
+                         single-database plain dump can be restored. Nothing was restored",
                         t.database
                     ));
                 }
@@ -750,6 +1151,14 @@ pub async fn tool_restore(
             // The database is mysql's positional argument: a leading `-` would be an option.
             if t.database.is_empty() || t.database.starts_with('-') {
                 return Err(format!("cannot restore into a database named {:?}", t.database));
+            }
+            // `--one-database` can't stop `DROP DATABASE other`: refuse such a file up front.
+            if let Some(found) = mysql_foreign_database(Path::new(file), &t.database)? {
+                return Err(format!(
+                    "{file} reaches another database ({found}) — a multi-database dump can't be \
+                     restored into {:?} alone. Nothing was restored",
+                    t.database
+                ));
             }
             let bin = resolve_first(&["mysql", "mariadb"], tool_dir).ok_or_else(|| missing("mysql", "mysql-client"))?;
             let mariadb = tool_version(&bin).await.is_some_and(|v| v.contains("MariaDB"));
@@ -1356,6 +1765,12 @@ mod tests {
 
         let s = run("mysql", plain.clone()).await;
         assert!(s.lines[0].starts_with("mysql -h h -P 1 -u u --protocol=TCP"), "{:?}", s.lines);
+
+        // A dump that reaches another database is refused before mysql starts.
+        let multi = files.path().join("multi.sql");
+        std::fs::write(&multi, "/*!40000 DROP DATABASE IF EXISTS `payroll`*/;\n").unwrap();
+        let e = tool_restore("mysql", &t, "pw", multi.to_str().unwrap(), dir).await.unwrap_err();
+        assert!(e.contains("payroll") && e.contains("Nothing was restored"), "{e}");
         assert!(s.lines[0].ends_with(" shop"), "{:?}", s.lines);
         assert_eq!(s.lines[2], "stdin=[CREAT]", "the dump is mysql's stdin");
     }
@@ -1420,30 +1835,120 @@ mod tests {
         assert_eq!(names_in(dir.path()), ["live.db"], "no temp file or stale WAL left behind");
     }
 
-    /// psql meta-commands that switch database — never `\copy` or the PG 17.6+
-    /// `\restrict` / `\unrestrict` guard lines, or text that merely mentions `\c`.
+    /// psql meta-commands that switch database, read another file or run a shell — never
+    /// `\copy`, `\conninfo`, the PG 17.6+ `\restrict` / `\unrestrict` guard lines, or text
+    /// that merely mentions `\c`.
     #[test]
-    fn plain_dumps_that_switch_database_are_detected() {
+    fn plain_dumps_with_dangerous_meta_commands_are_detected() {
         let dir = tempfile::tempdir().unwrap();
         let check = |body: &str| {
             let p = dir.path().join("x.sql");
             std::fs::write(&p, body).unwrap();
-            psql_switches_database(&p).unwrap()
+            psql_forbidden_meta(&p).unwrap()
         };
-        for yes in ["\\connect other\n", "SET x;\n  \\c other\n", "\\c\n", "\\connect", "\t\\c -reuse-previous=on dbname=x\n"] {
-            assert!(check(yes), "{yes:?}");
+        for (body, cmd) in [
+            ("\\connect other\n", "\\connect"),
+            ("SET x;\n  \\c other\n", "\\c"),
+            ("\\c\n", "\\c"),
+            ("\\connect", "\\connect"),
+            ("\t\\c -reuse-previous=on dbname=x\n", "\\c"),
+            ("\\i /etc/other.sql\n", "\\i"),
+            ("\\ir other.sql\n", "\\ir"),
+            ("\\include other.sql\n", "\\include"),
+            ("\\include_relative other.sql\n", "\\include_relative"),
+            ("\\! rm -rf ~\n", "\\!"),
+            ("\\!rm -rf ~\n", "\\!"),
+        ] {
+            let found = check(body).unwrap_or_else(|| panic!("{body:?} must be refused"));
+            assert!(found.contains(cmd), "{body:?}: {found}");
         }
         for no in [
             "CREATE TABLE t (x int);\n",
             "\\copy t FROM 'x.csv'\n",
             "\\restrict AbC123\nCREATE TABLE t (x int);\n\\unrestrict AbC123\n",
             "SELECT '\\c other';\n",
-            "COPY t (x) FROM stdin;\n\\\\connect\n\\.\n",
+            "COPY t (x) FROM stdin;\n\\\\connect\n\\\\! x\n\\.\n",
             "\\conninfo\n",
+            "\\if :x\n\\endif\n",
         ] {
-            assert!(!check(no), "{no:?}");
+            assert_eq!(check(no), None, "{no:?}");
         }
-        assert!(psql_switches_database(&dir.path().join("missing.sql")).is_err());
+        assert!(psql_forbidden_meta(&dir.path().join("missing.sql")).is_err());
+    }
+
+    /// Run the MySQL scan over `body` with target `target`.
+    fn my_scan(body: &str, target: &str) -> Option<String> {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("x.sql");
+        std::fs::write(&p, body).unwrap();
+        mysql_foreign_database(&p, target).unwrap()
+    }
+
+    /// `--one-database` filters by the default database only: `DROP DATABASE other` runs
+    /// regardless. Every statement that creates, drops or switches to another database is
+    /// refused before `mysql` starts.
+    #[test]
+    fn mysql_dumps_that_reach_another_database_are_refused() {
+        for (body, what) in [
+            // mysqldump --databases --add-drop-database, verbatim shapes.
+            ("/*!40000 DROP DATABASE IF EXISTS `other`*/;\n", "DROP DATABASE `other`"),
+            (
+                "CREATE DATABASE /*!32312 IF NOT EXISTS*/ `other` /*!40100 DEFAULT CHARACTER SET utf8mb4 */;\n",
+                "CREATE DATABASE `other`",
+            ),
+            ("USE `other`;\n", "USE `other`"),
+            // Unquoted, lower case, SCHEMA, IF [NOT] EXISTS.
+            ("use other;\n", "USE `other`"),
+            ("drop schema other;\n", "DROP SCHEMA `other`"),
+            ("Create Schema If Not Exists other;\n", "CREATE SCHEMA `other`"),
+            ("drop database if exists other", "DROP DATABASE `other`"),
+            // Split over lines, or after another statement on the same line.
+            ("DROP\n  DATABASE\n  `other`;\n", "DROP DATABASE `other`"),
+            ("INSERT INTO t VALUES (1); USE other;\n", "USE `other`"),
+            // MariaDB's versioned comment.
+            ("/*M!100101 USE other */;\n", "USE `other`"),
+            // Names are compared exactly (the server may be case-sensitive).
+            ("USE Target;\n", "USE `Target`"),
+            ("USE `tar``get`;\n", "USE `tar`get`"),
+            // Incomplete: can't tell which database.
+            ("USE;\n", "USE"),
+            ("DROP DATABASE IF EXISTS;\n", "DROP DATABASE"),
+            // The mysql client's own switches, includes and shell.
+            ("\\u other\n", "\\u"),
+            ("SELECT 1; \\r other\n", "\\r"),
+            ("connect other\n", "CONNECT"),
+            ("source /tmp/other.sql\n", "SOURCE"),
+            ("\\. /tmp/other.sql\n", "\\."),
+            ("system rm -rf ~\n", "SYSTEM"),
+            ("\\! rm -rf ~\n", "\\!"),
+        ] {
+            let found = my_scan(body, "target").unwrap_or_else(|| panic!("{body:?} must be refused"));
+            assert!(found.contains(what), "{body:?}: {found}");
+            assert!(found.starts_with("line "), "{found}");
+        }
+    }
+
+    #[test]
+    fn mysql_dumps_of_the_target_itself_are_allowed() {
+        let stock = "-- MySQL dump 10.13  Distrib 8.4.0\n\
+            /*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;\n\
+            /*!40000 DROP DATABASE IF EXISTS `target`*/;\n\
+            CREATE DATABASE /*!32312 IF NOT EXISTS*/ `target` /*!40100 DEFAULT CHARACTER SET utf8mb4 */;\n\
+            USE `target`;\n\
+            DROP TABLE IF EXISTS `t`;\n\
+            CREATE TABLE `t` (\n  `use` int,\n  `source` text\n) ENGINE=InnoDB;\n\
+            INSERT INTO `t` VALUES (1,'USE other; DROP DATABASE x'),(2,'it\\'s \\\\'),(3,'a''b'),(4,\"q\\\"USE other\");\n\
+            -- USE other\n# DROP DATABASE other\n/* USE other; */ SELECT 2*3;\n\
+            ALTER TABLE t\n  DROP COLUMN c;\n\
+            DELIMITER ;;\nCREATE PROCEDURE p() BEGIN SELECT 1; END ;;\nDELIMITER ;\n\
+            use target;\ncreate database if not exists target;\n";
+        assert_eq!(my_scan(stock, "target"), None);
+        // Large enough to cross the reader's buffer boundaries, string open across them.
+        let big = format!("INSERT INTO t VALUES ('{}');\n", "x".repeat(300_000));
+        assert_eq!(my_scan(&format!("{big}USE target;\n"), "target"), None);
+        assert!(my_scan(&format!("{big}USE other;\n"), "target").unwrap().contains("line 2"));
+        let dir = tempfile::tempdir().unwrap();
+        assert!(mysql_foreign_database(&dir.path().join("missing.sql"), "t").is_err());
     }
 
     #[test]

@@ -428,32 +428,88 @@ async fn mysql_restore_through_the_docker_shim() {
             let argv = std::fs::read_to_string(shim.path().join("argv.mysql")).unwrap();
             assert!(argv.lines().any(|a| a == "--one-database"), "{argv}");
             assert_eq!(argv.lines().last(), Some(TEST_DB), "the database is the last argument:\n{argv}");
+        }
+    })
+    .await;
+    mysql_drop_scratch(&url).await;
+    finish(body);
+}
 
-            // `--one-database`: a dump that switches with `USE other_db` can't write there.
+/// `--one-database` filters by the default database only, so a stock
+/// `mysqldump --databases --add-drop-database` file would `DROP DATABASE` the others while
+/// the target is still the default. Such a file is refused before mysql starts, and the other
+/// database survives.
+#[tokio::test]
+async fn mysql_multi_database_dump_is_refused_through_the_docker_shim() {
+    let Some(url) = shim_gate("TIQ_MYSQL_URL", "tableiq-mysql") else { return };
+    let _g = DB_LOCK.lock().await;
+    let body = tokio::spawn({
+        let url = url.clone();
+        async move {
+            let mut c = mysql_test_db(&url).await;
             sqlx::Executor::execute(
                 &mut c,
                 format!(
                     "CREATE DATABASE IF NOT EXISTS {OTHER_DB}; CREATE TABLE IF NOT EXISTS {OTHER_DB}.guard (x int); \
-                     DELETE FROM {OTHER_DB}.guard; INSERT INTO {OTHER_DB}.guard VALUES (1)"
+                     INSERT INTO {OTHER_DB}.guard VALUES (1)"
                 )
                 .as_str(),
             )
             .await
             .unwrap();
+            let (_, pass, _, _, _) = url_parts(&url);
+            let work = tempfile::tempdir().unwrap();
+            let dump = work.path().join("multi.sql");
+            docker_dump(
+                "tableiq-mysql",
+                &format!("MYSQL_PWD={pass}"),
+                &format!("mysqldump -uroot --no-tablespaces --add-drop-database --databases {OTHER_DB} {TEST_DB}"),
+                &dump,
+            );
+            let text = std::fs::read_to_string(&dump).unwrap();
+            assert!(text.contains(&format!("DROP DATABASE IF EXISTS `{OTHER_DB}`")), "a stock multi-database dump");
+
+            let shim = tempfile::tempdir().unwrap();
+            restore_shim(shim.path(), "mysql", "tableiq-mysql", "-P", "MYSQL_PWD");
+            let (t, pass) = target(&url);
+            let e = backup::tool_restore("mysql", &t, &pass, dump.to_str().unwrap(), shim.path().to_str())
+                .await
+                .unwrap_err();
+            assert!(e.contains(OTHER_DB) && e.contains("Nothing was restored"), "{e}");
+            assert!(!shim.path().join("argv.mysql").exists(), "mysql never ran");
+
+            // A hand-written `USE other_db` is refused the same way.
             let sneaky = work.path().join("sneaky.sql");
-            std::fs::write(
-                &sneaky,
-                format!("INSERT INTO tiq_rs_items VALUES (9, 'z');\nUSE {OTHER_DB};\nDELETE FROM guard;\n"),
-            )
-            .unwrap();
-            let (s, lines, _) = tool_restore("mysql", &url, &sneaky, shim.path().to_str()).await;
-            assert!(s.ok, "{s:?}\n{}", lines.join("\n"));
-            assert_eq!(mysql_count(&mut c).await.unwrap(), 4, "the target's statements ran");
+            std::fs::write(&sneaky, format!("INSERT INTO tiq_rs_items VALUES (9, 'z');\nUSE {OTHER_DB};\nDELETE FROM guard;\n"))
+                .unwrap();
+            let e = backup::tool_restore("mysql", &t, &pass, sneaky.to_str().unwrap(), shim.path().to_str())
+                .await
+                .unwrap_err();
+            assert!(e.contains(&format!("USE `{OTHER_DB}`")), "{e}");
+
             let guard: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {OTHER_DB}.guard"))
                 .fetch_one(&mut c)
                 .await
                 .unwrap();
-            assert_eq!(guard, 1, "nothing ran in {OTHER_DB} after `USE`");
+            assert_eq!(guard, 1, "{OTHER_DB} survives");
+            assert_eq!(mysql_count(&mut c).await.unwrap(), 3, "the target is untouched too");
+
+            // The same stock shape naming only the target (its own DROP/CREATE DATABASE and
+            // USE) is allowed, and restores.
+            let own = work.path().join("own.sql");
+            docker_dump(
+                "tableiq-mysql",
+                &format!("MYSQL_PWD={pass}"),
+                &format!("mysqldump -uroot --no-tablespaces --add-drop-database --databases {TEST_DB}"),
+                &own,
+            );
+            sqlx::Executor::execute(&mut c, format!("DROP TABLE {TEST_DB}.tiq_rs_items").as_str()).await.unwrap();
+            let id = backup::tool_restore("mysql", &t, &pass, own.to_str().unwrap(), shim.path().to_str())
+                .await
+                .expect("a dump of the target alone is allowed");
+            let (s, lines) = wait(&id).await;
+            assert!(s.ok, "{s:?}\n{}", lines.join("\n"));
+            assert_eq!(mysql_count(&mut c).await.unwrap(), 3, "restored");
         }
     })
     .await;
