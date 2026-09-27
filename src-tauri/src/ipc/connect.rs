@@ -2,8 +2,8 @@
 //! and stream table windows to the UI. Routes all six engines — Postgres, MySQL/MariaDB,
 //! SQLite, SQL Server, MongoDB, and Redis.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use serde::Serialize;
 use tauri::ipc::Response;
@@ -11,6 +11,7 @@ use tauri::State;
 
 use arrow::record_batch::RecordBatch;
 
+use crate::backup;
 use crate::connections::{self, ConnConfig, ConnStore};
 use crate::lk;
 use crate::drivers::{
@@ -79,7 +80,7 @@ pub struct ConnState {
     tunnels: Mutex<HashMap<String, Tunnel>>,
     /// In-flight cancel tokens keyed by client-supplied query id (plan spec #6), or by a
     /// page fetch's `request_key`.
-    cancels: Mutex<HashMap<String, CancelToken>>,
+    pub(crate) cancels: Mutex<HashMap<String, CancelToken>>,
     /// Saved queries + searchable run history (persisted JSON).
     library: Mutex<crate::library::QueryLibrary>,
     /// Per-connection SQL logs (the bottom panel). Keyed by conn id, not by session, so a
@@ -180,6 +181,39 @@ impl ConnState {
         lk(&self.sql_logs).entry(id.to_string()).or_default().clone()
     }
 
+    /// A `ConnState` over an in-memory store holding `cfgs` — nothing read from or saved to disk.
+    #[cfg(test)]
+    pub(crate) fn with_configs(cfgs: Vec<ConnConfig>) -> Self {
+        let mut store = ConnStore::default();
+        for c in cfgs {
+            store.upsert(c);
+        }
+        Self {
+            store: Mutex::new(store),
+            sessions: Mutex::new(HashMap::new()),
+            kv_sessions: Mutex::new(HashMap::new()),
+            doc_sessions: Mutex::new(HashMap::new()),
+            results: Mutex::new(ResultStore::default()),
+            tunnels: Mutex::new(HashMap::new()),
+            cancels: Mutex::new(HashMap::new()),
+            library: Mutex::new(Default::default()),
+            sql_logs: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Install an already-open SQL session for `id`, as `connect` would, without the
+    /// keychain. For tests that bring their own driver (a live-database URL).
+    #[doc(hidden)]
+    pub fn adopt_session(&self, id: &str, drv: Arc<dyn SqlDriver>) {
+        let drv = Arc::new(Logged { inner: drv, log: self.sql_log_for(id) });
+        lk(&self.sessions).insert(id.to_string(), drv);
+    }
+
+    /// Every saved connection's config (a snapshot).
+    pub(crate) fn configs(&self) -> Vec<ConnConfig> {
+        lk(&self.store).connections.clone()
+    }
+
     pub(crate) fn session(&self, id: &str) -> Result<Arc<dyn SqlDriver>, String> {
         lk(&self.sessions)
             .get(id)
@@ -200,6 +234,42 @@ impl ConnState {
             .cloned()
             .ok_or_else(|| "not connected (or not a document connection)".to_string())
     }
+}
+
+/// Connections whose file a restore is swapping right now. Nothing else may open a session
+/// on one meanwhile: an MCP call reconnecting on demand would land on the old file — and for
+/// DuckDB, the restore's own reopen could then pick up that instance, still on the old file.
+static RESTORING: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Default::default);
+
+/// Marks a connection as being restored until dropped — so a panic mid-restore clears it too.
+/// Only its holder may open a session on the connection meanwhile ([`connect_session`]).
+pub(crate) struct Restoring(String);
+
+impl Restoring {
+    pub(crate) fn begin(id: &str) -> Result<Self, String> {
+        if !lk(&RESTORING).insert(id.to_string()) {
+            return Err(being_restored(id));
+        }
+        Ok(Self(id.to_string()))
+    }
+}
+
+impl Drop for Restoring {
+    fn drop(&mut self) {
+        lk(&RESTORING).remove(&self.0);
+    }
+}
+
+fn being_restored(id: &str) -> String {
+    format!("Connection `{id}` is being restored; try again when the restore finishes.")
+}
+
+/// Refuses while a restore is swapping `id`'s database.
+pub(crate) fn not_restoring(id: &str) -> Result<(), String> {
+    if lk(&RESTORING).contains(id) {
+        return Err(being_restored(id));
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -304,6 +374,18 @@ pub async fn connect(state: State<'_, ConnState>, id: String) -> Result<Connecte
 
 /// `connect`'s body, callable without a tauri `State` (the MCP server reuses it).
 pub(crate) async fn connect_inner(state: &ConnState, id: &str) -> Result<ConnectedInfo, String> {
+    connect_session(state, id, None).await
+}
+
+/// [`connect_inner`]; `restore` is the restore that is reopening its own connection — the
+/// only caller allowed to open one while it is being restored.
+pub(crate) async fn connect_session(
+    state: &ConnState,
+    id: &str,
+    restore: Option<&Restoring>,
+) -> Result<ConnectedInfo, String> {
+    let restore_ok = |id: &str| if restore.is_some() { Ok(()) } else { not_restoring(id) };
+    restore_ok(id)?;
     let id = id.to_string();
     let cfg = {
         let store = lk(&state.store);
@@ -339,7 +421,12 @@ pub(crate) async fn connect_inner(state: &ConnState, id: &str) -> Result<Connect
         } else {
             let drv = open_driver(&eff, &password).await?;
             let drv = Arc::new(Logged { inner: drv, log: state.sql_log_for(&id) });
-            lk(&state.sessions).insert(id.clone(), drv);
+            // Checked again under the sessions lock: a restore that began while this was
+            // opening takes the session out after marking the connection, so it never finds
+            // one here on the file it is about to replace.
+            let mut sessions = lk(&state.sessions);
+            restore_ok(&id)?;
+            sessions.insert(id.clone(), drv);
         }
         Ok(())
     }
@@ -433,6 +520,16 @@ pub async fn switch_database(
     id: String,
     database: String,
 ) -> Result<ConnectedInfo, String> {
+    switch_inner(&state, id, database).await
+}
+
+/// `id`'s saved config on `database` (its saved one when `None`), the config to dial — at
+/// the SSH tunnel's local forward when one is open — and the password.
+fn session_target(
+    state: &ConnState,
+    id: &str,
+    database: Option<String>,
+) -> Result<(ConnConfig, ConnConfig, String), String> {
     // Look up the saved config; clone with the database swapped — we do not
     // mutate the persisted store so the user's saved default is preserved.
     let cfg = {
@@ -444,23 +541,73 @@ pub async fn switch_database(
             .cloned()
             .ok_or_else(|| "unknown connection".to_string())?
     };
-    let new_cfg = switch_target(&cfg, database)?;
+    let new_cfg = match database {
+        Some(db) => switch_target(&cfg, db)?,
+        None => cfg,
+    };
 
     let password = if new_cfg.is_file_engine() {
         String::new()
     } else {
-        connections::get_password(&id).unwrap_or_default()
+        connections::get_password(id).unwrap_or_default()
     };
 
     // Compute the effective config — if a tunnel is alive, retarget host/port at
     // its local forward (matching the original `connect` flow). Pull `local_addr`
     // out under the lock so we don't hold the guard across any awaits below.
-    let tunnel_local = lk(&state.tunnels).get(&id).map(|t| t.local_addr());
+    let tunnel_local = lk(&state.tunnels).get(id).map(|t| t.local_addr());
     let eff = if let Some(local) = tunnel_local {
         new_cfg.with_host_port(&local.ip().to_string(), local.port())
     } else {
         new_cfg.clone()
     };
+    Ok((new_cfg, eff, password))
+}
+
+/// A new SQL session for `id` on `database` (its saved one when `None`), through the
+/// connection's open SSH tunnel — opened, NOT installed: see [`replace_session`].
+pub(crate) async fn open_sql_session(
+    state: &ConnState,
+    id: &str,
+    database: Option<String>,
+) -> Result<Arc<dyn SqlDriver>, String> {
+    let (cfg, eff, password) = session_target(state, id, database)?;
+    if cfg.ssh.as_ref().is_some_and(|s| s.enabled) && !lk(&state.tunnels).contains_key(id) {
+        return Err("The SSH tunnel for this connection is not open — reconnect".into());
+    }
+    let drv = open_driver(&eff, &password).await?;
+    Ok(Arc::new(Logged { inner: drv, log: state.sql_log_for(id) }))
+}
+
+/// Install `new` as `id`'s SQL session — only if `old` is still the current one, so a
+/// session opened in the background never replaces one ⌘D or Reconnect installed while it
+/// was opening. Returns whether it did; the old session's results go with it.
+pub(crate) fn replace_session(state: &ConnState, id: &str, old: &Arc<dyn SqlDriver>, new: Arc<dyn SqlDriver>) -> bool {
+    {
+        let mut sessions = lk(&state.sessions);
+        match sessions.get_mut(id) {
+            // By address: the vtable half of the pointer is irrelevant.
+            Some(cur) if std::ptr::addr_eq(Arc::as_ptr(cur), Arc::as_ptr(old)) => *cur = new,
+            _ => return false, // `new` is dropped (closed) here
+        }
+    }
+    lk(&state.results).purge(id);
+    true
+}
+
+/// Remove `id`'s session only if it is still `old` (by address). False: it was replaced.
+fn remove_session_if(state: &ConnState, id: &str, old: &Arc<dyn SqlDriver>) -> bool {
+    let mut sessions = lk(&state.sessions);
+    let ours = sessions.get(id).is_some_and(|cur| std::ptr::addr_eq(Arc::as_ptr(cur), Arc::as_ptr(old)));
+    if ours {
+        sessions.remove(id);
+    }
+    ours
+}
+
+/// `switch_database`'s body, callable without a tauri `State` (Restore reopens with it).
+pub(crate) async fn switch_inner(state: &ConnState, id: String, database: String) -> Result<ConnectedInfo, String> {
+    let (new_cfg, eff, password) = session_target(state, &id, Some(database))?;
 
     // Connect to the NEW database first; only a successful session replaces the old one.
     // Tearing the old session down up front left a failed switch (typo'd/dropped database,
@@ -1092,6 +1239,11 @@ pub async fn rows_of(
 ///
 /// With a `query_id`, the run is registered under `ckey(id, query_id)` like [`run_query`],
 /// so `cancel_query` and ⌘. (`cancel_all`) can stop it.
+///
+/// `read_only` (Metrics widgets): `sql` must pass the widget guard (`mcp::guard::widget_stmts`
+/// — MCP's, minus its DuckDB file-access refusals) and runs inside a read-only transaction,
+/// so a SELECT calling a function that writes (`setval`, …) fails or is rolled back instead
+/// of repeating every refresh.
 #[tauri::command]
 pub async fn query_rows(
     state: State<'_, ConnState>,
@@ -1099,11 +1251,28 @@ pub async fn query_rows(
     sql: String,
     max_rows: Option<usize>,
     query_id: Option<String>,
+    read_only: Option<bool>,
 ) -> Result<Rows, String> {
     let drv = state.session(&id)?;
     let cap = max_rows.unwrap_or(1000).min(1000);
     let key = query_id.map(|q| ckey(&id, &q));
-    registered_rows(&state.cancels, drv.as_ref(), key.as_deref(), &[sql], cap).await
+    let stmts = if read_only.unwrap_or(false) { widget_stmts(&state, &id, &sql)? } else { vec![sql] };
+    registered_rows(&state.cancels, drv.as_ref(), key.as_deref(), &stmts, cap).await
+}
+
+/// Would a Metrics widget's `sql` pass the guard it runs under (`query_rows` with
+/// `read_only`)? The add/edit modal asks before saving, so a widget that would only error on
+/// every refresh is refused up front, with the reason.
+#[tauri::command]
+pub fn validate_widget_sql(state: State<ConnState>, id: String, sql: String) -> Result<(), String> {
+    widget_stmts(&state, &id, &sql).map(|_| ())
+}
+
+/// `sql` guarded and wrapped for a widget on connection `id` (by its saved engine).
+fn widget_stmts(state: &ConnState, id: &str, sql: &str) -> Result<Vec<String>, String> {
+    let cfg = state.configs().into_iter().find(|c| c.id == id);
+    let engine = cfg.map(|c| c.engine).ok_or_else(|| "unknown connection".to_string())?;
+    crate::mcp::guard::widget_stmts(&engine, sql)
 }
 
 /// The body of [`query_rows`], outside Tauri so it can be tested: [`rows_of`] with a cancel
@@ -1773,16 +1942,22 @@ fn check_export_path(path: &str) -> Result<(), String> {
 /// `check_export_path` with the config directory passed in, so it is testable without
 /// mutating `TIQ_CONFIG_DIR` out from under the rest of the suite.
 fn check_export_path_in(path: &str, app_dir: &std::path::Path) -> Result<(), String> {
+    check_dest_in(path, app_dir, &EXPORT_EXTS, "an export")
+}
+
+/// The shared destination guard: absolute, an allowlisted extension, outside `app_dir`.
+/// `what` names the file in the messages ("an export", "a backup").
+fn check_dest_in(path: &str, app_dir: &std::path::Path, exts: &[&str], what: &str) -> Result<(), String> {
     if path.is_empty() {
         return Err("no destination path".into());
     }
     let p = std::path::Path::new(path);
     if !p.is_absolute() {
-        return Err(format!("{path}: an export must be written to an absolute path"));
+        return Err(format!("{path}: {what} must be written to an absolute path"));
     }
     match p.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase) {
-        Some(ext) if EXPORT_EXTS.contains(&ext.as_str()) => {}
-        _ => return Err(format!("{path}: an export must end in {}", EXPORT_EXTS.join(", "))),
+        Some(ext) if exts.contains(&ext.as_str()) => {}
+        _ => return Err(format!("{path}: {what} must end in {}", exts.join(", "))),
     }
     // `json` is on the allowlist and TableIQ's own config dir is full of json, so the
     // extension check alone left `connections.json` (→ the bundle-import path) and `ai.json`
@@ -1791,8 +1966,28 @@ fn check_export_path_in(path: &str, app_dir: &std::path::Path) -> Result<(), Str
     let dir = p.parent().unwrap_or(p);
     if dir.starts_with(app_dir) || real(dir).starts_with(real(app_dir)) {
         return Err(format!(
-            "{path}: an export cannot be written into TableIQ's own configuration directory"
+            "{path}: {what} cannot be written into TableIQ's own configuration directory"
         ));
+    }
+    Ok(())
+}
+
+/// Backup destinations: the export guard with the backup file types.
+const BACKUP_EXTS: [&str; 7] = ["dump", "sql", "backup", "db", "sqlite", "duckdb", "bak"];
+
+fn check_backup_path(path: &str) -> Result<(), String> {
+    check_backup_path_in(path, &crate::appdir::app_dir())
+}
+
+fn check_backup_path_in(path: &str, app_dir: &std::path::Path) -> Result<(), String> {
+    check_dest_in(path, app_dir, &BACKUP_EXTS, "a backup")
+}
+
+/// SQL Server writes the backup on the server (possibly Windows), so there is nothing local to
+/// check beyond presence; `backup::mssql_backup_sql` quotes it.
+fn check_server_backup_path(path: &str) -> Result<(), String> {
+    if path.trim().is_empty() || path.contains('\0') {
+        return Err("enter the backup file's path on the server".into());
     }
     Ok(())
 }
@@ -1811,6 +2006,220 @@ pub fn write_text_file(path: String, contents: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+// ── Backup Database ────────────────────────────────────────────────────────
+
+/// Start backing up `database` on connection `id` into `path` and return the job id that
+/// `backup_job` polls. Postgres and MySQL/MariaDB run `pg_dump` / `mysqldump` (found via
+/// `tool_dir` → PATH → the usual install dirs); SQLite, DuckDB and SQL Server back themselves
+/// up with SQL on the open session. For SQL Server `path` is a path ON THE SERVER.
+#[tauri::command]
+pub async fn backup_database(
+    state: State<'_, ConnState>,
+    id: String,
+    database: String,
+    path: String,
+    format: Option<String>,
+    tool_dir: Option<String>,
+) -> Result<String, String> {
+    let cfg = {
+        let store = lk(&state.store);
+        store.connections.iter().find(|c| c.id == id).cloned().ok_or_else(|| "unknown connection".to_string())?
+    };
+    let format = backup::PgFormat::parse(format.as_deref())?;
+    match cfg.engine.as_str() {
+        "postgres" | "mysql" => {
+            check_backup_path(&path)?;
+            // Connected only: a tunnel exists only while connected, and without it the tool
+            // would go straight to the host behind the bastion.
+            state.session(&id)?;
+            let tunnel = lk(&state.tunnels).get(&id).map(|t| t.local_addr());
+            if tunnel.is_none() && cfg.ssh.as_ref().is_some_and(|s| s.enabled) {
+                return Err("The SSH tunnel for this connection is not open — reconnect, then back up".into());
+            }
+            let (host, port) = backup::endpoint(&cfg.host, cfg.port, tunnel);
+            let target = backup::Target {
+                host,
+                port,
+                user: cfg.username.clone(),
+                database,
+                sslmode: cfg.sslmode.clone(),
+            };
+            let password = connections::get_password(&id).unwrap_or_default();
+            backup::tool_backup(&cfg.engine, &target, &password, format, &path, tool_dir.as_deref()).await
+        }
+        "sqlite" | "duckdb" | "sqlserver" => {
+            let drv = state.session(&id)?;
+            // File engines back up their own file (the guard against writing onto it needs
+            // the path); SQL Server backs up the database the UI is on.
+            let db = if cfg.engine == "sqlserver" {
+                check_server_backup_path(&path)?;
+                if database.is_empty() {
+                    return Err("no database to back up".into());
+                }
+                database
+            } else {
+                check_backup_path(&path)?;
+                cfg.database.clone()
+            };
+            let engine = cfg.engine.clone();
+            Ok(backup::spawn_future(async move { backup::sql_backup(drv, &engine, &db, &path).await }))
+        }
+        _ => Err("Backup is not supported for this engine".into()),
+    }
+}
+
+/// A backup job's lines from `after` on, and its outcome once finished.
+#[tauri::command]
+pub fn backup_job(job_id: String, after: usize) -> Result<backup::JobStatus, String> {
+    backup::job_status(&job_id, after)
+}
+
+#[tauri::command]
+pub fn cancel_backup_job(job_id: String) -> Result<(), String> {
+    backup::cancel_job(&job_id)
+}
+
+// ── Restore Database ───────────────────────────────────────────────────────
+
+/// A restore source: a local backup file the app could have written (absolute, a backup
+/// extension) that exists and is a regular file.
+fn check_restore_source(path: &str) -> Result<(), String> {
+    let p = std::path::Path::new(path);
+    if path.is_empty() || !p.is_absolute() {
+        return Err(format!("{path:?}: choose the backup file to restore (an absolute path)"));
+    }
+    match p.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase) {
+        Some(ext) if BACKUP_EXTS.contains(&ext.as_str()) => {}
+        _ => return Err(format!("{path}: a backup must end in {}", BACKUP_EXTS.join(", "))),
+    }
+    match std::fs::metadata(p) {
+        Ok(m) if m.is_file() => Ok(()),
+        Ok(_) => Err(format!("{path} is not a file")),
+        Err(e) => Err(format!("{path}: {e}")),
+    }
+}
+
+/// Restore `database` on connection `id` from the backup at `path` and return the job id
+/// `backup_job` polls. DESTRUCTIVE: `confirm` — the name the user typed — must equal
+/// `database`, and that is checked before anything else. Postgres runs `pg_restore` (custom
+/// archives) or `psql` (plain SQL), MySQL/MariaDB `mysql` with the dump on stdin, SQL Server
+/// `RESTORE … WITH REPLACE` from a path ON THE SERVER; SQLite/DuckDB close the session, swap
+/// the file in atomically and reopen.
+#[tauri::command]
+pub async fn restore_database(
+    state: State<'_, ConnState>,
+    id: String,
+    database: String,
+    path: String,
+    confirm: String,
+    tool_dir: Option<String>,
+) -> Result<String, String> {
+    restore_inner(&state, &id, database, path, &confirm, tool_dir.as_deref()).await
+}
+
+async fn restore_inner(
+    state: &ConnState,
+    id: &str,
+    database: String,
+    path: String,
+    confirm: &str,
+    tool_dir: Option<&str>,
+) -> Result<String, String> {
+    let cfg = {
+        let store = lk(&state.store);
+        store.connections.iter().find(|c| c.id == id).cloned().ok_or_else(|| "unknown connection".to_string())?
+    };
+    // Destructive: the typed name is checked before anything is read, closed or run. A file
+    // engine confirms with its file's name — the whole path is a lot to type.
+    let expected = if cfg.is_file_engine() {
+        std::path::Path::new(&cfg.database)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| cfg.database.clone())
+    } else {
+        database.clone()
+    };
+    backup::check_confirm(&expected, confirm)?;
+    match cfg.engine.as_str() {
+        "postgres" | "mysql" => {
+            check_restore_source(&path)?;
+            state.session(id)?;
+            let tunnel = lk(&state.tunnels).get(id).map(|t| t.local_addr());
+            if tunnel.is_none() && cfg.ssh.as_ref().is_some_and(|s| s.enabled) {
+                return Err("The SSH tunnel for this connection is not open — reconnect, then restore".into());
+            }
+            let (host, port) = backup::endpoint(&cfg.host, cfg.port, tunnel);
+            let target = backup::Target {
+                host,
+                port,
+                user: cfg.username.clone(),
+                database,
+                sslmode: cfg.sslmode.clone(),
+            };
+            let password = connections::get_password(id).unwrap_or_default();
+            backup::tool_restore(&cfg.engine, &target, &password, &path, tool_dir).await
+        }
+        "sqlserver" => {
+            let drv = state.session(id)?;
+            check_server_backup_path(&path)?;
+            let restored = backup::sql_restore(drv.clone(), &database, &path).await;
+            // A RESTORE that fails part-way (database left RESTORING / SUSPECT) can leave the
+            // one pinned session on master while the UI shows `database`: reopen it there, or
+            // close it — never leave it quietly querying master.
+            // Only the session this restore ran on is closed: a ⌘D / Reconnect meanwhile
+            // installed a newer one, which is the user's choice and stays.
+            let res = if backup::mssql_on_database(drv.as_ref(), &database).await || !remove_session_if(state, id, &drv) {
+                restored
+            } else {
+                drop(drv);
+                lk(&state.results).purge(id);
+                let lost = |r: String| {
+                    format!("the session had left {database:?} and could not be reopened ({r}) — reconnect once it is online")
+                };
+                match (restored, switch_inner(state, id.to_string(), database.clone()).await) {
+                    (Err(e), Ok(_)) => Err(format!("{e} — the session had left {database:?} and was reopened on it")),
+                    (Err(e), Err(r)) => Err(format!("{e} — {}", lost(r))),
+                    (Ok(()), Err(r)) => Err(format!("Restored, but {}", lost(r))),
+                    (Ok(()), Ok(_)) => Ok(()),
+                }
+            };
+            Ok(backup::spawn_future(async move { res }))
+        }
+        "sqlite" | "duckdb" => {
+            // The file engines replace the connection's own file: that is what was confirmed.
+            if database != cfg.database {
+                return Err(format!("Restore replaces this connection's own file, {:?}", cfg.database));
+            }
+            check_restore_source(&path)?;
+            // Everything knowable up front, before the session is taken out and closed.
+            backup::check_file_backup(&cfg.engine, &cfg.database, &path)?;
+            // Marked before the session is taken out, cleared once it is reopened: nothing
+            // (an MCP call reconnecting on demand) may open the old file in between.
+            let restoring = Restoring::begin(id)?;
+            let drv = lk(&state.sessions).remove(id).ok_or_else(|| "not connected (or not a SQL connection)".to_string())?;
+            // Results belong to the database being replaced.
+            lk(&state.results).purge(id);
+            let restored = backup::file_restore(drv, &cfg.engine, &cfg.database, &path).await;
+            // Reopen whatever happened: the old file after a failure, the restored one after success.
+            let reopened = connect_session(state, id, Some(&restoring)).await;
+            drop(restoring);
+            let res = match (restored, reopened) {
+                (Err(e), Err(r)) => Err(format!("{e} — and the connection could not be reopened: {r}")),
+                (Err(e), Ok(_)) => Err(e),
+                (Ok(()), Err(r)) => Err(format!("Restored, but reopening the database failed: {r}")),
+                (Ok(()), Ok(_)) => Ok(()),
+            };
+            Ok(backup::spawn_future(async move { res }))
+        }
+        _ => Err("Restore is not supported for this engine".into()),
+    }
+}
+
+/// The backup/restore client tools found (Settings → Backup tools).
+#[tauri::command]
+pub async fn detect_backup_tools(tool_dir: Option<String>) -> Result<Vec<backup::ToolInfo>, String> {
+    backup::detect(tool_dir.as_deref()).await
+}
 
 #[cfg(test)]
 mod tests {
@@ -1945,6 +2354,363 @@ mod tests {
         assert_eq!(check_export_path_in(ok.to_str().unwrap(), &app), Ok(()));
     }
 
+    /// `pg_dump`/`mysqldump`/`VACUUM INTO` write wherever they are told, so the backup
+    /// destination gets the export guard with the backup file types.
+    #[test]
+    fn backup_path_accepts_backup_files_and_rejects_the_rest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = tmp.path().join("ai.rhobots.tableiq");
+        std::fs::create_dir_all(&app).unwrap();
+        for ext in ["dump", "sql", "backup", "db", "sqlite", "duckdb", "bak", "DUMP"] {
+            let p = tmp.path().join(format!("shop.{ext}"));
+            assert_eq!(check_backup_path_in(p.to_str().unwrap(), &app), Ok(()), "{ext}");
+        }
+        assert!(check_backup_path_in("", &app).is_err(), "empty");
+        assert!(check_backup_path_in("shop.dump", &app).is_err(), "relative");
+        assert!(check_backup_path_in("/Users/x/.zshrc.sh", &app).is_err(), ".sh");
+        assert!(check_backup_path_in("/Users/x/.ssh/authorized_keys", &app).is_err(), "no extension");
+        let inside = app.join("tiq.db");
+        assert!(check_backup_path_in(inside.to_str().unwrap(), &app).is_err(), "inside app_dir");
+    }
+
+    /// SQL Server writes the file on the server, so only the quoting rules apply there.
+    #[test]
+    fn server_backup_path_needs_only_to_be_present() {
+        assert_eq!(check_server_backup_path("/var/opt/mssql/data/x.bak"), Ok(()));
+        assert_eq!(check_server_backup_path(r"C:\Backups\it's.bak"), Ok(()));
+        assert!(check_server_backup_path("  ").is_err());
+        assert!(check_server_backup_path("/x\0.bak").is_err(), "NUL");
+    }
+
+    /// A restore reads the file, so the source-side rules: absolute, a backup extension,
+    /// and an existing regular file.
+    #[test]
+    fn restore_source_must_be_an_existing_backup_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ok = tmp.path().join("shop.dump");
+        std::fs::write(&ok, "PGDMP").unwrap();
+        assert_eq!(check_restore_source(ok.to_str().unwrap()), Ok(()));
+        let sh = tmp.path().join("evil.sh");
+        std::fs::write(&sh, "#!/bin/sh").unwrap();
+        assert!(check_restore_source(sh.to_str().unwrap()).is_err(), ".sh");
+        assert!(check_restore_source("").is_err(), "empty");
+        assert!(check_restore_source("shop.dump").is_err(), "relative");
+        assert!(check_restore_source(tmp.path().join("missing.sql").to_str().unwrap()).is_err(), "missing");
+        let dir = tmp.path().join("folder.sql");
+        std::fs::create_dir(&dir).unwrap();
+        assert!(check_restore_source(dir.to_str().unwrap()).is_err(), "a directory");
+    }
+
+    fn state_with(cfgs: Vec<ConnConfig>) -> ConnState {
+        ConnState::with_configs(cfgs)
+    }
+
+    fn sqlite_cfg(id: &str, file: &std::path::Path) -> ConnConfig {
+        ConnConfig {
+            id: id.into(),
+            name: id.into(),
+            color: None,
+            engine: "sqlite".into(),
+            host: String::new(),
+            port: 0,
+            database: file.to_str().unwrap().into(),
+            username: String::new(),
+            sslmode: "prefer".into(),
+            ssh: None,
+        }
+    }
+
+    async fn job_result(id: &str) -> backup::JobStatus {
+        for _ in 0..200 {
+            let s = backup::job_status(id, 0).unwrap();
+            if s.done {
+                return s;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        panic!("restore job {id} did not finish");
+    }
+
+    async fn scalar(state: &ConnState, id: &str, sql: &str) -> Result<String, String> {
+        let r = state.session(id)?.run_query(sql, 1).await.map_err(|e| e.to_string())?;
+        Ok(arrow::util::display::array_value_to_string(r.batch.column(0), 0).unwrap())
+    }
+
+    /// Destructive: a typed name that doesn't match is refused before the backup is read or
+    /// the session closed. A file engine confirms with its file's name, not the whole path.
+    #[tokio::test]
+    async fn restore_refuses_a_mismatched_confirm_before_any_io() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("live.db");
+        let bak = tmp.path().join("old.sqlite");
+        std::fs::write(&bak, "not even a database").unwrap();
+        let state = state_with(vec![sqlite_cfg("c1", &db)]);
+        connect_inner(&state, "c1").await.unwrap();
+        state.session("c1").unwrap().run_script("CREATE TABLE t (x); INSERT INTO t VALUES (7)").await.unwrap();
+        let before = state.session("c1").unwrap();
+        let name = db.to_str().unwrap().to_string();
+
+        for typed in ["", "LIVE.db", "live.db ", "live", name.as_str()] {
+            let e = restore_inner(&state, "c1", name.clone(), bak.to_str().unwrap().into(), typed, None)
+                .await
+                .unwrap_err();
+            assert!(e.contains("does not match") && e.contains("live.db"), "{typed:?}: {e}");
+        }
+        // A missing backup answers with the confirm error: the path is never looked at first.
+        let e = restore_inner(&state, "c1", name.clone(), "/nonexistent/x.sqlite".into(), "nope", None)
+            .await
+            .unwrap_err();
+        assert!(e.contains("does not match"), "{e}");
+        assert!(Arc::ptr_eq(&before, &state.session("c1").unwrap()), "the same session, never closed");
+        assert_eq!(scalar(&state, "c1", "SELECT x FROM t").await.unwrap(), "7", "data untouched");
+    }
+
+    /// `:memory:` has no file: refused before the session is taken out and closed — which
+    /// would have thrown the in-memory database away.
+    #[tokio::test]
+    async fn restore_into_an_in_memory_database_leaves_it_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bak = tmp.path().join("snap.duckdb");
+        std::fs::write(&bak, b"\0\0\0\0\0\0\0\0DUCK").unwrap();
+        // DuckDB's `:memory:` is one instance the session holds (a sqlx SQLite `:memory:` pool
+        // gives every pooled connection its own), so losing the session loses the data.
+        let mut cfg = sqlite_cfg("m", &tmp.path().join("unused"));
+        cfg.engine = "duckdb".into();
+        cfg.database = ":memory:".into();
+        let state = state_with(vec![cfg]);
+        connect_inner(&state, "m").await.unwrap();
+        state.session("m").unwrap().run_script("CREATE TABLE t (x INTEGER); INSERT INTO t VALUES (42)").await.unwrap();
+        let before = state.session("m").unwrap();
+        let e = restore_inner(&state, "m", ":memory:".into(), bak.to_str().unwrap().into(), ":memory:", None)
+            .await
+            .unwrap_err();
+        assert!(e.contains("memory"), "{e}");
+        assert!(Arc::ptr_eq(&before, &state.session("m").unwrap()), "the session was never taken out");
+        assert_eq!(scalar(&state, "m", "SELECT x FROM t").await.unwrap(), "42", "the in-memory data survives");
+    }
+
+    /// The wrong kind of backup is refused before the session is recycled.
+    #[tokio::test]
+    async fn restore_of_the_wrong_kind_of_file_keeps_the_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("live.db");
+        let dump = tmp.path().join("dump.sql");
+        std::fs::write(&dump, "CREATE TABLE t (x);").unwrap();
+        let state = state_with(vec![sqlite_cfg("c1", &db)]);
+        connect_inner(&state, "c1").await.unwrap();
+        let before = state.session("c1").unwrap();
+        let name = db.to_str().unwrap().to_string();
+        let e = restore_inner(&state, "c1", name, dump.to_str().unwrap().into(), "live.db", None).await.unwrap_err();
+        assert!(e.contains("not a SQLite database"), "{e}");
+        assert!(Arc::ptr_eq(&before, &state.session("c1").unwrap()), "not closed and reopened");
+    }
+
+    /// The SQLite path end to end through the command's body: backup, DROP TABLE, restore —
+    /// the session is reopened on the restored file and the table is back.
+    #[tokio::test]
+    async fn sqlite_restore_swaps_the_file_and_reopens_the_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("live.db");
+        let bak = tmp.path().join("snap.sqlite");
+        let state = state_with(vec![sqlite_cfg("c1", &db)]);
+        connect_inner(&state, "c1").await.unwrap();
+        let drv = state.session("c1").unwrap();
+        drv.run_script("CREATE TABLE items (id INTEGER PRIMARY KEY); INSERT INTO items VALUES (1),(2),(3)")
+            .await
+            .unwrap();
+        let name = db.to_str().unwrap().to_string();
+        backup::sql_backup(drv.clone(), "sqlite", &name, bak.to_str().unwrap()).await.unwrap();
+        drv.run_script("DROP TABLE items").await.unwrap();
+        drop(drv);
+        assert!(scalar(&state, "c1", "SELECT COUNT(*) FROM items").await.is_err(), "dropped");
+
+        // The target is the connection's own file, whatever `database` claims.
+        let e = restore_inner(&state, "c1", "/elsewhere/live.db".into(), bak.to_str().unwrap().into(), "live.db", None)
+            .await
+            .unwrap_err();
+        assert!(e.contains("file"), "{e}");
+
+        let job = restore_inner(&state, "c1", name.clone(), bak.to_str().unwrap().into(), "live.db", None)
+            .await
+            .unwrap();
+        let s = job_result(&job).await;
+        assert!(s.ok, "{s:?}");
+        assert_eq!(scalar(&state, "c1", "SELECT COUNT(*) FROM items").await.unwrap(), "3", "the table is back");
+        assert!(bak.exists(), "the backup itself is only read");
+    }
+
+    /// While a restore swaps the file, `connect` is refused (it would open the old file) —
+    /// the restore's own reopen is not — and the mark clears when the restore ends, even by
+    /// a panic. A second restore of the same connection is refused meanwhile.
+    #[tokio::test]
+    async fn a_restore_in_progress_refuses_other_connects_and_always_clears() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_with(vec![sqlite_cfg("being-restored", &tmp.path().join("r.db"))]);
+        let guard = Restoring::begin("being-restored").unwrap();
+        let e = connect_inner(&state, "being-restored").await.err().expect("refused");
+        assert!(e.contains("being restored"), "{e}");
+        assert!(state.session("being-restored").is_err(), "nothing was opened");
+        assert!(Restoring::begin("being-restored").is_err(), "one restore at a time");
+        connect_session(&state, "being-restored", Some(&guard)).await.unwrap();
+        assert!(state.session("being-restored").is_ok(), "the restore itself reopens");
+        drop(guard);
+        assert!(not_restoring("being-restored").is_ok());
+
+        let panicked = std::panic::catch_unwind(|| {
+            let _g = Restoring::begin("restore-panics").unwrap();
+            panic!("mid-restore");
+        });
+        assert!(panicked.is_err());
+        assert!(not_restoring("restore-panics").is_ok(), "a panic still clears the mark");
+    }
+
+    /// The widget check `validate_widget_sql` runs is the guard `query_rows` applies: a DuckDB
+    /// file read and a SQL Server `'OPEN'` literal pass it, a write does not.
+    #[test]
+    fn widget_sql_check_is_the_read_only_query_rows_guard() {
+        let mut duck = sqlite_cfg("w-duck", std::path::Path::new("/tmp/w.duckdb"));
+        duck.engine = "duckdb".into();
+        let mut ms = sqlite_cfg("w-ms", std::path::Path::new("/tmp/unused"));
+        ms.engine = "sqlserver".into();
+        let state = state_with(vec![duck, ms]);
+        assert!(widget_stmts(&state, "w-duck", "SELECT * FROM read_csv('/data/x.csv')").is_ok());
+        assert!(widget_stmts(&state, "w-ms", "SELECT count(*) FROM t WHERE status = 'OPEN'").is_ok());
+        let e = widget_stmts(&state, "w-ms", "DELETE FROM t").unwrap_err();
+        assert!(e.contains("read-only"), "{e}");
+        assert!(widget_stmts(&state, "nope", "SELECT 1").is_err());
+    }
+
+    /// A SQL Server session: answers HEADERONLY with `backup_of`, `DB_NAME()` with `on`, and
+    /// records every script it is asked to run.
+    struct FakeMssql {
+        backup_of: &'static str,
+        on: &'static str,
+        scripts: Mutex<Vec<String>>,
+    }
+
+    fn one_cell(col: &str, v: &str) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new(col, DataType::Utf8, true)]));
+        RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(vec![v]))]).unwrap()
+    }
+
+    #[async_trait::async_trait]
+    impl SqlDriver for FakeMssql {
+        async fn introspect(&self) -> crate::drivers::DResult<crate::drivers::SchemaModel> {
+            unimplemented!()
+        }
+        async fn count_rows(
+            &self,
+            _: &str,
+            _: &str,
+            _: &[crate::drivers::ColumnFilter],
+            _: Option<&CancelToken>,
+        ) -> crate::drivers::DResult<crate::drivers::RowCount> {
+            unimplemented!()
+        }
+        async fn open_window_filtered(
+            &self,
+            _: &str,
+            _: &str,
+            _: usize,
+            _: usize,
+            _: &[crate::drivers::ColumnFilter],
+            _: &[crate::drivers::SortKey],
+            _: Option<&[Option<String>]>,
+        ) -> crate::drivers::DResult<RecordBatch> {
+            unimplemented!()
+        }
+        async fn primary_key(&self, _: &str, _: &str) -> crate::drivers::DResult<Vec<String>> {
+            unimplemented!()
+        }
+        async fn apply_edit(&self, _: &str, _: &str, _: &crate::drivers::EditSpec) -> crate::drivers::DResult<u64> {
+            unimplemented!()
+        }
+        async fn run_statements(
+            &self,
+            _: &[String],
+            _: usize,
+            _: &CancelToken,
+        ) -> crate::drivers::DResult<Vec<crate::drivers::StmtOutput>> {
+            unimplemented!()
+        }
+        async fn run_script(&self, sql: &str) -> crate::drivers::DResult<u64> {
+            lk(&self.scripts).push(sql.to_string());
+            Ok(0)
+        }
+        async fn run_query(&self, sql: &str, _: usize) -> crate::drivers::DResult<crate::drivers::QueryResult> {
+            let batch = if sql.starts_with("RESTORE HEADERONLY") {
+                one_cell("DatabaseName", self.backup_of)
+            } else {
+                one_cell("db", self.on)
+            };
+            Ok(crate::drivers::QueryResult { batch, truncated: false, exec_ms: 0 })
+        }
+    }
+
+    fn mssql_state(fake: FakeMssql) -> (ConnState, Arc<FakeMssql>) {
+        let cfg = ConnConfig {
+            id: "ms".into(),
+            name: "ms".into(),
+            color: None,
+            engine: "sqlserver".into(),
+            // Nothing listens here: a reopen fails fast.
+            host: "127.0.0.1".into(),
+            port: 1,
+            database: "shop".into(),
+            username: "sa".into(),
+            sslmode: "prefer".into(),
+            ssh: None,
+        };
+        let state = state_with(vec![cfg]);
+        let fake = Arc::new(fake);
+        lk(&state.sessions).insert("ms".into(), fake.clone());
+        (state, fake)
+    }
+
+    /// `WITH REPLACE` without `MOVE` would put another database's backup onto its files:
+    /// only a backup OF the target is accepted, before anything runs.
+    #[tokio::test]
+    async fn sqlserver_restore_refuses_a_backup_of_another_database() {
+        let (state, fake) =
+            mssql_state(FakeMssql { backup_of: "payroll", on: "shop", scripts: Mutex::new(vec![]) });
+        let job = restore_inner(&state, "ms", "shop".into(), "/var/opt/mssql/data/p.bak".into(), "shop", None)
+            .await
+            .unwrap();
+        let s = job_result(&job).await;
+        assert!(!s.ok);
+        assert!(s.error.as_deref().unwrap_or("").contains("payroll"), "{s:?}");
+        assert!(lk(&fake.scripts).is_empty(), "no RESTORE ran");
+        assert!(state.session("ms").is_ok());
+    }
+
+    /// A restore that leaves the pinned session on master (database RESTORING / SUSPECT)
+    /// must not leave the app querying master while it shows `shop`: the session is reopened
+    /// on `shop` — or, when that fails, closed — and the error says so.
+    #[tokio::test]
+    async fn sqlserver_session_left_on_another_database_is_reopened_or_closed() {
+        let (state, fake) =
+            mssql_state(FakeMssql { backup_of: "shop", on: "master", scripts: Mutex::new(vec![]) });
+        let job = restore_inner(&state, "ms", "shop".into(), "/var/opt/mssql/data/s.bak".into(), "shop", None)
+            .await
+            .unwrap();
+        let s = job_result(&job).await;
+        assert_eq!(lk(&fake.scripts).len(), 1, "the restore batch ran");
+        assert!(!s.ok);
+        let e = s.error.unwrap_or_default();
+        assert!(e.contains("could not be reopened"), "{e}");
+        assert!(state.session("ms").is_err(), "not left connected to master");
+
+        // On the database afterwards: fine, same session.
+        let (state, fake) = mssql_state(FakeMssql { backup_of: "shop", on: "shop", scripts: Mutex::new(vec![]) });
+        let before = state.session("ms").unwrap();
+        let job = restore_inner(&state, "ms", "shop".into(), "/var/opt/mssql/data/s.bak".into(), "shop", None)
+            .await
+            .unwrap();
+        assert!(job_result(&job).await.ok);
+        assert!(lk(&fake.scripts)[0].contains("RESTORE DATABASE [shop]"));
+        assert!(Arc::ptr_eq(&before, &state.session("ms").unwrap()));
+    }
+
     /// A file engine's `database` is its file path: "switching" to the catalog name the
     /// picker showed opened (and created) an empty file of that name.
     #[test]
@@ -2007,9 +2773,7 @@ mod tests {
     /// Tauri-free pieces (`keys_for`, `cancel_all_for`) plus the outcome decision itself.
     #[tokio::test]
     async fn cancel_all_reports_unsupported_when_the_engine_cant_cancel() {
-        let tmp = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
-        let path = tmp.path().to_str().unwrap().to_string();
-        let drv = SqliteDriver::connect(&path).await.expect("connect"); // default cancel() is NotImplemented
+        let drv = DuckDriver::connect(":memory:").await.expect("connect"); // default cancel() is NotImplemented
 
         let mut map = HashMap::new();
         map.insert(ckey("conn1", "table:public.users"), CancelToken::new());
@@ -2018,7 +2782,7 @@ mod tests {
         let had_running = !keys_for(&lk(&cancels), "conn1").is_empty();
         assert!(had_running);
         let n = cancel_all_for(&cancels, &drv, "conn1").await;
-        assert_eq!(n, 0, "the sqlite driver can't cancel, so nothing counts as stopped");
+        assert_eq!(n, 0, "the duckdb driver can't cancel, so nothing counts as stopped");
 
         let outcome = cancel_all_outcome(n, had_running);
         assert_eq!(outcome, Err("Cancellation is not supported for this engine.".to_string()));
@@ -2044,6 +2808,22 @@ mod tests {
         let all = rows_of(&drv, &stmt, 10, &CancelToken::new()).await.expect("uncapped read");
         assert_eq!(all.rows.len(), 5, "under the cap, every row comes back");
         assert!(!all.truncated);
+    }
+
+    /// A failed SQL Server restore closes only the session it ran on: one a ⌘D installed
+    /// meanwhile stays.
+    #[tokio::test]
+    async fn remove_session_if_spares_a_newer_session() {
+        let tmp = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        let old: Arc<dyn SqlDriver> = Arc::new(SqliteDriver::connect(&path).await.expect("connect"));
+        let newer: Arc<dyn SqlDriver> = Arc::new(SqliteDriver::connect(&path).await.expect("connect"));
+        let state = ConnState::default();
+        lk(&state.sessions).insert("c".into(), newer.clone());
+        assert!(!remove_session_if(&state, "c", &old));
+        assert!(lk(&state.sessions).contains_key("c"), "the newer session stays");
+        assert!(remove_session_if(&state, "c", &newer));
+        assert!(!lk(&state.sessions).contains_key("c"));
     }
 
     /// A `query_rows` call with a `query_id` (a metrics widget's fetch, the Users list) is
@@ -2085,5 +2865,73 @@ mod tests {
         let stmt = vec!["SELECT 1".to_string()];
         registered_rows(&cancels, drv.as_ref(), None, &stmt, 10).await.expect("unregistered read");
         assert!(lk(&cancels).is_empty());
+    }
+
+    /// The read-only wrapper (`mcp::guard::read_only_stmts`, used by MCP and by Metrics
+    /// widgets through `query_rows(read_only)`): the read comes back through `rows_of`, and a
+    /// statement that fails mid-transaction never hands its pooled connection back still
+    /// inside `BEGIN` — the next wrapped read would die on "cannot start a transaction within
+    /// a transaction", and a later write would sit uncommitted where no one else sees it.
+    #[tokio::test]
+    async fn read_only_wrapper_reads_and_leaves_no_dirty_connection_after_an_error() {
+        use crate::mcp::guard::read_only_stmts;
+        let tmp = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        let drv = SqliteDriver::connect(&path).await.expect("connect");
+        drv.run_script("CREATE TABLE t (n INTEGER); INSERT INTO t VALUES (1),(2),(3)").await.expect("seed");
+
+        let stmts = read_only_stmts("sqlite", "SELECT n FROM t ORDER BY n").unwrap();
+        let rows = rows_of(&drv, &stmts, 2, &CancelToken::new()).await.expect("wrapped read");
+        assert_eq!(rows.columns, vec!["n".to_string()]);
+        assert_eq!(rows.rows, vec![vec![Some("1".to_string())], vec![Some("2".to_string())]]);
+        assert!(rows.truncated);
+
+        let failing = read_only_stmts("sqlite", "SELECT * FROM missing_table").unwrap();
+        let e = rows_of(&drv, &failing, 10, &CancelToken::new()).await.err().expect("fails");
+        assert!(e.contains("missing_table"), "{e}");
+
+        // More wrapped reads than the pool has connections: every one must find a clean one.
+        for _ in 0..6 {
+            rows_of(&drv, &stmts, 10, &CancelToken::new()).await.expect("a clean connection after the error");
+        }
+        drv.run_script("INSERT INTO t VALUES (4)").await.expect("plain write");
+        let other = SqliteDriver::connect(&path).await.expect("second driver");
+        let n = rows_of(&other, &["SELECT count(*) FROM t".to_string()], 1, &CancelToken::new()).await.unwrap();
+        assert_eq!(n.rows[0][0].as_deref(), Some("4"), "the write committed, not trapped in a leftover transaction");
+    }
+
+    /// DuckDB runs each call on its own connection clone and rolls back what it left open;
+    /// the wrapper's failure path must leave the shared database writable and consistent.
+    #[tokio::test]
+    async fn read_only_wrapper_on_duckdb_rolls_back_after_an_error() {
+        use crate::mcp::guard::read_only_stmts;
+        let drv = DuckDriver::connect(":memory:").await.expect("connect");
+        drv.run_script("CREATE TABLE t (n INTEGER); INSERT INTO t VALUES (1)").await.expect("seed");
+        let failing = read_only_stmts("duckdb", "SELECT * FROM missing_table").unwrap();
+        assert!(rows_of(&drv, &failing, 10, &CancelToken::new()).await.is_err());
+        let ok = read_only_stmts("duckdb", "SELECT count(*) FROM t").unwrap();
+        let rows = rows_of(&drv, &ok, 10, &CancelToken::new()).await.expect("wrapped read");
+        assert_eq!(rows.rows[0][0].as_deref(), Some("1"));
+        drv.run_script("INSERT INTO t VALUES (2)").await.expect("write after the failed wrap");
+    }
+
+    /// A wrapped read stops at the cap like a bare one: the SELECT is not the last statement
+    /// (ROLLBACK follows), but nothing after it needs the connection, so reading on to count
+    /// millions of rows nobody will see would only make MCP and Metrics slow.
+    #[tokio::test]
+    async fn a_wrapped_read_stops_at_the_cap() {
+        let tmp = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
+        let drv = SqliteDriver::connect(tmp.path().to_str().unwrap()).await.expect("connect");
+        let big = "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 3000000) SELECT x FROM c";
+        let stmts = crate::mcp::guard::read_only_stmts("sqlite", big).unwrap();
+        let outs = drv.run_statements(&stmts, 10, &CancelToken::new()).await.expect("run");
+        let read = outs.iter().find(|o| o.batch.is_some()).expect("the read's result");
+        assert_eq!(read.row_count, 10);
+        assert_eq!(read.total_rows, None, "stopped at the cap instead of counting every row");
+        assert!(read.truncated);
+        // The skipped ROLLBACK is implied: the connection was closed, and it said so.
+        assert!(outs.last().unwrap().notice.as_deref().unwrap_or("").contains("rolled back"));
+        let rows = rows_of(&drv, &stmts, 10, &CancelToken::new()).await.expect("rows");
+        assert_eq!(rows.rows.len(), 10);
     }
 }

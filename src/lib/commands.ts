@@ -1,6 +1,7 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { synthWindowIpc, MOCK_TOTAL_ROWS } from "./mockSource";
 import type { SshConfig } from "./ssh";
+import { restoreConfirmName } from "./backup";
 
 // ── connection-loss detection ────────────────────────────────────────────
 // Every Rust command returns its error as `e.to_string()`, so sqlx / the
@@ -668,6 +669,105 @@ export async function clearSqlLog(id: string): Promise<void> {
   await invoke("clear_sql_log", { id });
 }
 
+// ── Backup Database ───────────────────────────────────────────────────────
+/** A backup job's stderr lines from `after` on (`next` = where to poll from), and — once
+ *  `done` — its outcome. Mirrors Rust `backup::JobStatus`. */
+export interface BackupJobStatus {
+  lines: string[];
+  next: number;
+  done: boolean;
+  ok: boolean;
+  error: string | null;
+}
+export interface BackupToolInfo {
+  name: string;
+  path: string | null;
+  version: string | null;
+}
+
+/** True where a native Save/Open dialog exists (the packaged app) — not in the browser mock
+ *  or the QA bridge, where the user types the path. */
+export function hasNativeFileDialog(): boolean {
+  return inTauri() && !BRIDGE;
+}
+
+/** The native Save dialog for a backup file; null when cancelled. */
+export async function pickBackupPath(defaultPath: string, extensions: string[]): Promise<string | null> {
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  return save({ defaultPath, filters: [{ name: "Backup", extensions }] });
+}
+
+const mockBackupPolls = new Map<string, number>();
+
+/** Start backing up `database` into `path` (on the server for SQL Server); returns the job
+ *  id for `backupJob`. `format` is Postgres' "custom" | "plain"; `toolDir` overrides where
+ *  pg_dump/mysqldump are looked for ("" = PATH and the usual install dirs). */
+export async function backupDatabase(
+  id: string,
+  database: string,
+  path: string,
+  format: string,
+  toolDir: string,
+): Promise<string> {
+  if (!inTauri()) {
+    const job = `mock-backup-${mockBackupPolls.size + 1}`;
+    mockBackupPolls.set(job, 0);
+    return job;
+  }
+  return invoke<string>("backup_database", { id, database, path, format, toolDir: toolDir || null });
+}
+
+/** The native Open dialog for a backup to restore; null when cancelled. */
+export async function pickRestorePath(extensions: string[]): Promise<string | null> {
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const picked = await open({ multiple: false, directory: false, filters: [{ name: "Backup", extensions }] });
+  return typeof picked === "string" ? picked : null;
+}
+
+/** Restore `database` from the backup at `path` (on the server for SQL Server) — DESTRUCTIVE.
+ *  `confirm` is the name the user typed; the Rust command refuses unless it equals `database`.
+ *  Returns a job id for `backupJob`. */
+export async function restoreDatabase(
+  id: string,
+  database: string,
+  path: string,
+  confirm: string,
+  toolDir: string,
+): Promise<string> {
+  if (!inTauri()) {
+    // The mock has no file connections to look up: a path-like database is a file engine's,
+    // confirmed by its file name — as the Rust command does.
+    const expected = /[/\\]/.test(database) ? restoreConfirmName("sqlite", database) : database;
+    if (confirm !== expected) throw new Error(`The typed name does not match "${expected}" — nothing was restored`);
+    const job = `mock-restore-${mockBackupPolls.size + 1}`;
+    mockBackupPolls.set(job, 0);
+    return job;
+  }
+  return invoke<string>("restore_database", { id, database, path, confirm, toolDir: toolDir || null });
+}
+
+export async function backupJob(jobId: string, after: number): Promise<BackupJobStatus> {
+  if (!inTauri()) {
+    const n = (mockBackupPolls.get(jobId) ?? 0) + 1;
+    mockBackupPolls.set(jobId, n);
+    const done = n >= 2;
+    const lines = n === 1 ? ["(browser mock) dumping…"] : ["(browser mock) done"];
+    return { lines, next: after + lines.length, done, ok: done, error: null };
+  }
+  return invoke<BackupJobStatus>("backup_job", { jobId, after });
+}
+
+export async function cancelBackupJob(jobId: string): Promise<void> {
+  if (!inTauri()) return;
+  await invoke("cancel_backup_job", { jobId });
+}
+
+export async function detectBackupTools(toolDir: string): Promise<BackupToolInfo[]> {
+  if (!inTauri())
+    return [{ name: "pg_dump", path: "/opt/homebrew/opt/libpq/bin/pg_dump", version: "pg_dump (PostgreSQL) 17.0" }];
+  return invoke<BackupToolInfo[]>("detect_backup_tools", { toolDir: toolDir || null });
+}
+
 export async function fetchResultWindow(
   resultId: string,
   offset: number,
@@ -740,15 +840,104 @@ export interface Rows {
 
 /** Run `sql` and return its rows, capped at `maxRows` (never above 1000). With a `queryId`,
  *  `cancelQuery(id, queryId)` — and ⌘. (`cancelAll`) — can stop it while it runs. */
+/** `readOnly`: the SQL must pass the backend's read-only guard and runs inside a read-only
+ *  transaction (Metrics widgets pass it). */
 export async function queryRows(
   id: string,
   sql: string,
   maxRows?: number,
   queryId?: string,
+  readOnly?: boolean,
 ): Promise<Rows> {
   if (!inTauri())
     return { columns: ["label", "value"], rows: [["a", "3"], ["b", "5"]], truncated: false };
-  return invoke<Rows>("query_rows", { id, sql, maxRows: maxRows ?? null, queryId: queryId ?? null });
+  return invoke<Rows>("query_rows", {
+    id,
+    sql,
+    maxRows: maxRows ?? null,
+    queryId: queryId ?? null,
+    readOnly: readOnly ?? null,
+  });
+}
+
+/** Would this Metrics widget SQL pass the backend guard its refreshes run under? Rejects
+ *  with the reason. The browser preview has no backend guard: the modal's TS check stands. */
+export async function validateWidgetSql(id: string, sql: string): Promise<void> {
+  if (!inTauri()) return;
+  await invoke<null>("validate_widget_sql", { id, sql });
+}
+
+// ── MCP server (Task 14) ───────────────────────────────────────────────────
+export interface McpConn {
+  id: string;
+  writes: boolean;
+}
+export interface McpConfig {
+  enabled: boolean;
+  port: number;
+  row_cap: number;
+  connections: McpConn[];
+}
+export interface McpStatus {
+  running: boolean;
+  port: number | null;
+  url: string | null;
+  error: string | null;
+}
+export interface McpActivity {
+  seq: number;
+  ts_ms: number;
+  client: string;
+  tool: string;
+  conn_id: string | null;
+  sql: string | null;
+  rows: number | null;
+  ms: number;
+  ok: boolean;
+  error: string | null;
+}
+
+// Browser mock: the server only exists in the app, so the mock never claims it is running.
+let mockMcp: McpConfig = { enabled: false, port: 7431, row_cap: 500, connections: [] };
+const MOCK_MCP_STATUS: McpStatus = {
+  running: false,
+  port: null,
+  url: null,
+  error: "Browser preview: the MCP server runs only in the TableIQ app.",
+};
+
+export async function mcpGetConfig(): Promise<McpConfig> {
+  if (!inTauri()) return mockMcp;
+  return invoke<McpConfig>("mcp_get_config");
+}
+
+/** Save, then restart the server (stopped when disabled). */
+export async function mcpSetConfig(cfg: McpConfig): Promise<McpStatus> {
+  if (!inTauri()) {
+    mockMcp = cfg;
+    return MOCK_MCP_STATUS;
+  }
+  return invoke<McpStatus>("mcp_set_config", { cfg });
+}
+
+export async function mcpStatus(): Promise<McpStatus> {
+  if (!inTauri()) return MOCK_MCP_STATUS;
+  return invoke<McpStatus>("mcp_status");
+}
+
+export async function mcpToken(): Promise<string> {
+  if (!inTauri()) return "mock0000token0000mock0000token00";
+  return invoke<string>("mcp_token");
+}
+
+export async function mcpRegenerateToken(): Promise<string> {
+  if (!inTauri()) return "mock1111token1111mock1111token11";
+  return invoke<string>("mcp_regenerate_token");
+}
+
+export async function mcpActivity(afterSeq: number): Promise<McpActivity[]> {
+  if (!inTauri()) return [];
+  return invoke<McpActivity[]>("mcp_activity", { afterSeq });
 }
 
 // ── WASM plugins (Extism) ──────────────────────────────────────────────────

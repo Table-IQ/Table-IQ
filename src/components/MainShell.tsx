@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { ConnectionRail } from "./ConnectionRail";
 import { Wordmark } from "./Brand";
 import { ThemeToggle } from "./ThemeToggle";
@@ -10,8 +10,9 @@ import { ErdView } from "./ErdView";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { StructureEditor } from "./StructureEditor";
 import { ImportDialog } from "./ImportDialog";
+import { BackupRestoreDialog } from "./BackupRestoreDialog";
 import { DiffView } from "./DiffView";
-import { CommandPalette, type Command } from "./CommandPalette";
+import { CommandPalette } from "./CommandPalette";
 import { ConnectionPicker } from "./ConnectionPicker";
 import { DatabasePicker } from "./DatabasePicker";
 import { isFileEngine } from "./ConnectionManager";
@@ -39,7 +40,6 @@ import {
   IconErd,
   IconHelp,
   IconImport,
-  IconLink,
   IconMetrics,
   IconOverview,
   IconPlay,
@@ -47,13 +47,8 @@ import {
   IconRefresh,
   IconSidebar,
   IconSidebarRight,
-  IconSliders,
   IconSqlLog,
-  IconStop,
   IconStructure,
-  IconTable,
-  IconUsers,
-  IconView,
 } from "./ui/Icon";
 import {
   cancelConnecting,
@@ -82,19 +77,25 @@ import {
   type ObjectInfo,
   type SavedQuery,
 } from "../lib/commands";
-import { savedQueriesForConn } from "../lib/history";
 import {
   buildTableScript,
   quoteIdent,
   selectStarter,
   type ScriptColumn,
 } from "../lib/tableScript";
-import { supportsUserMgmt } from "../lib/userMgmt";
 import { UsersView } from "./UsersView";
 import { MetricsBoard } from "./MetricsBoard";
+import { McpActivityView } from "./McpActivityView";
 import { Elapsed } from "./ui/Elapsed";
 import { applyToolbar, loadToolbar } from "../lib/toolbarPrefs";
-import { DEFAULT_HIDDEN_TOOLBAR_IDS, DEFAULT_TOOLBAR_PREF, TOOLBAR_ITEMS } from "../lib/toolbarItems";
+import {
+  DEFAULT_HIDDEN_TOOLBAR_IDS,
+  DEFAULT_TOOLBAR_PREF,
+  TOOLBAR_ITEMS,
+  type ToolbarId,
+} from "../lib/toolbarItems";
+import { useShellKeymap } from "./shell/useShellKeymap";
+import { usePaletteCommands } from "./shell/usePaletteCommands";
 
 /** The schema a connection should open on. Every engine has a conventional
  *  "your stuff lives here" schema; alphabetical order picks `auth` over
@@ -144,6 +145,8 @@ export function MainShell() {
     tabsState;
   const [showStructure, setShowStructure] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [showBackup, setShowBackup] = useState(false);
+  const [showRestore, setShowRestore] = useState(false);
   const [showDiff, setShowDiff] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
   // ⌘⇧\ Workspace Overview (TablePlus parity) — a grid of every open tab
@@ -393,231 +396,47 @@ export function MainShell() {
   }, [showPalette]);
 
   // Keyboard shortcuts. ⌘O is new — Open Connection picker (TablePlus parity).
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      // CodeMirror's own keymap (⌘D multi-cursor, ⌘[ / ⌘] indent, ⌘K) runs first
-      // and calls preventDefault when the SQL editor is focused — the workspace
-      // shortcuts must not fire on top of it.
-      if (e.defaultPrevented) return;
-      // Settings (⌘,) owns the keyboard while it's open — its own Escape
-      // handler (App.tsx) closes it; without this guard the same Escape
-      // keypress also cancelled an in-flight connection here. App.tsx defers
-      // the actual close to a macrotask (setTimeout, not queueMicrotask —
-      // see closeSettingsDeferred in Settings.tsx for why), so `open` reads
-      // true here for this whole keypress no matter which window listener
-      // runs first.
-      if (useSettingsUi.getState().open) return;
-      const meta = e.metaKey || e.ctrlKey;
-      if (meta && e.key.toLowerCase() === "k") {
-        e.preventDefault();
-        if (e.shiftKey) {
-          // ⌘⇧K alias for Open Connection. CodeMirror's own keymap owns plain
-          // ⌘⇧K as deleteLine when the editor has focus — it calls
-          // preventDefault first, so the `e.defaultPrevented` guard above
-          // means this alias only fires when the editor doesn't consume it.
-          setShowConnPicker((v) => !v);
-        } else {
-          setShowPalette((v) => !v);
-        }
-      } else if (meta && e.key.toLowerCase() === "o") {
-        e.preventDefault();
-        setShowConnPicker((v) => !v);
-      } else if (meta && e.key.toLowerCase() === "d") {
-        e.preventDefault();
-        void openDbPicker();
-      } else if (meta && e.key.toLowerCase() === "t") {
-        e.preventDefault();
-        openQuery();
-      } else if (meta && e.key.toLowerCase() === "w") {
-        e.preventDefault();
-        if (activeKey) close(activeKey);
-      } else if (meta && e.key === "[") {
-        e.preventDefault();
-        setShowSidebar((v) => !v);
-      } else if (meta && e.key === "]") {
-        e.preventDefault();
-        setShowInspector((v) => !v);
-      } else if (meta && e.key === ".") {
-        e.preventDefault();
-        void cancelAllQueries();
-      } else if (
-        meta &&
-        e.shiftKey &&
-        (e.key === "\\" || e.key === "|" || e.code === "Backslash")
-      ) {
-        // Shift usually remaps `key` to "|" on a US layout — `code` is the
-        // physical-key fallback so this still fires on other layouts.
-        e.preventDefault();
-        setShowWorkspaceOverview((v) => !v);
-      } else if (meta && e.shiftKey && e.key.toLowerCase() === "c") {
-        // ⌘⇧C SQL log (TablePlus parity). Doesn't collide with any binding in
-        // this app's own keymap or CodeMirror's (grepped both); a browser
-        // devtools inspector shortcut on the same combo only exists with
-        // devtools enabled, which the shipped app doesn't expose.
-        e.preventDefault();
-        setShowSqlLog((v) => !v);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [openQuery, close, activeKey, active?.id]);
+  // Binding table + guards live in `shortcutFor` (`lib/shellKeymap.ts`, unit-tested);
+  // this just wires it to the shell's own state setters (Task 11b extraction).
+  useShellKeymap({
+    openQuery,
+    close,
+    activeKey,
+    activeConnId: active?.id,
+    openDbPicker,
+    cancelAllQueries,
+    setShowPalette,
+    setShowConnPicker,
+    setShowSidebar,
+    setShowInspector,
+    setShowWorkspaceOverview,
+    setShowSqlLog,
+  });
 
-  const commands = useMemo<Command[]>(() => {
-    const list: Command[] = [
-      { id: "act:erd", label: "Diagram", group: "Commands", icon: <IconErd />, run: openErd },
-      // Hidden for engines with no user-management SQL (sqlite/duckdb/mongodb/redis).
-      ...((active && supportsUserMgmt(active.engine as Engine)
-        ? [
-            {
-              id: "act:users",
-              label: "Database User Management",
-              group: "Commands",
-              icon: <IconUsers />,
-              run: () => openView("users", "Users"),
-            },
-          ]
-        : []) as Command[]),
-      {
-        id: "act:metrics",
-        label: "Metrics Board",
-        group: "Commands",
-        icon: <IconMetrics />,
-        run: () => openView("metrics", "Metrics Board"),
-      },
-      {
-        id: "act:open-conn",
-        label: "Open Connection",
-        group: "Commands",
-        icon: <IconLink />,
-        shortcut: "⌘O",
-        run: () => setShowConnPicker(true),
-      },
-      // A file engine (sqlite/duckdb) has no other database to switch to — same
-      // condition that hides the Databases group below and no-ops openDbPicker.
-      ...((!active || !isFileEngine(active.engine as Engine)
-        ? [
-            {
-              id: "act:open-db",
-              label: "Open Database",
-              group: "Commands",
-              icon: <IconDatabase />,
-              shortcut: "⌘D",
-              run: () => void openDbPicker(),
-            },
-          ]
-        : []) as Command[]),
-      {
-        id: "act:workspace-overview",
-        label: "Workspace Overview",
-        group: "Commands",
-        shortcut: "⌘⇧\\",
-        run: () => setShowWorkspaceOverview(true),
-      },
-      {
-        id: "act:sql-log",
-        label: "Toggle SQL Log",
-        group: "Commands",
-        icon: <IconSqlLog />,
-        shortcut: "⌘⇧C",
-        run: () => setShowSqlLog((v) => !v),
-      },
-      {
-        id: "act:settings",
-        label: "Settings",
-        group: "Commands",
-        icon: <IconSliders />,
-        shortcut: "⌘,",
-        run: () => useSettingsUi.getState().show(),
-      },
-      {
-        id: "act:customize-toolbar",
-        label: "Customize Toolbar",
-        group: "Commands",
-        icon: <IconOverview />,
-        run: () => useSettingsUi.getState().show("toolbar"),
-      },
-      {
-        id: "act:query",
-        label: "New Query",
-        group: "Commands",
-        icon: <IconPlus />,
-        shortcut: "⌘T",
-        run: () => openQuery(),
-      },
-      {
-        id: "act:table",
-        label: "New Table…",
-        group: "Commands",
-        icon: <IconStructure />,
-        run: () => setShowStructure(true),
-      },
-      {
-        id: "act:import",
-        label: "Import CSV / JSON…",
-        group: "Commands",
-        icon: <IconImport />,
-        run: () => setShowImport(true),
-      },
-      {
-        id: "act:diff",
-        label: "Diff with another connection…",
-        group: "Commands",
-        icon: <IconDiff />,
-        run: () => setShowDiff(true),
-      },
-      {
-        id: "act:cancel-all",
-        label: "Cancel Running Queries",
-        group: "Commands",
-        icon: <IconStop />,
-        shortcut: "⌘.",
-        run: () => void cancelAllQueries(),
-      },
-    ];
-    for (const s of schema?.schemas ?? []) {
-      for (const o of s.objects) {
-        list.push({
-          id: `tbl:${s.name}.${o.name}`,
-          label: `${s.name}.${o.name}`,
-          hint: o.kind,
-          group: "Tables",
-          icon: o.kind === "View" ? <IconView /> : <IconTable />,
-          run: () => openTable(s.name, o.name),
-        });
-      }
-    }
-    // File engines (sqlite/duckdb) are their own database — nothing to list or switch to.
-    if (active && !isFileEngine(active.engine as Engine)) {
-      for (const db of dbList.items) {
-        list.push({
-          id: `db:${db}`,
-          label: db,
-          hint: db === active.database ? "current" : undefined,
-          group: "Databases",
-          icon: <IconDatabase />,
-          run: () => void pickDatabase(db),
-        });
-      }
-    }
-    if (active) {
-      for (const q of savedQueriesForConn(paletteSaved, active.id)) {
-        list.push({
-          id: `q:${q.id}`,
-          label: q.name,
-          group: "Queries",
-          icon: <IconPlay />,
-          run: () => openQuery(q.sql, q.name),
-        });
-      }
-    }
-    return list;
-    // `active`, `openDbPicker` and `pickDatabase` are intentionally not deps — they
-    // close over `active` fresh every render, and `schema`/`dbList.items` already
-    // change whenever a connection or database switch would make them stale.
-    // Recomputing on every unrelated render (e.g. a keystroke) would churn the
-    // palette unnecessarily.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [schema, openTable, openQuery, openErd, openView, dbList.items, paletteSaved]);
+  // Commands, then Tables/Databases/Queries groups (`commandGroups.ts`). Extracted
+  // to `usePaletteCommands` (Task 11b) so PR-C can add Backup/Restore/MCP entries
+  // without growing this file further.
+  const commands = usePaletteCommands({
+    active,
+    schema,
+    dbItems: dbList.items,
+    paletteSaved,
+    openTable,
+    openQuery,
+    openErd,
+    openView,
+    openDbPicker,
+    pickDatabase,
+    setShowConnPicker,
+    setShowWorkspaceOverview,
+    setShowSqlLog,
+    setShowStructure,
+    setShowImport,
+    setShowDiff,
+    setShowBackup,
+    setShowRestore,
+    cancelAllQueries,
+  });
 
   // Until this connection's tabs are hydrated the tab store may still hold the
   // previous connection's — never render (or persist) those under this one.
@@ -849,6 +668,11 @@ export function MainShell() {
           <MetricsBoard connId={active.id} engine={active.engine as Engine} />
         </ErrorBoundary>
       )}
+      {activeTab?.kind === "mcp" && (
+        <ErrorBoundary key={activeTab.key} label={`mcp tab ${activeTab.key}`}>
+          <McpActivityView />
+        </ErrorBoundary>
+      )}
       {activeTab?.kind === "table" &&
         (activeObj ? (
           <ErrorBoundary key={activeTab.key} label={`table tab ${activeTab.key}`}>
@@ -930,7 +754,7 @@ export function MainShell() {
   // independent of the user's order/hidden prefs. `render` is an escape hatch
   // for items that are already their own stateful component (ThemeToggle).
   const titlebarActions: Record<
-    string,
+    ToolbarId,
     {
       icon?: ReactNode;
       onClick?: () => void;
@@ -1015,7 +839,10 @@ export function MainShell() {
         <IconGroup>
           {visibleTitlebarIds.map((id) => {
             const item = TOOLBAR_ITEMS.find((i) => i.id === id);
-            const action = titlebarActions[id];
+            // `visibleTitlebarIds` is `applyToolbar`'s output over `TOOLBAR_ITEMS`'
+            // own ids (see below), so every `id` here is a `ToolbarId` — `applyToolbar`
+            // itself stays untyped `string[]` (shared with Settings' persisted prefs).
+            const action = titlebarActions[id as ToolbarId];
             if (!item || !action || action.when === false) return null;
             if (action.render) return <span key={id}>{action.render()}</span>;
             return (
@@ -1370,7 +1197,8 @@ export function MainShell() {
           {(!activeTab ||
             activeTab.kind === "erd" ||
             activeTab.kind === "users" ||
-            activeTab.kind === "metrics") && (
+            activeTab.kind === "metrics" ||
+            activeTab.kind === "mcp") && (
             <StatusBar
               left={
                 <>
@@ -1425,6 +1253,28 @@ export function MainShell() {
           engine={active.engine as Engine}
           schema={schema}
           onClose={() => setShowImport(false)}
+        />
+      )}
+      {showBackup && (
+        <BackupRestoreDialog
+          mode="backup"
+          connId={active.id}
+          connName={active.name}
+          engine={active.engine as Engine}
+          database={active.database}
+          onClose={() => setShowBackup(false)}
+        />
+      )}
+      {showRestore && (
+        <BackupRestoreDialog
+          mode="restore"
+          connId={active.id}
+          connName={active.name}
+          engine={active.engine as Engine}
+          host={fileEngine ? "" : saved.find((c) => c.id === active.id)?.host ?? ""}
+          database={active.database}
+          onClose={() => setShowRestore(false)}
+          onRestored={() => void onRefreshSchema()}
         />
       )}
       {showDiff && (

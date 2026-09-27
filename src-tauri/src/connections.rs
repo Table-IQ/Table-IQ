@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::ssh::SshConfig;
 pub use crate::ssh::ssh_secret_account;
 
-const KEYRING_SERVICE: &str = "ai.rhobots.tableiq";
+pub(crate) const KEYRING_SERVICE: &str = "ai.rhobots.tableiq";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ConnConfig {

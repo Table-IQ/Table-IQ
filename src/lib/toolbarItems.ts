@@ -14,7 +14,7 @@ export interface ToolbarItemInfo {
 }
 
 /** Order here is also the default order (before any user customization). */
-export const TOOLBAR_ITEMS: ToolbarItemInfo[] = [
+export const TOOLBAR_ITEMS = [
   { id: "refresh-schema", label: "Refresh schema" },
   { id: "switch-database", label: "Switch database" },
   { id: "command-palette", label: "Command palette" },
@@ -23,7 +23,12 @@ export const TOOLBAR_ITEMS: ToolbarItemInfo[] = [
   { id: "workspace-overview", label: "Workspace Overview" },
   { id: "sql-log", label: "SQL log" },
   { id: "metrics", label: "Metrics Board" },
-];
+] as const satisfies readonly ToolbarItemInfo[];
+
+/** Every customizable title-bar item's id, derived from `TOOLBAR_ITEMS` (Task 11b) —
+ *  lets `MainShell`'s action map be a `Record<ToolbarId, …>`, so a missing action is
+ *  a compile error instead of a silently-missing icon. */
+export type ToolbarId = (typeof TOOLBAR_ITEMS)[number]["id"];
 
 /** Items hidden until the user opts in from Settings → Toolbar. */
 export const DEFAULT_HIDDEN_TOOLBAR_IDS: string[] = ["workspace-overview", "metrics"];

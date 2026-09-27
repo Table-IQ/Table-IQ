@@ -434,6 +434,11 @@ impl SqlDriver for MySqlDriver {
             .await
             .map_err(db)?;
         token.set_backend_id(cid as i64);
+        // Recorded, then the flag checked (the `CancelToken` protocol): a caller that gave up
+        // while this waited for a pooled connection has said it was cancelled — never run it.
+        if token.is_cancelled() {
+            return Err(DriverError::Cancelled);
+        }
 
         let res = exec::run_sqlx::<MySql, _, _, _>(
             &mut conn,

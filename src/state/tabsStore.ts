@@ -7,7 +7,7 @@ export type ViewKind = "erd" | "users" | "metrics" | "mcp";
 /** The glyph before a view tab's title — shared by the tab strip and Workspace Overview.
  *  DESIGN.md's "Tab strip" section documents every glyph in one place — keep that list in
  *  sync with this map, and never reuse a glyph across kinds (▦ is the table tab's). */
-const VIEW_GLYPHS: Partial<Record<ViewKind, string>> = { erd: "◫", users: "▤", metrics: "◨" };
+const VIEW_GLYPHS: Partial<Record<ViewKind, string>> = { erd: "◫", users: "▤", metrics: "◨", mcp: "◧" };
 
 /** `--accent` (DESIGN.md) is reserved for AI surfaces only, never ordinary chrome. ERD
  *  already rendered in accent before this fix and keeps doing so; users/metrics move to
@@ -17,6 +17,7 @@ const VIEW_GLYPH_CLASS: Partial<Record<ViewKind, string>> = {
   erd: "text-accent",
   users: "text-primary",
   metrics: "text-primary",
+  mcp: "text-primary",
 };
 
 export function viewGlyph(kind: Tab["kind"]): string | undefined {

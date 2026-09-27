@@ -160,11 +160,33 @@ impl SqlDriver for SqliteDriver {
         &self,
         stmts: &[String],
         cap: usize,
-        _token: &CancelToken,
+        token: &CancelToken,
     ) -> DResult<Vec<StmtOutput>> {
         // One pooled connection for the whole script so BEGIN/…/COMMIT share a session.
-        // SQLite has no server-side cancellation, so the token is unused.
         let mut conn = self.pool.acquire().await.map_err(db)?;
+        // Cancelled while waiting for the connection: never start. The progress handler below
+        // only looks every 1000 steps, which a short INSERT never reaches.
+        if token.is_cancelled() {
+            return Err(DriverError::Cancelled);
+        }
+        // SQLite has no server to cancel on: a progress handler interrupts the running
+        // statement once `cancel` flags the token. `live` switches it off when this run ends
+        // — even if this future is dropped — so a stale token can't interrupt the pooled
+        // connection's next user.
+        let live = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        {
+            let (t, l) = (token.clone(), live.clone());
+            conn.lock_handle().await.map_err(db)?.set_progress_handler(1000, move || {
+                !(l.load(std::sync::atomic::Ordering::Relaxed) && t.is_cancelled())
+            });
+        }
+        struct Off(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for Off {
+            fn drop(&mut self) {
+                self.0.store(false, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        let off = Off(live);
         let res = exec::run_sqlx::<Sqlite, _, _, _>(
             &mut conn,
             stmts,
@@ -174,6 +196,17 @@ impl SqlDriver for SqliteDriver {
             sqlite_stmt_err,
         )
         .await;
+        drop(off);
+        if let Ok(mut h) = conn.lock_handle().await {
+            h.remove_progress_handler();
+        }
+        let res = match res {
+            // An interrupt surfaces as a statement error; report it as the cancel it was.
+            Ok((outs, _)) if token.is_cancelled() && outs.last().is_some_and(|o| o.error.is_some()) => {
+                Err(DriverError::Cancelled)
+            }
+            other => other,
+        };
         match res {
             // A dirty connection (an error, or BEGIN/PRAGMA left behind) must not go back to
             // the pool: closing it rolls back and drops the session state.
@@ -188,6 +221,13 @@ impl SqlDriver for SqliteDriver {
                 Err(e)
             }
         }
+    }
+
+    /// Flag the token; the progress handler `run_statements` installed interrupts the
+    /// statement at its next step.
+    async fn cancel(&self, token: &CancelToken) -> DResult<()> {
+        token.mark_cancelled();
+        Ok(())
     }
 
     /// One query for the whole catalog: `sqlite_master` joined to the table-valued
@@ -557,6 +597,12 @@ impl SqlDriver for SqliteDriver {
     /// file called `main`.
     async fn list_databases(&self) -> DResult<Vec<String>> {
         Ok(Vec::new())
+    }
+
+    /// Waits for checked-out connections to come back, then closes every one — the last
+    /// close checkpoints the WAL into the file, so nothing of it is left to replay.
+    async fn close(&self) {
+        self.pool.close().await
     }
 }
 

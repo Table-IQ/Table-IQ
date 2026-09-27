@@ -79,6 +79,7 @@ Full account in `docs/finalize/2026-09-25-table-ux-and-duckdb.md`.
 | Item | Why |
 |---|---|
 | **Arrow upgrade (53 → 55+), then a current `duckdb` crate** | The newest `duckdb` crate that builds beside arrow 53 is 1.2.2, which has no `interrupt_handle` and builds each result fully in memory before the 50k cap applies. Upgrading arrow across the app unlocks DuckDB cancel, streaming results and newer `.duckdb` storage versions. The Stop button is still shown for DuckDB and reports "not implemented". |
+| **MCP can't stop a DuckDB query** | Same cause as above: an MCP `run_query` on DuckDB that passes its 30s timeout keeps running (and keeps one of the four MCP query slots) until it finishes. Four such queries leave MCP answering metadata tools only until one ends. Settings → MCP says so. |
 | **Staged edits vs. other refreshes** | Search, filter, sort, paging, page size and Refresh now refuse to run with unsaved edits. Insert row, Delete row, "Set value" from the row menu, closing Alter and an Inspector save still refetch and drop other staged edits. |
 | **First / Last page buttons** | The pager has Prev/Next only. "Last" would need a reversed keyset read (`ORDER BY pk DESC LIMIT n`, then flip). No "go to page N" exists either, so no slow deep-OFFSET jump is exposed. |
 | **Explicit NULL from the + Row draft** | Blank draft cells now leave the column to its DEFAULT (that fixed serial keys). There is no way to type NULL into a nullable column that has a DEFAULT; it needs a per-cell NULL toggle in the draft rail. |
@@ -128,7 +129,7 @@ Full account in `docs/finalize/2026-09-27-sql-log-users-metrics.md`. PR-C (Backu
 
 | Item | Why |
 |---|---|
-| **Widgets can still run side-effecting SELECTs** | The keyword guard rejects writes, DDL and exec, but a SELECT that calls a function with side effects (`pg_terminate_backend`, `setval`, `… FOR SHARE`) still runs on every refresh. The structural fix is to run widget `query_rows` inside a READ ONLY transaction (PG/MySQL) or with `query_only` (SQLite). PR-C's MCP server builds that wrapper; Metrics adopts it then. |
+| ~~**Widgets can still run side-effecting SELECTs**~~ | **Closed in PR-C (Task 14).** Widgets call `query_rows` with `read_only: true`: the backend re-checks the SQL with the MCP guard (`mcp::guard::guard_sql`) and runs it inside `BEGIN TRANSACTION READ ONLY` (PG) / `START TRANSACTION READ ONLY` (MySQL) / `BEGIN … ROLLBACK` (SQLite, DuckDB, SQL Server), so `setval`/`nextval` fail on PG and writes are undone elsewhere. The guard's function denylist also refuses `pg_terminate_backend`/`pg_cancel_backend`, advisory locks (`pg_advisory_*`, MySQL `GET_LOCK`) and `dblink`. The widget guard is MCP's minus its DuckDB file-access refusals (`read_csv`, `FROM 'x.parquet'`, …), and the Metrics modal checks it on save (`validate_widget_sql`). Still reachable: side effects inside user-defined functions or extensions the denylist doesn't name, and MySQL `SLEEP`. |
 | **SQL log misses some statements** | Statements run before the driver is wrapped (on connect), `test_connection`, schema-diff temp drivers, SQLite PRAGMAs run when a connection opens, and pool background tasks are not logged. |
 | **SQL log fills with widget refreshes** | Several fast widgets can fill the 2000-entry ring in minutes and push out the user's own statements. A `source` tag (user/app/widget) plus a panel filter would fix it. |
 | **`redact` edge cases** | Not masked yet: a PG nested comment between keyword and value, PG adjacent-literal continuation, MySQL `#` comments, `CONCAT('a','b')` passwords (only `'a'` is masked), and connection-string passwords (`dblink`). |
@@ -137,6 +138,22 @@ Full account in `docs/finalize/2026-09-27-sql-log-users-metrics.md`. PR-C (Backu
 | **Users view polish** | No refresh indicator; row buttons lack per-user `aria-label`s; modal boilerplate is repeated; a MySQL grant with no current database targets `` ``.* ``; PG "revoke read" also revokes USAGE/CONNECT. |
 | **Users Submit button with pasted input** | QA ISSUE-002, low confidence (likely a harness artifact). Needs a manual paste check. |
 | **SQLite log detection by engine name** | `exec.rs` branches on `DB::NAME == "SQLite"`. |
+
+### 2h. Deferred from PR-C (0.7.0)
+
+Backup/Restore, MCP Server and MCP Activity. Minors from the PR-C final triage, left for later.
+
+| Item | Why |
+|---|---|
+| **SQL Server wrapped read vs. the user's own transaction (m7)** | The read-only wrapper (`BEGIN TRAN` … `ROLLBACK`) runs on the one pinned connection the user's tabs share. If a tab left a transaction open (or turned `IMPLICIT_TRANSACTIONS` on), the wrapper nests inside it and its `ROLLBACK` rolls back the user's open work too. Needs the SQL Server pool work in §2a, or a `@@TRANCOUNT` check before wrapping. |
+| **Widget refresh reconnects every time (m8)** | The wrapper's `BEGIN` trips `touches_session`, so every wrapped widget run closes its pooled connection instead of returning it: each refresh pays a fresh connect (and PG `after_connect`). A clean `ROLLBACK` could return the connection instead. |
+| **Palette memo misses `active` (m6)** | `usePaletteCommands`' `useMemo` leaves `active` out of its deps on purpose; entries gated on it (Backup, Restore, Users, MCP) can lag until `schema`/`dbItems` change. |
+| **Stale icon reuse (m6)** | "MCP Server" and "MCP Activity" share `IconChip`; `IconImport` and `IconDatabase` each serve two entries too. |
+| **SQLite WAL sidecar deletion when two pools hold the same file** | Restore deletes the `-wal`/`-shm` sidecars of the file it swaps. A second connection on the same file (another saved connection, or the file open elsewhere) still holds them. |
+| **MySQL `MYSQL_PWD` deprecation** | Backup/Restore pass the password in `MYSQL_PWD`, which Oracle deprecates (8.4 still honours it). If a client drops it, the fallback is a 0600 `--defaults-extra-file`. |
+| **PG meta-command scan is line-start only** | Restore refuses `\c`, `\i`, `\!` only at the start of a line of a plain `.sql` file; a crafted file can put one mid-line (`SELECT 1; \! cmd`). |
+| **MySQL fully-qualified cross-db writes on restore** | `mysql --one-database` filters by the selected database, but `other_db.table` in the dump (and `ALTER DATABASE`) still run. |
+| **Split `connect.rs` backup/restore; move `MyScan` out of `backup.rs`** | Backup/restore commands belong in `ipc/backup.rs`; `connect.rs` is past 2,700 lines. `backup.rs` also carries the MySQL dump scanner (`MyScan`). |
 
 ---
 

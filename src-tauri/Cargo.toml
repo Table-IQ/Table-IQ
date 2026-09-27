@@ -1,6 +1,6 @@
 [package]
 name = "tableiq"
-version = "0.6.0"
+version = "0.7.0"
 description = "TableIQ — fast, local-first, AI-assisted database client"
 authors = ["Rudresh Narwal"]
 edition = "2021"
@@ -56,6 +56,9 @@ duckdb = { version = "1", features = ["bundled"] }
 # The SQL log (`sql_log`) reads the statement sqlx already emits on its `sqlx::query` target.
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
+# The in-app MCP server (`mcp`): Streamable HTTP on 127.0.0.1, mounted in an axum router.
+rmcp = { version = "3.4", default-features = false, features = ["server", "macros", "transport-streamable-http-server"] }
+axum = { version = "0.8", default-features = false, features = ["tokio", "http1"] }
 
 [dev-dependencies]
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "mysql", "sqlite", "json"] }

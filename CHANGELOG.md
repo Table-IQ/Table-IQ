@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.7.0 — 2026-09-27
+
+Back up and restore any database from ⌘K. Let Claude read the connections you choose
+through a local, read-only MCP server, and see every call it makes. With this release,
+all 13 TablePlus ⌘K commands work.
+
+### Added
+- **Backup Database (⌘K).**
+  - Postgres uses `pg_dump`, in custom or plain format.
+  - MySQL / MariaDB uses `mysqldump` or `mariadb-dump`.
+  - SQLite and DuckDB copy the file.
+  - SQL Server runs `BACKUP … TO DISK` to a path on the server.
+  - You see a live log and the elapsed time, plus a Cancel button for Postgres and MySQL.
+  - Settings → Backup tools finds `pg_dump` and `mysqldump` for you, or you can point it
+    at a folder.
+  - Passwords never appear on a command line.
+- **Restore Database (⌘K).**
+  - A red confirmation dialog asks you to type the database name (or the file name for
+    SQLite / DuckDB) before anything changes.
+  - It refuses a backup that would write to a different database.
+  - SQLite and DuckDB files are swapped in atomically.
+- **MCP Server (Settings → MCP).** Claude Code or Claude Desktop can list and query the
+  connections you tick.
+  - It's local only, protected by a token and read-only by default.
+  - Queries are capped at 500 rows by default (up to 10,000 in Settings) and 8 MB.
+  - A ready-made `claude mcp add …` line is one click away.
+- **MCP Activity (⌘K).** Every agent call, with its time, client, tool, connection, SQL,
+  rows, duration and result. The server status updates live.
+
+### Fixed
+- Metrics widgets are checked against the same read-only guard when you save them, so a
+  widget that can't run is refused up front instead of failing on every refresh.
+
 ## 0.6.0 — 2026-09-27
 
 See every statement the app sends to your database, manage database users without

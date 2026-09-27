@@ -2,11 +2,13 @@
 pub mod ai;
 pub mod appdir;
 pub mod applog;
+pub mod backup;
 pub mod bench;
 pub mod connections;
 pub mod drivers;
 pub mod ipc;
 pub mod library;
+pub mod mcp;
 pub mod plugins;
 pub mod query;
 pub mod sql_log;
@@ -20,6 +22,7 @@ pub(crate) fn lk<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 use ipc::connect::{
     ai_egress_preview, ai_explain_sql, ai_fix_sql, ai_generate_sql, ai_optimize_sql, apply_edit,
+    backup_database, backup_job, cancel_backup_job, detect_backup_tools, restore_database,
     cancel_all, cancel_query, connect, count_rows_exact, delete_connection, delete_row, describe_table,
     estimate_rows,
     disconnect, diff_results, diff_schemas, export_result, export_table, generate_ddl,
@@ -28,7 +31,7 @@ use ipc::connect::{
     apply_parquet_import, import_rows, insert_row, install_sample_plugin, kv_get, kv_scan,
     list_connections, list_databases, list_objects, list_plugins, list_saved_queries,
     local_llm_available, log_client_error, open_table, parse_import, parse_parquet_preview, primary_key,
-    profile_column, query_history, query_rows, read_onboarding_state, run_plugin_on_result, run_query,
+    profile_column, query_history, query_rows, validate_widget_sql, read_onboarding_state, run_plugin_on_result, run_query,
     run_script, save_ai_config, save_connection, save_query, delete_saved_query, sql_log,
     clear_sql_log, switch_database, test_connection, write_onboarding_state, write_text_file, ConnState,
 };
@@ -62,6 +65,7 @@ pub fn invoke_handler<R: tauri::Runtime>(
         export_table,
         run_script,
         query_rows,
+        validate_widget_sql,
         generate_ddl,
         list_saved_queries,
         save_query,
@@ -101,6 +105,17 @@ pub fn invoke_handler<R: tauri::Runtime>(
         write_text_file,
         sql_log,
         clear_sql_log,
+        backup_database,
+        backup_job,
+        cancel_backup_job,
+        detect_backup_tools,
+        restore_database,
+        mcp::mcp_get_config,
+        mcp::mcp_set_config,
+        mcp::mcp_status,
+        mcp::mcp_token,
+        mcp::mcp_regenerate_token,
+        mcp::mcp_activity,
     ]
 }
 
@@ -112,6 +127,12 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(ConnState::new())
         .invoke_handler(invoke_handler())
+        // The MCP server starts with the app when enabled. The QA bridge doesn't run this;
+        // Settings → MCP starts it there.
+        .setup(|app| {
+            tauri::async_runtime::spawn(mcp::autostart(app.handle().clone()));
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

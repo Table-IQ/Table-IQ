@@ -761,6 +761,22 @@ pub trait SqlDriver: Send + Sync {
     async fn list_databases(&self) -> DResult<Vec<String>> {
         Err(DriverError::NotImplemented)
     }
+
+    /// Give up on the session now: calls waiting on it, and every later one, fail at once and
+    /// the connection is closed. For an engine that cannot cancel a stuck query (SQL Server's
+    /// one pinned connection) — the caller then opens a new session. Default: nothing to do.
+    fn abandon(&self) {}
+
+    /// The database the session is on now, where the driver tracks it (SQL Server follows
+    /// `USE`), so a replacement session can be opened there. Default: unknown.
+    fn database(&self) -> Option<String> {
+        None
+    }
+
+    /// Release the session's hold on its database, waiting for in-flight work — Restore
+    /// swaps a file engine's file only after this. Default: nothing to close (the driver
+    /// lets go when its last `Arc` drops).
+    async fn close(&self) {}
 }
 
 /// Document stores (MongoDB). The third data-model trait (plan spec #1).
