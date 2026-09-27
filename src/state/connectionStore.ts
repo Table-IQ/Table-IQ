@@ -141,14 +141,26 @@ export const useConnections = create<ConnectionState>((set, get) => ({
   setEditsPending: (editsPending) => set({ editsPending }),
 }));
 
+export const TAB_SWITCH_MESSAGE = "This tab has unsaved changes. Discard them and switch tabs?";
+export const TAB_CLOSE_MESSAGE = "This tab has unsaved changes. Discard them and close it?";
+/** The button labels every tab-guard prompt uses (`tabGuard.ts`). */
+export const TAB_GUARD_LABELS = { ok: "Discard changes", cancel: "Keep editing" } as const;
+
 /** Leaving the active session remounts its shell, which throws staged grid edits
- *  away (and would cut a running commit off). Ask first; no dialog → stay. */
-export async function canLeaveSession(): Promise<boolean> {
+ *  away (and would cut a running commit off). Ask first; no dialog → stay. The tab
+ *  guard reuses this with its own message and button labels. */
+export async function canLeaveSession(
+  message = "This connection has unsaved changes. Discard them and leave?",
+  labels?: { ok: string; cancel: string },
+): Promise<boolean> {
   if (!useConnections.getState().editsPending) return true;
-  const message = "This connection has unsaved changes. Discard them and leave?";
   try {
     const { confirm } = await import("@tauri-apps/plugin-dialog");
-    return await confirm(message, { title: "Unsaved changes", kind: "warning" });
+    return await confirm(message, {
+      title: "Unsaved changes",
+      kind: "warning",
+      ...(labels ? { okLabel: labels.ok, cancelLabel: labels.cancel } : {}),
+    });
   } catch {
     return typeof window !== "undefined" ? window.confirm(message) : false;
   }

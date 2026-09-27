@@ -10,6 +10,7 @@ import {
 import { groupByDay, oneLine, savedQueriesForConn } from "../lib/history";
 import { logError } from "../lib/report";
 import { useTabs } from "../state/tabsStore";
+import { tabGuard } from "../state/tabGuard";
 import { IconClose, IconPlus, IconSearch } from "./ui/Icon";
 
 interface Props {
@@ -30,7 +31,6 @@ export function SidebarLibrary({ mode, connId }: Props) {
   const [draftName, setDraftName] = useState<string | null>(null); // non-null while the footer "+" input is open
   const [savingDraft, setSavingDraft] = useState(false);
 
-  const openQuery = useTabs((s) => s.openQuery);
   const activeTab = useTabs((s) => s.tabs.find((t) => t.key === s.activeKey));
 
   // Distinguishes a single click (open) from a double click (rename): a click
@@ -99,7 +99,7 @@ export function SidebarLibrary({ mode, connId }: Props) {
   const openSaved = (q: SavedQuery) => {
     cancelPendingOpen();
     pendingOpen.current = window.setTimeout(() => {
-      openQuery(q.sql, q.name);
+      void tabGuard.openQuery(q.sql, q.name);
       pendingOpen.current = null;
     }, 200);
   };
@@ -235,7 +235,7 @@ export function SidebarLibrary({ mode, connId }: Props) {
               {g.items.map((h, i) => (
                 <button
                   key={`${h.ts}-${i}`}
-                  onClick={() => openQuery(h.sql)}
+                  onClick={() => void tabGuard.openQuery(h.sql)}
                   className="flex h-[var(--row-h)] w-full items-center gap-2 rounded-md px-2 text-left hover:bg-surface-2"
                 >
                   <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-text">

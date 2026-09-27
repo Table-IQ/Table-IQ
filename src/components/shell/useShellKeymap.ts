@@ -2,10 +2,9 @@ import { useEffect } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { useSettingsUi } from "../Settings";
 import { shortcutFor } from "../../lib/shellKeymap";
+import { tabGuard } from "../../state/tabGuard";
 
 export interface UseShellKeymapOptions {
-  openQuery: () => void;
-  close: (key: string) => void;
   activeKey: string | null;
   /** Included only to force a re-subscribe when the active connection changes,
    *  same as before the extraction — see the deps comment below. */
@@ -43,10 +42,10 @@ export function useShellKeymap(options: UseShellKeymapOptions): void {
           void options.openDbPicker();
           break;
         case "new-query":
-          options.openQuery();
+          void tabGuard.openQuery();
           break;
         case "close-tab":
-          if (options.activeKey) options.close(options.activeKey);
+          if (options.activeKey) void tabGuard.close([options.activeKey]);
           break;
         case "toggle-sidebar":
           options.setShowSidebar((v) => !v);
@@ -73,5 +72,5 @@ export function useShellKeymap(options: UseShellKeymapOptions): void {
     // fresh closure) whenever the active connection changes, which is what those
     // two actually depend on.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [options.openQuery, options.close, options.activeKey, options.activeConnId]);
+  }, [options.activeKey, options.activeConnId]);
 }

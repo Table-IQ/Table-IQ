@@ -31,7 +31,10 @@ import { pagerLabel } from "../lib/pager";
 import { mergeTotal, staleTotal, type RowTotal } from "../lib/rowTotal";
 import { isFindShortcut, isMacPlatform } from "../lib/shortcut";
 import { cycleSort } from "../lib/tableSort";
-import { useTabs } from "../state/tabsStore";
+import { tabGuard } from "../state/tabGuard";
+import { useStaged } from "../state/stagedStore";
+import { normalizeEnv } from "../lib/connEnv";
+import { productionCommitMessage } from "../lib/stagedEdits";
 import {
   invalidateTableMeta,
   loadForeignKeys,
@@ -197,7 +200,6 @@ export function TableView({ connId, schema, object, view }: Props) {
   const savedTimer = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearTimeout(savedTimer.current), []);
   const gridRef = useRef<DataGridHandle>(null);
-  const openTab = useTabs((s) => s.openTable);
   const engine = useConnections((s) => s.active?.engine ?? "postgres") as Engine;
   const setSelectedRow = useSelectedRow((s) => s.setRow);
   const clearSelectedRowIfFrom = useSelectedRow((s) => s.clearIfFrom);
@@ -517,6 +519,45 @@ export function TableView({ connId, schema, object, view }: Props) {
   const rowsOnPage = pageData ? Math.min(pageData.size, pageData.rows) : 0;
   const hasNext = !!pageData && pageData.rows > pageData.size;
   const firstRow = pageData ? pageData.page * pageData.size : 0;
+
+  // The titlebar's Discard / Review / Commit (G2) act on this tab's staged edits.
+  // `rowOffset` is `firstRow` (the page on screen): `PendingEdit.row` indexes that page.
+  const publishStaged = useStaged((s) => s.publish);
+  const unregisterStaged = useStaged((s) => s.unregister);
+  useEffect(() => {
+    publishStaged(requestKey, pendingCount, committing, {
+      list: () => gridRef.current?.listPending() ?? [],
+      commit: () => gridRef.current?.commitPending(),
+      discard: () => gridRef.current?.discardPending(),
+      rowOffset: firstRow,
+    });
+  }, [requestKey, pendingCount, committing, publishStaged, firstRow]);
+  useEffect(() => () => unregisterStaged(requestKey), [requestKey, unregisterStaged]);
+
+  // Production connections confirm every commit (⌘S, the in-grid and titlebar Commit).
+  const env = useConnections((s) => normalizeEnv(s.saved.find((c) => c.id === connId)?.env));
+  const confirmCommit = useMemo(
+    () =>
+      env === "production"
+        ? async () => {
+            const name =
+              useConnections.getState().saved.find((c) => c.id === connId)?.name ?? "production";
+            const message = productionCommitMessage(pendingCount, name);
+            try {
+              const { confirm } = await import("@tauri-apps/plugin-dialog");
+              return await confirm(message, {
+                title: "Production",
+                kind: "warning",
+                okLabel: "Commit to production",
+                cancelLabel: "Cancel",
+              });
+            } catch {
+              return window.confirm(message);
+            }
+          }
+        : undefined,
+    [env, connId, pendingCount],
+  );
 
   const source = useMemo<GridSource | null>(() => {
     if (!pageData) return null;
@@ -872,7 +913,7 @@ export function TableView({ connId, schema, object, view }: Props) {
           {fks.map((fk, i) => (
             <button
               key={`${fk.from_column}->${fk.to_table}`}
-              onClick={() => openTab(fk.to_schema ?? schema, fk.to_table)}
+              onClick={() => void tabGuard.openTable(fk.to_schema ?? schema, fk.to_table)}
               title={`${fk.from_column} → ${fk.to_schema ?? schema}.${fk.to_table}.${fk.to_column}`}
               className="text-text/80 transition-colors hover:text-primary"
             >
@@ -954,6 +995,7 @@ export function TableView({ connId, schema, object, view }: Props) {
             rowMarkerStart={firstRow + 1}
             highlight={searchTerm(pageData?.filters ?? [])}
             pk={pk}
+            confirmCommit={confirmCommit}
             // Read-only while a page is in flight: the grid stays live for
             // scrolling and copying, but an edit staged now would be wiped when
             // the new page lands.
@@ -961,7 +1003,7 @@ export function TableView({ connId, schema, object, view }: Props) {
             fkByColumn={fkByColumn}
             onFkClick={(toTable) => {
               const fk = fks.find((f) => f.to_table === toTable);
-              openTab(fk?.to_schema ?? schema, toTable);
+              void tabGuard.openTable(fk?.to_schema ?? schema, toTable);
             }}
             onCellContext={(c) => setCellMenu(c)}
             onRowSelected={(row, values) => {
@@ -1012,7 +1054,9 @@ export function TableView({ connId, schema, object, view }: Props) {
                 { value: "structure", label: "Structure" },
               ]}
               value={view}
-              onChange={(v) => v !== view && !blockedByEdits() && openTab(schema, object.name, v)}
+              onChange={(v) => {
+                if (v !== view && !blockedByEdits()) void tabGuard.openTable(schema, object.name, v);
+              }}
             />
             <StatusBarButton
               onClick={() => setDraft(draft ? null : {})}

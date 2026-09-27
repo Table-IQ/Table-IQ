@@ -60,6 +60,7 @@ import {
   useConnections,
 } from "../state/connectionStore";
 import { useTabs, viewGlyph, viewGlyphClass } from "../state/tabsStore";
+import { tabGuard } from "../state/tabGuard";
 import type { Tab } from "../state/tabsStore";
 import {
   cancelAll,
@@ -142,8 +143,8 @@ export function MainShell() {
   // Header color chip resolves from the saved ConnConfig (ConnectedInfo doesn't carry color).
   const activeColor = active ? saved.find((c) => c.id === active.id)?.color ?? null : null;
   const tabsState = useTabs();
-  const { tabs, activeKey, openTable, openQuery, openErd, openView, close, setActive: setActiveTab } =
-    tabsState;
+  // Every tab change goes through `tabGuard` (staged edits live in the mounted tab only).
+  const { tabs, activeKey } = tabsState;
   const [showStructure, setShowStructure] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showBackup, setShowBackup] = useState(false);
@@ -403,8 +404,6 @@ export function MainShell() {
   // Binding table + guards live in `shortcutFor` (`lib/shellKeymap.ts`, unit-tested);
   // this just wires it to the shell's own state setters (Task 11b extraction).
   useShellKeymap({
-    openQuery,
-    close,
     activeKey,
     activeConnId: active?.id,
     openDbPicker,
@@ -425,10 +424,6 @@ export function MainShell() {
     schema,
     dbItems: dbList.items,
     paletteSaved,
-    openTable,
-    openQuery,
-    openErd,
-    openView,
     openDbPicker,
     pickDatabase,
     setShowConnPicker,
@@ -538,7 +533,7 @@ export function MainShell() {
       {
         id: "n-view",
         label: "New View…",
-        onSelect: () => openQuery(`CREATE VIEW ${q(s)}.${q("new_view")} AS\nSELECT 1;`),
+        onSelect: () => void tabGuard.openQuery(`CREATE VIEW ${q(s)}.${q("new_view")} AS\nSELECT 1;`),
       },
     ];
     if (engine === "postgres") {
@@ -547,13 +542,13 @@ export function MainShell() {
           id: "n-mview",
           label: "New Materialized View…",
           onSelect: () =>
-            openQuery(`CREATE MATERIALIZED VIEW ${q(s)}.${q("new_mview")} AS\nSELECT 1;`),
+            void tabGuard.openQuery(`CREATE MATERIALIZED VIEW ${q(s)}.${q("new_mview")} AS\nSELECT 1;`),
         },
         {
           id: "n-fn",
           label: "New Function…",
           onSelect: () =>
-            openQuery(
+            void tabGuard.openQuery(
               `CREATE FUNCTION ${q(s)}.${q("new_fn")}()\nRETURNS void AS $$\nBEGIN\n  -- …\nEND;\n$$ LANGUAGE plpgsql;`,
             ),
         },
@@ -561,7 +556,7 @@ export function MainShell() {
           id: "n-proc",
           label: "New Procedure…",
           onSelect: () =>
-            openQuery(
+            void tabGuard.openQuery(
               `CREATE PROCEDURE ${q(s)}.${q("new_proc")}()\nLANGUAGE plpgsql AS $$\nBEGIN\n  -- …\nEND;\n$$;`,
             ),
         },
@@ -574,12 +569,12 @@ export function MainShell() {
           id: "n-fn",
           label: "New Function…",
           onSelect: () =>
-            openQuery(`CREATE FUNCTION ${q("new_fn")}() RETURNS INT DETERMINISTIC\nRETURN 1;`),
+            void tabGuard.openQuery(`CREATE FUNCTION ${q("new_fn")}() RETURNS INT DETERMINISTIC\nRETURN 1;`),
         },
         {
           id: "n-proc",
           label: "New Procedure…",
-          onSelect: () => openQuery(`CREATE PROCEDURE ${q("new_proc")}()\nSELECT 1;`),
+          onSelect: () => void tabGuard.openQuery(`CREATE PROCEDURE ${q("new_proc")}()\nSELECT 1;`),
         },
       );
     } else if (engine === "sqlserver") {
@@ -588,7 +583,7 @@ export function MainShell() {
           id: "n-fn",
           label: "New Function…",
           onSelect: () =>
-            openQuery(
+            void tabGuard.openQuery(
               `CREATE FUNCTION ${q(s)}.${q("new_fn")}()\nRETURNS int\nAS\nBEGIN\n  RETURN 1\nEND`,
             ),
         },
@@ -596,7 +591,7 @@ export function MainShell() {
           id: "n-proc",
           label: "New Procedure…",
           onSelect: () =>
-            openQuery(`CREATE PROCEDURE ${q(s)}.${q("new_proc")}\nAS\nBEGIN\n  SELECT 1\nEND`),
+            void tabGuard.openQuery(`CREATE PROCEDURE ${q(s)}.${q("new_proc")}\nAS\nBEGIN\n  SELECT 1\nEND`),
         },
       );
     }
@@ -605,7 +600,7 @@ export function MainShell() {
         id: "n-schema",
         label: engine === "mysql" ? "New Database…" : "New Schema…",
         onSelect: () =>
-          openQuery(
+          void tabGuard.openQuery(
             engine === "mysql"
               ? `CREATE DATABASE ${q("new_database")};`
               : `CREATE SCHEMA ${q("new_schema")};`,
@@ -618,7 +613,7 @@ export function MainShell() {
         id: "n-group",
         label: "New Group / Role…",
         onSelect: () =>
-          openQuery(
+          void tabGuard.openQuery(
             engine === "mysql" ? `CREATE ROLE 'new_group';` : `CREATE ROLE ${q("new_group")};`,
           ),
       });
@@ -803,7 +798,7 @@ export function MainShell() {
     },
     metrics: {
       icon: <IconMetrics size={16} />,
-      onClick: () => openView("metrics", "Metrics Board"),
+      onClick: () => void tabGuard.openView("metrics", "Metrics Board"),
     },
   };
   const visibleTitlebarIds = applyToolbar(
@@ -1027,7 +1022,7 @@ export function MainShell() {
                   activeKey={activeKey}
                   pinned={livePins(pinned, schema)}
                   onlySchema={activeSchema}
-                  onOpen={(schemaName, obj) => openTable(schemaName, obj.name)}
+                  onOpen={(schemaName, obj) => void tabGuard.openTable(schemaName, obj.name)}
                   onContext={(e, schemaName, obj) => {
                     e.preventDefault();
                     setObjMenu({ x: e.clientX, y: e.clientY, schema: schemaName, obj });
@@ -1093,8 +1088,8 @@ export function MainShell() {
         <main className="flex min-w-0 flex-1 flex-col">
           {/* Primary action toolbar */}
           <Toolbar>
-            <ToolbarButton icon={<IconPlus />} label="Query" shortcut="⌘T" onClick={() => openQuery()} />
-            <ToolbarButton icon={<IconErd />} label="ERD" onClick={openErd} />
+            <ToolbarButton icon={<IconPlus />} label="Query" shortcut="⌘T" onClick={() => void tabGuard.openQuery()} />
+            <ToolbarButton icon={<IconErd />} label="ERD" onClick={() => void tabGuard.openErd()} />
             <ToolbarButton
               icon={<IconStructure />}
               label="Table"
@@ -1136,7 +1131,7 @@ export function MainShell() {
                 if (!activeKey) return;
                 const i = tabs.findIndex((t) => t.key === activeKey);
                 const prev = tabs[i - 1];
-                if (prev) setActiveTab(prev.key);
+                if (prev) void tabGuard.activate(prev.key);
               }}
             />
             <IconButton
@@ -1148,7 +1143,7 @@ export function MainShell() {
                 if (!activeKey) return;
                 const i = tabs.findIndex((t) => t.key === activeKey);
                 const next = tabs[i + 1];
-                if (next) setActiveTab(next.key);
+                if (next) void tabGuard.activate(next.key);
               }}
             />
             <span className="my-auto mx-1 inline-block h-4 w-px bg-border" />
@@ -1167,7 +1162,7 @@ export function MainShell() {
                       : "bg-surface text-muted hover:bg-surface-2 hover:text-text"
                   }`}
                 >
-                  <button onClick={() => setActiveTab(t.key)} className="font-mono">
+                  <button onClick={() => void tabGuard.activate(t.key)} className="font-mono">
                     {t.kind === "query" ? <span className="text-primary">◇ </span> : null}
                     {viewGlyph(t.kind) ? (
                       <span className={viewGlyphClass(t.kind)}>{viewGlyph(t.kind)} </span>
@@ -1175,7 +1170,7 @@ export function MainShell() {
                     {t.title}
                   </button>
                   <button
-                    onClick={() => close(t.key)}
+                    onClick={() => void tabGuard.close([t.key])}
                     className="inline-flex h-4 w-4 items-center justify-center rounded text-muted opacity-0 hover:bg-surface-2 hover:text-text group-hover:opacity-100"
                     aria-label={`Close ${t.title}`}
                   >
@@ -1340,17 +1335,17 @@ export function MainShell() {
             }
           };
           const items: (ContextMenuItem | "separator")[] = [
-            { id: "open", label: "Open in new tab", onSelect: () => openTable(s, obj.name) },
+            { id: "open", label: "Open in new tab", onSelect: () => void tabGuard.openTable(s, obj.name) },
             {
               id: "open-structure",
               label: "Open structure",
-              onSelect: () => openTable(s, obj.name, "structure"),
+              onSelect: () => void tabGuard.openTable(s, obj.name, "structure"),
             },
             {
               id: "overview",
               label: "Item overview",
               onSelect: () => {
-                openTable(s, obj.name);
+                void tabGuard.openTable(s, obj.name);
                 setShowInspector(true);
               },
             },
@@ -1361,7 +1356,7 @@ export function MainShell() {
                 // The ERD keys its cards `schema.table`, so same-named tables in
                 // two schemas cannot be confused for one another.
                 setErdFocus(`${s}.${obj.name}`);
-                openErd();
+                void tabGuard.openErd();
               },
             },
             "separator",
@@ -1399,14 +1394,14 @@ export function MainShell() {
             {
               id: "new-query",
               label: "New query selecting from this",
-              onSelect: () => openQuery(selectStarter(s, obj.name, engine)),
+              onSelect: () => void tabGuard.openQuery(selectStarter(s, obj.name, engine)),
             },
             "separator",
             {
               id: "clone",
               label: "Clone (open as query)",
               onSelect: () =>
-                openQuery(
+                void tabGuard.openQuery(
                   engine === "postgres"
                     ? `CREATE TABLE ${q(s)}.${q(`${obj.name}_copy`)} (LIKE ${qualified} INCLUDING ALL);`
                     : engine === "sqlserver"
@@ -1419,13 +1414,13 @@ export function MainShell() {
               id: "truncate",
               label: "Truncate (open as query)",
               tone: "danger",
-              onSelect: () => openQuery(buildTableScript("truncate", s, obj.name, scriptCols, engine)),
+              onSelect: () => void tabGuard.openQuery(buildTableScript("truncate", s, obj.name, scriptCols, engine)),
             },
             {
               id: "drop",
               label: "Drop (open as query)",
               tone: "danger",
-              onSelect: () => openQuery(buildTableScript("drop", s, obj.name, scriptCols, engine)),
+              onSelect: () => void tabGuard.openQuery(buildTableScript("drop", s, obj.name, scriptCols, engine)),
             },
           ];
           return (
@@ -1450,13 +1445,13 @@ export function MainShell() {
       {tabMenu &&
         (() => {
           const items: (ContextMenuItem | "separator")[] = [
-            { id: "close", label: "Close", onSelect: () => close(tabMenu.tab.key) },
+            { id: "close", label: "Close", onSelect: () => void tabGuard.close([tabMenu.tab.key]) },
             {
               id: "close-others",
               label: "Close others",
               disabled: tabs.length <= 1,
               onSelect: () => {
-                for (const t of tabs) if (t.key !== tabMenu.tab.key) close(t.key);
+                void tabGuard.close(tabs.filter((t) => t.key !== tabMenu.tab.key).map((t) => t.key));
               },
             },
             {
@@ -1464,7 +1459,7 @@ export function MainShell() {
               label: "Close all",
               tone: "danger",
               onSelect: () => {
-                for (const t of tabs) close(t.key);
+                void tabGuard.close(tabs.map((t) => t.key));
               },
             },
             "separator",
@@ -1476,9 +1471,9 @@ export function MainShell() {
               disabled: tabMenu.tab.kind !== "table" && tabMenu.tab.kind !== "query",
               onSelect: () => {
                 if (tabMenu.tab.kind === "table" && tabMenu.tab.schema && tabMenu.tab.table) {
-                  openTable(tabMenu.tab.schema, tabMenu.tab.table);
+                  void tabGuard.openTable(tabMenu.tab.schema, tabMenu.tab.table);
                 } else if (tabMenu.tab.kind === "query") {
-                  openQuery(tabMenu.tab.sql);
+                  void tabGuard.openQuery(tabMenu.tab.sql);
                 }
               },
             },

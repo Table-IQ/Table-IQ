@@ -12,7 +12,7 @@ import {
   type EdgeGeometry,
   type NodeBox,
 } from "../lib/erdLayout";
-import { useTabs } from "../state/tabsStore";
+import { tabGuard } from "../state/tabGuard";
 import { Toolbar, ToolbarButton, ToolbarSpacer } from "./ui/Toolbar";
 import { IconRefresh, IconSearch } from "./ui/Icon";
 
@@ -67,7 +67,6 @@ export function ErdView({
   // Per-card top-left positions (seeded from auto-layout, then user-draggable).
   const [positions, setPositions] = useState<Map<string, NodeBox>>(new Map());
   const containerRef = useRef<HTMLDivElement>(null);
-  const openTab = useTabs((s) => s.openTable);
   const dragRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
   // Active card drag (header grab). `moved` suppresses the click-to-open that
   // would otherwise fire when a drag ends on the card.
@@ -361,7 +360,7 @@ export function ErdView({
                       suppressClick.current = false;
                       return;
                     }
-                    openTab(c.schema, c.name);
+                    void tabGuard.openTable(c.schema, c.name);
                   }}
                   style={{
                     opacity: visible(c.key) ? 1 : 0.25,

@@ -26,12 +26,14 @@ import { useTheme } from "../theme/ThemeProvider";
 import type { ForeignKey, SortKey } from "../lib/commands";
 import {
   discardAll,
+  gatedCommit,
   isNullLeftEmpty,
   listPending,
   pendingKey,
   removePending,
   stageEdit,
   movedTints,
+  type PendingEdit,
   type PendingMap,
 } from "../lib/stagedEdits";
 
@@ -87,6 +89,8 @@ export interface DataGridHandle {
   commitPending: () => void;
   /** Drop all staged edits and revert the display. */
   discardPending: () => void;
+  /** The staged edits, in commit order (for the titlebar's Review popover). */
+  listPending: () => PendingEdit[];
   /** Fade a red tint off `row`; resolves when it has faded (at once under
    *  reduced motion). Used just before a deleted row is refetched away. */
   fadeRow: (row: number) => Promise<void>;
@@ -163,6 +167,10 @@ interface Props {
   /** Primary-key columns. A saved tint remembers its row by them, so a re-read
    *  that moves another row onto that index doesn't inherit the green. */
   pk?: string[] | null;
+  /** Asked before any commit (⌘S, the in-grid Commit, the titlebar's Commit — all
+   *  route through `commitPending`); resolving false leaves every edit staged. Set
+   *  for production connections. */
+  confirmCommit?: () => Promise<boolean>;
 }
 
 /** Row-marker column width for the widest number it will show (~8px a digit). */
@@ -197,6 +205,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     rowMarkerStart = 1,
     highlight = "",
     pk,
+    confirmCommit,
   },
   ref,
 ) {
@@ -236,6 +245,8 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   const savedIds = useRef(new Map<string, Record<string, string | null>>());
   const pkRef = useRef(pk);
   pkRef.current = pk;
+  const confirmCommitRef = useRef(confirmCommit);
+  confirmCommitRef.current = confirmCommit;
   // Monotonic per-cell edit token — a resolving write that's been superseded by
   // a newer edit on the same cell bails instead of clobbering it.
   const editSeq = useRef(new Map<string, number>());
@@ -743,7 +754,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   /** Commit all staged edits to the DB, in stage order. Drives saving→saved/error
    *  tints per cell; stops at the first failure, leaving the rest staged so the
    *  user can fix and retry. Refreshes only when every edit committed. */
-  const commitPending = useCallback(async () => {
+  const doCommit = useCallback(async () => {
     if (!onEdit) return;
     const edits = listPending(pending.current);
     if (edits.length === 0) return;
@@ -807,6 +818,13 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     }
   }, [onEdit, notifyPending, clearTintLater, onSave, onCommittingChange, animate, readRow]);
 
+  /** {@link doCommit}, behind `confirmCommit` when one is set. Nothing staged means
+   *  nothing to confirm, so an empty ⌘S never prompts. */
+  const commitPending = useCallback(async () => {
+    if (!onEdit || pending.current.size === 0) return;
+    await gatedCommit(confirmCommitRef.current, doCommit);
+  }, [onEdit, doCommit]);
+
   /** Drop every staged edit and revert the display to each cell's saved value. */
   const discardPending = useCallback(() => {
     for (const e of discardAll(pending.current)) {
@@ -866,6 +884,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     scrollToRow: (row: number) => gridRef.current?.scrollTo(0, row, "vertical"),
     commitPending: () => void commitPending(),
     discardPending,
+    listPending: () => listPending(pending.current),
     fadeRow: (row: number) =>
       new Promise<void>((resolve) => {
         if (reducedMotion.current) return resolve();
