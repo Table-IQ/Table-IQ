@@ -210,6 +210,15 @@ describe("isReadOnlyWidgetSql", () => {
     expect(isReadOnlyWidgetSql("SELECT update_count, into_date FROM t")).toBe(true);
   });
 
+  // A digit is a `\w` character, so `\b` does not fire between a digit and a following
+  // keyword — `1DELETE` reads as one boundary-free run to `\b(DELETE)\b`, hiding a write
+  // verb right after a numeric literal (verified live: SQL Server actually runs the
+  // DELETE). MySQL has the same hole via a numeric-literal suffix before INTO OUTFILE.
+  it("rejects a write keyword glued to a preceding digit (no \\b between digit and keyword)", () => {
+    expect(isReadOnlyWidgetSql("SELECT 1DELETE FROM t", "sqlserver")).toBe(false);
+    expect(isReadOnlyWidgetSql("SELECT 1e0INTO OUTFILE '/tmp/x'", "mysql")).toBe(false);
+  });
+
   it("rejects writer statements outright", () => {
     for (const sql of [
       "UPDATE t SET a = 1",

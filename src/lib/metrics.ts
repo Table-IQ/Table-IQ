@@ -167,7 +167,11 @@ const WRITE_KEYWORDS = [
   "EXEC", "EXECUTE", "CALL", "COPY", "LOCK", "KILL",
   "BACKUP", "RESTORE", "DBCC", "BULK", "SHUTDOWN",
 ];
-const WRITE_KEYWORD_RE = new RegExp(`\\b(${WRITE_KEYWORDS.join("|")})\\b`);
+// Not `\b` on the left: `\b` is a transition between a word char and a non-word char, and
+// a digit IS a word char, so `1DELETE` has no boundary there and slips through. A negative
+// lookbehind for an upper-cased letter/underscore (digits deliberately excluded) closes
+// that hole while still letting a keyword immediately follow a digit be rejected.
+const WRITE_KEYWORD_RE = new RegExp(`(?<![A-Z_])(${WRITE_KEYWORDS.join("|")})(?![A-Z0-9_])`);
 
 /**
  * True when `sql` is exactly one statement whose first keyword is read-only —
