@@ -151,7 +151,9 @@ saturated than our previous indigo-tinted dark.
 
 ### Tab strip (26px)
 - `<` `>` history navigation
-- Tab list — kind glyph (◇ query / ◫ ERD / ▦ table) + title
+- Tab list — kind glyph (◇ query / ◫ ERD / ▦ table / ▤ users / ◨ metrics) + title. ERD is the
+  only one of these five drawn in `--accent`; the rest use the neutral tab-glyph token (see
+  the accent rule above — AI surfaces only).
 - Active tab: subtler highlight (no top-border accent)
 - Right-edge `+` for new query
 

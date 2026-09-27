@@ -4,8 +4,10 @@ import { create } from "zustand";
  *  connection switch, so "per connection" falls out of that reset for free). */
 export type ViewKind = "erd" | "users" | "metrics" | "mcp";
 
-/** The glyph before a view tab's title — shared by the tab strip and Workspace Overview. */
-const VIEW_GLYPHS: Partial<Record<ViewKind, string>> = { erd: "◫", users: "▤", metrics: "▦" };
+/** The glyph before a view tab's title — shared by the tab strip and Workspace Overview.
+ *  DESIGN.md's "Tab strip" section documents every glyph in one place — keep that list in
+ *  sync with this map, and never reuse a glyph across kinds (▦ is the table tab's). */
+const VIEW_GLYPHS: Partial<Record<ViewKind, string>> = { erd: "◫", users: "▤", metrics: "◨" };
 
 /** `--accent` (DESIGN.md) is reserved for AI surfaces only, never ordinary chrome. ERD
  *  already rendered in accent before this fix and keeps doing so; users/metrics move to

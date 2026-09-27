@@ -109,7 +109,7 @@ describe("viewGlyph", () => {
   it("gives every drawn view kind a glyph and table/query tabs none", () => {
     expect(viewGlyph("erd")).toBe("◫");
     expect(viewGlyph("users")).toBe("▤");
-    expect(viewGlyph("metrics")).toBe("▦");
+    expect(viewGlyph("metrics")).toBe("◨");
     expect(viewGlyph("table")).toBeUndefined();
     expect(viewGlyph("query")).toBeUndefined();
   });
