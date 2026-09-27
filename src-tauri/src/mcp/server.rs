@@ -344,8 +344,9 @@ async fn connect_once(state: &ConnState, id: &str) -> Result<Arc<dyn SqlDriver>,
 /// DuckDB has no users: a table function can read any file the app can (`read_text`,
 /// `glob`, `FROM '/path'`) or fetch over HTTP. Before MCP touches a DuckDB instance, turn
 /// external access and extension auto-loading off and lock the configuration — for the
-/// whole instance, the user's own tabs included, until TableIQ restarts. Checked on every
-/// use rather than cached, so a reopened instance (a reconnect) is hardened again.
+/// whole instance, the user's own tabs included (so COPY/EXPORT and Backup's ATTACH fail
+/// too), until the instance is reopened (a reconnect or restore). Checked on every use
+/// rather than cached, so a reopened instance is hardened again on the next MCP call.
 async fn harden_duckdb(drv: &dyn SqlDriver) -> Result<(), String> {
     static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _one = ONE_AT_A_TIME.lock().await;

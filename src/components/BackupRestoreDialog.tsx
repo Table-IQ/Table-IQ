@@ -46,7 +46,7 @@ type Outcome = { ok: boolean; error: string | null };
 function restoreWarning(engine: Engine): string {
   switch (engine) {
     case "postgres":
-      return "A custom-format archive (.dump) drops and recreates the objects it contains; anything not in it is kept. A plain .sql file runs on top of what is there and stops at the first error; one that switches database, includes another file or runs a shell (\\c, \\i, \\!) is refused. Either way, a restore that fails part-way can leave the database partly changed.";
+      return "A custom-format archive (.dump) drops and recreates the objects it contains; anything not in it is kept. A plain .sql file runs on top of what is there and stops at the first error; a line starting with \\c, \\i or \\! (switch database, include a file, run a shell) is refused — the check looks at line starts only. Either way, a restore that fails part-way can leave the database partly changed.";
     case "mysql":
       return "The .sql file runs on top of what is there: the tables in the dump are dropped and recreated, other tables are kept. A file that creates, drops or switches to another database (a multi-database dump) is refused, and statements run only while this database is selected (mysql --one-database) — but a fully qualified name such as other_db.table in the file still runs. A restore that fails or is cancelled part-way leaves it partly restored.";
     case "sqlserver":
