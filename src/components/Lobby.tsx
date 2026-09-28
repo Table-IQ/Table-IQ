@@ -56,9 +56,13 @@ const PINNED_N = 3;
 const PREVIEW_ROWS = 3;
 const PREVIEW_COLS = 3;
 const ERD_TABLES = 4;
-const ERD_W = 360;
 const ERD_H = 150;
-const ERD_FONT_PX = 11;
+// Layout units, not px: text and strokes scale with the cards (240×28), so a name always
+// fits its box whatever width the lobby column renders at.
+const ERD_FONT_UNITS = 13;
+const ERD_STROKE_UNITS = 1.5;
+/** Room past the right-most card for a self-referencing FK's loop (erdLayout's LOOP_W + margin). */
+const ERD_LOOP_PAD = 64;
 const SQL_PREVIEW_CHARS = 90;
 const ASK_TITLE_CHARS = 40;
 
@@ -857,8 +861,6 @@ function MiniErd({ tables, edges }: { tables: string[]; edges: ForeignKey[] }) {
     tables.map((name) => ({ name, columns: 0 })),
     edges.map((e) => ({ from: e.from_table, to: e.to_table })),
   );
-  const scale = Math.min(ERD_W / layout.width, ERD_H / layout.height);
-  const font = ERD_FONT_PX / scale;
   const seen = new Set<string>();
   const paths: string[] = [];
   for (const e of edges) {
@@ -875,7 +877,7 @@ function MiniErd({ tables, edges }: { tables: string[]; edges: ForeignKey[] }) {
   return (
     <div className="px-2 pt-2">
       <svg
-        viewBox={`0 0 ${layout.width} ${layout.height}`}
+        viewBox={`0 0 ${layout.width + (edges.some((e) => e.from_table === e.to_table) ? ERD_LOOP_PAD : 0)} ${layout.height}`}
         width="100%"
         height={ERD_H}
         role="img"
@@ -883,7 +885,7 @@ function MiniErd({ tables, edges }: { tables: string[]; edges: ForeignKey[] }) {
         className="block"
       >
         {paths.map((d, i) => (
-          <path key={i} d={d} className="fill-none stroke-muted-2" strokeWidth={1 / scale} />
+          <path key={i} d={d} className="fill-none stroke-muted-2" strokeWidth={ERD_STROKE_UNITS} />
         ))}
         {[...layout.nodes.entries()].map(([name, box]) => (
           <g key={name}>
@@ -892,16 +894,16 @@ function MiniErd({ tables, edges }: { tables: string[]; edges: ForeignKey[] }) {
               y={box.y}
               width={box.w}
               height={box.h}
-              rx={4 / scale}
+              rx={6}
               className="fill-bg stroke-border"
-              strokeWidth={1 / scale}
+              strokeWidth={ERD_STROKE_UNITS}
             />
             <text
               x={box.x + box.w / 2}
               y={box.y + box.h / 2}
               textAnchor="middle"
               dominantBaseline="central"
-              fontSize={font}
+              fontSize={ERD_FONT_UNITS}
               className="fill-text font-mono"
             >
               {name}
