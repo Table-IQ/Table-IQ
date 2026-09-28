@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   askErrorMessage,
+  miniErdGrid,
   erdSubset,
   formatBytes,
   formatCount,
@@ -165,5 +166,29 @@ describe("lobbyShouldLoad", () => {
 
   it("does not auto-retry a load that never succeeded", () => {
     expect(lobbyShouldLoad({ autoload: false, requested: false, entry: { refreshKey: 0 } })).toBe(false);
+  });
+});
+
+// Regression: ISSUE-004 — a 4-table FK chain laid out as one row was unreadable at half the lobby width
+// Found by /qa on 2026-09-28
+// Report: .gstack/qa-reports/qa-report-127-0-0-1-2026-09-28.md
+describe("miniErdGrid", () => {
+  const fk = (from: string, to: string) => ({ from_table: from, from_column: "x", to_table: to, to_column: "id" });
+
+  it("puts a 4-table chain on a two-column ring with FK neighbours side by side", () => {
+    const g = miniErdGrid(["b", "c", "a", "d"], [fk("a", "b"), fk("b", "c"), fk("c", "d")]);
+    expect(new Set([...g.boxes.values()].map((b) => b.x)).size).toBe(2); // two columns
+    for (const [f, t] of [["a", "b"], ["b", "c"], ["c", "d"]]) {
+      const [fx, fy] = [g.boxes.get(f)!.x, g.boxes.get(f)!.y];
+      const [tx, ty] = [g.boxes.get(t)!.x, g.boxes.get(t)!.y];
+      expect(fx === tx || fy === ty).toBe(true); // never diagonal
+    }
+    expect(g.width).toBeLessThan(g.height * 8);
+  });
+
+  it("handles one table and a self-reference", () => {
+    const g = miniErdGrid(["users"], [fk("users", "users")]);
+    expect(g.boxes.size).toBe(1);
+    expect(g.width).toBeGreaterThan(0);
   });
 });
