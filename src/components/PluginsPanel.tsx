@@ -20,7 +20,10 @@ export function PluginsPanel({
   const [output, setOutput] = useState<string | null>(null);
   const [status, setStatus] = useState<string>("");
 
-  const refresh = useCallback(() => listPlugins().then(setPlugins).catch(() => {}), []);
+  const refresh = useCallback(
+    () => listPlugins().then(setPlugins).catch((e) => setStatus(`Could not list plugins: ${e}`)),
+    [],
+  );
   useEffect(() => {
     refresh();
   }, [refresh]);
@@ -94,7 +97,11 @@ export function PluginsPanel({
                 Output
               </span>
               <button
-                onClick={() => downloadText("plugin-output.txt", output, "text/plain")}
+                onClick={() =>
+                  downloadText("plugin-output.txt", output, "text/plain").catch((e) =>
+                    setStatus(`Export failed: ${e}`),
+                  )
+                }
                 className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
               >
                 <IconExport size={11} /> Download

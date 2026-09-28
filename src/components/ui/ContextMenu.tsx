@@ -9,6 +9,8 @@ export interface ContextMenuItem {
   /** Right-aligned secondary text (e.g. a shortcut). */
   shortcut?: string;
   disabled?: boolean;
+  /** Set on radio-style items: renders a fixed check slot + aria-checked. */
+  checked?: boolean;
   /** Leaf action. Omitted on items that only open a submenu. */
   onSelect?: () => void;
   /** Nested submenu — opens as a flyout on hover/click (TablePlus parity). */
@@ -63,11 +65,19 @@ function MenuItems({
                     ? "text-muted"
                     : "text-text"
               }`}
-              role="menuitem"
+              role={item.checked === undefined ? "menuitem" : "menuitemradio"}
+              aria-checked={item.checked}
               aria-haspopup={item.children ? "menu" : undefined}
               aria-expanded={item.children ? openSub === item.id : undefined}
             >
-              <span className="truncate">{item.label}</span>
+              <span className="truncate">
+                {item.checked !== undefined && (
+                  <span aria-hidden className="inline-block w-4">
+                    {item.checked ? "✓" : ""}
+                  </span>
+                )}
+                {item.label}
+              </span>
               {item.children ? (
                 <span aria-hidden className="ml-auto text-muted">
                   ›

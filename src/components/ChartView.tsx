@@ -1,10 +1,72 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { fetchResultWindow } from "../lib/commands";
 import { decodeWindow } from "../lib/arrowWindow";
-import { buildSeries, niceMax, type Point } from "../lib/chart";
+import { buildSeries, niceMax, MAX_BARS, type Point } from "../lib/chart";
 
 const SAMPLE = 200; // rows pulled for the chart
-const MAX_BARS = 50;
+
+/**
+ * The bar/line SVG itself (Task 11: extracted so `MetricsBoard`'s widget
+ * cards can reuse it at a smaller size). Assumes `points.length > 0` —
+ * callers own the "no data" empty state, same as `ChartView` always did.
+ */
+export function ChartSvg({
+  points,
+  kind,
+  width = 760,
+  height = 280,
+  padB = 48,
+}: {
+  points: Point[];
+  kind: "bar" | "line";
+  width?: number;
+  height?: number;
+  /** Space under the plot; a small widget card needs less than the full chart. */
+  padB?: number;
+}) {
+  const max = niceMax(points.map((p) => p.value));
+  const W = width;
+  const H = height;
+  const padL = 48;
+  const padT = 12;
+  const plotW = W - padL - 12;
+  const plotH = H - padB - padT;
+  const x = (i: number) => padL + (points.length <= 1 ? plotW / 2 : (i / (points.length - 1)) * plotW);
+  const y = (v: number) => padT + plotH - (v / max) * plotH;
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label="chart">
+      {/* axes */}
+      <line x1={padL} y1={padT} x2={padL} y2={padT + plotH} stroke="currentColor" className="text-border" />
+      <line x1={padL} y1={padT + plotH} x2={W - 12} y2={padT + plotH} stroke="currentColor" className="text-border" />
+      <text x={padL - 6} y={padT + 4} textAnchor="end" className="fill-current text-[10px] text-muted">
+        {max.toLocaleString()}
+      </text>
+      <text x={padL - 6} y={padT + plotH} textAnchor="end" className="fill-current text-[10px] text-muted">
+        0
+      </text>
+      {kind === "bar"
+        ? points.map((p, i) => {
+            const bw = Math.max(2, plotW / points.length - 4);
+            const bx = padL + (i / points.length) * plotW + 2;
+            const bh = (p.value / max) * plotH;
+            return (
+              <rect key={i} x={bx} y={padT + plotH - bh} width={bw} height={bh} className="fill-primary">
+                <title>{`${p.label}: ${p.value.toLocaleString()}`}</title>
+              </rect>
+            );
+          })
+        : (
+          <polyline
+            fill="none"
+            className="stroke-primary"
+            strokeWidth={2}
+            points={points.map((p, i) => `${x(i)},${y(p.value)}`).join(" ")}
+          />
+        )}
+    </svg>
+  );
+}
 
 /** Quick chart of a result set: pick a label column + numeric value column, bar or line. */
 export function ChartView({
@@ -30,8 +92,10 @@ export function ChartView({
       const labels: string[] = [];
       const values: string[] = [];
       for (let r = 0; r < w.numRows; r++) {
-        labels.push(w.getCell(r, xCol));
-        values.push(w.getCell(r, yCol));
+        // A NULL label/value isn't plottable, so it charts as empty and is
+        // dropped by buildSeries — the grid is where NULL renders as NULL.
+        labels.push(w.getCell(r, xCol) ?? "");
+        values.push(w.getCell(r, yCol) ?? "");
       }
       if (!cancelled) setPoints(buildSeries(labels, values).slice(0, MAX_BARS));
     })().catch(() => !cancelled && setPoints([]));
@@ -39,17 +103,6 @@ export function ChartView({
       cancelled = true;
     };
   }, [resultId, xCol, yCol, totalRows]);
-
-  const max = useMemo(() => niceMax(points.map((p) => p.value)), [points]);
-  const W = 760;
-  const H = 280;
-  const padL = 48;
-  const padB = 48;
-  const padT = 12;
-  const plotW = W - padL - 12;
-  const plotH = H - padB - padT;
-  const x = (i: number) => padL + (points.length <= 1 ? plotW / 2 : (i / (points.length - 1)) * plotW);
-  const y = (v: number) => padT + plotH - (v / max) * plotH;
 
   const select =
     "rounded-md border border-border bg-bg px-2 py-1 text-xs text-text focus:border-primary focus:outline-none";
@@ -94,43 +147,7 @@ export function ChartView({
             No numeric data for {yCol}. Pick a numeric Y column.
           </div>
         ) : (
-          <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label="chart">
-            {/* axes */}
-            <line x1={padL} y1={padT} x2={padL} y2={padT + plotH} stroke="currentColor" className="text-border" />
-            <line x1={padL} y1={padT + plotH} x2={W - 12} y2={padT + plotH} stroke="currentColor" className="text-border" />
-            <text x={padL - 6} y={padT + 4} textAnchor="end" className="fill-current text-[10px] text-muted">
-              {max.toLocaleString()}
-            </text>
-            <text x={padL - 6} y={padT + plotH} textAnchor="end" className="fill-current text-[10px] text-muted">
-              0
-            </text>
-            {kind === "bar"
-              ? points.map((p, i) => {
-                  const bw = Math.max(2, plotW / points.length - 4);
-                  const bx = padL + (i / points.length) * plotW + 2;
-                  const bh = (p.value / max) * plotH;
-                  return (
-                    <rect
-                      key={i}
-                      x={bx}
-                      y={padT + plotH - bh}
-                      width={bw}
-                      height={bh}
-                      className="fill-primary"
-                    >
-                      <title>{`${p.label}: ${p.value.toLocaleString()}`}</title>
-                    </rect>
-                  );
-                })
-              : (
-                <polyline
-                  fill="none"
-                  className="stroke-primary"
-                  strokeWidth={2}
-                  points={points.map((p, i) => `${x(i)},${y(p.value)}`).join(" ")}
-                />
-              )}
-          </svg>
+          <ChartSvg points={points} kind={kind} />
         )}
       </div>
     </div>

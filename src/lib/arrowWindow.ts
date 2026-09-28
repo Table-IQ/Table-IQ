@@ -4,22 +4,42 @@ import { tableFromIPC, Table } from "apache-arrow";
 export interface DecodedWindow {
   numRows: number;
   columns: string[];
-  /** Stringified cell value for display; null → "". */
-  getCell(row: number, col: string): string;
+  /** Stringified cell value for display; a SQL NULL stays `null` (never ""). */
+  getCell(row: number, col: string): string | null;
 }
 
 /** Decode an Arrow IPC *stream* buffer (schema + one batch) into a window view. */
 export function decodeWindow(buf: Uint8Array): DecodedWindow {
   const table: Table = tableFromIPC(buf);
   const columns = table.schema.fields.map((f) => f.name);
+  // Build the name→child-vector lookup once per window instead of per cell.
+  const children = new Map(columns.map((name) => [name, table.getChild(name)]));
   return {
     numRows: table.numRows,
     columns,
     getCell(row, col) {
-      const v = table.getChild(col)?.get(row);
-      return v == null ? "" : String(v);
+      const v = children.get(col)?.get(row);
+      return v == null ? null : String(v);
     },
   };
+}
+
+/**
+ * The cells of `win` whose text contains `term` (case-insensitive), as
+ * `row * columns.length + colIndex`. One pass per page, so the grid's
+ * per-cell highlight check is a Set lookup instead of a lowercase + scan.
+ */
+export function searchHits(win: DecodedWindow, columns: string[], term: string): Set<number> {
+  const hits = new Set<number>();
+  const t = term.toLowerCase();
+  if (t === "") return hits;
+  for (let c = 0; c < columns.length; c++) {
+    for (let r = 0; r < win.numRows; r++) {
+      const v = win.getCell(r, columns[c]);
+      if (v !== null && v.toLowerCase().includes(t)) hits.add(r * columns.length + c);
+    }
+  }
+  return hits;
 }
 
 /**
@@ -55,8 +75,14 @@ export class WindowCache {
     }
   }
 
-  /** Cell for a global row, or undefined if its page isn't loaded. Touch = mark recent. */
-  getCell(globalRow: number, col: string): string | undefined {
+  /** The decoded page holding `globalRow`, without touching LRU order. */
+  windowOf(globalRow: number): DecodedWindow | undefined {
+    return this.pages.get(this.pageOf(globalRow));
+  }
+
+  /** Cell for a global row, or undefined if its page isn't loaded (a SQL NULL
+   *  value is `null`, distinct from "not loaded yet"). Touch = mark recent. */
+  getCell(globalRow: number, col: string): string | null | undefined {
     const page = this.pageOf(globalRow);
     const w = this.pages.get(page);
     if (!w) return undefined;

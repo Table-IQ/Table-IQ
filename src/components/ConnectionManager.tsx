@@ -1,18 +1,26 @@
 import { useEffect, useMemo, useState } from "react";
 import { BrandMark } from "./Brand";
 import { ThemeToggle } from "./ThemeToggle";
+import { useSettingsUi } from "./Settings";
 import { Onboarding } from "./Onboarding";
 import { EngineIcon } from "./ui/EngineIcon";
-import { IconClose, IconExport, IconImport, IconKey, IconPlus, IconSearch } from "./ui/Icon";
+import { Elapsed } from "./ui/Elapsed";
+import {
+  IconClose,
+  IconExport,
+  IconImport,
+  IconKey,
+  IconPlus,
+  IconRefresh,
+  IconSearch,
+} from "./ui/Icon";
 import { ContextMenu } from "./ui/ContextMenu";
 import {
-  connect,
   deleteConnection,
   downloadText,
   exportConnections,
   importConnections,
   listConnections,
-  listObjects,
   pickKeyFile,
   saveConnection,
   testConnection,
@@ -20,8 +28,18 @@ import {
   type Engine,
 } from "../lib/commands";
 import { defaultSshConfig, type SshConfig } from "../lib/ssh";
-import { useConnections } from "../state/connectionStore";
-import { getLastConnected, markConnected } from "../lib/lastConnected";
+import { CONN_ENVS, type ConnEnv } from "../lib/connEnv";
+import { cancelConnecting, openConnection, useConnections, type ConnectingState } from "../state/connectionStore";
+import { getLastConnected } from "../lib/lastConnected";
+import { version as APP_VERSION } from "../../package.json";
+
+/** Connecting stage → row label. "switch" never happens here (that's the
+ *  DatabasePicker's flow) but the union is shared, so cover it anyway. */
+const BUSY_LABEL: Record<ConnectingState["stage"], string> = {
+  connect: "Connecting…",
+  schema: "Loading schema…",
+  switch: "Loading schema…",
+};
 
 /** Default connection color (light-mode `--primary`). Connections still on this
  *  value are treated as "no custom tag" — so the row dot is suppressed. */
@@ -31,6 +49,7 @@ const DEFAULT_PORT: Record<string, number> = {
   postgres: 5432,
   mysql: 3306,
   sqlite: 0,
+  duckdb: 0,
   redis: 6379,
   mongodb: 27017,
   sqlserver: 1433,
@@ -72,8 +91,14 @@ export function sortByRecency(
  * TablePlus's "host:port : database" idiom but keeps our `/` separator since
  * that's what the existing detail UI already speaks.
  */
+/** Engines whose "database" is a local file path (or DuckDB's `:memory:`): no host,
+ *  no port, no password, no SSH tunnel. Mirrors `is_file_engine` in ipc/connect.rs. */
+export function isFileEngine(engine: Engine): boolean {
+  return engine === "sqlite" || engine === "duckdb";
+}
+
 function hostLineOf(c: ConnConfig): string {
-  if (c.engine === "sqlite") return c.database || "(no file selected)";
+  if (isFileEngine(c.engine)) return c.database || "(no file selected)";
   return `${c.host}:${c.port}/${c.database || ""}`.replace(/\/$/, "");
 }
 
@@ -85,7 +110,8 @@ function hostLineOf(c: ConnConfig): string {
  * unless an SSH bastion is configured.
  */
 function envTagOf(c: ConnConfig): { label: string; tone: "ok" | "warn" | "muted" } {
-  if (c.engine === "sqlite") return { label: "(file)", tone: "muted" };
+  if (isFileEngine(c.engine))
+    return { label: c.database === ":memory:" ? "(in-memory)" : "(file)", tone: "muted" };
   const isLoopback = c.host === "127.0.0.1" || c.host === "localhost" || c.host === "::1";
   if (c.ssh?.enabled) return { label: "(ssh)", tone: "warn" };
   if (isLoopback) return { label: "(local)", tone: "ok" };
@@ -93,7 +119,7 @@ function envTagOf(c: ConnConfig): { label: string; tone: "ok" | "warn" | "muted"
 }
 
 export function ConnectionManager() {
-  const { saved, setSaved, setActive, setSchema } = useConnections();
+  const { saved, setSaved, connecting } = useConnections();
   const [form, setForm] = useState<ConnConfig>(blankConfig);
   const [password, setPassword] = useState("");
   // SSH secrets are split so the form can show password + key passphrase the way
@@ -135,26 +161,49 @@ export function ConnectionManager() {
   const setKeyPath = (path: string) => setSsh({ auth: { mode: "keyfile", path } });
 
   useEffect(() => {
-    listConnections().then(setSaved).catch(() => {});
+    listConnections()
+      .then(setSaved)
+      .catch((e) => setStatus({ kind: "err", msg: `Could not load saved connections: ${e}` }));
   }, [setSaved]);
+
+  // Cancel drops the store's `connecting` state immediately, but the row's own
+  // status line (`status`) only followed once `doConnect`'s promise settled —
+  // which, for a slow backend, left it reading "Connecting…" well after Cancel.
+  // Reset it here too so Cancel always reads back as idle right away.
+  const handleCancel = () => {
+    cancelConnecting();
+    setStatus({ kind: "idle", msg: "" });
+  };
 
   // ⌘N opens the new-connection sheet. MainShell handles ⌘N for new query once
   // there's an active connection, so the two don't clash.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Settings (⌘,) owns the keyboard while it's open — its own Escape
+      // handler (App.tsx) closes it; without this guard the same Escape
+      // keypress also dropped the new-connection sheet / cancelled an
+      // in-flight connection. App.tsx defers the actual close to a macrotask
+      // (setTimeout, not queueMicrotask — see closeSettingsDeferred in
+      // Settings.tsx for why), so `open` reads true here for this whole
+      // keypress no matter which window listener runs first.
+      if (useSettingsUi.getState().open) return;
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "n") {
         e.preventDefault();
         openSheetForNew();
-      } else if (e.key === "Escape" && sheetOpen) {
-        setSheetOpen(false);
+      } else if (e.key === "Escape") {
+        if (sheetOpen) setSheetOpen(false);
+        else if (connecting) handleCancel();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sheetOpen]);
+  }, [sheetOpen, connecting]);
 
-  const refresh = () => listConnections().then(setSaved).catch(() => {});
+  const refresh = () =>
+    listConnections()
+      .then(setSaved)
+      .catch((e) => setStatus({ kind: "err", msg: `Could not load saved connections: ${e}` }));
   // Clear a green/red test result the moment the user changes anything, so the
   // feedback never goes stale against edited values.
   const clearStatus = () =>
@@ -208,16 +257,13 @@ export function ConnectionManager() {
   };
 
   const doConnect = async (cfg: ConnConfig, pw?: string) => {
+    if (connecting) return; // one connect at a time — ConnRow disables other rows too
     setStatus({ kind: "busy", msg: "Connecting…" });
     try {
       if (pw !== undefined)
         await saveConnection(cfg, pw || undefined, effectiveSshSecret || undefined);
-      const info = await connect(cfg.id);
-      if (info.engine !== "redis" && info.engine !== "mongodb") {
-        setSchema(await listObjects(cfg.id));
-      }
-      markConnected(cfg.id);
-      setActive(info);
+      const ok = await openConnection(cfg);
+      if (!ok) setStatus({ kind: "idle", msg: "" }); // cancelled — no error to show
     } catch (e) {
       setStatus({ kind: "err", msg: String(e) });
     }
@@ -271,7 +317,7 @@ export function ConnectionManager() {
           <h1 className="mt-2 text-[36px] font-semibold leading-none tracking-tight text-text">
             Table<span className="text-primary">IQ</span>
           </h1>
-          <div className="text-[12px] text-muted">Version 0.1.0</div>
+          <div className="text-[12px] text-muted">Version {APP_VERSION}</div>
           <div className="mt-1 text-[11px] leading-relaxed text-muted-2">
             Local-first · zero telemetry
             <br />
@@ -284,13 +330,17 @@ export function ConnectionManager() {
         <div className="px-5 pb-5">
           <div className="flex flex-col gap-1.5">
             <button
-              onClick={async () =>
-                downloadText(
-                  "tableiq-connections.json",
-                  await exportConnections(),
-                  "application/json",
-                )
-              }
+              onClick={async () => {
+                try {
+                  await downloadText(
+                    "tableiq-connections.json",
+                    await exportConnections(),
+                    "application/json",
+                  );
+                } catch (e) {
+                  setStatus({ kind: "err", msg: `Export failed: ${e}` });
+                }
+              }}
               className="flex h-8 items-center gap-2 rounded-[var(--radius)] border border-border bg-bg/70 px-3 text-[12px] text-text shadow-[var(--shadow-soft)] backdrop-blur-sm transition-colors hover:bg-bg"
               title="Export connections (no passwords)"
             >
@@ -386,8 +436,10 @@ export function ConnectionManager() {
                   key={c.id}
                   conn={c}
                   armed={armedDelete === c.id}
-                  status={status}
+                  busy={connecting?.id === c.id ? connecting : null}
+                  disabled={connecting !== null && connecting.id !== c.id}
                   onConnect={() => void doConnect(c)}
+                  onCancel={handleCancel}
                   onEdit={() => openSheetForEdit(c)}
                   onDelete={() => setArmedDelete(c.id)}
                   onConfirmDelete={async () => {
@@ -430,6 +482,7 @@ export function ConnectionManager() {
               id: "connect",
               label: "Connect",
               shortcut: "↵",
+              disabled: connecting !== null,
               onSelect: () => void doConnect(menu.conn),
             },
             { id: "edit", label: "Edit…", onSelect: () => openSheetForEdit(menu.conn) },
@@ -496,6 +549,7 @@ export function ConnectionManager() {
                 <option value="mysql">MySQL / MariaDB</option>
                 <option value="sqlserver">SQL Server</option>
                 <option value="sqlite">SQLite</option>
+                <option value="duckdb">DuckDB</option>
                 <option value="redis">Redis</option>
                 <option value="mongodb">MongoDB</option>
               </select>
@@ -510,14 +564,18 @@ export function ConnectionManager() {
                   placeholder="My database"
                 />
               </label>
-              {form.engine === "sqlite" ? (
+              {isFileEngine(form.engine) ? (
                 <label className="col-span-2 text-xs text-muted">
                   Database file
                   <input
                     className={field}
                     value={form.database}
                     onChange={(e) => set("database", e.target.value)}
-                    placeholder="/path/to/database.db"
+                    placeholder={
+                      form.engine === "duckdb"
+                        ? "/path/to/file.duckdb or :memory:"
+                        : "/path/to/database.db"
+                    }
                   />
                 </label>
               ) : form.engine === "redis" ? (
@@ -631,7 +689,7 @@ export function ConnectionManager() {
               )}
             </div>
 
-            {form.engine !== "sqlite" && (
+            {!isFileEngine(form.engine) && (
               <details className="mt-4 rounded-md border border-border" open={ssh.enabled}>
                 <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-xs font-medium text-text">
                   <span>SSH Tunnel</span>
@@ -800,8 +858,26 @@ export function ConnectionManager() {
                 >
                   Test
                 </button>
+                <label className="ml-auto flex flex-col gap-1 text-[11px] text-muted">
+                  <span>Environment</span>
+                  <select
+                    className={`${field} w-36`}
+                    value={form.env ?? ""}
+                    onChange={(e) => set("env", (e.target.value || null) as ConnEnv | null)}
+                  >
+                    <option value="">None</option>
+                    {CONN_ENVS.map((env) => (
+                      <option key={env} value={env}>
+                        {env[0].toUpperCase() + env.slice(1)}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="text-[10px] text-muted">
+                    Production asks before committing staged edits
+                  </span>
+                </label>
                 <label
-                  className="ml-auto inline-flex items-center gap-2 text-[11px] text-muted"
+                  className="inline-flex items-center gap-2 text-[11px] text-muted"
                   title="Pick a color for this connection (shown as the env tag dot)"
                 >
                   <span>Color tag</span>
@@ -845,12 +921,16 @@ export function ConnectionManager() {
 }
 
 /** TablePlus-style connection row: 2-letter engine circle + name + env tag, with
- *  host:port/db underneath. Hover reveals edit + delete buttons on the right. */
+ *  host:port/db underneath. Hover reveals edit + delete buttons on the right —
+ *  or, while this row is the one connecting, a spinner + elapsed timer + Cancel
+ *  (Esc also cancels). Other rows go `disabled` for the duration. */
 function ConnRow({
   conn,
   armed,
-  status: _status,
+  busy,
+  disabled,
   onConnect,
+  onCancel,
   onEdit,
   onDelete,
   onConfirmDelete,
@@ -858,8 +938,10 @@ function ConnRow({
 }: {
   conn: ConnConfig;
   armed: boolean;
-  status: { kind: "idle" | "busy" | "ok" | "err"; msg: string };
+  busy: ConnectingState | null;
+  disabled: boolean;
   onConnect: () => void;
+  onCancel: () => void;
   onEdit: () => void;
   onDelete: () => void;
   onConfirmDelete: () => void;
@@ -870,12 +952,15 @@ function ConnRow({
     tag.tone === "ok" ? "text-ok" : tag.tone === "warn" ? "text-warn" : "text-muted-2";
   return (
     <li
-      className="group flex cursor-pointer items-center gap-3 rounded-[var(--radius)] px-2.5 py-2 transition-colors hover:bg-surface"
+      className={`group flex cursor-pointer items-center gap-3 rounded-[var(--radius)] px-2.5 py-2 transition-colors hover:bg-surface ${
+        disabled ? "pointer-events-none opacity-50" : ""
+      }`}
       onContextMenu={onContextMenu}
-      onDoubleClick={onConnect}
+      onDoubleClick={busy ? undefined : onConnect}
     >
       <button
         onClick={onConnect}
+        disabled={!!busy}
         className="flex min-w-0 flex-1 items-center gap-3 text-left"
         title={`Double-click or press Enter to connect to ${conn.name}`}
       >
@@ -898,35 +983,53 @@ function ConnRow({
           </div>
         </div>
       </button>
-      <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-        <button
-          onClick={onEdit}
-          title="Edit"
-          aria-label={`Edit ${conn.name}`}
-          className="inline-flex h-7 items-center rounded-[var(--radius)] px-2 text-[11.5px] text-muted hover:bg-surface-2 hover:text-text"
-        >
-          Edit
-        </button>
-        {armed ? (
+      {busy ? (
+        <div className="flex shrink-0 items-center gap-2 text-[11px] text-muted">
+          <IconRefresh size={12} className="animate-spin text-primary" aria-hidden />
+          <span>{BUSY_LABEL[busy.stage]}</span>
+          <Elapsed since={busy.since} minMs={1000} className="tiq-delayed font-mono tabular-nums" />
           <button
-            onClick={onConfirmDelete}
-            title="Click again to confirm"
-            aria-label={`Confirm delete ${conn.name}`}
-            className="inline-flex h-7 items-center rounded-[var(--radius)] bg-danger/10 px-2 text-[11.5px] font-medium text-danger hover:bg-danger/20"
+            onClick={(e) => {
+              e.stopPropagation();
+              onCancel();
+            }}
+            title="Cancel (Esc)"
+            className="inline-flex h-6 items-center rounded-[var(--radius)] border border-border px-2 text-[11px] text-muted hover:bg-surface-2 hover:text-text"
           >
-            Confirm delete?
+            Cancel
           </button>
-        ) : (
+        </div>
+      ) : (
+        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
           <button
-            onClick={onDelete}
-            title="Delete"
-            aria-label={`Delete ${conn.name}`}
-            className="inline-flex h-7 w-7 items-center justify-center rounded-[var(--radius)] text-muted hover:bg-surface-2 hover:text-danger"
+            onClick={onEdit}
+            title="Edit"
+            aria-label={`Edit ${conn.name}`}
+            className="inline-flex h-7 items-center rounded-[var(--radius)] px-2 text-[11.5px] text-muted hover:bg-surface-2 hover:text-text"
           >
-            ×
+            Edit
           </button>
-        )}
-      </div>
+          {armed ? (
+            <button
+              onClick={onConfirmDelete}
+              title="Click again to confirm"
+              aria-label={`Confirm delete ${conn.name}`}
+              className="inline-flex h-7 items-center rounded-[var(--radius)] bg-danger/10 px-2 text-[11.5px] font-medium text-danger hover:bg-danger/20"
+            >
+              Confirm delete?
+            </button>
+          ) : (
+            <button
+              onClick={onDelete}
+              title="Delete"
+              aria-label={`Delete ${conn.name}`}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-[var(--radius)] text-muted hover:bg-surface-2 hover:text-danger"
+            >
+              ×
+            </button>
+          )}
+        </div>
+      )}
     </li>
   );
 }

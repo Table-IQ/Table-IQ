@@ -1,110 +1,177 @@
 # TableIQ — Pending Work & Prerequisites
 
-**Date:** 2026-05-27 · **Branch baseline:** `main` (slices 5–**19** + UI Slice 20 merged) · **Status:** Phase 1–3 substantially shipped. **Slice 20 (this round): TablePlus-faithful shell across every surface (shared UI primitives, native title-bar overlay, color-edge connection cards, sectioned ObjectTree, primary action toolbar, StatusBar, ConnectionRail mini-rail, Items/Queries/History sidebar tabs, right Inspector with FK relationships, light-theme contrast pass, system-font stack, cell-level FK arrow in data grid, ERD pan/zoom/search/column-anchored connectors, first-launch Onboarding + CoachMarks, FK introspection parity for MySQL/SQLite/MSSQL).** Remaining is mostly prerequisite-blocked (certs, AI key, model weights).
+**Date:** 2026-09-23 · **Branch baseline:** `main` (`origin/main` @ `0cadf86`) + the
+`2026-09-22-prod-ready` branch (56 commits, `92603ec..ab2ac3b`) · **Status:** the
+production-readiness pass is done. See `CHANGELOG.md` for what shipped. This file tracks
+what's left.
 
-This is the single source of truth for what's left. Two parts: **(1) Prerequisites** — things only you (or the environment) can supply, which block certain items; **(2) Pending items** — all remaining work, grouped, with current state and where it lives in the code.
+Two parts: **(1) Prerequisites** — things only a person (not code) can supply, which block
+certain items; **(2) Status board** — what's deferred from this branch and why, what's
+verified-in-QA-but-still-open, and older pending work this branch didn't touch.
 
-**Legend** — Status: ✅ done · 🟡 partial · ⬜ not started · 🔒 blocked on a prerequisite. Effort: S (<½ day) · M (½–2 days) · L (multi-day).
+**Legend** — Status: done · deferred · blocked (needs a prerequisite).
 
 ---
 
-## 1. Prerequisites (must be supplied before the blocked items can finish)
-
-These are the only true blockers. Everything else is just code we can write.
+## 1. Prerequisites
 
 | # | Prerequisite | Unblocks | How to provide |
 |---|---|---|---|
-| P1 | **Apple Developer account + Developer ID certificate** | Signed/notarized macOS build | Enroll in Apple Developer Program. Add GitHub secrets: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`. |
-| P2 | **Windows code-signing certificate** (OV/EV) | Signed Windows installer | Buy a code-signing cert. Add secret `TAURI_SIGNING_PRIVATE_KEY` (+ password). |
-| P3 | **AI provider API key** (Anthropic / OpenAI / Gemini) **or** running Ollama | Verifying *live* AI answer quality | In-app AI Settings → paste key (stored in OS keychain), **or** `ollama serve` + `ollama pull qwen2.5-coder:7b`. |
-| P4 | **llama.cpp binary + GGUF model weights** + licensing decision | Bundled offline AI sidecar | Decide which model to ship and how (download-on-first-use vs bundle ~GB into installer). |
-| P5 | **wasm32 toolchain + plugin ABI sign-off** | WASM plugin system | `rustup target add wasm32-unknown-unknown` (I can run this) + agree the plugin ABI/manifest shape. |
-| P6 | **Live test databases (Docker)** | Running the gated live integration tests | Env vars: `TIQ_PG_URL`, `TIQ_MYSQL_URL`, `TIQ_MSSQL_URL` (azure-sql-edge), `TIQ_MONGO_URL`, `TIQ_REDIS_URL`, `TIQ_SSH_TEST_HOST`. |
-
-> Note: per-OS CI runners are already GitHub-hosted (mac/ubuntu/windows in the matrix). The release gap is **certs only**, not runners.
-
----
-
-## 2. Pending items (all)
-
-### A. Engine parity — SQL Server (MSSQL) 🟡 · Effort M
-Connect / introspect / primary-key / query / window / DDL / row-estimate work **live** on azure-sql-edge.
-- ✅ **`apply_edit` (inline cell edit)** — Slice 15. Parameterized T-SQL NULL-safe UPDATE; live round-trip + stale-conflict tested.
-- ✅ **Windowed cursor** (`open_cursor`/`fetch_next`/`close_cursor`) — Slice 19. Client-side offset + `OFFSET/FETCH`; live-paged 3 rows at 2/page → 2,1,0.
-- ⬜ **Query cancellation** — left unsupported on purpose: tiberius exposes no TDS Attention packet, and `KILL <spid>` would sever the single pinned connection. Needs a connection pool (below) first to do cleanly.
-- 🟡 **Single pinned connection** (`Mutex<Client>`, no pool) — can't run parallel queries; blocks clean cancellation. Full pool (deadpool-tiberius) is a follow-up.
-- 🟡 **DateTime/XML cells** stringify via debug fallback in `cell_to_string`.
-
-### B. UI gaps (tested backend, missing UI) — ✅ DONE (Slice 17)
-- ✅ **Result-set diff picker UI** — `resultsStore` tracks recent results; `DiffResultsView` picks two → `diff_results`. "Diff results" button in QueryView.
-- ✅ **ALTER-table UI** — `AlterTablePanel` (drop/add columns → `generate_ddl` preview → apply) via a "Structure" button in TableView. **Still open:** rename/type-change need extra backend (`RenameColumn`/`AlterColumnType`); route those through the SQL editor for now.
-
-### B'. TablePlus-faithful UI overhaul — ✅ DONE (Slice 20, 2026-05-27)
-- ✅ **Shared UI primitives** in `src/components/ui/` — `Panel`, `Toolbar`, `StatusBar`, `Section`, `Chip`, `IconButton`, `CoachMark`, hand-rolled `Icon` set. Every surface now consumes them so spacing, type, and chrome are uniform.
-- ✅ **Shell** — `MainShell` adopts native title-bar overlay (macOS traffic lights via `titleBarStyle: "Overlay"`), `ConnectionRail` mini-rail on the far left, breadcrumb chip in the header, Items/Queries/History sidebar tabs, primary action toolbar above the tab strip, workspace `StatusBar`, right `Inspector` panel (Details/Assistant) with columns + FK relationships.
-- ✅ **ObjectTree** — sectioned (Pinned / Tables / Views / Functions), in-tree search, pin toggle, type icons.
-- ✅ **ConnectionManager** — TablePlus-style color-edge cards in saved list, env color picker, hosts Onboarding overlay.
-- ✅ **TableView + DataGrid** — action toolbar (Filter / Insert / Refresh / Structure / Profile / Alter / Export), FK chip rail, cell-level FK arrow in the grid (clicking jumps to referenced table), Data/Structure toggle, dirty-row count in StatusBar.
-- ✅ **QueryView + SqlEditor** — collapsed AI drawer, primary Run/Cancel/Explain/Library toolbar, drawer-routed Library/Chart/Plugins/DiffResults/AiSettings, result-set status footer.
-- ✅ **ErdView** — mouse-drag pan + ⌘+wheel zoom (0.4–2.0), column-anchored orthogonal connectors (edges emerge from FK column rows), search-as-you-type fades non-matches, dotted grid backdrop.
-- ✅ **All schema-tool modals** (`StructureEditor`, `AlterTablePanel`, `DiffView`, `DiffResultsView`, `ImportDialog` with 3-step progress) migrated to the `Panel` primitive.
-- ✅ **Non-SQL shells** (`KvShell`, `DocShell`) inherit the same titlebar/sidebar/status treatment.
-- ✅ **First-launch onboarding** — `Onboarding.tsx` + `CoachMark.tsx`. 3-step welcome card on first launch (detected via Tauri `onboarded.json` in app-config dir) + 4 coach marks pointing at sidebar/tabs/inspector after connect. Help menu re-runs the tour.
-- ✅ **Light-theme contrast pass** — `--muted` #6b7280 → #4b5563, `--text` → #111827, `--border` → #d1d5db, `--surface` → #f3f4f6 (all AA Pass for caption-sized text). Density variables added (`--row-h`, `--toolbar-h`, etc.). System-ui / SF Pro font stack first.
-- ✅ **FK detection parity** — `foreign_keys()` implemented for MySQL (`information_schema.kcu ⋈ rc`), SQLite (`PRAGMA foreign_key_list` iter over `sqlite_master`), SQL Server (`sys.foreign_keys ⋈ sys.foreign_key_columns`). +3 tests; live SQLite round-trip test against temp file (always-on). ERD edges + cell-level FK arrow now light up on every engine.
-- ✅ **Tauri commands** — `read_onboarding_state` / `write_onboarding_state` persist the first-launch marker under the platform app-config dir.
-
-**Verification:** 57 frontend Vitest + 69 Rust unit tests green. Live design review confirmed TablePlus parity across light/dark in shell, sidebar, data grid, query workspace, ERD, inspector, and onboarding.
-
-### C. AI features
-- ✅ **NL→SQL** — built; deterministic parts unit-tested (`ai/mod.rs`, `ipc/connect.rs:825`). Egress "what gets sent" preview ✅, schema-only privacy ✅, generate-not-execute read-only guard ✅, BYOK (Anthropic/OpenAI/Gemini) + Ollama HTTP ✅.
-- 🟡 **Explain / Optimize / Fix-error** — ✅ built (Slice 18): `ai_explain_sql`/`ai_optimize_sql`/`ai_fix_sql` + Explain/Optimize/Fix buttons (generate-not-execute), prompts unit-tested. **Chat panel** still ⬜. *Live quality* needs P3.
-- ⬜ **Grounded + self-verifying (agentic) AI** · Effort L — schema-card grounding exists; the read-only "run-and-check its own query" loop and hard write-approval gate are not built.
-- 🔒 **Live generation quality** — needs P3 (key or Ollama) to actually verify answers.
-- 🔒/⬜ **Bundled llama.cpp sidecar** · Effort L — Ollama HTTP path works; sidecar spawn + model-download code not written; weight bundling needs P4.
-
-### D. Extensibility — WASM plugins (Extism) ✅ DONE (Slice 16)
-Sandboxed wasmtime host (`src-tauri/src/plugins/mod.rs`); ABI = `info()` + `transform(result_json) -> string`; plugins dir under config; embedded **markdown-export** sample (built from `plugins/markdown-export/` to wasm32, committed); `list_plugins`/`install_sample_plugin`/`run_plugin_on_result` commands + `PluginsPanel`. 3 host tests. P5 satisfied (`wasm32-unknown-unknown` installed).
-
-### E. Release / distribution 🔒 · Effort M (mostly config)
-- ✅ CI matrix scaffolded — mac universal / ubuntu-22.04 / windows-latest (`.github/workflows/release.yml`).
-- 🔒 **macOS notarization** — needs P1 (cert + secrets).
-- 🔒 **Windows code signing** — needs P2 (cert + secret).
-- Once secrets exist, `tauri-action` signs automatically; produces `.dmg` / `.msi` / AppImage + GitHub release.
-
-### F. QA
-- ⬜ **Interactive `/browse` QA of slices 5–14** · Effort M — deferred (prior verification was tsc + unit/integration + browser-mocks). Can run **now** against browser-mock mode (`pnpm dev`, full UI on synthetic 1M-row data) for the UI flows; real-DB QA needs P6 (Docker test DBs).
+| P1 | **Apple Developer account + Developer ID certificate** | Signed/notarized macOS build | Enroll in Apple Developer Program; add GitHub secrets `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`. |
+| P2 | **Windows code-signing certificate** (OV/EV) | Signed Windows installer | Buy a code-signing cert; add secret `TAURI_SIGNING_PRIVATE_KEY` (+ password). |
+| P3 | **Updater signing keypair + release endpoint** | Auto-updater | `tauri signer generate`; decide where update manifests are hosted (GitHub Releases is the natural fit given `release.yml` already publishes there). |
+| P4 | **A license decision** | A `LICENSE` file | This is the maintainer's call, not a technical one — nothing in the codebase assumes a license. |
+| P5 | **AI provider API key** (Anthropic / OpenAI / Gemini) **or** running Ollama | Verifying *live* AI answer quality | In-app AI Settings → paste key (stored in OS keychain), **or** `ollama serve` + `ollama pull qwen2.5-coder:7b`. |
+| P6 | **llama.cpp binary + GGUF model weights** + licensing decision | Bundled offline AI sidecar | Decide which model to ship and how (download-on-first-use vs. bundle ~GB into the installer). |
+| P7 | **Live test databases** | Running the gated live integration tests | Docker, for Postgres/MySQL: `docker compose -f docker/postgres/docker-compose.yml up -d` and `docker/mysql/docker-compose.yml`. SQL Server has no compose file (see README) but runs the same way locally. All three are documented in `README.md` "Test databases" and are what CI (Postgres/MySQL only) and this branch's `cargo test` runs were verified against. **This prerequisite is satisfied for local dev**; CI intentionally omits SQL Server (see `ci.yml` comment). |
 
 ---
 
-## 3. Suggested order (when you're ready)
+## 2. Status board
 
-1. **MSSQL parity** — `apply_edit` + cancellation + cursor (A). No blockers; verify with a live MSSQL (P6).
-2. **Close the UI gaps** — result-set diff picker + ALTER-table UI (B). Pure frontend, high value, backend already tested.
-3. **AI breadth** — explain / optimize / fix / chat (C). Build now; verify quality once P3 is provided.
-4. **`/browse` QA pass** (F) on the shipped slices.
-5. **Signed releases** (E) — once P1/P2 certs are in GitHub secrets.
-6. **Large/greenfield** — WASM plugins (D) and llama.cpp sidecar bundling (C) — schedule deliberately; need P4/P5.
+### 2a. Deferred from the `2026-09-22-prod-ready` branch
 
-## 4. Quick status board
+| Item | Why |
+|---|---|
+| **Auto-updater** | Needs a signing keypair and a release endpoint (P3) — a decision only the maintainer can make, not a code gap. |
+| **macOS / Windows code signing** | Needs certificates (P1, P2). `release.yml`'s signing steps are already wired to fire once the secrets exist. |
+| **`LICENSE` file** | The maintainer's choice of license (P4). Nothing in the repo picks one; `package.json` and `Cargo.toml` both leave `license` unset on purpose. |
+| **Per-tab persistent DB session** (an open transaction, or a `SET` that survives between runs in the same query tab) | A design change — every statement currently runs on a short-lived connection from the pool, so `BEGIN`/session-scoped `SET` don't carry to the next run. Needs a plan for how a tab claims and releases a dedicated connection. |
+| **SQL Server query cancellation** | tiberius exposes no TDS Attention packet, so there's no cancel API to call. `SqlServerDriver` also holds a single pinned connection behind a `Mutex` (`src-tauri/src/drivers/sqlserver.rs`), not a pool — cancellation would need a second connection to send the cancel on even if tiberius supported it. Doing this cleanly needs a connection pool first (e.g. `deadpool-tiberius`), which is its own follow-up. |
+| **Columns show/hide UI** | Not built. The grid always renders every column from `describe_table`/the query result; there's no per-column visibility toggle. |
+| **MySQL `DELIMITER`** | Not supported. `MainShell.tsx`'s New Function/Procedure templates for MySQL are single-statement bodies on purpose — the app's statement splitter (`sqlSplit`) doesn't understand a `DELIMITER` change, so a `BEGIN…END` routine body would be split mid-statement. |
 
-| Item | Status | Blocker | Effort |
-|---|---|---|---|
-| MSSQL inline edit | ✅ | — (verified live) | M |
-| MSSQL cursor | ✅ | — (verified live) | S–M |
-| MSSQL cancellation | ⬜ | needs pool first (tiberius/TDS limitation) | M |
-| MSSQL connection pool | 🟡 | none (design) | M |
-| Result-set diff picker UI | ✅ | — | M |
-| ALTER-table UI (add/drop) | ✅ | rename/type = extra backend | M |
-| AI explain/optimize/fix | ✅ | P3 for live quality | M |
-| AI chat panel | ⬜ | P3 for live quality | M–L |
-| AI grounded + self-verify | ⬜ | P3 | L |
-| llama.cpp sidecar bundle | ⬜ | P4 | L |
-| WASM plugins (Extism) | ✅ | — | L |
-| macOS signed build | 🔒 | P1 | M |
-| Windows signed build | 🔒 | P2 | M |
-| `/browse` QA of slices 5–19 | ⬜ | P6 for real-DB | M |
+### 2b. Verified in QA, still open
+
+These were exercised during this branch's QA but couldn't be fully confirmed in this
+environment:
+
+- **Packaged-app Save dialog** — `ec29ce0` routes export through
+  `@tauri-apps/plugin-dialog`'s native `save()` instead of an `<a download>` blob. Verified
+  in the dev build; not re-verified in a packaged (`tauri build`) app, and not verified at
+  all on Windows/Linux.
+- **CSP on the SQL editor/grid** — `tauri.conf.json`'s CSP (`default-src 'self'`,
+  `script-src 'self'`) is unverified at runtime end-to-end (e.g. CodeMirror's own
+  rendering, glide-data-grid's canvas paths) because this machine has no assistive-access
+  permission for the packaged app window. Should be re-checked with the dev console open
+  in a real build for CSP violation reports.
+
+### 2c. Cleanup notes from this pass
+
+- The unused windowed-cursor driver API (`open_cursor`/`fetch_next`/`close_cursor` on
+  `SqlDriver`, plus the Postgres/MySQL/SQLite/SQL Server implementations hard-coded to
+  `FetchWindow::Wide`) **was removed** (`782f53d`), along with the `RawCell`/`KeyBy`/
+  `RowKey`/`FetchWindow` scaffolding it depended on. It was never called from `src/` (no
+  frontend caller, no IPC command wrapped it), and the four implementations had diverged —
+  Postgres ignored its `sql` argument and queried a hardcoded seed table, while MySQL and
+  SQLite returned `NotImplemented` — a trap for whoever wired it up next. Removing it also
+  deleted `src-tauri/tests/cursor_bounded_ram.rs` (the bounded-RAM proof over the full
+  1,000,000-row `wide` table), the only test that exercised it. `src-tauri/tests/sqlserver.rs`
+  never used this API; its live tests go through the normal query path.
+- `package-lock.json` was removed. CI (`ci.yml`) and the release workflow
+  (`release.yml`) both install via `pnpm/action-setup` + `pnpm install`; nothing
+  referenced the npm lockfile except planning notes under `.context/plans/`.
+
+### 2d. Deferred from the `table-ux-and-duckdb` branch (0.3.0)
+
+Full account in `docs/finalize/2026-09-25-table-ux-and-duckdb.md`.
+
+| Item | Why |
+|---|---|
+| **Arrow upgrade (53 → 55+), then a current `duckdb` crate** | The newest `duckdb` crate that builds beside arrow 53 is 1.2.2, which has no `interrupt_handle` and builds each result fully in memory before the 50k cap applies. Upgrading arrow across the app unlocks DuckDB cancel, streaming results and newer `.duckdb` storage versions. The Stop button is still shown for DuckDB and reports "not implemented". |
+| **MCP can't stop a DuckDB query** | Same cause as above: an MCP `run_query` on DuckDB that passes its 30s timeout keeps running (and keeps one of the four MCP query slots) until it finishes. Four such queries leave MCP answering metadata tools only until one ends. Settings → MCP says so. |
+| **Staged edits vs. other refreshes** | Search, filter, sort, paging, page size and Refresh now refuse to run with unsaved edits. Insert row, Delete row, "Set value" from the row menu, closing Alter and an Inspector save still refetch and drop other staged edits. |
+| **First / Last page buttons** | The pager has Prev/Next only. "Last" would need a reversed keyset read (`ORDER BY pk DESC LIMIT n`, then flip). No "go to page N" exists either, so no slow deep-OFFSET jump is exposed. |
+| **Explicit NULL from the + Row draft** | Blank draft cells now leave the column to its DEFAULT (that fixed serial keys). There is no way to type NULL into a nullable column that has a DEFAULT; it needs a per-cell NULL toggle in the draft rail. |
+| **SQLite / SQL Server page cancel** | Both fall back to the plain, un-cancellable fetch (SQLite has no cancel API; SQL Server needs the pool work in 2a). Their filtered pages have no timeout. MariaDB ignores the `MAX_EXECUTION_TIME` hint. |
+| **Exact count after insert/delete** | A kept exact total can be off by one until "Count exactly" is pressed again. |
+| **60 fps scroll trace** | Not recorded. The design plan asked for a Chrome performance trace of grid scrolling; only the typing-a-search path was traced (0 long tasks). |
+| **DuckDB 1B-row scale test** | Not run; the DuckDB seed is 1k rows. The Postgres fixture (`docker/postgres/big.sql`, 20M rows faked to ~1T) covers the paging and estimate paths. |
+| **Reduced-motion toggle** | Implemented (one CSS media query + a `matchMedia` check for the canvas loop) but not exercised with the macOS setting switched on. |
+| **Desktop-app screenshots** | macOS denies this process Screen Recording, so all evidence was captured through the IPC bridge in a browser (same UI). The desktop app itself was launched on the final commit. |
+| **Query-result numbers left-aligned** | Pre-existing polish; the table grid right-aligns numbers, query results don't. |
+
+### 2e. Deferred from the `connection-tabs-readability` branch (0.4.0)
+
+Full account in `docs/finalize/2026-09-26-connection-tabs-readability.md`.
+
+| Item | Why |
+|---|---|
+| **Per-session "disconnected" state** | One global flag. A background connection that drops is not flagged until its next request after you switch back to it; switching away and back clears a dead connection's banner until the next failure. Needs `disconnected` on each open session. |
+| **⌘O in the Redis / MongoDB shells** | Only the SQL shell has the Open Connection picker, so a lone Redis or Mongo session can't open a second connection alongside it. Lift the picker out of MainShell. |
+| **Keep background shells mounted** | Switching remounts the shell: query results, undo history, the page cache and a running "Count exactly" are dropped, and the table page refetches. Tabs and SQL persist. Mounting one hidden shell per open connection would make switching instant. |
+| **Unsaved editor text when a background ⌘O finishes** | Typing still focused in an editor within 300 ms of a slow ⌘O resolving can be lost (the blur flush covers clicks, not a remount you didn't trigger). |
+| **Orphan session on a failed ⌘O / welcome connect** | If `connect` succeeds but loading the schema fails, the backend session stays open with no UI. |
+| **Closing a connection with a query running** | The query finishes and its result sits in the result store until evicted; the result-diff picker lists results from every connection. |
+| **Keyword contrast** | Light-theme keyword blue `#6499D3` (TablePlus's) is ≈3:1 on white, below WCAG AA. One token (`--syn-keyword`) if AA matters more than parity. |
+| **Grid headers left-aligned** | TablePlus centres them; glide has no header-alignment key (needs a custom header draw). |
+| **`--text-mono-cell` token** | The 12.5px data size is a literal in the sidebar lists and `theme.ts`, not a CSS variable. |
+
+### 2f. Deferred from the `palette-sqllog-settings` branch, PR-A (0.5.0)
+
+Full account in `docs/finalize/2026-09-27-palette-sqllog-settings.md`. PR-B (SQL log, User Management, Metrics Board) and PR-C (Backup/Restore, MCP Server/Activity) are the rest of this plan.
+
+| Item | Why |
+|---|---|
+| **Saved queries orphaned by deleting their connection** | Saved queries now carry a `conn_id`. Deleting that connection leaves its queries on disk but hidden forever. Options: delete them with the connection, promote them to global, or show "orphaned" ones everywhere. This needs a product decision; no data is lost today. |
+| **"Workspace Overview" palette row has no icon** | QA ISSUE-002 (cosmetic). |
+| **In-tab "Query cancelled" message is error-red** | QA ISSUE-004. The top "Cancelled N" strip is neutral; QueryView's message panel predates it. |
+| **Side-sheet connect shows only "Connecting…"** | The new-connection form's status line doesn't show the "Loading schema…" stage, and its Cancel sits behind the sheet. The card and the header strip do show both. |
+| **Settings choice groups use `aria-pressed`** | A radiogroup would be more accurate for single-choice controls. The ⌘K palette has no `listbox`/`option` roles (pre-existing). |
+| **History search has no debounce** | One request per keystroke, and no guard against a late response. |
+| **Workspace Overview keyboard** | ArrowDown moves one card, not one row, and focus isn't trapped in the dialog. |
+| **Title-bar action map isn't type-linked to `TOOLBAR_ITEMS`** | A new toolbar item without an action is dropped silently. |
+| **`StorageLike`/`defaultStorage` duplicated** | `src/lib/prefs.ts` and `src/lib/toolbarPrefs.ts` carry the same 9 lines. |
+
+### 2g. Deferred from the `sql-log-users-metrics` branch, PR-B (0.6.0)
+
+Full account in `docs/finalize/2026-09-27-sql-log-users-metrics.md`. PR-C (Backup/Restore, MCP Server/Activity) is the rest of this plan.
+
+| Item | Why |
+|---|---|
+| ~~**Widgets can still run side-effecting SELECTs**~~ | **Closed in PR-C (Task 14).** Widgets call `query_rows` with `read_only: true`: the backend re-checks the SQL with the MCP guard (`mcp::guard::guard_sql`) and runs it inside `BEGIN TRANSACTION READ ONLY` (PG) / `START TRANSACTION READ ONLY` (MySQL) / `BEGIN … ROLLBACK` (SQLite, DuckDB, SQL Server), so `setval`/`nextval` fail on PG and writes are undone elsewhere. The guard's function denylist also refuses `pg_terminate_backend`/`pg_cancel_backend`, advisory locks (`pg_advisory_*`, MySQL `GET_LOCK`) and `dblink`. The widget guard is MCP's minus its DuckDB file-access refusals (`read_csv`, `FROM 'x.parquet'`, …), and the Metrics modal checks it on save (`validate_widget_sql`). Still reachable: side effects inside user-defined functions or extensions the denylist doesn't name, and MySQL `SLEEP`. |
+| **SQL log misses some statements** | Statements run before the driver is wrapped (on connect), `test_connection`, schema-diff temp drivers, SQLite PRAGMAs run when a connection opens, and pool background tasks are not logged. |
+| **SQL log fills with widget refreshes** | Several fast widgets can fill the 2000-entry ring in minutes and push out the user's own statements. A `source` tag (user/app/widget) plus a panel filter would fix it. |
+| **`redact` edge cases** | Not masked yet: a PG nested comment between keyword and value, PG adjacent-literal continuation, MySQL `#` comments, `CONCAT('a','b')` passwords (only `'a'` is masked), and connection-string passwords (`dblink`). |
+| **SQL Server slow widgets hold the only connection** | The SQL Server driver has one pinned connection and no cancel, so a slow widget makes grid and query tabs queue behind it. Needs the SQL Server pool work in §2a. |
+| **PG passwords sent in plaintext** | `CREATE ROLE … PASSWORD '…'` could land in the server log under `log_statement=ddl`. psql's `\password` hashes client-side (SCRAM); we could do the same. |
+| **Users view polish** | No refresh indicator; row buttons lack per-user `aria-label`s; modal boilerplate is repeated; a MySQL grant with no current database targets `` ``.* ``; PG "revoke read" also revokes USAGE/CONNECT. |
+| **Users Submit button with pasted input** | QA ISSUE-002, low confidence (likely a harness artifact). Needs a manual paste check. |
+| **SQLite log detection by engine name** | `exec.rs` branches on `DB::NAME == "SQLite"`. |
+
+### 2h. Deferred from PR-C (0.7.0)
+
+Backup/Restore, MCP Server and MCP Activity. Minors from the PR-C final triage, left for later.
+
+| Item | Why |
+|---|---|
+| **SQL Server wrapped read vs. the user's own transaction (m7)** | The read-only wrapper (`BEGIN TRAN` … `ROLLBACK`) runs on the one pinned connection the user's tabs share. If a tab left a transaction open (or turned `IMPLICIT_TRANSACTIONS` on), the wrapper nests inside it and its `ROLLBACK` rolls back the user's open work too. Needs the SQL Server pool work in §2a, or a `@@TRANCOUNT` check before wrapping. |
+| **Widget refresh reconnects every time (m8)** | The wrapper's `BEGIN` trips `touches_session`, so every wrapped widget run closes its pooled connection instead of returning it: each refresh pays a fresh connect (and PG `after_connect`). A clean `ROLLBACK` could return the connection instead. |
+| **Palette memo misses `active` (m6)** | `usePaletteCommands`' `useMemo` leaves `active` out of its deps on purpose; entries gated on it (Backup, Restore, Users, MCP) can lag until `schema`/`dbItems` change. |
+| **Stale icon reuse (m6)** | "MCP Server" and "MCP Activity" share `IconChip`; `IconImport` and `IconDatabase` each serve two entries too. |
+| **SQLite WAL sidecar deletion when two pools hold the same file** | Restore deletes the `-wal`/`-shm` sidecars of the file it swaps. A second connection on the same file (another saved connection, or the file open elsewhere) still holds them. |
+| **MySQL `MYSQL_PWD` deprecation** | Backup/Restore pass the password in `MYSQL_PWD`, which Oracle deprecates (8.4 still honours it). If a client drops it, the fallback is a 0600 `--defaults-extra-file`. |
+| **PG meta-command scan is line-start only** | Restore refuses `\c`, `\i`, `\!` only at the start of a line of a plain `.sql` file; a crafted file can put one mid-line (`SELECT 1; \! cmd`). |
+| **MySQL fully-qualified cross-db writes on restore** | `mysql --one-database` filters by the selected database, but `other_db.table` in the dump (and `ALTER DATABASE`) still run. |
+| **Split `connect.rs` backup/restore; move `MyScan` out of `backup.rs`** | Backup/restore commands belong in `ipc/backup.rs`; `connect.rs` is past 2,700 lines. `backup.rs` also carries the MySQL dump scanner (`MyScan`). |
 
 ---
 
-_Generated from a file-level review of the current `main`. Code references are `file:line` and clickable in the editor._
+## 3. Other pending work (pre-existing, not touched by this branch)
+
+This branch's scope was the Query tab, table browsing, Structure, the ERD, SQL Server
+parity, and security/reliability hardening (see `CHANGELOG.md`). The items below predate
+it and weren't re-verified here; they're carried forward for visibility.
+
+| Item | Status | Blocker |
+|---|---|---|
+| AI chat panel | not built | live-quality verification needs P5 |
+| AI grounded + self-verifying (agentic) loop | not built | needs design + P5 |
+| Bundled llama.cpp sidecar | not built | needs P6 |
+| WASM plugins (Extism) | done | sandboxed via wasmtime/Extism; this branch removed WASI access and added a memory/time cap and path-traversal-safe plugin ids (`src-tauri/src/plugins/mod.rs`) |
+| MongoDB / Redis shells | done (pre-existing) | lighter `DocShell`/`KvShell`, not the SQL grid/ERD — out of scope for this branch |
+
+---
+
+_Code references are `file:line` where given, and file paths elsewhere are relative to the
+repo root._

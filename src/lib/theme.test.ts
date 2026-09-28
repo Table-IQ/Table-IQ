@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveTheme, gridTheme, gridRowTints, editTints } from "./theme";
+import { resolveTheme, gridTheme, gridRowTints, editTints, nullCellStyle, searchHitBg } from "./theme";
 
 describe("resolveTheme", () => {
   it("returns the explicit choice for light/dark", () => {
@@ -26,11 +26,19 @@ describe("gridTheme", () => {
     expect(gridTheme("light").accentColor).toBe("#4f46e5");
     expect(gridTheme("dark").accentColor).toBe("#6366f1");
   });
-  it("sizes mono cells smaller than the surrounding chrome", () => {
-    // 11.5px cells read tighter than the 12px chrome — gives the grid a denser feel
-    // (TablePlus parity, see DESIGN.md "Type scale").
-    expect(gridTheme("light").baseFontStyle).toBe("11.5px");
-    expect(gridTheme("dark").baseFontStyle).toBe("11.5px");
+  it("draws cells in the mono face at 12.5px, like TablePlus", () => {
+    for (const mode of ["light", "dark"] as const) {
+      expect(gridTheme(mode).baseFontStyle).toBe("12.5px");
+      expect(gridTheme(mode).fontFamily).toMatch(/^"SF Mono"/);
+    }
+  });
+  it("keeps the header in the sans face — its style leads with the sans stack", () => {
+    // glide composes the header font as `${headerFontStyle} ${fontFamily}`.
+    expect(gridTheme("light").headerFontStyle).toMatch(/^500 12\.5px -apple-system/);
+  });
+  it("paints light-mode data and headers pure black on a white header", () => {
+    const t = gridTheme("light");
+    expect([t.textDark, t.textHeader, t.bgHeader]).toEqual(["#000000", "#000000", "#ffffff"]);
   });
 });
 
@@ -38,7 +46,7 @@ describe("gridRowTints", () => {
   it("zebra tint sits between bgCell and the chrome surface in each mode", () => {
     // Subtle alternate-row stripe (TablePlus parity). Light is just off-white;
     // dark is just above the cell black — never as strong as `--surface`.
-    expect(gridRowTints("light").zebra).toBe("#f6f6f7");
+    expect(gridRowTints("light").zebra).toBe("#f5f5f5");
     expect(gridRowTints("dark").zebra).toBe("#13151a");
   });
   it("hover tint is a neutral, distinct from the zebra stripe", () => {
@@ -55,5 +63,34 @@ describe("editTints", () => {
     const d = editTints("dark");
     expect(new Set([d.saving, d.saved, d.error]).size).toBe(3);
     expect(l.saved).not.toBe(d.saved);
+  });
+});
+
+describe("nullCellStyle", () => {
+  it("dims and italicises the NULL placeholder in both modes", () => {
+    for (const mode of ["light", "dark"] as const) {
+      const s = nullCellStyle(mode);
+      expect(s.baseFontStyle).toContain("italic");
+      // Same muted colour for both of glide's text slots, and never the body text.
+      expect(s.textDark).toBe(s.textLight);
+      expect(s.textDark).not.toBe(gridTheme(mode).textDark);
+    }
+  });
+
+  it("uses the mode's own muted tone", () => {
+    expect(nullCellStyle("light").textDark).toBe("#71717a");
+    expect(nullCellStyle("dark").textDark).toBe("#71757e");
+  });
+});
+
+describe("searchHitBg", () => {
+  it("is its own colour per mode, distinct from the selected-row band", () => {
+    for (const mode of ["light", "dark"] as const) {
+      const hit = searchHitBg(mode);
+      expect(hit).toMatch(/^#[0-9a-f]{6}$/i);
+      expect(hit).not.toBe(gridTheme(mode).accentLight);
+      expect(hit).not.toBe(gridTheme(mode).bgCell);
+    }
+    expect(searchHitBg("light")).not.toBe(searchHitBg("dark"));
   });
 });

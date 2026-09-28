@@ -10,7 +10,7 @@ import {
 import { blankColumn, emptyTableSpec, tableSpecValid } from "../lib/ddl";
 import { useConnections } from "../state/connectionStore";
 import { Panel } from "./ui/Panel";
-import { IconPlus } from "./ui/Icon";
+import { IconPlus, IconRefresh } from "./ui/Icon";
 
 const field =
   "rounded-md border border-border bg-bg px-2 py-1 text-xs text-text placeholder:text-muted focus:border-primary focus:outline-none";
@@ -20,13 +20,16 @@ export function StructureEditor({
   engine,
   schema,
   onClose,
+  onSchemaChanged,
 }: {
   connId: string;
   engine: Engine;
   schema: SchemaModel;
   onClose: () => void;
+  /** Called after a table is created, so callers (e.g. the lobby's stats) can refetch. */
+  onSchemaChanged?: () => void;
 }) {
-  const { setSchema } = useConnections();
+  const { updateSession } = useConnections();
   const schemaNames = schema.schemas.map((s) => s.name);
   const [spec, setSpec] = useState(() => emptyTableSpec(schemaNames[0] ?? null));
   const [sql, setSql] = useState<string | null>(null);
@@ -34,6 +37,8 @@ export function StructureEditor({
     kind: "idle",
     msg: "",
   });
+  // Apply shows its own pending state (spinner, disabled) while the DDL runs.
+  const applying = status.kind === "busy" && status.msg === "Applying…";
 
   const valid = useMemo(() => tableSpecValid(spec), [spec]);
 
@@ -55,7 +60,8 @@ export function StructureEditor({
     setStatus({ kind: "busy", msg: "Applying…" });
     try {
       await runScript(connId, sql);
-      setSchema(await listObjects(connId).catch(() => schema));
+      updateSession(connId, { schema: await listObjects(connId).catch(() => schema) });
+      onSchemaChanged?.();
       setStatus({ kind: "ok", msg: "Table created" });
     } catch (e) {
       setStatus({ kind: "err", msg: String(e) });
@@ -79,11 +85,12 @@ export function StructureEditor({
           <button
             onClick={apply}
             disabled={!sql || status.kind === "busy"}
-            className="rounded-md bg-primary px-3 py-1 text-xs font-medium text-white hover:bg-primary-hover disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1 text-xs font-medium text-white hover:bg-primary-hover disabled:opacity-50"
           >
-            Apply
+            {applying && <IconRefresh size={11} className="animate-spin" />}
+            {applying ? "Applying…" : "Apply"}
           </button>
-          {status.kind !== "idle" && (
+          {status.kind !== "idle" && !applying && (
             <span
               className={`text-xs ${
                 status.kind === "ok"

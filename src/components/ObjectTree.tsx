@@ -12,28 +12,34 @@ import {
 
 interface Props {
   schema: SchemaModel;
+  /** Key of the active tab (`table:<schema>.<name>` for a table tab). */
   activeKey: string | null;
   pinned?: string[]; // `${schema}.${table}`
+  /** When set, the tree shows only this schema's objects (sidebar dropdown). */
+  onlySchema?: string;
   onOpen: (schema: string, obj: ObjectInfo) => void;
   onContext?: (e: React.MouseEvent, schema: string, obj: ObjectInfo) => void;
   onPinToggle?: (schema: string, name: string) => void;
 }
 
-export function ObjectTree({ schema, activeKey, pinned = [], onOpen, onContext, onPinToggle }: Props) {
+export function ObjectTree({ schema, activeKey, pinned = [], onlySchema, onOpen, onContext, onPinToggle }: Props) {
   const [query, setQuery] = useState("");
   const filtered = useMemo(() => filterSchema(schema, query), [schema, query]);
 
   // Bucket objects per schema by kind. (Tables vs Views — SchemaModel currently
   // doesn't carry functions/procedures; the section is rendered empty-suppressed.)
+  // When `onlySchema` is set, restrict to that one schema — the active schema is
+  // named by the sidebar dropdown, so its per-schema header is dropped below.
   const sections = useMemo(() => {
     const out: { schema: string; tables: ObjectInfo[]; views: ObjectInfo[] }[] = [];
     for (const s of filtered.schemas) {
+      if (onlySchema && s.name !== onlySchema) continue;
       const tables = s.objects.filter((o) => o.kind === "Table");
       const views = s.objects.filter((o) => o.kind === "View");
       out.push({ schema: s.name, tables, views });
     }
     return out;
-  }, [filtered]);
+  }, [filtered, onlySchema]);
 
   const pinnedSet = useMemo(() => new Set(pinned), [pinned]);
   const pinnedObjs = useMemo(() => {
@@ -48,7 +54,9 @@ export function ObjectTree({ schema, activeKey, pinned = [], onOpen, onContext, 
 
   const renderRow = (sName: string, o: ObjectInfo) => {
     const key = `${sName}.${o.name}`;
-    const active = key === activeKey;
+    // Tab keys are namespaced (`table:public.users`); the bare `schema.table` we
+    // use for pinning never matched one, so nothing ever highlighted.
+    const active = activeKey === `table:${key}`;
     const isView = o.kind === "View";
     const Icon = isView ? IconView : IconTable;
     return (
@@ -56,7 +64,7 @@ export function ObjectTree({ schema, activeKey, pinned = [], onOpen, onContext, 
         key={key}
         onClick={() => onOpen(sName, o)}
         onContextMenu={(e) => onContext?.(e, sName, o)}
-        className={`group flex h-[var(--row-h)] w-full items-center gap-2 rounded-md px-2 text-left text-xs transition-colors ${
+        className={`group flex h-[var(--row-h)] w-full items-center gap-2 rounded-md px-2 text-left font-mono text-[12.5px] transition-colors ${
           active ? "bg-selection-bg text-text" : "text-text hover:bg-surface-2"
         }`}
         title={`${o.kind} · ${o.columns.length} cols`}
@@ -113,9 +121,11 @@ export function ObjectTree({ schema, activeKey, pinned = [], onOpen, onContext, 
         )}
         {sections.map((sec) => (
           <div key={sec.schema} className="mb-2">
-            <div className="px-1.5 pt-1 text-[10px] font-semibold uppercase tracking-wider text-muted/80">
-              {sec.schema}
-            </div>
+            {!onlySchema && (
+              <div className="px-1.5 pt-1 text-[10px] font-semibold uppercase tracking-wider text-muted/80">
+                {sec.schema}
+              </div>
+            )}
             {sec.tables.length > 0 && (
               <Section label="Tables" count={sec.tables.length}>
                 {sec.tables.map((o) => renderRow(sec.schema, o))}

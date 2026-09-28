@@ -163,6 +163,13 @@ export const IconDatabase = (p: P) => (
     <path d="M2.5 7c0 .9 2 1.6 4.5 1.6S11.5 7.9 11.5 7" />
   </svg>
 );
+export const IconSliders = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M2 4h10M2 10h10" />
+    <circle cx="5" cy="4" r="1.4" fill="var(--bg)" />
+    <circle cx="9" cy="10" r="1.4" fill="var(--bg)" />
+  </svg>
+);
 export const IconSidebarRight = (p: P) => (
   <svg {...base(p)}>
     <rect x="1.5" y="2.5" width="11" height="9" rx="1" />
@@ -233,5 +240,71 @@ export const IconDrag = (p: P) => (
 export const IconPin = (p: P) => (
   <svg {...base(p)}>
     <path d="M7 1.5v4M5 5.5h4l1.5 3h-7L5 5.5ZM7 8.5v4" />
+  </svg>
+);
+export const IconOverview = (p: P) => (
+  <svg {...base(p)}>
+    <rect x="1.5" y="1.5" width="5" height="5" rx="0.8" />
+    <rect x="7.5" y="1.5" width="5" height="5" rx="0.8" />
+    <rect x="1.5" y="7.5" width="5" height="5" rx="0.8" />
+    <rect x="7.5" y="7.5" width="5" height="5" rx="0.8" />
+  </svg>
+);
+// TablePlus's title-bar bottom-panel/console icon: a window with a docked
+// strip along the bottom edge (the SQL log lives there).
+export const IconSqlLog = (p: P) => (
+  <svg {...base(p)}>
+    <rect x="1.5" y="1.5" width="11" height="11" rx="1" />
+    <path d="M1.5 8.5h11M4.5 8.5v4" />
+  </svg>
+);
+export const IconTrash = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M2.5 3.5h9M5.5 3.5v-1a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v1M5 3.5l.5 8a1 1 0 0 0 1 1h1a1 1 0 0 0 1-1l.5-8" />
+  </svg>
+);
+export const IconUsers = (p: P) => (
+  <svg {...base(p)}>
+    <circle cx="5" cy="4.5" r="2" />
+    <path d="M1.5 12v-1a3 3 0 0 1 3-3h1a3 3 0 0 1 3 3v1" />
+    <path d="M9.5 3.2a2 2 0 0 1 0 3.8M12.5 12v-1a3 3 0 0 0-2.3-2.9" />
+  </svg>
+);
+export const IconMetrics = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M1.5 12.5h11" />
+    <rect x="2.5" y="8" width="2.2" height="4.5" />
+    <rect x="5.9" y="4.5" width="2.2" height="8" />
+    <rect x="9.3" y="6.5" width="2.2" height="6" />
+  </svg>
+);
+export const IconPlug = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M5 1.5v3.5M9 1.5v3.5" />
+    <rect x="3.5" y="5" width="7" height="4" rx="1" />
+    <path d="M7 9v1.5a2 2 0 0 1-2 2H3.5" />
+  </svg>
+);
+// Same eye glyph as IconView — a distinct name for the titlebar's "view row
+// details" action, which reads clearer under that label than "view".
+export const IconEye = IconView;
+export const IconPower = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M7 1.5v5" />
+    <path d="M10.5 3.3a5 5 0 1 1-7 0" />
+  </svg>
+);
+// TablePlus's commit glyph: a list of staged edits with an up-arrow (push
+// them to the server) on the right.
+export const IconCommitList = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M1.5 4.5h6M1.5 7h6M1.5 9.5h4" />
+    <path d="M11 10.5v-7M11 3.5 8.7 5.8M11 3.5l2.3 2.3" />
+  </svg>
+);
+export const IconColumns = (p: P) => (
+  <svg {...base(p)}>
+    <rect x="1.5" y="2.5" width="11" height="9" rx="1" />
+    <path d="M5.5 2.5v9M8.5 2.5v9" />
   </svg>
 );

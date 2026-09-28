@@ -34,3 +34,8 @@ tsconfig.tsbuildinfo
 tsconfig.node.tsbuildinfo
 vite.config.d.ts
 vite.config.js
+.claude/finalize-creds.json
+.claude/finalize-stages.jsonl
+.claude/vite-dev.log
+.claude/*.png
+.claude/qa-shots/

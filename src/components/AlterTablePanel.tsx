@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   generateDdl,
   listObjects,
@@ -10,6 +10,7 @@ import {
 import { blankColumn } from "../lib/ddl";
 import { useConnections } from "../state/connectionStore";
 import { Panel } from "./ui/Panel";
+import { IconRefresh } from "./ui/Icon";
 
 const field =
   "rounded-md border border-border bg-bg px-2 py-1 text-xs text-text focus:border-primary focus:outline-none";
@@ -29,17 +30,36 @@ export function AlterTablePanel({
   columns: ColumnInfo[];
   onClose: () => void;
 }) {
-  const { setSchema } = useConnections();
+  const { updateSession } = useConnections();
   const [drops, setDrops] = useState<Set<string>>(new Set());
+  // Per-column rename + retype, seeded from the current name/type. An op is only
+  // emitted when a value actually differs from the original.
+  const [edits, setEdits] = useState<Record<string, { name: string; type: string }>>(() =>
+    Object.fromEntries(columns.map((c) => [c.name, { name: c.name, type: c.data_type }])),
+  );
   const [add, setAdd] = useState<ColumnSpec | null>(null);
   const [sql, setSql] = useState<string | null>(null);
   const [status, setStatus] = useState<{ kind: "idle" | "busy" | "ok" | "err"; msg: string }>({
     kind: "idle",
     msg: "",
   });
+  // Apply shows its own pending state (spinner, disabled) while the DDL runs.
+  const applying = status.kind === "busy" && status.msg === "Applying…";
+
+  // A preview answers for the drafts it was built from: any change to them, or a
+  // successful Apply, retires it so Apply can never run stale or twice.
+  useEffect(() => setSql(null), [edits, drops, add]);
 
   const addValid = !!add && !!add.name.trim() && !!add.data_type.trim();
-  const hasOps = drops.size > 0 || addValid;
+  const edited = (c: ColumnInfo) => {
+    const e = edits[c.name];
+    return !!e && !drops.has(c.name) && (e.name !== c.name || e.type !== c.data_type);
+  };
+  const hasEdits = columns.some(edited);
+  const hasOps = drops.size > 0 || addValid || hasEdits;
+
+  const setEdit = (orig: string, patch: Partial<{ name: string; type: string }>) =>
+    setEdits((s) => ({ ...s, [orig]: { ...s[orig], ...patch } }));
 
   const toggleDrop = (name: string) =>
     setDrops((s) => {
@@ -54,6 +74,34 @@ export function AlterTablePanel({
       const parts: string[] = [];
       for (const name of drops) {
         parts.push(await generateDdl(engine, { op: "drop_column", schema, table, column: name }));
+      }
+      // Type-change must precede rename: both target the original column name, so
+      // renaming first would leave the retype pointing at a column that no longer exists.
+      for (const c of columns) {
+        const e = edits[c.name];
+        if (!e || drops.has(c.name)) continue;
+        if (e.type.trim() && e.type !== c.data_type) {
+          parts.push(
+            await generateDdl(engine, {
+              op: "alter_column_type",
+              schema,
+              table,
+              column: c.name,
+              new_type: e.type,
+            }),
+          );
+        }
+        if (e.name.trim() && e.name !== c.name) {
+          parts.push(
+            await generateDdl(engine, {
+              op: "rename_column",
+              schema,
+              table,
+              column: c.name,
+              new_name: e.name,
+            }),
+          );
+        }
       }
       if (addValid && add) {
         parts.push(await generateDdl(engine, { op: "add_column", schema, table, column: add }));
@@ -71,7 +119,8 @@ export function AlterTablePanel({
     try {
       await runScript(connId, sql);
       const refreshed = await listObjects(connId).catch(() => null);
-      if (refreshed) setSchema(refreshed);
+      if (refreshed) updateSession(connId, { schema: refreshed });
+      setSql(null);
       setStatus({ kind: "ok", msg: "Applied" });
     } catch (e) {
       setStatus({ kind: "err", msg: String(e) });
@@ -101,11 +150,12 @@ export function AlterTablePanel({
           <button
             onClick={apply}
             disabled={!sql || status.kind === "busy"}
-            className="rounded-md bg-primary px-3 py-1 text-xs font-medium text-white hover:bg-primary-hover disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1 text-xs font-medium text-white hover:bg-primary-hover disabled:opacity-50"
           >
-            Apply
+            {applying && <IconRefresh size={11} className="animate-spin" />}
+            {applying ? "Applying…" : "Apply"}
           </button>
-          {status.kind !== "idle" && (
+          {status.kind !== "idle" && !applying && (
             <span
               className={`text-xs ${
                 status.kind === "ok"
@@ -123,27 +173,44 @@ export function AlterTablePanel({
     >
       <div className="p-4">
         <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted">
-          Existing columns
+          Existing columns <span className="font-normal normal-case">— edit name or type, or check to drop</span>
         </div>
-        {columns.map((c) => (
-          <label
-            key={c.name}
-            className={`mb-1 flex items-center gap-2 rounded-md px-2 py-1 text-xs ${
-              drops.has(c.name) ? "bg-danger/10" : "hover:bg-surface-2"
-            }`}
-          >
-            <input type="checkbox" checked={drops.has(c.name)} onChange={() => toggleDrop(c.name)} />
-            <span
-              className={`font-mono ${
-                drops.has(c.name) ? "text-danger line-through" : "text-text"
+        {columns.map((c) => {
+          const e = edits[c.name] ?? { name: c.name, type: c.data_type };
+          const dropped = drops.has(c.name);
+          return (
+            <div
+              key={c.name}
+              className={`mb-1 flex items-center gap-2 rounded-md px-2 py-1 text-xs ${
+                dropped ? "bg-danger/10" : "hover:bg-surface-2"
               }`}
             >
-              {c.name}
-            </span>
-            <span className="text-muted">{c.data_type}</span>
-            {drops.has(c.name) && <span className="ml-auto text-[10px] text-danger">drop</span>}
-          </label>
-        ))}
+              <input
+                type="checkbox"
+                checked={dropped}
+                onChange={() => toggleDrop(c.name)}
+                title="Drop column"
+              />
+              <input
+                className={`${field} w-36 font-mono ${dropped ? "text-danger line-through" : ""}`}
+                value={e.name}
+                disabled={dropped}
+                onChange={(ev) => setEdit(c.name, { name: ev.target.value })}
+              />
+              <input
+                className={`${field} w-32`}
+                value={e.type}
+                disabled={dropped}
+                onChange={(ev) => setEdit(c.name, { type: ev.target.value })}
+              />
+              {dropped ? (
+                <span className="ml-auto text-[10px] text-danger">drop</span>
+              ) : edited(c) ? (
+                <span className="ml-auto text-[10px] text-primary">edit</span>
+              ) : null}
+            </div>
+          );
+        })}
 
         <div className="mb-1 mt-4 flex items-center justify-between">
           <span className="text-[10px] font-semibold uppercase tracking-wider text-muted">

@@ -4,6 +4,7 @@
  * tab — they never execute. `create` is a best-effort CREATE from the columns we
  * already have in the schema model (type + nullability; no constraints/defaults).
  */
+import type { Engine } from "./commands";
 
 export type ScriptKind = "select" | "drop" | "truncate" | "create";
 
@@ -13,9 +14,41 @@ export interface ScriptColumn {
   nullable: boolean;
 }
 
-/** Double-quote a SQL identifier, escaping embedded quotes. */
-export function quoteIdent(name: string): string {
+/**
+ * Quote a SQL identifier for `engine`, escaping the embedded delimiter by
+ * doubling it: `"…"` on Postgres/SQLite, `` `…` `` on MySQL, `[…]` on SQL Server.
+ * Mirrors each driver's Rust `quote_ident`. Defaults to the SQL-standard form.
+ */
+export function quoteIdent(name: string, engine?: Engine): string {
+  if (engine === "mysql") return `\`${name.replace(/`/g, "``")}\``;
+  if (engine === "sqlserver") return `[${name.replace(/]/g, "]]")}]`;
   return `"${name.replace(/"/g, '""')}"`;
+}
+
+/**
+ * Quote a string as a SQL literal for `engine`. `'` is doubled everywhere; MySQL
+ * *also* honours `\` as an escape inside string literals (unless the server runs
+ * with NO_BACKSLASH_ESCAPES), so doubling the quote alone is not enough there: a
+ * stored `a\' OR 1=1 -- ` would close the literal early and rewrite the
+ * statement's meaning. Mirrors each driver's Rust literal escaping.
+ */
+export function quoteLiteral(value: string, engine?: Engine): string {
+  const escaped =
+    engine === "mysql"
+      ? value.replace(/\\/g, "\\\\").replace(/'/g, "''")
+      : value.replace(/'/g, "''");
+  return `'${escaped}'`;
+}
+
+/** Rows a generated "browse this table" query reads. */
+const STARTER_ROWS = 300;
+
+/** The engine's "read the first N rows" query — SQL Server has no LIMIT clause. */
+export function selectStarter(schema: string, table: string, engine?: Engine): string {
+  const qualified = `${quoteIdent(schema, engine)}.${quoteIdent(table, engine)}`;
+  return engine === "sqlserver"
+    ? `SELECT TOP ${STARTER_ROWS} * FROM ${qualified};`
+    : `SELECT * FROM ${qualified} LIMIT ${STARTER_ROWS};`;
 }
 
 export function buildTableScript(
@@ -23,20 +56,46 @@ export function buildTableScript(
   schema: string,
   table: string,
   columns: ScriptColumn[],
+  engine?: Engine,
 ): string {
-  const qualified = `${quoteIdent(schema)}.${quoteIdent(table)}`;
+  const qualified = `${quoteIdent(schema, engine)}.${quoteIdent(table, engine)}`;
   switch (kind) {
     case "select":
-      return `SELECT * FROM ${qualified} LIMIT 100;`;
+      return selectStarter(schema, table, engine);
     case "drop":
       return `DROP TABLE ${qualified};`;
     case "truncate":
       return `TRUNCATE TABLE ${qualified};`;
     case "create": {
       const lines = columns.map(
-        (c) => `  ${quoteIdent(c.name)} ${c.data_type}${c.nullable ? "" : " NOT NULL"}`,
+        (c) =>
+          `  ${quoteIdent(c.name, engine)} ${c.data_type}${c.nullable ? "" : " NOT NULL"}`,
       );
       return `CREATE TABLE ${qualified} (\n${lines.join(",\n")}\n);`;
     }
   }
+}
+
+/**
+ * The row's `DELETE … WHERE <pk>` for the clipboard ("Copy DELETE statement").
+ * Identifiers AND literals are quoted for `engine`: with the default `"…"` form
+ * MySQL reads `WHERE "id" = '5'` as comparing the *string* 'id' to '5' — always
+ * false, so the pasted statement quietly deletes nothing. A NULL key part uses
+ * `IS NULL`, since `= NULL` never matches either.
+ */
+export function buildDeleteStatement(
+  schema: string,
+  table: string,
+  pk: [string, string | null][],
+  engine?: Engine,
+): string {
+  const qualified = `${quoteIdent(schema, engine)}.${quoteIdent(table, engine)}`;
+  const where = pk
+    .map(([c, v]) =>
+      v == null
+        ? `${quoteIdent(c, engine)} IS NULL`
+        : `${quoteIdent(c, engine)} = ${quoteLiteral(v, engine)}`,
+    )
+    .join(" AND ");
+  return `DELETE FROM ${qualified} WHERE ${where};`;
 }

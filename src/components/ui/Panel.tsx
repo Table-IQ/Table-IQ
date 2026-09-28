@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { IconClose } from "./Icon";
 
 export function Panel({
@@ -26,16 +26,29 @@ export function Panel({
       : width === "xl"
       ? "max-w-6xl"
       : "max-w-[96vw]";
+  // Close plays the exit animation first; the parent unmounts us when it ends.
+  // (Under reduced motion it still ends, after 0.01ms — see index.css.)
+  const [closing, setClosing] = useState(false);
+  const titleId = useId();
   return (
-    <div className="tiq-overlay flex items-center justify-center p-6">
+    <div
+      className={`tiq-overlay flex items-center justify-center p-6 ${closing ? "tiq-pop-out" : "tiq-pop-in"}`}
+      onAnimationEnd={(e) => {
+        if (closing && e.target === e.currentTarget) onClose?.();
+      }}
+    >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
         className={`flex max-h-[92vh] w-full flex-col overflow-hidden rounded-lg border border-border bg-bg shadow-[var(--shadow-pop)] ${w}`}
       >
         <header className="flex h-10 shrink-0 items-center gap-2 border-b border-border bg-surface px-3">
-          <div className="flex-1 truncate text-sm font-semibold text-text">{title}</div>
+          <div id={titleId} className="flex-1 truncate text-sm font-semibold text-text">{title}</div>
           {onClose && (
             <button
-              onClick={onClose}
+              onClick={() => setClosing(true)}
+              disabled={closing}
               aria-label="Close"
               className="inline-flex h-6 w-6 items-center justify-center rounded text-muted hover:bg-surface-2 hover:text-text"
             >

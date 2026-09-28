@@ -1,17 +1,33 @@
 /**
  * Build the `(column, text_value)[]` payload for the `insert_row` IPC command from
- * a column list + draft-row map. Empty strings collapse to null (matches the
- * server's CSV/JSON import convention; an explicit "" goes through SQL coercion).
+ * a column list + draft-row map. Only filled columns are sent: a blank or untouched
+ * cell is left out so the database applies its DEFAULT (a serial id, `now()`), or
+ * NULL when the column has none. An explicit `null` in the draft is sent as NULL.
  */
 export function buildInsertValues(
   columns: string[],
   draft: Record<string, string | null | undefined>,
 ): [string, string | null][] {
-  return columns.map((c) => {
+  return columns.flatMap((c): [string, string | null][] => {
     const v = draft[c];
-    if (v === undefined || v === null || v === "") return [c, null];
-    return [c, v];
+    return v === undefined || v === "" ? [] : [[c, v]];
   });
+}
+
+/** The inserted row's PK values, so the grid can find it after the refetch.
+ *  Null when any PK column was left to the database (serial, default). */
+export function insertedPkMatch(
+  pk: string[],
+  values: [string, string | null][],
+): Record<string, string> | null {
+  if (pk.length === 0) return null;
+  const out: Record<string, string> = {};
+  for (const c of pk) {
+    const v = values.find(([col]) => col === c)?.[1];
+    if (v == null) return null;
+    out[c] = v;
+  }
+  return out;
 }
 
 /** Has any cell been touched? Used to enable the Commit button. */

@@ -1,33 +1,44 @@
-//! Postgres `SqlDriver` — keyset (seek) cursor streaming with bounded RAM.
-//!
-//! Phase 0 spike: the cursor query is specialized to the seeded `wide` table so we can
-//! prove the streaming path end-to-end. A general SQL rewrite/keyset planner is Phase 1.
-//! Decimal is carried as exact text (plan spec #3) — no float round-trip.
+//! Postgres `SqlDriver`. Decimal is carried as exact text (plan spec #3) — no float
+//! round-trip.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 
-use arrow::array::{ArrayRef, Int64Array, StringArray, TimestampMicrosecondArray};
-use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+use arrow::array::StringArray;
+use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
-use sqlx::postgres::{PgPoolOptions, PgRow};
-use sqlx::{Column, Executor, Pool, Postgres, Row};
+use sqlx::postgres::{PgDatabaseError, PgErrorPosition, PgPoolOptions, PgQueryResult, PgRow};
+use sqlx::{Executor, Pool, Postgres, Row};
 
 use super::{
-    build_insert_sql, build_where_clause, CancelToken, ColumnFilter, ColumnInfo, CursorId, DResult,
-    DriverError, EditSpec, ObjectInfo, ObjectKind, QueryResult, SchemaInfo, SchemaModel, SqlDriver,
+    build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
+    ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec, IndexInfo, ObjectInfo,
+    ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver, StmtOutput,
+    TableStat, TableStructure, TriggerInfo, EXACT_COUNT_MAX,
 };
 
-/// Map a query error, recognising Postgres' "canceling statement due to user request"
-/// (SQLSTATE 57014) as a clean cancellation rather than a generic DB error.
-fn map_query_err(e: sqlx::Error) -> DriverError {
-    if let sqlx::Error::Database(ref dbe) = e {
-        if dbe.code().as_deref() == Some("57014") {
-            return DriverError::Cancelled;
-        }
-    }
-    DriverError::Db(e.to_string())
+/// Above this, a `table_stats` catalog read gives up rather than block the lobby.
+const STATS_TIMEOUT_MS: u64 = 5_000;
+
+/// One leaf's estimated row count: `c` is the leaf's `pg_class` row, `s.bs` the block size.
+/// Never-ANALYZEd (`reltuples = -1`; before PG 14, `reltuples = 0` with `relpages = 0`) is
+/// estimated from its size: pages × tuples-per-page, a tuple being its fixed-width columns
+/// (32 bytes per variable-width one) plus 28 bytes of header and line pointer. Shared,
+/// byte-identical, between `estimate_rows` and `table_stats`.
+const PG_LEAF_ROW_ESTIMATE: &str = "CASE \
+    WHEN c.reltuples > 0 AND c.relpages > 0 \
+      THEN c.reltuples::float8 / c.relpages * floor(pg_relation_size(c.oid) / s.bs) \
+    WHEN c.reltuples > 0 OR (c.reltuples = 0 AND c.relpages > 0) THEN c.reltuples::float8 \
+    ELSE floor(pg_relation_size(c.oid) / s.bs) * floor(s.bs / (28 + ( \
+      SELECT COALESCE(SUM(CASE WHEN a.attlen > 0 THEN a.attlen ELSE 32 END), 0) \
+      FROM pg_attribute a \
+      WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped))) \
+    END";
+
+/// Postgres reports "canceling statement due to user request" as SQLSTATE 57014; that is a
+/// clean cancellation, not a query error.
+fn is_cancel(e: &sqlx::Error) -> bool {
+    matches!(e, sqlx::Error::Database(dbe) if dbe.code().as_deref() == Some("57014"))
 }
 
 /// Build a parameterized, identifier-safe optimistic-concurrency UPDATE.
@@ -66,23 +77,138 @@ fn build_update_sql(
     )
 }
 
-fn db(e: sqlx::Error) -> DriverError {
-    DriverError::Db(e.to_string())
+/// Build a parameterized, identifier-safe DELETE matching a row by its primary key.
+/// PK columns are matched on their TEXT rendering (`col::text IS NOT DISTINCT FROM $n::text`)
+/// — NULL-safe and type-agnostic. This deliberately differs from `build_update_sql`'s
+/// PK clause (`col = $n::udt`): the pk values handed in are the display query's
+/// `col::text` renderings, so matching back on `::text` round-trips them exactly and
+/// avoids per-type cast lookups. Params: $1.. = pk values in `pk_cols` order.
+fn build_delete_sql(schema: &str, table: &str, pk_cols: &[String]) -> String {
+    let mut p = 1;
+    let wheres: Vec<String> = pk_cols
+        .iter()
+        .map(|c| {
+            let w = format!("{}::text IS NOT DISTINCT FROM ${}::text", quote_ident(c), p);
+            p += 1;
+            w
+        })
+        .collect();
+    format!(
+        "DELETE FROM {}.{} WHERE {}",
+        quote_ident(schema),
+        quote_ident(table),
+        wheres.join(" AND ")
+    )
 }
+
+/// Unwrap `sqlx::Error::Database` to the bare server message — sqlx otherwise prefixes it with
+/// "error returned from database:", which `DriverError::Db` used to prefix again.
+fn db(e: sqlx::Error) -> DriverError {
+    match e.as_database_error() {
+        Some(dbe) => DriverError::Db(dbe.message().to_string()),
+        None => DriverError::Db(e.to_string()),
+    }
+}
+
+/// One cell of a simple-query row. `raw_sql` uses the text protocol, so the bytes are already
+/// the server's display rendering — the same text the old `col::text` cast produced.
+fn pg_cell(row: &PgRow, i: usize) -> Result<Option<String>, sqlx::Error> {
+    use sqlx::ValueRef;
+    let raw = row.try_get_raw(i)?;
+    if raw.is_null() {
+        return Ok(None);
+    }
+    let bytes = raw.as_bytes().map_err(sqlx::Error::Decode)?;
+    Ok(Some(exec::cell_text(bytes)))
+}
+
+/// Per-statement error detail. Postgres reports a 1-based **character** offset into the
+/// statement; we keep it and also derive the 1-based line so the editor can point at it.
+/// A cancellation aborts the whole run instead of becoming a statement error.
+fn pg_stmt_err(e: sqlx::Error, stmt: &str) -> Result<QueryError, DriverError> {
+    if is_cancel(&e) {
+        return Err(DriverError::Cancelled);
+    }
+    let dbe = e.as_database_error();
+    let message = dbe.map_or_else(|| e.to_string(), |d| d.message().to_string());
+    let position = dbe
+        .and_then(|d| d.try_downcast_ref::<PgDatabaseError>())
+        .and_then(|p| match p.position() {
+            Some(PgErrorPosition::Original(n)) => u32::try_from(n).ok(),
+            _ => None,
+        });
+    // Offset → line: count the newlines in the first `position - 1` characters.
+    let line = position.map(|p| {
+        1 + stmt
+            .chars()
+            .take(p.saturating_sub(1) as usize)
+            .filter(|c| *c == '\n')
+            .count() as u32
+    });
+    Ok(QueryError { message, line, position })
+}
+
 
 /// Quote a SQL identifier safely (double-quote, escape embedded quotes).
 fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
-pub struct PgDriver {
-    pool: Pool<Postgres>,
-    cursors: Mutex<HashMap<String, CursorState>>,
+/// Placeholder factory for [`build_where_clause`] / [`build_insert_sql`]: `$n::<udt>`.
+/// Postgres will not coerce a text bind, so every value carries its column's own type —
+/// without this a filter on a bigint column raises "operator does not exist: bigint = text"
+/// and "+ Row" into any non-text column fails the same way. A column the map doesn't know
+/// (`""`, which the builder passes for the LIKE/ILIKE comparisons that are textual by
+/// construction) falls back to `text`.
+fn pg_placeholder(udts: &HashMap<String, String>) -> impl Fn(usize, &str) -> String + '_ {
+    move |i, col| {
+        format!("${i}::{}", quote_ident(udts.get(col).map_or("text", String::as_str)))
+    }
 }
 
-struct CursorState {
-    last_id: i64,
-    page_size: usize,
+/// Left side of a LIKE/ILIKE comparison. Postgres has no `bigint LIKE text` operator at
+/// all, so the column is compared on its text rendering.
+fn pg_text_expr(col: &str) -> String {
+    format!("{}::text", quote_ident(col))
+}
+
+/// The last page column of a PK-less table: each row's `ctid`, the keyset cursor there.
+pub const CTID_COL: &str = "__tiq_ctid";
+
+/// What every page of a table needs from the catalog, cached per table (see
+/// [`super::MetaCache`]).
+struct PgMeta {
+    udts: Vec<(String, String)>,
+    pk: Vec<String>,
+    /// `ctid` identifies a row of this relation: a plain table or matview with no
+    /// inheritance children (a parent's scan spans relations whose ctids collide), on
+    /// Postgres 14+ — before it there is no TID Range Scan, so a ctid seek scans the table.
+    ctid_ok: bool,
+}
+
+pub struct PgDriver {
+    pool: Pool<Postgres>,
+    /// Where `cancel` runs: one connection, opened on first use. On `pool` a cancel would
+    /// wait behind the very pages it is meant to stop.
+    cancel_pool: Pool<Postgres>,
+    meta: super::MetaCache<std::sync::Arc<PgMeta>>,
+    /// [`super::WINDOW_TIMEOUT_MS`]; only tests shorten it.
+    window_timeout_ms: u64,
+}
+
+/// A failed cancellable page: 57014 is a cancel when the token says so or the server says
+/// "due to user request" (someone else's `pg_cancel_backend`), and otherwise the statement
+/// timeout.
+fn window_err(e: sqlx::Error, token: &CancelToken, timeout_ms: u64) -> DriverError {
+    if !is_cancel(&e) {
+        db(e)
+    } else if token.is_cancelled()
+        || e.as_database_error().is_some_and(|d| d.message().contains("user request"))
+    {
+        DriverError::Cancelled
+    } else {
+        DriverError::Db(format!("query timed out after {timeout_ms} ms"))
+    }
 }
 
 impl PgDriver {
@@ -94,9 +220,15 @@ impl PgDriver {
         // "pool timed out while waiting for an open connection", hiding the cause.
         {
             use sqlx::Connection;
-            let probe = sqlx::postgres::PgConnection::connect(url)
-                .await
-                .map_err(|e| DriverError::Db(e.to_string()))?;
+            let probe = tokio::time::timeout(
+                super::CONNECT_TIMEOUT,
+                sqlx::postgres::PgConnection::connect(url),
+            )
+            .await
+            .map_err(|_| {
+                DriverError::Db(format!("timed out connecting to {}", super::url_host_port(url)))
+            })?
+            .map_err(|e| DriverError::Db(e.to_string()))?;
             let _ = probe.close().await;
         }
         // Pin the session GUCs that affect `col::text` rendering on EVERY pooled
@@ -107,6 +239,9 @@ impl PgDriver {
         // timestamptz/float render differently between the two queries, so a
         // correct edit would silently match 0 rows. UTC + ISO + max float digits
         // make the text form deterministic and stable across the pool.
+        // `standard_conforming_strings` is pinned for a different reason: it makes a
+        // backslash an ordinary character in a literal, which is what the import path's
+        // `sql_literal` assumes when it escapes only the quote.
         let pool = PgPoolOptions::new()
             .max_connections(4)
             .acquire_timeout(std::time::Duration::from_secs(10))
@@ -114,7 +249,8 @@ impl PgDriver {
                 Box::pin(async move {
                     conn.execute(
                         "SET TimeZone = 'UTC'; SET DateStyle = 'ISO, MDY'; \
-                         SET extra_float_digits = 3;",
+                         SET extra_float_digits = 3; \
+                         SET standard_conforming_strings = on;",
                     )
                     .await
                     .map(|_| ())
@@ -123,178 +259,125 @@ impl PgDriver {
             .connect(url)
             .await
             .map_err(|e| DriverError::Db(e.to_string()))?;
+        let cancel_pool = PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_secs(10))
+            .connect_lazy_with((*pool.connect_options()).clone());
         Ok(Self {
             pool,
-            cursors: Mutex::new(HashMap::new()),
+            cancel_pool,
+            meta: Default::default(),
+            window_timeout_ms: super::WINDOW_TIMEOUT_MS,
         })
     }
-}
 
-#[async_trait]
-impl SqlDriver for PgDriver {
-    async fn open_cursor(&self, _sql: &str, page_size: usize) -> DResult<CursorId> {
-        let id = format!(
-            "cur-{:x}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        );
-        self.cursors.lock().unwrap().insert(
-            id.clone(),
-            CursorState {
-                last_id: 0,
-                page_size,
-            },
-        );
-        Ok(CursorId(id))
+    /// Shorten the page timeouts, so a test can reach them quickly.
+    #[doc(hidden)]
+    pub fn with_window_timeout_ms(mut self, ms: u64) -> Self {
+        self.window_timeout_ms = ms;
+        self
     }
 
-    async fn fetch_next(&self, cursor: &CursorId, n: usize) -> DResult<RecordBatch> {
-        // Read cursor state without holding the lock across the await.
-        let (last_id, page) = {
-            let map = self.cursors.lock().unwrap();
-            let s = map
-                .get(&cursor.0)
-                .ok_or_else(|| DriverError::Db("unknown cursor".into()))?;
-            (s.last_id, s.page_size.max(n))
-        };
-
-        // Keyset pagination: seek past last_id, bounded LIMIT. Decimal as exact text.
-        let q = "SELECT id, \
-                        amount_numeric::text AS amount_numeric, \
-                        (extract(epoch FROM created_at) * 1e6)::bigint AS created_us, \
-                        blob_text, \
-                        nullable_int \
-                 FROM wide WHERE id > $1 ORDER BY id LIMIT $2";
-        let rows = sqlx::query(q)
-            .bind(last_id)
-            .bind(page as i64)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| DriverError::Db(e.to_string()))?;
-
-        let batch = rows_to_batch(&rows)?;
-
-        // Advance the keyset to the last id we saw.
-        if let Some(ids) = batch.column(0).as_any().downcast_ref::<Int64Array>() {
-            if !ids.is_empty() {
-                let max = ids.value(ids.len() - 1);
-                if let Some(s) = self.cursors.lock().unwrap().get_mut(&cursor.0) {
-                    s.last_id = max;
-                }
+    /// Set up a page's transaction in ONE round trip and record the PID in `token`: the
+    /// session is named after the token (`application_name`, which `cancel` matches — the
+    /// page SQL itself stays the same text for every token, so it is prepared once per
+    /// connection), a timeout bounds the statement, and `tid_scan` turns seq scans off (see
+    /// `window`). `set_config(…, true)` is `SET LOCAL`: it needs the caller's transaction and
+    /// reverts when it ends. A token already cancelled stops the page here.
+    async fn pin(
+        conn: &mut sqlx::PgConnection,
+        token: Option<&CancelToken>,
+        timeout_ms: Option<u64>,
+        tid_scan: bool,
+    ) -> DResult<()> {
+        let pid: i32 = sqlx::query_scalar(
+            "SELECT pg_backend_pid() FROM \
+             set_config('application_name', COALESCE($1, current_setting('application_name')), true) a, \
+             set_config('statement_timeout', COALESCE($2, current_setting('statement_timeout')), true) t, \
+             set_config('enable_seqscan', \
+                        CASE WHEN $3 THEN 'off' ELSE current_setting('enable_seqscan') END, true) s",
+        )
+        .bind(token.map(CancelToken::label))
+        .bind(timeout_ms.map(|ms| ms.to_string()))
+        .bind(tid_scan)
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(db)?;
+        if let Some(token) = token {
+            token.set_backend_id(pid as i64);
+            if token.is_cancelled() {
+                return Err(DriverError::Cancelled);
             }
         }
-        Ok(batch)
-    }
-
-    async fn close_cursor(&self, cursor: &CursorId) -> DResult<()> {
-        self.cursors.lock().unwrap().remove(&cursor.0);
         Ok(())
     }
 
-    async fn introspect(&self) -> DResult<SchemaModel> {
-        let tables = sqlx::query(
-            "SELECT table_schema, table_name, table_type \
-             FROM information_schema.tables \
-             WHERE table_schema NOT IN ('pg_catalog', 'information_schema') \
-             ORDER BY table_schema, table_name",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db)?;
-
-        let columns = sqlx::query(
-            "SELECT table_schema, table_name, column_name, data_type, is_nullable \
-             FROM information_schema.columns \
-             WHERE table_schema NOT IN ('pg_catalog', 'information_schema') \
-             ORDER BY table_schema, table_name, ordinal_position",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db)?;
-
-        // schema name -> (object name -> ObjectInfo), preserving insertion order.
-        use std::collections::BTreeMap;
-        let mut schemas: BTreeMap<String, Vec<ObjectInfo>> = BTreeMap::new();
-        let mut index: std::collections::HashMap<(String, String), (usize, usize)> =
-            std::collections::HashMap::new();
-
-        for r in &tables {
-            let schema: String = r.get("table_schema");
-            let name: String = r.get("table_name");
-            let ttype: String = r.get("table_type");
-            let kind = if ttype == "VIEW" {
-                ObjectKind::View
-            } else {
-                ObjectKind::Table
-            };
-            let list = schemas.entry(schema.clone()).or_default();
-            index.insert((schema, name.clone()), (0, list.len()));
-            list.push(ObjectInfo {
-                name,
-                kind,
-                columns: Vec::new(),
-            });
+    /// [`PgMeta`] for one relation, from the cache after the first page. A missing
+    /// relation is an error and is not cached, so creating it later just works.
+    async fn browse_meta(&self, schema: &str, table: &str) -> DResult<std::sync::Arc<PgMeta>> {
+        if let Some(m) = self.meta.get(schema, table) {
+            return Ok(m);
         }
-
-        for r in &columns {
-            let schema: String = r.get("table_schema");
-            let table: String = r.get("table_name");
-            if let Some(list) = schemas.get_mut(&schema) {
-                if let Some(obj) = list.iter_mut().find(|o| o.name == table) {
-                    obj.columns.push(ColumnInfo {
-                        name: r.get("column_name"),
-                        data_type: r.get("data_type"),
-                        nullable: r.get::<String, _>("is_nullable") == "YES",
-                    });
-                }
-            }
+        let udts = self.column_udts(schema, table).await?;
+        if udts.is_empty() {
+            return Err(DriverError::Db(format!("no such table {schema}.{table}")));
         }
-
-        Ok(SchemaModel {
-            schemas: schemas
-                .into_iter()
-                .map(|(name, objects)| SchemaInfo { name, objects })
-                .collect(),
-        })
-    }
-
-    async fn row_estimate(&self, schema: &str, table: &str) -> DResult<i64> {
-        let est: Option<f32> = sqlx::query_scalar(
-            "SELECT reltuples FROM pg_class c \
+        let pk = self.primary_key(schema, table).await?;
+        let ctid_ok: bool = sqlx::query_scalar(
+            "SELECT c.relkind IN ('r', 'm') AND NOT c.relhassubclass \
+               AND current_setting('server_version_num')::int >= 140000 FROM pg_class c \
              JOIN pg_namespace n ON n.oid = c.relnamespace \
              WHERE n.nspname = $1 AND c.relname = $2",
         )
         .bind(schema)
         .bind(table)
-        .fetch_optional(&self.pool)
+        .fetch_one(&self.pool)
         .await
-        .map_err(db)?
-        .flatten();
-        Ok(est.map(|f| f as i64).unwrap_or(0).max(0))
+        .map_err(db)?;
+        let m = std::sync::Arc::new(PgMeta { udts, pk, ctid_ok });
+        self.meta.put(schema, table, m.clone());
+        Ok(m)
     }
 
-    async fn open_window(
+    /// One page of a table; see [`SqlDriver::open_window_cancellable`] for `token`. A page
+    /// that failed on a stale cached column list (see `window_once`) is retried once.
+    #[allow(clippy::too_many_arguments)]
+    async fn window(
         &self,
         schema: &str,
         table: &str,
         offset: usize,
         len: usize,
+        filters: &[ColumnFilter],
+        order: &[SortKey],
+        after: Option<&[Option<String>]>,
+        token: Option<&CancelToken>,
     ) -> DResult<RecordBatch> {
-        // Column order from the catalog (also validates the table exists).
-        let cols: Vec<String> = sqlx::query_scalar(
-            "SELECT column_name FROM information_schema.columns \
-             WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position",
-        )
-        .bind(schema)
-        .bind(table)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db)?;
-        if cols.is_empty() {
-            return Err(DriverError::Db(format!("no such table {schema}.{table}")));
+        let cached = self.meta.get(schema, table).is_some();
+        let res = self.window_once(schema, table, offset, len, filters, order, after, token).await;
+        if res.is_err() && cached && self.meta.get(schema, table).is_none() {
+            return self.window_once(schema, table, offset, len, filters, order, after, token).await;
         }
+        res
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn window_once(
+        &self,
+        schema: &str,
+        table: &str,
+        offset: usize,
+        len: usize,
+        filters: &[ColumnFilter],
+        order: &[SortKey],
+        after: Option<&[Option<String>]>,
+        token: Option<&CancelToken>,
+    ) -> DResult<RecordBatch> {
+        let meta = self.browse_meta(schema, table).await?;
+        let mut cols: Vec<String> = meta.udts.iter().map(|(c, _)| c.clone()).collect();
+        let udts: HashMap<String, String> = meta.udts.iter().cloned().collect();
+        let pk = &meta.pk;
+        let order_sql = build_order_by(order, pk, &cols, &quote_ident)?;
 
         // Display-first browse: cast every column to text (lossless string view,
         // consistent with the decimal-as-text rule). Identifiers are quoted.
@@ -303,107 +386,405 @@ impl SqlDriver for PgDriver {
             .map(|c| format!("{0}::text AS {0}", quote_ident(c)))
             .collect::<Vec<_>>()
             .join(", ");
-        // Order on the REAL first column (numeric/native) in a subquery, THEN cast to
-        // text — ordering by the text cast would sort numbers lexicographically.
+        // Filter binds come first ($1..), then the keyset's, then the offset/limit.
+        let (mut where_sql, mut binds) = build_where_clause(
+            filters,
+            &cols,
+            &quote_ident,
+            &pg_placeholder(&udts),
+            &pg_text_expr,
+            1,
+        );
+        // No PK, sort or filter: key on `ctid`. There is deliberately no ORDER BY ctid —
+        // Postgres can't produce that order from an index, so it would sort the whole
+        // table per page. `ctid > $n` runs as a TID Range Scan, which walks the heap in
+        // ctid order from the cursor on; an unordered first page is the same heap order.
+        let by_ctid = meta.ctid_ok && pk.is_empty() && order.is_empty() && filters.is_empty();
+        let seek = match after {
+            Some([Some(tid)]) if by_ctid => {
+                Some((format!("_t.ctid > ${}::tid", binds.len() + 1), vec![Some(tid.clone())]))
+            }
+            Some(a) => build_keyset(order, pk, a, &quote_ident, &pg_placeholder(&udts), binds.len() + 1, false),
+            None => None,
+        };
+        let mut offset = offset;
+        if let Some((k, kb)) = seek {
+            where_sql = if where_sql.is_empty() { k } else { format!("{where_sql} AND {k}") };
+            binds.extend(kb);
+            offset = 0;
+        } else if by_ctid {
+            // Without it the first (or an OFFSET) page is a plain Seq Scan, which on a table
+            // past shared_buffers/4 is a synchronized one: it starts wherever another scan
+            // of the table is, and the next page's `ctid >` then skips the blocks before.
+            // Its selectivity is ~1, so the planner still prefers that Seq Scan: every ctid
+            // page runs with `enable_seqscan = off` (see `pin`).
+            where_sql = "_t.ctid >= '(0,0)'::tid".into();
+        }
+        let (inner, select_list) = if by_ctid {
+            cols.push(CTID_COL.into());
+            let c = quote_ident(CTID_COL);
+            (format!("_t.*, _t.ctid AS {c}"), format!("{select_list}, {c}::text AS {c}"))
+        } else {
+            ("*".to_string(), select_list)
+        };
+        let off_ph = format!("${}", binds.len() + 1);
+        let lim_ph = format!("${}", binds.len() + 2);
+        // Order (and filter) on the REAL columns inside the subquery, THEN cast to text —
+        // ordering by the text cast would sort numbers lexicographically.
         let q = format!(
             "SELECT {select_list} FROM \
-             (SELECT * FROM {}.{} ORDER BY 1 OFFSET $1 LIMIT $2) AS _w",
+             (SELECT {inner} FROM {}.{} AS _t{}{order_sql} OFFSET {off_ph} LIMIT {lim_ph}) AS _w",
             quote_ident(schema),
-            quote_ident(table)
+            quote_ident(table),
+            if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },
         );
-        let rows = sqlx::query(&q)
-            .bind(offset as i64)
-            .bind(len as i64)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(db)?;
+        let mut qy = sqlx::query(&q);
+        for b in &binds {
+            qy = qy.bind(b.clone());
+        }
+        qy = qy.bind(offset as i64).bind(len as i64);
+        let ms = self.window_timeout_ms * if filters.is_empty() { 2 } else { 1 };
+        let res = if token.is_none() && !by_ctid {
+            qy.fetch_all(&self.pool).await
+        } else {
+            // Pinned, so `cancel` can target the PID, and bounded — both SET LOCAL, so in a
+            // transaction. Dropping it (rather than awaiting `rollback`) queues the ROLLBACK,
+            // which the pool flushes as the connection comes back: the page's answer does
+            // not wait a round trip for it, and nobody gets the connection before it lands.
+            let mut tx = self.pool.begin().await.map_err(db)?;
+            Self::pin(&mut tx, token, token.map(|_| ms), by_ctid).await?;
+            match token {
+                Some(t) => super::recheck_cancel(self, t, qy.fetch_all(&mut *tx)).await,
+                None => qy.fetch_all(&mut *tx).await,
+            }
+        };
+        let rows = res.map_err(|e| {
+            // A column or the table itself is gone (42703 / 42P01): the cached list is stale.
+            if matches!(e.as_database_error().and_then(|d| d.code()).as_deref(), Some("42703" | "42P01")) {
+                self.meta.forget(schema, table);
+            }
+            match token {
+                Some(t) => window_err(e, t, ms),
+                None => db(e),
+            }
+        })?;
 
         text_rows_to_batch(&cols, &rows)
     }
 
-    async fn run_query(&self, sql: &str, cap: usize) -> DResult<QueryResult> {
-        let start = std::time::Instant::now();
-        let wrapped = format!("SELECT * FROM ({sql}) AS _q");
-        // Column names (in order) without executing the full query.
-        let described = self.pool.describe(wrapped.as_str()).await.map_err(db)?;
-        let names: Vec<String> = described.columns().iter().map(|c| c.name().to_string()).collect();
-        if names.is_empty() {
-            let empty = text_rows_to_batch(&[], &[])?;
-            return Ok(QueryResult {
-                batch: empty,
-                truncated: false,
-                exec_ms: start.elapsed().as_millis() as u64,
-            });
-        }
-        let select_list = names
-            .iter()
-            .map(|c| format!("{0}::text AS {0}", quote_ident(c)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let q = format!("SELECT {select_list} FROM ({sql}) AS _q LIMIT $1");
-        let mut rows = sqlx::query(&q)
-            .bind(cap as i64 + 1)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(db)?;
-        let truncated = rows.len() > cap;
-        if truncated {
-            rows.truncate(cap);
-        }
-        let batch = text_rows_to_batch(&names, &rows)?;
-        Ok(QueryResult {
-            batch,
-            truncated,
-            exec_ms: start.elapsed().as_millis() as u64,
-        })
+    /// Ordered `(column, udt_name)` for one relation — the single catalog lookup that gives
+    /// both the browse column list and the cast target for every typed bind. Read from
+    /// `pg_attribute` rather than `information_schema.columns`, which hides materialized
+    /// views (the browser lists them, so the grid has to be able to open them).
+    /// Empty ⇒ no such relation.
+    async fn column_udts(&self, schema: &str, table: &str) -> DResult<Vec<(String, String)>> {
+        let rows = sqlx::query(
+            "SELECT a.attname AS column_name, t.typname AS udt_name \
+             FROM pg_class c \
+             JOIN pg_namespace n ON n.oid = c.relnamespace \
+             JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped \
+             JOIN pg_type t ON t.oid = a.atttypid \
+             WHERE n.nspname = $1 AND c.relname = $2 \
+             ORDER BY a.attnum",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        rows.iter()
+            .map(|r| Ok((r.try_get("column_name").map_err(db)?, r.try_get("udt_name").map_err(db)?)))
+            .collect()
     }
+}
 
-    async fn run_query_cancellable(
+#[async_trait]
+impl SqlDriver for PgDriver {
+    async fn run_statements(
         &self,
-        sql: &str,
+        stmts: &[String],
         cap: usize,
         token: &CancelToken,
-    ) -> DResult<QueryResult> {
-        let start = std::time::Instant::now();
-        // Pin one pooled connection for the whole query so we can target it by backend PID.
+    ) -> DResult<Vec<StmtOutput>> {
+        // Pin one pooled connection for the whole script so we can target it by backend PID,
+        // and so BEGIN/…/COMMIT actually land on the same session.
         let mut conn = self.pool.acquire().await.map_err(db)?;
         let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
             .fetch_one(&mut *conn)
             .await
             .map_err(db)?;
         token.set_backend_id(pid as i64);
+        // Recorded, then the flag checked (the `CancelToken` protocol): a caller that gave up
+        // while this waited for a pooled connection has said it was cancelled — never run it.
+        if token.is_cancelled() {
+            return Err(DriverError::Cancelled);
+        }
 
-        let wrapped = format!("SELECT * FROM ({sql}) AS _q");
-        let described = (&mut *conn).describe(wrapped.as_str()).await.map_err(map_query_err)?;
-        let names: Vec<String> = described.columns().iter().map(|c| c.name().to_string()).collect();
-        if names.is_empty() {
-            return Ok(QueryResult {
-                batch: text_rows_to_batch(&[], &[])?,
-                truncated: false,
-                exec_ms: start.elapsed().as_millis() as u64,
+        let res = exec::run_sqlx::<Postgres, _, _, _>(
+            &mut conn,
+            stmts,
+            cap,
+            pg_cell,
+            PgQueryResult::rows_affected,
+            pg_stmt_err,
+        )
+        .await;
+        match res {
+            // A dirty connection (an error, or BEGIN/SET left behind) must not go back to the
+            // pool: closing it makes the server roll back and drop the session state.
+            Ok((outs, reset)) => {
+                if reset {
+                    conn.close_on_drop();
+                }
+                Ok(outs)
+            }
+            Err(e) => {
+                conn.close_on_drop();
+                Err(e)
+            }
+        }
+    }
+
+    /// One catalog pass over `pg_namespace ⋈ pg_class ⋈ pg_attribute`. `information_schema`
+    /// (what this replaces) hid materialized views and empty schemas, lost every type
+    /// detail (`character varying` with no length, `ARRAY`, `USER-DEFINED`) and needed an
+    /// O(n²) scan to attach each column to its table.
+    async fn introspect(&self) -> DResult<SchemaModel> {
+        let rows = sqlx::query(
+            "SELECT n.nspname AS schema_name, \
+                    c.relname AS object_name, \
+                    c.relkind::text AS relkind, \
+                    a.attname AS column_name, \
+                    format_type(a.atttypid, a.atttypmod) AS data_type, \
+                    a.attnotnull AS notnull, \
+                    COALESCE(i.indisprimary, false) AS is_pk \
+             FROM pg_namespace n \
+             LEFT JOIN pg_class c \
+               ON c.relnamespace = n.oid AND c.relkind IN ('r', 'p', 'v', 'm', 'f') \
+             LEFT JOIN pg_attribute a \
+               ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped \
+             LEFT JOIN pg_index i \
+               ON i.indrelid = c.oid AND i.indisprimary AND a.attnum = ANY(i.indkey) \
+             WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') \
+               AND n.nspname NOT LIKE 'pg\\_toast%' \
+             ORDER BY n.nspname, c.relname, a.attnum",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+
+        // The rows arrive grouped by the ORDER BY; the two maps index into the vectors so
+        // attaching a column is O(1) instead of a linear scan of the schema's objects.
+        let mut schemas: Vec<SchemaInfo> = Vec::new();
+        let mut schema_ix: HashMap<String, usize> = HashMap::new();
+        let mut object_ix: HashMap<(String, String), usize> = HashMap::new();
+        for r in &rows {
+            let schema: String = r.try_get("schema_name").map_err(db)?;
+            let si = *schema_ix.entry(schema.clone()).or_insert_with(|| {
+                // An empty non-system schema still gets a node (LEFT JOIN ⇒ all columns NULL).
+                schemas.push(SchemaInfo { name: schema.clone(), objects: Vec::new() });
+                schemas.len() - 1
+            });
+            let Some(object): Option<String> = r.try_get("object_name").map_err(db)? else {
+                continue;
+            };
+            let oi = match object_ix.get(&(schema.clone(), object.clone())) {
+                Some(i) => *i,
+                None => {
+                    // Materialized views ('m') browse exactly like views.
+                    let kind = match r.try_get::<String, _>("relkind").map_err(db)?.as_str() {
+                        "v" | "m" => ObjectKind::View,
+                        _ => ObjectKind::Table,
+                    };
+                    schemas[si].objects.push(ObjectInfo {
+                        name: object.clone(),
+                        kind,
+                        columns: Vec::new(),
+                    });
+                    let i = schemas[si].objects.len() - 1;
+                    object_ix.insert((schema.clone(), object.clone()), i);
+                    i
+                }
+            };
+            // A relation with no columns (a 0-column table) yields one all-NULL column row.
+            let Some(column): Option<String> = r.try_get("column_name").map_err(db)? else {
+                continue;
+            };
+            schemas[si].objects[oi].columns.push(ColumnInfo {
+                name: column,
+                data_type: r.try_get("data_type").map_err(db)?,
+                nullable: !r.try_get::<bool, _>("notnull").map_err(db)?,
+                pk: r.try_get("is_pk").map_err(db)?,
             });
         }
-        let select_list = names
-            .iter()
-            .map(|c| format!("{0}::text AS {0}", quote_ident(c)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let q = format!("SELECT {select_list} FROM ({sql}) AS _q LIMIT $1");
-        let mut rows = sqlx::query(&q)
-            .bind(cap as i64 + 1)
-            .fetch_all(&mut *conn)
-            .await
-            .map_err(map_query_err)?;
-        let truncated = rows.len() > cap;
-        if truncated {
-            rows.truncate(cap);
+        Ok(SchemaModel { schemas })
+    }
+
+    /// Exact `COUNT(*)` under a 2s server-side timeout, falling back to the planner's
+    /// estimate. The `reltuples` shortcut this replaces reported **0** for a table that
+    /// had never been ANALYZEd and for every view (both carry `reltuples = -1`), so the
+    /// grid then fetched nothing — so the shortcut is now taken only past
+    /// [`EXACT_COUNT_MAX`], where a count could never finish in time anyway.
+    async fn count_rows(
+        &self,
+        schema: &str,
+        table: &str,
+        filters: &[ColumnFilter],
+        force_exact: Option<&CancelToken>,
+    ) -> DResult<RowCount> {
+        if force_exact.is_none() && filters.is_empty() {
+            if let Some(n) = self.estimate_rows(schema, table).await? {
+                if n > EXACT_COUNT_MAX {
+                    return Ok(RowCount { count: Some(n), exact: false });
+                }
+            }
         }
-        let batch = text_rows_to_batch(&names, &rows)?;
-        Ok(QueryResult {
-            batch,
-            truncated,
-            exec_ms: start.elapsed().as_millis() as u64,
-        })
+        let meta = self.browse_meta(schema, table).await?;
+        let udts: HashMap<String, String> = meta.udts.iter().cloned().collect();
+        let cols: Vec<String> = meta.udts.iter().map(|(c, _)| c.clone()).collect();
+        let (where_sql, binds) = build_where_clause(
+            filters,
+            &cols,
+            &quote_ident,
+            &pg_placeholder(&udts),
+            &pg_text_expr,
+            1,
+        );
+        let q = format!(
+            "SELECT COUNT(*)::bigint FROM {}.{}{}",
+            quote_ident(schema),
+            quote_ident(table),
+            if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },
+        );
+        let mut qy = sqlx::query_scalar::<_, i64>(&q);
+        for b in &binds {
+            qy = qy.bind(b.clone());
+        }
+        if let Some(token) = force_exact {
+            // Unbounded, so pinned to one connection whose PID `cancel` can target — named
+            // in a transaction, as a page is (see `pin`).
+            let mut tx = self.pool.begin().await.map_err(db)?;
+            Self::pin(&mut tx, Some(token), None, false).await?;
+            return match super::recheck_cancel(self, token, qy.fetch_one(&mut *tx)).await {
+                Ok(n) => Ok(RowCount { count: Some(n), exact: true }),
+                Err(e) if is_cancel(&e) => Err(DriverError::Cancelled),
+                Err(e) => Err(db(e)),
+            };
+        }
+        // SET LOCAL needs a transaction; it also reverts on its own when this one ends. Sent
+        // with the BEGIN in one round trip; the ROLLBACK is queued on drop (see `window`).
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN; SET LOCAL statement_timeout = 2000")
+            .await
+            .map_err(db)?;
+        let res = qy.fetch_one(&mut *tx).await;
+        drop(tx);
+        match res {
+            Ok(n) => Ok(RowCount { count: Some(n), exact: true }),
+            // 57014 here is the statement_timeout firing — this query carries no cancel token.
+            // The catalog estimate is the whole table's, so a filtered count has none.
+            Err(e) if is_cancel(&e) => Ok(RowCount {
+                count: if filters.is_empty() { self.estimate_rows(schema, table).await? } else { None },
+                exact: false,
+            }),
+            Err(e) => Err(db(e)),
+        }
+    }
+
+    /// Leaf `reltuples` summed down the `pg_inherits` tree (a partitioned parent has no
+    /// storage of its own), scaled like the planner does by the leaf's growth since ANALYZE
+    /// (current pages / `relpages`). A never-ANALYZEd leaf (`reltuples = -1`; before PG 14,
+    /// `reltuples = 0` with `relpages = 0`) is estimated from its size: pages ×
+    /// tuples-per-page, a tuple being its fixed-width columns (32 bytes per variable-width
+    /// one) plus 28 bytes of header and line pointer. Views: `None`.
+    async fn estimate_rows(&self, schema: &str, table: &str) -> DResult<Option<i64>> {
+        let sql = format!(
+            "WITH RECURSIVE rel AS ( \
+               SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+               WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('r', 'p', 'm') \
+               UNION ALL \
+               SELECT i.inhrelid FROM pg_inherits i JOIN rel ON i.inhparent = rel.oid) \
+             SELECT COALESCE(SUM({est}), 0)::bigint \
+             FROM rel JOIN pg_class c ON c.oid = rel.oid \
+             CROSS JOIN (SELECT current_setting('block_size')::float8 AS bs) s \
+             WHERE c.relkind IN ('r', 'm') \
+             HAVING EXISTS (SELECT 1 FROM rel)",
+            est = PG_LEAF_ROW_ESTIMATE
+        );
+        sqlx::query_scalar(&sql)
+            .bind(schema)
+            .bind(table)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db)
+    }
+
+    /// Every base table (and materialized view) in `schema`, top-level meaning "not a child
+    /// in `pg_inherits`" — a declarative partition or legacy-inheritance child is excluded
+    /// and instead summed into its top ancestor. Rows: [`PG_LEAF_ROW_ESTIMATE`] per leaf,
+    /// summed. Bytes: `pg_total_relation_size` (table + indexes + toast) per leaf, summed.
+    /// Bounded by [`STATS_TIMEOUT_MS`]; on a timeout the error is returned as-is.
+    async fn table_stats(&self, schema: &str) -> DResult<Vec<TableStat>> {
+        let sql = format!(
+            "WITH RECURSIVE tops AS ( \
+               SELECT c.oid AS top, c.relname FROM pg_class c \
+               JOIN pg_namespace n ON n.oid = c.relnamespace \
+               WHERE n.nspname = $1 AND c.relkind IN ('r', 'p', 'm') \
+                 AND NOT EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhrelid = c.oid)), \
+             tree AS ( \
+               SELECT top, top AS oid FROM tops \
+               UNION ALL SELECT t.top, i.inhrelid FROM tree t JOIN pg_inherits i ON i.inhparent = t.oid) \
+             SELECT tops.relname, \
+                    COALESCE(SUM(CASE WHEN c.relkind IN ('r', 'm') THEN {est} END), 0)::float8, \
+                    COALESCE(SUM(pg_total_relation_size(c.oid)), 0)::bigint \
+             FROM tree JOIN tops USING (top) JOIN pg_class c ON c.oid = tree.oid \
+             CROSS JOIN (SELECT current_setting('block_size')::float8 AS bs) s \
+             GROUP BY tops.relname ORDER BY 3 DESC",
+            est = PG_LEAF_ROW_ESTIMATE
+        );
+        let mut tx = self
+            .pool
+            .begin_with(format!("BEGIN; SET LOCAL statement_timeout = {STATS_TIMEOUT_MS}"))
+            .await
+            .map_err(db)?;
+        let rows: Vec<(String, f64, i64)> =
+            sqlx::query_as(&sql).bind(schema).fetch_all(&mut *tx).await.map_err(db)?;
+        Ok(rows
+            .into_iter()
+            .map(|(name, rows, bytes)| TableStat { name, rows: Some(rows as i64), bytes: Some(bytes) })
+            .collect())
+    }
+
+    async fn open_window_filtered(
+        &self,
+        schema: &str,
+        table: &str,
+        offset: usize,
+        len: usize,
+        filters: &[ColumnFilter],
+        order: &[SortKey],
+        after: Option<&[Option<String>]>,
+    ) -> DResult<RecordBatch> {
+        self.window(schema, table, offset, len, filters, order, after, None).await
+    }
+
+    async fn open_window_cancellable(
+        &self,
+        schema: &str,
+        table: &str,
+        offset: usize,
+        len: usize,
+        filters: &[ColumnFilter],
+        order: &[SortKey],
+        after: Option<&[Option<String>]>,
+        token: &CancelToken,
+    ) -> DResult<RecordBatch> {
+        self.window(schema, table, offset, len, filters, order, after, Some(token)).await
+    }
+
+    fn forget_meta(&self) {
+        self.meta.clear();
     }
 
     async fn cancel(&self, token: &CancelToken) -> DResult<()> {
@@ -411,12 +792,18 @@ impl SqlDriver for PgDriver {
         let Some(pid) = token.backend_id() else {
             return Ok(());
         };
-        // The cancel request must come from a *second* connection (plan spec #6).
-        sqlx::query("SELECT pg_cancel_backend($1)")
-            .bind(pid as i32)
-            .execute(&self.pool)
-            .await
-            .map_err(db)?;
+        // The cancel request must come from a *second* connection (plan spec #6). A named
+        // session (see `pin`) is matched in the same step, so a connection that has since
+        // moved on to another query — its transaction over, its name reverted — is left alone.
+        sqlx::query(
+            "SELECT pg_cancel_backend(pid) FROM pg_stat_activity \
+             WHERE pid = $1 AND ($2::text IS NULL OR (state = 'active' AND application_name = $2))",
+        )
+        .bind(pid as i32)
+        .bind(token.scope())
+        .execute(&self.cancel_pool)
+        .await
+        .map_err(db)?;
         Ok(())
     }
 
@@ -436,20 +823,12 @@ impl SqlDriver for PgDriver {
     }
 
     async fn apply_edit(&self, schema: &str, table: &str, edit: &EditSpec) -> DResult<u64> {
+        if edit.pk.is_empty() {
+            return Err(DriverError::Db("cannot edit without a primary key".into()));
+        }
         // udt_name per column (valid cast targets: int8, numeric, timestamptz, …).
-        let udts: std::collections::HashMap<String, String> = sqlx::query(
-            "SELECT column_name, udt_name FROM information_schema.columns \
-             WHERE table_schema = $1 AND table_name = $2",
-        )
-        .bind(schema)
-        .bind(table)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db)?
-        .into_iter()
-        .map(|r| (r.get::<String, _>("column_name"), r.get::<String, _>("udt_name")))
-        .collect();
-
+        let udts: HashMap<String, String> =
+            self.column_udts(schema, table).await?.into_iter().collect();
         let udt = |c: &str| udts.get(c).cloned().unwrap_or_else(|| "text".into());
         let set_udt = udt(&edit.column);
         let pk_with_udt: Vec<(String, String)> =
@@ -466,82 +845,26 @@ impl SqlDriver for PgDriver {
         Ok(res.rows_affected())
     }
 
+    async fn delete_row(
+        &self,
+        schema: &str,
+        table: &str,
+        pk: &[(String, Option<String>)],
+    ) -> DResult<u64> {
+        if pk.is_empty() {
+            return Err(DriverError::Db("cannot delete without a primary key".into()));
+        }
+        let pk_cols: Vec<String> = pk.iter().map(|(n, _)| n.clone()).collect();
+        let sql = build_delete_sql(schema, table, &pk_cols);
+        let mut q = sqlx::query(&sql);
+        for (_, v) in pk {
+            q = q.bind(v.clone());
+        }
+        Ok(q.execute(&self.pool).await.map_err(db)?.rows_affected())
+    }
+
     async fn run_script(&self, sql: &str) -> DResult<u64> {
         Ok(sqlx::raw_sql(sql).execute(&self.pool).await.map_err(db)?.rows_affected())
-    }
-
-    async fn open_window_filtered(
-        &self,
-        schema: &str,
-        table: &str,
-        offset: usize,
-        len: usize,
-        filters: &[ColumnFilter],
-    ) -> DResult<RecordBatch> {
-        if filters.is_empty() {
-            return self.open_window(schema, table, offset, len).await;
-        }
-        let cols: Vec<String> = sqlx::query_scalar(
-            "SELECT column_name FROM information_schema.columns \
-             WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position",
-        )
-        .bind(schema)
-        .bind(table)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db)?;
-        if cols.is_empty() {
-            return Err(DriverError::Db(format!("no such table {schema}.{table}")));
-        }
-
-        let select_list = cols
-            .iter()
-            .map(|c| format!("{0}::text AS {0}", quote_ident(c)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        // Build the WHERE in PG style; binds start at $1 (filters), then offset/len go last.
-        let (where_sql, binds) = build_where_clause(filters, &quote_ident, &|i| format!("${i}"), 1);
-        let off_ph = format!("${}", binds.len() + 1);
-        let lim_ph = format!("${}", binds.len() + 2);
-        let q = format!(
-            "SELECT {select_list} FROM \
-             (SELECT * FROM {}.{} WHERE {} ORDER BY 1 OFFSET {} LIMIT {}) AS _w",
-            quote_ident(schema),
-            quote_ident(table),
-            where_sql,
-            off_ph,
-            lim_ph
-        );
-        let mut q = sqlx::query(&q);
-        for b in &binds {
-            q = q.bind(b.clone());
-        }
-        q = q.bind(offset as i64).bind(len as i64);
-        let rows = q.fetch_all(&self.pool).await.map_err(db)?;
-        text_rows_to_batch(&cols, &rows)
-    }
-
-    async fn row_estimate_filtered(
-        &self,
-        schema: &str,
-        table: &str,
-        filters: &[ColumnFilter],
-    ) -> DResult<i64> {
-        if filters.is_empty() {
-            return self.row_estimate(schema, table).await;
-        }
-        let (where_sql, binds) = build_where_clause(filters, &quote_ident, &|i| format!("${i}"), 1);
-        let q = format!(
-            "SELECT COUNT(*)::bigint FROM {}.{} WHERE {}",
-            quote_ident(schema),
-            quote_ident(table),
-            where_sql
-        );
-        let mut q = sqlx::query_scalar::<_, i64>(&q);
-        for b in &binds {
-            q = q.bind(b.clone());
-        }
-        Ok(q.fetch_one(&self.pool).await.map_err(db)?.max(0))
     }
 
     async fn insert_row(
@@ -550,11 +873,10 @@ impl SqlDriver for PgDriver {
         table: &str,
         values: &[(String, Option<String>)],
     ) -> DResult<u64> {
-        if values.is_empty() {
-            return Err(DriverError::Db("no columns to insert".into()));
-        }
+        let udts: HashMap<String, String> =
+            self.column_udts(schema, table).await?.into_iter().collect();
         let (sql, binds) =
-            build_insert_sql(schema, table, values, &quote_ident, &|i| format!("${i}"), true);
+            build_insert_sql(schema, table, values, &quote_ident, &pg_placeholder(&udts), true);
         let mut q = sqlx::query(&sql);
         for b in &binds {
             q = q.bind(b.clone());
@@ -563,17 +885,26 @@ impl SqlDriver for PgDriver {
         Ok(res.rows_affected())
     }
 
+    /// FK edges straight off `pg_constraint`. `information_schema` cannot express a
+    /// composite key: its `key_column_usage`/`constraint_column_usage` join has no
+    /// ordinal key, so a 2-column FK came back as a 4-row cross product. Unnesting
+    /// `conkey`/`confkey` together WITH ORDINALITY pairs them by position instead.
     async fn foreign_keys(&self) -> DResult<Vec<super::ForeignKey>> {
         let rows = sqlx::query(
-            "SELECT tc.table_name AS from_table, kcu.column_name AS from_column, \
-                    ccu.table_name AS to_table, ccu.column_name AS to_column \
-             FROM information_schema.table_constraints tc \
-             JOIN information_schema.key_column_usage kcu \
-               ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema \
-             JOIN information_schema.constraint_column_usage ccu \
-               ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema \
-             WHERE tc.constraint_type = 'FOREIGN KEY' \
-               AND tc.table_schema NOT IN ('pg_catalog', 'information_schema')",
+            "SELECT c.conname AS constraint_name, \
+                    fs.nspname AS from_schema, ft.relname AS from_table, fa.attname AS from_column, \
+                    ts.nspname AS to_schema,   tt.relname AS to_table,   ta.attname AS to_column \
+             FROM pg_constraint c \
+             JOIN pg_class ft ON ft.oid = c.conrelid \
+             JOIN pg_namespace fs ON fs.oid = ft.relnamespace \
+             JOIN pg_class tt ON tt.oid = c.confrelid \
+             JOIN pg_namespace ts ON ts.oid = tt.relnamespace \
+             CROSS JOIN LATERAL unnest(c.conkey, c.confkey) WITH ORDINALITY AS k(fromattnum, toattnum, ord) \
+             JOIN pg_attribute fa ON fa.attrelid = c.conrelid AND fa.attnum = k.fromattnum \
+             JOIN pg_attribute ta ON ta.attrelid = c.confrelid AND ta.attnum = k.toattnum \
+             WHERE c.contype = 'f' \
+               AND fs.nspname NOT IN ('pg_catalog', 'information_schema') \
+             ORDER BY fs.nspname, ft.relname, c.conname, k.ord",
         )
         .fetch_all(&self.pool)
         .await
@@ -581,12 +912,123 @@ impl SqlDriver for PgDriver {
         Ok(rows
             .iter()
             .map(|r| super::ForeignKey {
-                from_table: r.get("from_table"),
-                from_column: r.get("from_column"),
-                to_table: r.get("to_table"),
-                to_column: r.get("to_column"),
+                constraint: r.try_get("constraint_name").unwrap_or_default(),
+                from_schema: r.try_get("from_schema").unwrap_or_default(),
+                from_table: r.try_get("from_table").unwrap_or_default(),
+                from_column: r.try_get("from_column").unwrap_or_default(),
+                to_schema: r.try_get("to_schema").unwrap_or_default(),
+                to_table: r.try_get("to_table").unwrap_or_default(),
+                to_column: r.try_get("to_column").unwrap_or_default(),
             })
             .collect())
+    }
+
+    /// Structure tab. The relation is identified by one `$1::regclass` bind of its quoted,
+    /// qualified name — so the lookup is schema-scoped without any identifier reaching the
+    /// SQL text. `pg_get_expr`/`pg_get_indexdef`/`pg_get_triggerdef` decompile the catalog
+    /// exactly the way `psql \d` does.
+    async fn describe_table(&self, schema: &str, table: &str) -> DResult<TableStructure> {
+        let qualified = format!("{}.{}", quote_ident(schema), quote_ident(table));
+
+        let cols = sqlx::query(
+            "SELECT a.attname AS name, \
+                    format_type(a.atttypid, a.atttypmod) AS data_type, \
+                    NOT a.attnotnull AS nullable, \
+                    pg_get_expr(d.adbin, d.adrelid) AS default_expr, \
+                    COALESCE(i.indisprimary, false) AS is_pk, \
+                    col_description(a.attrelid, a.attnum) AS comment \
+             FROM pg_attribute a \
+             LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
+             LEFT JOIN pg_index i \
+               ON i.indrelid = a.attrelid AND i.indisprimary AND a.attnum = ANY(i.indkey) \
+             WHERE a.attrelid = $1::regclass AND a.attnum > 0 AND NOT a.attisdropped \
+             ORDER BY a.attnum",
+        )
+        .bind(&qualified)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+
+        // `indnkeyatts` excludes INCLUDE columns; pg_get_indexdef(oid, n, true) renders the
+        // n-th key — a column name, or the expression for an expression index.
+        let idx = sqlx::query(
+            "SELECT ci.relname AS name, ix.indisunique AS is_unique, ix.indisprimary AS is_primary, \
+                    pg_get_indexdef(ix.indexrelid) AS definition, \
+                    (SELECT array_agg(pg_get_indexdef(ix.indexrelid, k.ord::int, true) ORDER BY k.ord) \
+                       FROM generate_series(1, ix.indnkeyatts) AS k(ord)) AS columns \
+             FROM pg_index ix \
+             JOIN pg_class ci ON ci.oid = ix.indexrelid \
+             WHERE ix.indrelid = $1::regclass \
+             ORDER BY ix.indisprimary DESC, ci.relname",
+        )
+        .bind(&qualified)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+
+        // `tgtype` is a bitmask: 2 = BEFORE, 64 = INSTEAD OF, 4/8/16/32 = INSERT/DELETE/
+        // UPDATE/TRUNCATE. `NOT tgisinternal` drops the triggers Postgres creates to enforce
+        // foreign keys — the user never wrote those.
+        let trg = sqlx::query(
+            "SELECT t.tgname AS name, \
+                    CASE WHEN (t.tgtype::int & 64) <> 0 THEN 'INSTEAD OF' \
+                         WHEN (t.tgtype::int & 2) <> 0 THEN 'BEFORE' ELSE 'AFTER' END \
+                      || ' ' || array_to_string(ARRAY[ \
+                           CASE WHEN (t.tgtype::int & 4) <> 0 THEN 'INSERT' END, \
+                           CASE WHEN (t.tgtype::int & 8) <> 0 THEN 'DELETE' END, \
+                           CASE WHEN (t.tgtype::int & 16) <> 0 THEN 'UPDATE' END, \
+                           CASE WHEN (t.tgtype::int & 32) <> 0 THEN 'TRUNCATE' END], ' OR ') \
+                      AS timing_event, \
+                    pg_get_triggerdef(t.oid) AS definition \
+             FROM pg_trigger t \
+             WHERE t.tgrelid = $1::regclass AND NOT t.tgisinternal \
+             ORDER BY t.tgname",
+        )
+        .bind(&qualified)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+
+        Ok(TableStructure {
+            columns: cols
+                .iter()
+                .map(|r| {
+                    Ok(ColumnDetail {
+                        name: r.try_get("name").map_err(db)?,
+                        data_type: r.try_get("data_type").map_err(db)?,
+                        nullable: r.try_get("nullable").map_err(db)?,
+                        default: r.try_get("default_expr").map_err(db)?,
+                        is_pk: r.try_get("is_pk").map_err(db)?,
+                        comment: r.try_get("comment").map_err(db)?,
+                    })
+                })
+                .collect::<DResult<Vec<_>>>()?,
+            indexes: idx
+                .iter()
+                .map(|r| {
+                    Ok(IndexInfo {
+                        name: r.try_get("name").map_err(db)?,
+                        columns: r
+                            .try_get::<Option<Vec<String>>, _>("columns")
+                            .map_err(db)?
+                            .unwrap_or_default(),
+                        unique: r.try_get("is_unique").map_err(db)?,
+                        primary: r.try_get("is_primary").map_err(db)?,
+                        definition: r.try_get("definition").map_err(db)?,
+                    })
+                })
+                .collect::<DResult<Vec<_>>>()?,
+            triggers: trg
+                .iter()
+                .map(|r| {
+                    Ok(TriggerInfo {
+                        name: r.try_get("name").map_err(db)?,
+                        timing_event: r.try_get("timing_event").map_err(db)?,
+                        definition: r.try_get("definition").map_err(db)?,
+                    })
+                })
+                .collect::<DResult<Vec<_>>>()?,
+        })
     }
 
     async fn explain_json(&self, sql: &str) -> DResult<String> {
@@ -612,9 +1054,55 @@ impl SqlDriver for PgDriver {
     }
 }
 
+/// Build an all-Utf8 (nullable) Arrow batch from text-cast rows. `cols` is the select list,
+/// in order, so column `i` of every row is `cols[i]`.
+///
+/// Cells go through the same `pg_cell` the query tab uses, so the two tabs cannot disagree
+/// about a byte. It used to be `try_get::<Option<String>>().unwrap_or_default()`, which
+/// would have turned a decode failure into an Arrow null the grid draws as NULL — as MySQL
+/// and SQLite both did. Postgres itself is stricter: it transcodes to the client encoding
+/// and raises `invalid byte sequence for encoding "UTF8"` rather than sending bytes that do
+/// not fit, so the mask was unreachable here. Reachable or not, a decode failure must not be
+/// silently renamed NULL in a tool whose job is to show what is in the database.
+fn text_rows_to_batch(cols: &[String], rows: &[PgRow]) -> DResult<RecordBatch> {
+    let mut fields = Vec::with_capacity(cols.len());
+    let mut arrays: Vec<arrow::array::ArrayRef> = Vec::with_capacity(cols.len());
+    for (i, c) in cols.iter().enumerate() {
+        fields.push(arrow::datatypes::Field::new(c, DataType::Utf8, true));
+        let mut vals: Vec<Option<String>> = Vec::with_capacity(rows.len());
+        for r in rows {
+            vals.push(pg_cell(r, i).map_err(db)?);
+        }
+        arrays.push(std::sync::Arc::new(vals.into_iter().collect::<StringArray>()));
+    }
+    RecordBatch::try_new(std::sync::Arc::new(arrow::datatypes::Schema::new(fields)), arrays)
+        .map_err(|e| DriverError::Db(e.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::build_update_sql;
+    use super::{build_delete_sql, build_update_sql};
+
+    #[test]
+    fn delete_sql_is_parameterized_and_quoted() {
+        let sql = build_delete_sql("public", "edit_demo", &["id".into()]);
+        assert_eq!(
+            sql,
+            "DELETE FROM \"public\".\"edit_demo\" \
+             WHERE \"id\"::text IS NOT DISTINCT FROM $1::text"
+        );
+    }
+
+    #[test]
+    fn delete_sql_handles_composite_pk() {
+        let sql = build_delete_sql("s", "t", &["a".into(), "b".into()]);
+        assert_eq!(
+            sql,
+            "DELETE FROM \"s\".\"t\" \
+             WHERE \"a\"::text IS NOT DISTINCT FROM $1::text \
+             AND \"b\"::text IS NOT DISTINCT FROM $2::text"
+        );
+    }
 
     #[test]
     fn update_sql_is_parameterized_and_quoted() {
@@ -727,54 +1215,4 @@ mod tests {
             start.elapsed()
         );
     }
-}
-
-/// Build an all-Utf8 (nullable) Arrow batch from text-cast rows.
-fn text_rows_to_batch(cols: &[String], rows: &[PgRow]) -> DResult<RecordBatch> {
-    let mut fields = Vec::with_capacity(cols.len());
-    let mut arrays: Vec<arrow::array::ArrayRef> = Vec::with_capacity(cols.len());
-    for c in cols {
-        fields.push(arrow::datatypes::Field::new(c, DataType::Utf8, true));
-        let col: StringArray = rows
-            .iter()
-            .map(|r| r.get::<Option<String>, _>(c.as_str()))
-            .collect();
-        arrays.push(std::sync::Arc::new(col));
-    }
-    RecordBatch::try_new(std::sync::Arc::new(arrow::datatypes::Schema::new(fields)), arrays)
-        .map_err(|e| DriverError::Db(e.to_string()))
-}
-
-fn rows_to_batch(rows: &[PgRow]) -> DResult<RecordBatch> {
-    let ids = Int64Array::from_iter_values(rows.iter().map(|r| r.get::<i64, _>("id")));
-    let amounts =
-        StringArray::from_iter_values(rows.iter().map(|r| r.get::<String, _>("amount_numeric")));
-    let created = TimestampMicrosecondArray::from_iter_values(
-        rows.iter().map(|r| r.get::<i64, _>("created_us")),
-    )
-    .with_timezone("UTC");
-    let blob = StringArray::from_iter_values(rows.iter().map(|r| r.get::<String, _>("blob_text")));
-    let nint = Int64Array::from_iter(rows.iter().map(|r| r.get::<Option<i64>, _>("nullable_int")));
-
-    let schema = Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        // exact text (plan spec #3 — no decimal float round-trip)
-        Field::new("amount_numeric", DataType::Utf8, false),
-        Field::new(
-            "created_at",
-            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
-            false,
-        ),
-        Field::new("blob_text", DataType::Utf8, false),
-        Field::new("nullable_int", DataType::Int64, true),
-    ]);
-
-    let cols: Vec<ArrayRef> = vec![
-        Arc::new(ids),
-        Arc::new(amounts),
-        Arc::new(created),
-        Arc::new(blob),
-        Arc::new(nint),
-    ];
-    RecordBatch::try_new(Arc::new(schema), cols).map_err(|e| DriverError::Db(e.to_string()))
 }

@@ -34,18 +34,19 @@ async fn introspect_finds_public_wide_with_columns() {
     assert!(colnames.contains(&"amount_numeric"));
     assert!(colnames.contains(&"nullable_int"));
     // nullable_int is nullable; id is not
-    assert!(wide.columns.iter().find(|c| c.name == "id").unwrap().nullable == false);
-    assert!(wide.columns.iter().find(|c| c.name == "nullable_int").unwrap().nullable == true);
+    assert!(!wide.columns.iter().find(|c| c.name == "id").unwrap().nullable);
+    assert!(wide.columns.iter().find(|c| c.name == "nullable_int").unwrap().nullable);
 }
 
 #[tokio::test]
-async fn row_estimate_is_positive() {
+async fn row_count_is_positive() {
     let Some(url) = pg() else {
         return;
     };
     let drv = PgDriver::connect(&url).await.unwrap();
-    let est = drv.row_estimate("public", "wide").await.unwrap();
-    assert!(est > 0, "estimate should be > 0, got {est}");
+    let c = drv.count_rows("public", "wide", &[], None).await.unwrap();
+    let n = c.count.expect("wide must report a count");
+    assert!(n > 0, "count should be > 0, got {n}");
 }
 
 #[tokio::test]

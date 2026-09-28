@@ -153,11 +153,20 @@ pub fn infer_type(values: &[Option<String>]) -> &'static str {
     }
 }
 
-/// One SQL literal: NULL or a single-quote-escaped string (untyped, coerced by the target column).
-fn sql_literal(v: &Option<String>) -> String {
-    match v {
-        None => "NULL".to_string(),
-        Some(s) => format!("'{}'", s.replace('\'', "''")),
+/// One SQL literal: NULL or an escaped string (untyped, coerced by the target column).
+///
+/// Escaping is per dialect because the rules genuinely differ. MySQL treats `\` as an escape
+/// character by default, so a cell ending in a backslash would otherwise escape the literal's
+/// closing quote and hand the rest of the cell to the parser as SQL. MSSQL has no backslash
+/// escape but needs `N'…'` to keep non-ASCII intact on the way into NVARCHAR.
+fn sql_literal(v: &Option<String>, d: Dialect) -> String {
+    let Some(s) = v else { return "NULL".to_string() };
+    match d {
+        Dialect::MySql => format!("'{}'", s.replace('\\', r"\\").replace('\'', "''")),
+        Dialect::SqlServer => format!("N'{}'", s.replace('\'', "''")),
+        // Postgres (with standard_conforming_strings on, which PgDriver pins), SQLite and
+        // DuckDB treat a backslash as an ordinary character.
+        Dialect::Postgres | Dialect::Sqlite | Dialect::DuckDb => format!("'{}'", s.replace('\'', "''")),
     }
 }
 
@@ -180,7 +189,7 @@ pub fn build_insert_sql(
         let values = chunk
             .iter()
             .map(|r| {
-                let cells = r.iter().map(sql_literal).collect::<Vec<_>>().join(", ");
+                let cells = r.iter().map(|v| sql_literal(v, d)).collect::<Vec<_>>().join(", ");
                 format!("({cells})")
             })
             .collect::<Vec<_>>()
@@ -248,6 +257,52 @@ mod tests {
             sql.trim(),
             "INSERT INTO \"public\".\"users\" (\"id\", \"name\") VALUES ('1', 'O''Brien'), ('2', NULL);"
         );
+    }
+
+    /// The injection this exists to stop. MySQL treats `\` as an escape character by default,
+    /// so doubling only the quote leaves `\'` — an escaped quote — and the closing quote of the
+    /// literal ends up escaped, handing the rest of the cell to the parser as SQL.
+    #[test]
+    fn mysql_escapes_backslashes_so_a_cell_cannot_break_out_of_its_literal() {
+        let payload = r"\'); DROP TABLE users; --";
+        assert_eq!(sql_literal(&s(payload), Dialect::MySql), r"'\\''); DROP TABLE users; --'");
+
+        let sql = build_insert_sql(
+            None,
+            "users",
+            &["name".into()],
+            &[vec![s(payload)]],
+            Dialect::MySql,
+        );
+        assert!(
+            sql.contains(r"('\\''); DROP TABLE users; --')"),
+            "the payload escaped its literal: {sql}"
+        );
+    }
+
+    #[test]
+    fn postgres_and_sqlite_double_the_quote_and_leave_backslashes_alone() {
+        // `standard_conforming_strings = on` (pinned in PgDriver::connect) makes a backslash
+        // an ordinary character, so doubling the quote is the whole rule.
+        let payload = r"\'); DROP TABLE users; --";
+        assert_eq!(sql_literal(&s(payload), Dialect::Postgres), r"'\''); DROP TABLE users; --'");
+        assert_eq!(sql_literal(&s(payload), Dialect::Sqlite), r"'\''); DROP TABLE users; --'");
+    }
+
+    #[test]
+    fn sqlserver_uses_a_national_literal_with_doubled_quotes() {
+        // N'…' keeps non-ASCII intact on the way into an NVARCHAR column; MSSQL has no
+        // backslash escape, so the quote is the only character that needs doubling.
+        assert_eq!(sql_literal(&s("O'Brien"), Dialect::SqlServer), "N'O''Brien'");
+        assert_eq!(sql_literal(&s(r"c:\tmp"), Dialect::SqlServer), r"N'c:\tmp'");
+        assert_eq!(sql_literal(&None, Dialect::SqlServer), "NULL");
+    }
+
+    #[test]
+    fn nulls_are_unquoted_in_every_dialect() {
+        for d in [Dialect::Postgres, Dialect::MySql, Dialect::Sqlite, Dialect::SqlServer, Dialect::DuckDb] {
+            assert_eq!(sql_literal(&None, d), "NULL");
+        }
     }
 
     #[test]

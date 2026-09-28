@@ -1,11 +1,99 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { synthWindowIpc, MOCK_TOTAL_ROWS } from "./mockSource";
 import type { SshConfig } from "./ssh";
+import { restoreConfirmName } from "./backup";
+import { isMacPlatform } from "./shortcut";
+
+// ── connection-loss detection ────────────────────────────────────────────
+// Every Rust command returns its error as `e.to_string()`, so sqlx / the
+// mysql+mongo+redis drivers' native messages reach us verbatim. When an
+// *established* session drops mid-use we flip a flag so MainShell can show the
+// "Tap to reconnect" banner (TablePlus parity). Match is intentionally narrow —
+// SQL/permission errors must NOT raise the banner.
+const CONNECTION_LOST_PHRASES = [
+  "connection refused",
+  "connection reset",
+  "connection closed",
+  "closed the connection",
+  "broken pipe",
+  "pool timed out",
+  "pool closed",
+  "connection timed out",
+  "terminating connection",
+  "no connection to the server",
+  "server has gone away",
+  "lost connection",
+];
+
+export function isConnectionLostError(msg: string): boolean {
+  const m = msg.toLowerCase();
+  return CONNECTION_LOST_PHRASES.some((p) => m.includes(p));
+}
+
+// Commands that legitimately fail when a DB is *initially* unreachable — their
+// errors are surfaced by the connection form, not the banner.
+// `diff_schemas` opens its own connections to two (possibly background) sessions:
+// its failure is shown by the diff view, never the active session's banner.
+const LIFECYCLE_CMDS = new Set(["connect", "test_connection", "disconnect", "diff_schemas"]);
+
+let connectionLostHandler: ((connId?: string) => void) | null = null;
+/** MainShell registers a callback fired when a live session drops, with that
+ *  session's id when the command carried one. Convention: session-bound commands
+ *  pass the connection as `{ id }` — an id-less command reports `undefined`, which
+ *  the active shell treats as its own. */
+export function setConnectionLostHandler(fn: ((connId?: string) => void) | null): void {
+  connectionLostHandler = fn;
+}
+
+// Real-app QA: `VITE_IPC_BRIDGE=1 pnpm dev` sends every command over HTTP to the
+// `ipc_bridge` binary (the real Rust handlers), proxied by vite at /__ipc.
+// DEV-gated like the mock backend below: `import.meta.env` is baked in at BUILD
+// time, so without this guard a release built in a shell that happens to export
+// VITE_IPC_BRIDGE=1 would ship a UI that routes every command — every edit and
+// delete — at http://localhost/__ipc/ instead of the app's own backend.
+const BRIDGE = import.meta.env.DEV && import.meta.env.VITE_IPC_BRIDGE === "1";
+
+async function bridgeInvoke<T>(cmd: string, args?: unknown): Promise<T> {
+  const res = await fetch("/__ipc/" + cmd, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(args ?? {}),
+  });
+  // Raw (binary) responses resolve to an ArrayBuffer, exactly like Tauri's invoke.
+  const octet = res.headers.get("content-type")?.includes("application/octet-stream");
+  const body = octet ? await res.arrayBuffer() : await res.json();
+  if (!res.ok) throw body; // Rust `Err(String)` arrives as a plain string, same as Tauri.
+  return body as T;
+}
+
+// ponytail: thin wrapper around Tauri's invoke so every existing call site gets
+// connection-loss detection for free. Upgrade path: a dedicated backend health
+// event if false positives appear.
+function invoke<T>(cmd: string, ...rest: unknown[]): Promise<T> {
+  const call = BRIDGE
+    ? bridgeInvoke<T>(cmd, rest[0])
+    : (tauriInvoke as (c: string, ...a: unknown[]) => Promise<T>)(cmd, ...rest);
+  return call.catch(
+    (e: unknown) => {
+      if (!LIFECYCLE_CMDS.has(cmd) && isConnectionLostError(String((e as { message?: string })?.message ?? e))) {
+        connectionLostHandler?.((rest[0] as { id?: unknown } | undefined)?.id as string | undefined);
+      }
+      throw e;
+    },
+  );
+}
 
 export type { SshConfig, SshAuth, SshAuthMode } from "./ssh";
 
 // ── shared types (mirror the Rust serde shapes) ──────────────────────────
-export type Engine = "postgres" | "mysql" | "sqlite" | "redis" | "mongodb" | "sqlserver";
+export type Engine =
+  | "postgres"
+  | "mysql"
+  | "sqlite"
+  | "duckdb"
+  | "redis"
+  | "mongodb"
+  | "sqlserver";
 export interface ConnConfig {
   id: string;
   name: string;
@@ -18,11 +106,15 @@ export interface ConnConfig {
   sslmode: string;
   /** Optional SSH bastion. Omitted/undefined ⇒ direct connection (matches Rust Option<SshConfig>). */
   ssh?: SshConfig | null;
+  /** Environment tag; tints the titlebar pill. */
+  env?: import("./connEnv").ConnEnv | null;
 }
 export interface ColumnInfo {
   name: string;
   data_type: string;
   nullable: boolean;
+  /** Part of the primary key. Optional: older payloads omit it (Rust `#[serde(default)]`). */
+  pk?: boolean;
 }
 export type ObjectKind = "Table" | "View";
 export interface ObjectInfo {
@@ -56,6 +148,24 @@ export interface KvValue {
 }
 
 function inTauri(): boolean {
+  // The mock backend further down is a DEV-ONLY convenience so /browse can exercise the
+  // full UI without a database. It must never be reachable from a packaged build: this was
+  // a pure runtime check, so if `__TAURI_INTERNALS__` were ever absent there — a webview
+  // quirk, a preload failure — every command would quietly return fabricated data, and
+  // `applyEdit`/`insertRow` would report writes that never happened. `import.meta.env.DEV`
+  // is statically replaced at build time, so a release build always takes the real
+  // `invoke()` path and fails loudly instead of lying.
+  if (!import.meta.env.DEV) return true;
+  return BRIDGE || (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window);
+}
+
+/** True only in a real Tauri webview on macOS, where the native menu bar
+ *  (src-tauri/src/menu.rs, macOS-only) exists. Unlike `inTauri`, false under the HTTP
+ *  bridge (a plain browser, no menu) and on Windows/Linux, so ⌘K/⌥⌘1/⌥⌘2 stay on the
+ *  webview keymap there. */
+export function hasNativeMenu(): boolean {
+  if (!isMacPlatform()) return false;
+  if (!import.meta.env.DEV) return true;
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
@@ -66,7 +176,7 @@ function inTauri(): boolean {
  * imports the dialog plugin so the browser-mock build never pulls it in.
  */
 export async function pickKeyFile(): Promise<string | null> {
-  if (!inTauri()) return null;
+  if (BRIDGE || !inTauri()) return null; // bridge: no native dialog in a plain browser
   const { open } = await import("@tauri-apps/plugin-dialog");
   const picked = await open({
     multiple: false,
@@ -149,6 +259,15 @@ const mockSchema: SchemaModel = {
         },
         { name: "users", kind: "Table", columns: [{ name: "id", data_type: "bigint", nullable: false }] },
         { name: "active_users", kind: "View", columns: [{ name: "id", data_type: "bigint", nullable: false }] },
+      ],
+    },
+    // A second schema so the sidebar schema dropdown is exercisable in browser
+    // (mock) mode — the dropdown only renders when there's more than one schema.
+    {
+      name: "analytics",
+      objects: [
+        { name: "events", kind: "Table", columns: [{ name: "id", data_type: "bigint", nullable: false }] },
+        { name: "daily_rollup", kind: "View", columns: [{ name: "day", data_type: "date", nullable: false }] },
       ],
     },
   ],
@@ -272,6 +391,7 @@ export async function listDatabases(id: string): Promise<string[]> {
       case "sqlserver":
         return ["master", "tableiq"];
       case "sqlite":
+      case "duckdb":
         return ["main"];
       case "redis":
         return Array.from({ length: 16 }, (_, i) => String(i));
@@ -320,7 +440,11 @@ export type FilterOp =
   | "Like"
   | "ILike"
   | "IsNull"
-  | "IsNotNull";
+  | "IsNotNull"
+  /** All-column "contains" search; `column` is "*" and `value` is the raw term. */
+  | "Search"
+  /** A raw SQL WHERE expression; `column` is "*" and `value` is the SQL. */
+  | "Raw";
 
 export interface ColumnFilter {
   column: string;
@@ -328,22 +452,79 @@ export interface ColumnFilter {
   value: string | null;
 }
 
+/** One ORDER BY term for a table window. Matches the Rust `SortKey` serde shape. */
+export interface SortKey {
+  column: string;
+  desc: boolean;
+}
+
+/**
+ * Row count for a table under `filters`. `count` is null when the engine could neither
+ * count in time nor offer an estimate; `exact` is false when it came from the stats
+ * catalog rather than a COUNT(*).
+ */
 export async function openTable(
   id: string,
   schema: string,
   table: string,
   filters?: ColumnFilter[],
-): Promise<{ rowEstimate: number }> {
-  if (!inTauri()) return { rowEstimate: MOCK_TOTAL_ROWS };
-  const info = await invoke<{ row_estimate: number }>("open_table", {
+): Promise<{ count: number | null; exact: boolean }> {
+  if (!inTauri()) return { count: MOCK_TOTAL_ROWS, exact: true };
+  return invoke<{ count: number | null; exact: boolean }>("open_table", {
     id,
     schema,
     table,
     filters: filters && filters.length ? filters : null,
   });
-  return { rowEstimate: info.row_estimate };
 }
 
+/**
+ * The catalog's row estimate for a table (never a scan). null for a view, an unknown
+ * table, or an engine without one.
+ */
+export async function estimateRows(id: string, schema: string, table: string): Promise<number | null> {
+  if (!inTauri()) return MOCK_TOTAL_ROWS;
+  return invoke<number | null>("estimate_rows", { id, schema, table });
+}
+
+/** One base table's catalog stats (the connection lobby). Null where the engine can't say. */
+export interface TableStat {
+  name: string;
+  rows: number | null;
+  bytes: number | null;
+}
+
+export async function tableStats(id: string, schema: string): Promise<TableStat[]> {
+  if (!inTauri()) return [];
+  return invoke<TableStat[]>("table_stats", { id, schema });
+}
+
+/**
+ * An exact, unbounded COUNT(*). Cancel it with `cancelQuery(id, tokenId)`; a cancelled
+ * count rejects with "Query cancelled", as a cancelled runQuery does.
+ */
+export async function countRowsExact(
+  id: string,
+  schema: string,
+  table: string,
+  tokenId: string,
+  filters?: ColumnFilter[],
+): Promise<{ count: number | null; exact: boolean }> {
+  if (!inTauri()) return { count: MOCK_TOTAL_ROWS, exact: true };
+  return invoke<{ count: number | null; exact: boolean }>("count_rows_exact", {
+    id,
+    schema,
+    table,
+    filters: filters && filters.length ? filters : null,
+    tokenId,
+  });
+}
+
+/**
+ * One page of a table. `after` is the previous page's last-row key (its PK values in PK
+ * order, or the `__tiq_ctid` cell of a Postgres table without a PK): where the backend
+ * can seek it ignores `offset`, everywhere else it ignores `after` — so pass both.
+ */
 export async function fetchTableWindow(
   id: string,
   schema: string,
@@ -351,6 +532,10 @@ export async function fetchTableWindow(
   offset: number,
   len: number,
   filters?: ColumnFilter[],
+  order?: SortKey[],
+  after?: (string | null)[],
+  /** Same key ⇒ the previous in-flight fetch for it is cancelled server-side (e.g. the tab id). */
+  requestKey?: string,
 ): Promise<{ bytes: Uint8Array; ms: number }> {
   const t0 = performance.now();
   if (!inTauri()) {
@@ -363,6 +548,9 @@ export async function fetchTableWindow(
     offset,
     len,
     filters: filters && filters.length ? filters : null,
+    order: order && order.length ? order : null,
+    after: after ?? null,
+    requestKey: requestKey ?? null,
   });
   return { bytes: new Uint8Array(ab), ms: performance.now() - t0 };
 }
@@ -379,6 +567,18 @@ export async function insertRow(
   return { rowsAffected: n };
 }
 
+/** Delete one row matched by its primary-key `(column, text_value)` pairs. */
+export async function deleteRow(
+  id: string,
+  schema: string,
+  table: string,
+  pk: [string, string | null][],
+): Promise<{ rowsAffected: number }> {
+  if (!inTauri()) return { rowsAffected: 1 };
+  const n = await invoke<number>("delete_row", { id, schema, table, pk });
+  return { rowsAffected: n };
+}
+
 // ── query & edit ─────────────────────────────────────────────────────────
 export interface QueryResultMeta {
   resultId: string;
@@ -386,6 +586,22 @@ export interface QueryResultMeta {
   rowCount: number;
   truncated: boolean;
   execMs: number;
+}
+
+/** One statement's outcome in a multi-statement run (mirrors Rust StatementResultMeta). */
+export interface StatementResultMeta {
+  index: number;
+  /** Present only when the statement returned a result set. */
+  resultId: string | null;
+  columns: { name: string; typeName: string }[];
+  rowCount: number;
+  /** Rows the statement produced; null when reading stopped at the cap (total unknown). */
+  totalRows: number | null;
+  truncated: boolean;
+  rowsAffected: number | null;
+  execMs: number;
+  error: { message: string; line: number | null; position: number | null } | null;
+  notice: string | null;
 }
 
 /** RowKey round-trip payload (mirrors Rust EditSpec). */
@@ -396,40 +612,187 @@ export interface EditSpec {
   orig_value: string | null;
 }
 
+/**
+ * Run `statements` as written, one at a time. Returns one meta per statement **executed** —
+ * the run stops at the first failing statement, so the array can be shorter than `statements`
+ * and the failure is carried in the last entry's `error`.
+ */
 export async function runQuery(
   id: string,
-  sql: string,
-  queryId: string,
-): Promise<QueryResultMeta> {
+  statements: string[],
+  queryId?: string,
+): Promise<StatementResultMeta[]> {
   if (!inTauri()) {
-    return {
-      resultId: "mock-q",
-      columns: ["id", "amount_numeric", "blob_text"],
-      rowCount: 50,
-      truncated: false,
-      execMs: 3,
-    };
+    return [
+      {
+        index: 0,
+        resultId: "mock-q",
+        columns: [
+          { name: "id", typeName: "int8" },
+          { name: "amount_numeric", typeName: "numeric" },
+          { name: "blob_text", typeName: "text" },
+        ],
+        rowCount: 50,
+        totalRows: 50,
+        truncated: false,
+        rowsAffected: null,
+        execMs: 3,
+        error: null,
+        notice: null,
+      },
+    ];
   }
-  const m = await invoke<{
-    result_id: string;
-    columns: string[];
-    row_count: number;
-    truncated: boolean;
-    exec_ms: number;
-  }>("run_query", { id, sql, queryId });
-  return {
+  const out = await invoke<
+    {
+      index: number;
+      result_id: string | null;
+      columns: { name: string; type_name: string }[];
+      row_count: number;
+      total_rows: number;
+      truncated: boolean;
+      rows_affected: number | null;
+      exec_ms: number;
+      error: { message: string; line: number | null; position: number | null } | null;
+      notice: string | null;
+    }[]
+  >("run_query", { id, statements, queryId });
+  return out.map((m) => ({
+    index: m.index,
     resultId: m.result_id,
-    columns: m.columns,
+    columns: m.columns.map((c) => ({ name: c.name, typeName: c.type_name })),
     rowCount: m.row_count,
+    totalRows: m.total_rows,
     truncated: m.truncated,
+    rowsAffected: m.rows_affected,
     execMs: m.exec_ms,
-  };
+    error: m.error,
+    notice: m.notice,
+  }));
 }
 
 /** Cancel an in-flight query (server-side) by the same `queryId` passed to runQuery. */
 export async function cancelQuery(id: string, queryId: string): Promise<void> {
   if (!inTauri()) return;
   await invoke("cancel_query", { id, queryId });
+}
+
+/** Cancel every in-flight query on connection `id` (⌘.). Returns how many were stopped. */
+export async function cancelAll(id: string): Promise<number> {
+  if (!inTauri()) return 0;
+  return invoke<number>("cancel_all", { id });
+}
+
+/** One statement the app ran on a connection. `seq` rises across every connection. */
+export type SqlLogEntry = { seq: number; ts_us: number; sql: string };
+
+/** Connection `id`'s SQL log after `afterSeq` (0 = all of it), oldest first. */
+export async function sqlLog(id: string, afterSeq: number): Promise<SqlLogEntry[]> {
+  if (!inTauri()) return []; // mock: no statements run
+  return invoke<SqlLogEntry[]>("sql_log", { id, afterSeq });
+}
+
+export async function clearSqlLog(id: string): Promise<void> {
+  if (!inTauri()) return;
+  await invoke("clear_sql_log", { id });
+}
+
+// ── Backup Database ───────────────────────────────────────────────────────
+/** A backup job's stderr lines from `after` on (`next` = where to poll from), and — once
+ *  `done` — its outcome. Mirrors Rust `backup::JobStatus`. */
+export interface BackupJobStatus {
+  lines: string[];
+  next: number;
+  done: boolean;
+  ok: boolean;
+  error: string | null;
+}
+export interface BackupToolInfo {
+  name: string;
+  path: string | null;
+  version: string | null;
+}
+
+/** True where a native Save/Open dialog exists (the packaged app) — not in the browser mock
+ *  or the QA bridge, where the user types the path. */
+export function hasNativeFileDialog(): boolean {
+  return inTauri() && !BRIDGE;
+}
+
+/** The native Save dialog for a backup file; null when cancelled. */
+export async function pickBackupPath(defaultPath: string, extensions: string[]): Promise<string | null> {
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  return save({ defaultPath, filters: [{ name: "Backup", extensions }] });
+}
+
+const mockBackupPolls = new Map<string, number>();
+
+/** Start backing up `database` into `path` (on the server for SQL Server); returns the job
+ *  id for `backupJob`. `format` is Postgres' "custom" | "plain"; `toolDir` overrides where
+ *  pg_dump/mysqldump are looked for ("" = PATH and the usual install dirs). */
+export async function backupDatabase(
+  id: string,
+  database: string,
+  path: string,
+  format: string,
+  toolDir: string,
+): Promise<string> {
+  if (!inTauri()) {
+    const job = `mock-backup-${mockBackupPolls.size + 1}`;
+    mockBackupPolls.set(job, 0);
+    return job;
+  }
+  return invoke<string>("backup_database", { id, database, path, format, toolDir: toolDir || null });
+}
+
+/** The native Open dialog for a backup to restore; null when cancelled. */
+export async function pickRestorePath(extensions: string[]): Promise<string | null> {
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const picked = await open({ multiple: false, directory: false, filters: [{ name: "Backup", extensions }] });
+  return typeof picked === "string" ? picked : null;
+}
+
+/** Restore `database` from the backup at `path` (on the server for SQL Server) — DESTRUCTIVE.
+ *  `confirm` is the name the user typed; the Rust command refuses unless it equals `database`.
+ *  Returns a job id for `backupJob`. */
+export async function restoreDatabase(
+  id: string,
+  database: string,
+  path: string,
+  confirm: string,
+  toolDir: string,
+): Promise<string> {
+  if (!inTauri()) {
+    // The mock has no file connections to look up: a path-like database is a file engine's,
+    // confirmed by its file name — as the Rust command does.
+    const expected = /[/\\]/.test(database) ? restoreConfirmName("sqlite", database) : database;
+    if (confirm !== expected) throw new Error(`The typed name does not match "${expected}" — nothing was restored`);
+    const job = `mock-restore-${mockBackupPolls.size + 1}`;
+    mockBackupPolls.set(job, 0);
+    return job;
+  }
+  return invoke<string>("restore_database", { id, database, path, confirm, toolDir: toolDir || null });
+}
+
+export async function backupJob(jobId: string, after: number): Promise<BackupJobStatus> {
+  if (!inTauri()) {
+    const n = (mockBackupPolls.get(jobId) ?? 0) + 1;
+    mockBackupPolls.set(jobId, n);
+    const done = n >= 2;
+    const lines = n === 1 ? ["(browser mock) dumping…"] : ["(browser mock) done"];
+    return { lines, next: after + lines.length, done, ok: done, error: null };
+  }
+  return invoke<BackupJobStatus>("backup_job", { jobId, after });
+}
+
+export async function cancelBackupJob(jobId: string): Promise<void> {
+  if (!inTauri()) return;
+  await invoke("cancel_backup_job", { jobId });
+}
+
+export async function detectBackupTools(toolDir: string): Promise<BackupToolInfo[]> {
+  if (!inTauri())
+    return [{ name: "pg_dump", path: "/opt/homebrew/opt/libpq/bin/pg_dump", version: "pg_dump (PostgreSQL) 17.0" }];
+  return invoke<BackupToolInfo[]>("detect_backup_tools", { toolDir: toolDir || null });
 }
 
 export async function fetchResultWindow(
@@ -475,6 +838,7 @@ export async function exportTable(
   table: string,
   format: ExportFormat,
   filters?: ColumnFilter[],
+  order?: SortKey[],
 ): Promise<string> {
   if (!inTauri()) return format === "json" ? '[{"id":"1"}]' : "id\n1\n";
   return invoke<string>("export_table", {
@@ -483,6 +847,7 @@ export async function exportTable(
     table,
     format,
     filters: filters && filters.length ? filters : null,
+    order: order && order.length ? order : null,
   });
 }
 
@@ -490,6 +855,116 @@ export async function runScript(id: string, sql: string): Promise<{ rowsAffected
   if (!inTauri()) return { rowsAffected: 0 };
   const r = await invoke<{ rows_affected: number }>("run_script", { id, sql });
   return { rowsAffected: r.rows_affected };
+}
+
+/** Plain rows from `query_rows` (Task 10 Users list, Task 11 metrics, Task 14 MCP) — capped
+ *  at 1000, no history, no `ResultStore` entry. */
+export interface Rows {
+  columns: string[];
+  rows: (string | null)[][];
+  truncated: boolean;
+}
+
+/** Run `sql` and return its rows, capped at `maxRows` (never above 1000). With a `queryId`,
+ *  `cancelQuery(id, queryId)` — and ⌘. (`cancelAll`) — can stop it while it runs. */
+/** `readOnly`: the SQL must pass the backend's read-only guard and runs inside a read-only
+ *  transaction (Metrics widgets pass it). */
+export async function queryRows(
+  id: string,
+  sql: string,
+  maxRows?: number,
+  queryId?: string,
+  readOnly?: boolean,
+): Promise<Rows> {
+  if (!inTauri())
+    return { columns: ["label", "value"], rows: [["a", "3"], ["b", "5"]], truncated: false };
+  return invoke<Rows>("query_rows", {
+    id,
+    sql,
+    maxRows: maxRows ?? null,
+    queryId: queryId ?? null,
+    readOnly: readOnly ?? null,
+  });
+}
+
+/** Would this Metrics widget SQL pass the backend guard its refreshes run under? Rejects
+ *  with the reason. The browser preview has no backend guard: the modal's TS check stands. */
+export async function validateWidgetSql(id: string, sql: string): Promise<void> {
+  if (!inTauri()) return;
+  await invoke<null>("validate_widget_sql", { id, sql });
+}
+
+// ── MCP server (Task 14) ───────────────────────────────────────────────────
+export interface McpConn {
+  id: string;
+  writes: boolean;
+}
+export interface McpConfig {
+  enabled: boolean;
+  port: number;
+  row_cap: number;
+  connections: McpConn[];
+}
+export interface McpStatus {
+  running: boolean;
+  port: number | null;
+  url: string | null;
+  error: string | null;
+}
+export interface McpActivity {
+  seq: number;
+  ts_ms: number;
+  client: string;
+  tool: string;
+  conn_id: string | null;
+  sql: string | null;
+  rows: number | null;
+  ms: number;
+  ok: boolean;
+  error: string | null;
+}
+
+// Browser mock: the server only exists in the app, so the mock never claims it is running.
+let mockMcp: McpConfig = { enabled: false, port: 7431, row_cap: 500, connections: [] };
+const MOCK_MCP_STATUS: McpStatus = {
+  running: false,
+  port: null,
+  url: null,
+  error: "Browser preview: the MCP server runs only in the TableIQ app.",
+};
+
+export async function mcpGetConfig(): Promise<McpConfig> {
+  if (!inTauri()) return mockMcp;
+  return invoke<McpConfig>("mcp_get_config");
+}
+
+/** Save, then restart the server (stopped when disabled). */
+export async function mcpSetConfig(cfg: McpConfig): Promise<McpStatus> {
+  if (!inTauri()) {
+    mockMcp = cfg;
+    return MOCK_MCP_STATUS;
+  }
+  return invoke<McpStatus>("mcp_set_config", { cfg });
+}
+
+export async function mcpStatus(): Promise<McpStatus> {
+  if (!inTauri()) return MOCK_MCP_STATUS;
+  return invoke<McpStatus>("mcp_status");
+}
+
+export async function mcpToken(): Promise<string> {
+  if (!inTauri()) return "mock0000token0000mock0000token00";
+  return invoke<string>("mcp_token");
+}
+
+export async function mcpRegenerateToken(): Promise<string> {
+  if (!inTauri()) return "mock1111token1111mock1111token11";
+  return invoke<string>("mcp_regenerate_token");
+}
+
+export async function mcpActivity(afterSeq: number): Promise<McpActivity[]> {
+  if (!inTauri()) return [];
+  return invoke<McpActivity[]>("mcp_activity", { afterSeq });
 }
 
 // ── WASM plugins (Extism) ──────────────────────────────────────────────────
@@ -712,6 +1187,8 @@ export interface SavedQuery {
   id: string;
   name: string;
   sql: string;
+  /** Owning connection; absent/null means the query is global (shows for every connection). */
+  conn_id?: string | null;
 }
 
 export interface HistoryEntry {
@@ -726,9 +1203,14 @@ export async function listSavedQueries(): Promise<SavedQuery[]> {
   return invoke<SavedQuery[]>("list_saved_queries");
 }
 
-export async function saveQuery(name: string, sql: string, id?: string): Promise<SavedQuery> {
-  if (!inTauri()) return { id: id ?? "m", name, sql };
-  return invoke<SavedQuery>("save_query", { id: id ?? null, name, sql });
+export async function saveQuery(
+  name: string,
+  sql: string,
+  id?: string,
+  connId?: string | null,
+): Promise<SavedQuery> {
+  if (!inTauri()) return { id: id ?? "m", name, sql, conn_id: connId ?? null };
+  return invoke<SavedQuery>("save_query", { id: id ?? null, name, sql, connId: connId ?? null });
 }
 
 export async function deleteSavedQuery(id: string): Promise<void> {
@@ -762,7 +1244,15 @@ export type DdlRequest =
   | { op: "create_table"; table: TableSpec }
   | { op: "drop_table"; schema: string | null; name: string }
   | { op: "add_column"; schema: string | null; table: string; column: ColumnSpec }
-  | { op: "drop_column"; schema: string | null; table: string; column: string };
+  | { op: "drop_column"; schema: string | null; table: string; column: string }
+  | { op: "rename_column"; schema: string | null; table: string; column: string; new_name: string }
+  | {
+      op: "alter_column_type";
+      schema: string | null;
+      table: string;
+      column: string;
+      new_type: string;
+    };
 
 /** Generate the migration SQL for a structure-editor op (preview before applying). */
 export async function generateDdl(engine: Engine, req: DdlRequest): Promise<string> {
@@ -782,22 +1272,103 @@ export async function generateDdl(engine: Engine, req: DdlRequest): Promise<stri
       return `CREATE TABLE "${req.table.name}" (\n${cols}${pkLine}\n);`;
     }
     if (req.op === "drop_table") return `DROP TABLE "${req.name}";`;
+    if (req.op === "rename_column")
+      return `ALTER TABLE "${req.table}" RENAME COLUMN "${req.column}" TO "${req.new_name}";`;
+    if (req.op === "alter_column_type")
+      return `ALTER TABLE "${req.table}" ALTER COLUMN "${req.column}" TYPE ${req.new_type};`;
     return "-- preview";
   }
   return invoke<string>("generate_ddl", { engine, req });
 }
 
 export interface ForeignKey {
+  /** Constraint name. A composite key arrives as one row per column pair, all sharing
+   *  it — the ERD groups on it to draw one edge. Optional (Rust `#[serde(default)]`). */
+  constraint?: string;
+  /** Owning schema. Optional: older payloads / the browser mock omit it (Rust `#[serde(default)]`). */
+  from_schema?: string;
   from_table: string;
   from_column: string;
+  to_schema?: string;
   to_table: string;
   to_column: string;
 }
 
 export async function foreignKeys(id: string): Promise<ForeignKey[]> {
   if (!inTauri())
-    return [{ from_table: "wide", from_column: "nullable_int", to_table: "users", to_column: "id" }];
+    return [
+      {
+        constraint: "wide_nullable_int_fkey",
+        from_schema: "public",
+        from_table: "wide",
+        from_column: "nullable_int",
+        to_schema: "public",
+        to_table: "users",
+        to_column: "id",
+      },
+    ];
   return invoke<ForeignKey[]>("foreign_keys", { id });
+}
+
+// ── Structure tab (columns / indexes / triggers) ──────────────────────────
+/** One column as the Structure tab shows it. Mirrors the Rust `ColumnDetail`. */
+export interface ColumnDetail {
+  name: string;
+  data_type: string;
+  nullable: boolean;
+  /** The DEFAULT expression, or null when the column has none. */
+  default: string | null;
+  is_pk: boolean;
+  comment: string | null;
+}
+export interface IndexInfo {
+  name: string;
+  columns: string[];
+  unique: boolean;
+  /** This index *is* the primary key. */
+  primary: boolean;
+  definition: string | null;
+}
+export interface TriggerInfo {
+  name: string;
+  /** When it fires, e.g. `BEFORE INSERT`. */
+  timing_event: string;
+  definition: string | null;
+}
+export interface TableStructure {
+  columns: ColumnDetail[];
+  indexes: IndexInfo[];
+  triggers: TriggerInfo[];
+}
+
+/** A driver that can't answer `describe_table` rejects with Rust's `NotImplemented`
+ *  message. The Structure tab shows a note for it rather than an error. */
+export function isNotImplementedError(e: unknown): boolean {
+  return String((e as { message?: string })?.message ?? e).toLowerCase().includes("not implemented");
+}
+
+export async function describeTable(
+  id: string,
+  schema: string,
+  table: string,
+): Promise<TableStructure> {
+  if (!inTauri())
+    return {
+      columns: [
+        { name: "id", data_type: "bigint", nullable: false, default: "nextval('wide_id_seq')", is_pk: true, comment: null },
+        { name: "amount_numeric", data_type: "numeric(12,2)", nullable: false, default: "0", is_pk: false, comment: "Running total." },
+        { name: "created_at", data_type: "timestamptz", nullable: false, default: "now()", is_pk: false, comment: null },
+        { name: "nullable_int", data_type: "integer", nullable: true, default: null, is_pk: false, comment: null },
+      ],
+      indexes: [
+        { name: "wide_pkey", columns: ["id"], unique: true, primary: true, definition: "CREATE UNIQUE INDEX wide_pkey ON public.wide USING btree (id)" },
+        { name: "wide_created_at_idx", columns: ["created_at"], unique: false, primary: false, definition: "CREATE INDEX wide_created_at_idx ON public.wide USING btree (created_at)" },
+      ],
+      triggers: [
+        { name: "trg_wide_touch", timing_event: "BEFORE UPDATE", definition: "CREATE TRIGGER trg_wide_touch BEFORE UPDATE ON public.wide FOR EACH ROW EXECUTE FUNCTION touch()" },
+      ],
+    };
+  return invoke<TableStructure>("describe_table", { id, schema, table });
 }
 
 export async function explainQuery(id: string, sql: string): Promise<string> {
@@ -873,13 +1444,6 @@ export async function aiFixSql(id: string, sql: string, error: string): Promise<
   return invoke<string>("ai_fix_sql", { id, sql, error });
 }
 
-/** Cheap row-estimate for the inspector / status bar (engine native). */
-export async function rowEstimate(id: string, schema: string, table: string): Promise<number> {
-  if (!inTauri()) return MOCK_TOTAL_ROWS;
-  const info = await invoke<{ row_estimate: number }>("open_table", { id, schema, table });
-  return info.row_estimate;
-}
-
 // ── Onboarding state (first-launch marker) ─────────────────────────────────
 export interface OnboardingState {
   onboarded: boolean;
@@ -901,8 +1465,39 @@ export async function writeOnboardingState(state: OnboardingState): Promise<void
   await invoke("write_onboarding_state", { state });
 }
 
-/** Save text to a file (Blob download — works in the WebView and the browser). */
-export function downloadText(filename: string, text: string, mime = "text/plain") {
+/**
+ * Record a front-end error in the app log (`app_dir()/logs/tableiq.log`). Fire-and-forget:
+ * a logging failure must never mask the error being logged, and outside Tauri there is no
+ * backend to write to.
+ */
+export function logClientError(message: string): void {
+  if (!inTauri()) return;
+  // The only swallowed rejection left in src/: this *is* the reporting path, so there is
+  // nowhere left to report to — and throwing here would mask the error being logged.
+  void invoke("log_client_error", { message }).catch(() => {});
+}
+
+/**
+ * Save text to a file. In the packaged app: the native Save dialog, then an atomic write
+ * from Rust — WKWebView ignores an `<a download>` blob link, so the old path silently did
+ * nothing on macOS. In the browser and the QA bridge (a real browser, no Tauri APIs) the
+ * blob download is still the only thing available. Resolves once the file is written, or
+ * immediately if the user cancels the dialog.
+ */
+export async function downloadText(filename: string, text: string, mime = "text/plain") {
+  if (inTauri() && !BRIDGE) {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    // `defaultPath` only seeds the filename; the type dropdown comes from `filters`, which
+    // is also what makes the OS re-append the extension the Rust side insists on.
+    const ext = filename.split(".").pop() ?? "";
+    const path = await save({
+      defaultPath: filename,
+      filters: ext && ext !== filename ? [{ name: ext.toUpperCase(), extensions: [ext] }] : [],
+    });
+    if (path === null) return; // cancelled
+    await invoke("write_text_file", { path, contents: text });
+    return;
+  }
   const blob = new Blob([text], { type: mime });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);

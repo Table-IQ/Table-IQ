@@ -70,7 +70,7 @@ pub fn extract_sql(raw: &str) -> String {
     let t = raw.trim();
     if let Some(rest) = t.strip_prefix("```") {
         // drop an optional language tag on the first line, then take up to the closing fence
-        let body = rest.splitn(2, '\n').nth(1).unwrap_or("");
+        let body = rest.split_once('\n').map_or("", |(_, body)| body);
         let end = body.find("```").unwrap_or(body.len());
         return body[..end].trim().to_string();
     }
@@ -93,10 +93,7 @@ impl Default for AiConfig {
 }
 
 fn config_path() -> std::path::PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("ai.rhobots.tableiq")
-        .join("ai.json")
+    crate::appdir::app_dir().join("ai.json")
 }
 
 pub fn load_config() -> AiConfig {
@@ -107,12 +104,8 @@ pub fn load_config() -> AiConfig {
 }
 
 pub fn save_config(cfg: &AiConfig) -> Result<(), String> {
-    let p = config_path();
-    if let Some(dir) = p.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(p, serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())
+    let json = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
+    crate::appdir::write_atomic(&config_path(), json.as_bytes()).map_err(|e| e.to_string())
 }
 
 /// Keychain account for a provider's API key.
@@ -133,8 +126,8 @@ mod tests {
                     name: "users".into(),
                     kind: ObjectKind::Table,
                     columns: vec![
-                        ColumnInfo { name: "id".into(), data_type: "bigint".into(), nullable: false },
-                        ColumnInfo { name: "email".into(), data_type: "text".into(), nullable: true },
+                        ColumnInfo { name: "id".into(), data_type: "bigint".into(), nullable: false, pk: true },
+                        ColumnInfo { name: "email".into(), data_type: "text".into(), nullable: true, pk: false },
                     ],
                 }],
             }],

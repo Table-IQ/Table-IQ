@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Table, tableToIPC, vectorFromArray, Int64, Utf8, type Vector } from "apache-arrow";
-import { decodeWindow, WindowCache } from "./arrowWindow";
+import { decodeWindow, searchHits, WindowCache } from "./arrowWindow";
 
 function ipcOf(cols: Record<string, Vector>): Uint8Array {
   return tableToIPC(new Table(cols), "stream");
@@ -16,12 +16,25 @@ describe("decodeWindow", () => {
     expect(w.getCell(2, "id")).toBe("12");
   });
 
-  it("renders null cells as empty string", () => {
-    const buf = ipcOf({ name: vectorFromArray(["a", null, "c"], new Utf8()) });
+  it("keeps null cells as null, distinct from an empty string", () => {
+    const buf = ipcOf({ name: vectorFromArray(["a", null, ""], new Utf8()) });
     const w = decodeWindow(buf);
     expect(w.getCell(0, "name")).toBe("a");
-    expect(w.getCell(1, "name")).toBe("");
-    expect(w.getCell(2, "name")).toBe("c");
+    expect(w.getCell(1, "name")).toBeNull();
+    expect(w.getCell(2, "name")).toBe("");
+  });
+
+  it("decodes multiple columns via a precomputed name→child map", () => {
+    const buf = ipcOf({
+      id: vectorFromArray([1n, 2n], new Int64()),
+      name: vectorFromArray(["a", "b"], new Utf8()),
+    });
+    const w = decodeWindow(buf);
+    expect(w.columns).toEqual(["id", "name"]);
+    expect(w.getCell(0, "id")).toBe("1");
+    expect(w.getCell(1, "name")).toBe("b");
+    // Unknown column name — no matching child.
+    expect(w.getCell(0, "nope")).toBeNull();
   });
 });
 
@@ -45,6 +58,19 @@ describe("WindowCache", () => {
     expect(c.getCell(25, "id")).toBeUndefined();
   });
 
+  it("windowOf returns the page holding a row without touching LRU order", () => {
+    const c = new WindowCache(10, 2);
+    const w0 = win(0);
+    c.put(0, w0);
+    c.put(1, win(10));
+    expect(c.windowOf(9)).toBe(w0);
+    expect(c.windowOf(10)?.getCell(0, "id")).toBe("10");
+    expect(c.windowOf(20)).toBeUndefined();
+    c.put(2, win(20)); // page 0 is still the LRU one despite windowOf(9)
+    expect(c.has(0)).toBe(false);
+    expect(c.has(1)).toBe(true);
+  });
+
   it("evicts the least-recently-used page beyond capacity", () => {
     const c = new WindowCache(10, 2);
     c.put(0, win(0));
@@ -55,5 +81,33 @@ describe("WindowCache", () => {
     expect(c.has(0)).toBe(true);
     expect(c.has(1)).toBe(false);
     expect(c.has(2)).toBe(true);
+  });
+});
+
+describe("searchHits", () => {
+  const w = decodeWindow(
+    ipcOf({
+      id: vectorFromArray([1n, 21n, 3n], new Int64()),
+      name: vectorFromArray(["Ada", null, "bob"], new Utf8()),
+    }),
+  );
+
+  it("marks every cell containing the term, case-insensitively", () => {
+    const hits = searchHits(w, ["id", "name"], "a");
+    expect([...hits].sort()).toEqual([1]); // row 0, col 1: "Ada"
+    expect(searchHits(w, ["id", "name"], "B").has(2 * 2 + 1)).toBe(true); // "bob"
+  });
+
+  it("matches numbers by their displayed text; a NULL never matches", () => {
+    const hits = searchHits(w, ["id", "name"], "1");
+    expect([...hits].sort((a, b) => a - b)).toEqual([0, 2]); // "1" and "21"
+  });
+
+  it("only looks at the listed columns", () => {
+    expect(searchHits(w, ["name"], "1").size).toBe(0);
+  });
+
+  it("an empty term marks nothing", () => {
+    expect(searchHits(w, ["id", "name"], "").size).toBe(0);
   });
 });

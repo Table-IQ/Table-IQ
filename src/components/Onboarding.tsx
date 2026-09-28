@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { BrandMark, Wordmark } from "./Brand";
 import { CoachMark, type CoachMarkSpec } from "./ui/CoachMark";
 import { readOnboardingState, writeOnboardingState } from "../lib/commands";
+import { logError } from "../lib/report";
 import { useConnections } from "../state/connectionStore";
 
 type Stage = "loading" | "welcome" | "coachmarks" | "done";
@@ -74,7 +75,7 @@ export function Onboarding() {
   }, [stage, hasActive]);
 
   const finish = () => {
-    writeOnboardingState({ onboarded: true }).catch(() => {});
+    writeOnboardingState({ onboarded: true }).catch((e) => logError("onboarding: mark done", e));
     setStage("done");
   };
 
@@ -113,7 +114,9 @@ export function Onboarding() {
                 // We keep stage="welcome" so once they connect, the post-connect
                 // coach marks fire automatically (effect above watches `hasActive`).
                 setStage("welcome");
-                writeOnboardingState({ onboarded: true }).catch(() => {});
+                writeOnboardingState({ onboarded: true }).catch((e) =>
+                  logError("onboarding: mark done", e),
+                );
                 // Hide the welcome card immediately — the ConnectionManager is right behind it.
                 setStage("done");
                 // But arm coach marks for the next active connection:

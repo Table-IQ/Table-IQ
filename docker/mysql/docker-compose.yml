@@ -1,0 +1,16 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: tableiq-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: tableiq
+      MYSQL_DATABASE: tableiq
+    ports:
+      - "53306:3306"
+    volumes:
+      - ./qa.sql:/docker-entrypoint-initdb.d/qa.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-ptableiq"]
+      interval: 3s
+      timeout: 3s
+      retries: 30

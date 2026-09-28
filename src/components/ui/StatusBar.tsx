@@ -69,7 +69,7 @@ export function SegmentedToggle<T extends string>({
   value,
   onChange,
 }: {
-  options: { value: T; label: string }[];
+  options: { value: T; label: string; icon?: ReactNode }[];
   value: T;
   onChange: (v: T) => void;
 }) {
@@ -87,7 +87,10 @@ export function SegmentedToggle<T extends string>({
               : "text-muted hover:text-text"
           }`}
         >
-          {o.label}
+          <span className="inline-flex items-center gap-1">
+            {o.icon}
+            {o.label}
+          </span>
         </button>
       ))}
     </span>

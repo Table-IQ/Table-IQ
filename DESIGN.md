@@ -26,19 +26,27 @@ Three principles, in order:
 
 - **Name:** TableIQ (one word, capital T and IQ). Never "Table-IQ" or "Tableiq".
 - **Wordmark:** `Table` in `--text`, `IQ` in `--primary`. Component: [`<Wordmark>`](src/components/Brand.tsx).
-- **Inline glyph:** tile-less "T" of three table cells + stem in `currentColor`,
-  topped by a 4-point **AI sparkle** (indigo→violet gradient) at the upper-right
-  ([`<BrandMark>`](src/components/Brand.tsx)). Slice 30 replaced the old flat dot
-  with the sparkle — the spark *is* the "IQ", so it carries the AI gradient.
+- **Mark:** a 2×2 table whose top-right cell *is* the 4-point **AI sparkle** —
+  the grid is "Table", the spark is "IQ". App tile: white cells on the
+  indigo→violet gradient, spark in `#C4B5FD` with a white core
+  ([icon-tile.svg](src/assets/brand/icon-tile.svg), regenerate the OS icon set
+  with `node scripts/render-brand-icon.mjs && pnpm tauri icon src/assets/brand/icon-1024.png`).
+  Inline glyph: tile-less, three cells in `currentColor`, spark in the
+  indigo→violet gradient ([`<BrandMark>`](src/components/Brand.tsx),
+  [glyph.svg](src/assets/brand/glyph.svg)). Replaced the "cells-T + spark" of
+  slices 30–31 (2026-09-26): the T read as a hammer at small sizes and the spark
+  floated outside the letterform; the grid still reads at 16 px.
 - Reserve the **violet `--accent`** and the primary→accent gradient for AI
   features (NL→SQL, chat, explain) — including the brand spark. Never for
   ordinary chrome.
 
 ## Type scale
 
-Base sized down from 13 → 12px so we read like TablePlus. Grid cells render at
-11.5px via the glide-data-grid theme so they feel tighter than the surrounding
-chrome.
+Base sized down from 13 → 12px so we read like TablePlus. **Data surfaces** (grid
+cells, sidebar tree, SQL editor) are **monospace**, larger than the chrome, in
+tight rows with pure-black text — measured off TablePlus screenshots (2026-09-26):
+SF Mono ≈12.5px, 24px grid rows, 20px tree rows. Small sans text floating in tall
+rows was the readability gap.
 
 | Token | Size / line | Usage |
 |---|---|---|
@@ -47,7 +55,8 @@ chrome.
 | `--text-base` | 12 / 17 | Body, form inputs, breadcrumb |
 | `--text-md` | 13 / 18 | Panel titles, modal headings |
 | `--text-lg` | 16 / 22 | Welcome / hero (connection manager) |
-| `--text-mono-cell` | 11.5 / 15 | Grid cells |
+| `--text-mono-cell` | 12.5 / 24 | Grid cells (mono) |
+| — | 12.5 / 20 (`--row-h`) | Sidebar tree rows (mono) |
 
 Weights: 400 default, 500 on labels + emphasis, 600 on hero + panel titles only.
 **Never 700 in chrome.**
@@ -60,11 +69,12 @@ Fonts:
 
 | Token | Old | New |
 |---|---|---|
-| `--row-h` | 26 | 22 |
+| `--row-h` | 26 → 22 | 20 |
 | `--toolbar-h` | 36 | 28 |
 | `--tabbar-h` | 30 | 26 |
 | `--statusbar-h` | 24 | 22 |
 | `--header-h` | 38 | 32 |
+| `--titlebar-h` | — | 52 (connected workspace only; `--header-h` is unchanged) |
 | `--sidebar-w` | 232 | 220 |
 | `--inspector-w` | 260 | 240 |
 | `--gap-tight` | 6 | 4 |
@@ -72,8 +82,7 @@ Fonts:
 | `--radius` | 6 | 5 |
 | `--radius-sm` | 4 | 3 |
 
-`--rail-w` removed — the left-edge connection rail is gone; switching happens
-through the `⌘O` Open Connection palette and the breadcrumb.
+`--rail-w: 72px` — the connection rail (below), shown only while 2+ connections are open.
 
 ## Color tokens
 
@@ -125,22 +134,41 @@ saturated than our previous indigo-tinted dark.
 
 ## Iconography
 
-- All lucide-react icons in chrome render at `strokeWidth={1.5}` and `size={12}`
-  (toolbar) or `size={11}` (status bar).
+- Chrome icons render at `strokeWidth={1.5}`: `size={20}` in the titlebar capsules
+  (see "Titlebar — glass capsules" below), `size={12}` in in-pane action toolbars,
+  `size={11}` in the status bar.
 - Inline data UI icons (FK chevrons, sort markers) render at `strokeWidth={2}`
   and `size={10}`.
 
 ## Layout building blocks
 
-### Window chrome (32px)
-- macOS traffic-lights reserve (left ~80px)
-- `<Wordmark>` + active-connection dot + name (left)
-- Breadcrumb: `connection · database · schema · table` (center, font-mono)
-- Right icon strip: refresh, theme, command palette, help, inspector toggle, disconnect
+### Titlebar — glass capsules (52px, `--titlebar-h`)
+TablePlus's toolbar idiom: 20px glyphs (`strokeWidth={1.5}`) in 36×32 hit areas, grouped
+into 36px full-radius glass capsules (`Capsule` / `CapsuleButton` / `CapsuleDivider`,
+`ui/Capsule.tsx`). The whole `<header>` is the drag region (`data-tauri-drag-region` +
+`.tiq-titlebar-drag`); capsules and the pill are `.tiq-no-drag`. Traffic lights sit at
+`trafficLightPosition { x: 18, y: 20 }` behind an 84px left reserve. There is no secondary
+toolbar under it.
+
+| Group | Contents |
+|---|---|
+| G1 | Toggle sidebar ⌘[ · Open connection ⌘O |
+| G2 | Discard · Review (popover, `StagedReview`) · Commit ⌘S with a `bg-text text-bg` count badge — driven only by the active table tab's staged edits (`useStaged`); disabled with "No staged changes" otherwise |
+| G3 | Open database ⌘D (pinned, not customizable; hidden for file engines) · `SQL` New query ⌘T · ERD · `+` More (New Table, Import, Diff, Backup / Restore where supported) |
+| Pill | `flex-1` status pill tinted by the connection env: `ENV \| Engine : SSL : SSH : connection : database : schema.table`. Object shrinks first, then database, then connection; the database is dropped when it equals the connection name; the `title` always carries the full text. While connecting: spinner + "Loading schema…" |
+| G4 | The user's customizable items (`TOOLBAR_ITEMS`, Settings → Toolbar, or right-click empty header space → Customize Toolbar…), then a fixed Cancel running queries ⌘. Below 1180px only the first two items show and the rest move under `»` (`.tiq-g4-extra` / `.tiq-g4-more`; the `@media` rule in `index.css` is the only source of the breakpoint) |
+| G5 | Settings ⌘, · Toggle inspector ⌘] · Disconnect |
+
+Tokens: `--glass-bg`, `--glass-border`, `--glass-shadow` (capsules and the pill border);
+`--env-<tone>` / `--env-<tone>-text` for the pill (`local`, `development`, `testing`,
+`staging`, `production`, and `none` = glass). No TLS version or traffic rate is shown:
+neither is measured.
 
 ### Tab strip (26px)
 - `<` `>` history navigation
-- Tab list — kind glyph (◇ query / ◫ ERD / ▦ table) + title
+- Tab list — kind glyph (◇ query / ◫ ERD / ▦ table / ▤ users / ◨ metrics / ◧ MCP activity) + title.
+  ERD is the only one of these six drawn in `--accent`; the rest use the neutral tab-glyph token
+  (see the accent rule above — AI surfaces only).
 - Active tab: subtler highlight (no top-border accent)
 - Right-edge `+` for new query
 
@@ -182,10 +210,36 @@ Two tiers only:
 
 ## Motion
 
-- Hover transitions: 120ms ease-out
-- Modal open/close: 160ms cubic-bezier(0.2, 0.8, 0.2, 1)
-- Tab switch: instant — feels snappier
-- Filter / Insert row appearance: 180ms slide-down
+Motion answers an action: it shows what opened, what is working, what changed.
+State is never carried by motion alone; a tint, label or text always remains.
+
+**Tokens** (`src/index.css`): `--dur-fast: 120ms`, `--dur: 180ms`,
+`--delay-busy: 150ms`, `--ease-out` (enter), `--ease-in` (exit).
+
+**Rules**
+- Animate only `opacity` and `transform`. The one exception: rails may animate `max-height`.
+- Enter eases out; exit eases in and runs faster (`--dur-fast`).
+- Busy indicators wait `--delay-busy` so a fast operation never flashes one.
+- `prefers-reduced-motion: reduce` turns all of it off (one media query in
+  `index.css`; the canvas grid checks `matchMedia` and skips its rAF loop).
+- Tab switch: instant. Hover: 120ms colour transition.
+
+**Where it is used**
+| Moment | Treatment |
+|---|---|
+| Rails (filters, new row, unsaved changes) | `.tiq-rail`: slide down + fade, `--dur` |
+| Busy (query run, page load) | `.tiq-progress`: 2px indeterminate bar in `--primary`, appears after 150ms |
+| Query results arrive | `.tiq-fade-in`, `--dur-fast`; stale results dim while running |
+| Stale content in flight (table page, query results) | `.tiq-dimmable` + `.is-busy`: opacity 0.6 after `--delay-busy`, un-dims at once; stays interactive (scroll, select, copy) — never `pointer-events: none` |
+| Running / counting timer | `<Elapsed>` (`ui/Elapsed.tsx`) owns its 100ms tick; appears after `--delay-busy`; `aria-hidden` inside a live region |
+| Row total while a new filter counts | previous total stays, drawn `--muted` until the new one lands |
+| Inline error / notice | `.tiq-slide-in`: 4px drop + fade, `--dur` |
+| Panels (Alter, New table, …) | `.tiq-pop-in` scale .98→1 + fade; `.tiq-pop-out` on close |
+| Cell saving | amber tint breathes (1s period) while any cell is writing |
+| Cell saved | green holds 800ms, then fades out over 300ms (canvas rAF) |
+| Row deleted | red tint fades over 300ms, then the page refetches |
+| Row inserted | the new row flashes green if its PK was typed |
+| Saved n changes | status-bar text, `.tiq-flash`: fade in, hold, fade out over 2s |
 
 ## Connection manager (welcome) — TablePlus parity
 
@@ -229,12 +283,13 @@ Lives in [src/components/ui/EngineIcon.tsx](src/components/ui/EngineIcon.tsx).
 TablePlus-style 2-letter monogram circle (not square tile, not avatar): flat
 engine colour fill + an inset 1px white-on-top / black-on-bottom highlight that
 reads as glass depth. Used everywhere a connection is identified (welcome list,
-⌘O picker). Sizes: sm 16 / md 22 / lg 32 / xl 44. Monograms: Pg, My, Sq, Re, Mo, Ms.
+⌘O picker). Sizes: sm 16 / md 22 / lg 32 / xl 44. Monograms: Pg, My, Sq, Dk, Re, Mo, Ms.
 
 ### Env tag derivation
 Without a dedicated `environment` field on `ConnConfig`, we derive the row's
 parenthetical tag from existing data: `(local)` for loopback host, `(ssh)` for
-SSH-tunneled, `(remote)` otherwise, `(file)` for SQLite. Coloured by tone:
+SSH-tunneled, `(remote)` otherwise, `(file)` for a SQLite or DuckDB file and
+`(in-memory)` for a DuckDB `:memory:` connection. Coloured by tone:
 green / amber / muted / muted. The user's `color` hex still renders as a small
 dot next to the tag for custom environments.
 
@@ -251,7 +306,7 @@ floats recently-used connections to the top of the list without any UI grouping
 | Welcome / first-launch | Hero treatment, larger wordmark, glass action chips |
 | Connection manager (Slice 22) | List-first; form slides out as side sheet on edit/new |
 | Workspace titlebar | Tighter (32px), 1.5-stroke icons, breadcrumb redesign |
-| Connection rail (left edge) | **Removed**. Replaced by `⌘O` Open Connection palette |
+| Connection rail (left edge) | Removed in Slice 22; **back** (2026-09-26) as the TablePlus open-connections rail, see below |
 | Tab strip | Subtler active state, smaller |
 | Status bar | New layout: object info L · row-window nav C · Data/Structure + Row + Filters/Columns + editable chip R |
 | Sidebar | Density tightened; section labels in `text-xs uppercase tracking-widest text-muted` |
@@ -266,14 +321,52 @@ floats recently-used connections to the top of the list without any UI grouping
 | Surface | Change |
 |---|---|
 | Grid columns | **Auto-fit to content** on first load (`lib/autoFit.ts`: `fitColumnWidth`/`autoFitWidths`), clamped to `MAX_AUTO_FIT` 420px. Fixes the old fixed-160px clipping. A persisted drag (`lib/colWidths.ts`) always wins over auto-fit. |
-| Grid rows | **Zebra stripe** on odd rows + neutral **hover** highlight (`gridRowTints` in `theme.ts` → glide `getRowThemeOverride`). Row 29px / header 30px (tighter than glide's 34px). |
+| Grid rows | **Zebra stripe** on odd rows + neutral **hover** highlight (`gridRowTints` in `theme.ts` → glide `getRowThemeOverride`). Row 24px / header 28px; cells SF Mono 12.5px `#000`, header sans 500 12.5px `#000` on white. |
 | Grid cells | Numeric columns **right-align** (`isNumericType`). FK cells stay left (`→ value`). |
 | Connection capsule | Centered TablePlus pill in the titlebar: `conn \| ENGINE : database ▾ : schema.table`. Name → ⌘O, database → ⌘D. Replaces the plain breadcrumb + left chip. |
 | Bottom bar | Active Data/Structure segment uses the primary accent (TablePlus blue tab). **Single** bottom bar — the workspace fallback is suppressed when a Table/Query tab owns one (was stacked two-deep). |
 
 > Grid colors are hardcoded hex in `theme.ts`/`gridRowTints` on purpose —
 > glide-data-grid's canvas theme needs literal colors, not CSS custom properties.
-> Components still use tokens.
+> Components still use tokens. (A `var(--…)` handed to the canvas does not
+> resolve — FK cell text once painted invisibly that way; FK cells use
+> `gridTheme(mode).accentColor`.)
+
+**Grid cell tints** (`theme.ts`, canvas hex — light / dark):
+
+| Tint | Light | Dark | Source |
+|---|---|---|---|
+| Search hit (cell matches the table search) | `#c7d2fe` | `#312e81` | `searchHitBg` — the accent, one step stronger than the selected-row band so a hit still reads on a selected row |
+| Selected row | `#e0e7ff` | `#1e2540` | `gridRowTints.selected` |
+| FK cell text | `#4f46e5` | `#6366f1` | `gridTheme().accentColor` |
+
+A save-state tint (staged / saving / saved / error) wins over a search hit on the same cell.
+
+## Connection rail — TablePlus parity
+
+Several connections stay open at once (the backend already keeps one session per
+id). `⌘O` opens another alongside the current one; the rail (`ConnectionRail.tsx`,
+`--rail-w` 72px, `tiq-vibrancy`) appears at the far left of the body once **two or
+more** are open. Each item: database cylinder (tinted by the connection's colour
+tag) over an 11px label; the active one is a raised `bg-bg` card; hover shows ×
+to close that session. A footer ⚙ menu toggles the label between database and
+connection name (`tiq:rail:label`). Switching does not reconnect — the shell
+remounts on the stored session and re-hydrates that connection's tabs. Disconnect
+closes only the active connection; the last one remaining takes over.
+
+## SQL editor syntax colours
+
+Xcode-style, sampled from TablePlus: keywords recede in a soft blue while
+identifiers stay full-contrast, so the query's *names* carry the eye.
+
+| Token | Light | Dark |
+|---|---|---|
+| keyword / type | `#6499D3` | `#6CB6FF` |
+| string | `#CF5478` | `#FF7FA3` |
+| comment | `#449940` | `#6BC46D` |
+| number / bool / null | `#1A01F5` | `#A5A3FF` |
+| identifier / function / operator | `--text` (`#000` light) | `--text` |
+| gutter numbers | `#7E7E7E` on `--bg` | `#6E7681` on `--bg` |
 
 ## Do / Don't
 

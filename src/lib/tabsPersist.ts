@@ -68,6 +68,60 @@ export function hydrateForConnection(
   }
 }
 
+/**
+ * Move `activeKey` to `key` in `slice`. An unknown key is a no-op — returns the
+ * SAME slice reference so callers can skip a redundant persist. Pure.
+ */
+export function focusTabIn(slice: PersistedTabs, key: string): PersistedTabs {
+  if (!slice.tabs.some((t) => t.key === key)) return slice;
+  return { ...slice, activeKey: key };
+}
+
+/**
+ * Remove the tab keyed `key` from `slice`. Closing the active tab moves
+ * `activeKey` to the last remaining tab, or `null` when none are left.
+ * Closing an unknown key is a no-op. Pure — mirrors `useTabs`' `close`.
+ */
+export function closeTabIn(slice: PersistedTabs, key: string): PersistedTabs {
+  const tabs = slice.tabs.filter((t) => t.key !== key);
+  const activeKey =
+    slice.activeKey === key ? (tabs.length ? tabs[tabs.length - 1].key : null) : slice.activeKey;
+  return { ...slice, tabs, activeKey };
+}
+
+/**
+ * Move `connId`'s persisted `activeKey` to `key` — reads storage fresh, applies
+ * `focusTabIn`, writes it back. Unlike a caller that snapshots the slice once
+ * (e.g. to render a list) and reuses that snapshot across multiple calls, this
+ * always starts from the latest state on disk, so sequential calls against the
+ * same connection compose instead of clobbering each other. A no-op when
+ * nothing is persisted for `connId` yet.
+ */
+export function focusTabForConnection(
+  connId: string,
+  key: string,
+  storage: Pick<Storage, "getItem" | "setItem"> | null,
+): void {
+  const slice = hydrateForConnection(connId, storage, null);
+  if (!slice) return;
+  persistForConnection(connId, focusTabIn(slice, key), storage);
+}
+
+/**
+ * Remove tab `key` from `connId`'s persisted slice — reads storage fresh,
+ * applies `closeTabIn`, writes it back. See `focusTabForConnection` for why the
+ * fresh read matters. A no-op when nothing is persisted for `connId` yet.
+ */
+export function closeTabForConnection(
+  connId: string,
+  key: string,
+  storage: Pick<Storage, "getItem" | "setItem"> | null,
+): void {
+  const slice = hydrateForConnection(connId, storage, null);
+  if (!slice) return;
+  persistForConnection(connId, closeTabIn(slice, key), storage);
+}
+
 /** Write the persisted slice for `connId`. Best-effort (silently ignores quota errors). */
 export function persistForConnection(
   connId: string,

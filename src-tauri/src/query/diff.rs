@@ -119,7 +119,7 @@ mod tests {
     use crate::drivers::{ColumnInfo, ObjectInfo, ObjectKind, SchemaInfo};
 
     fn col(name: &str, ty: &str, nullable: bool) -> ColumnInfo {
-        ColumnInfo { name: name.into(), data_type: ty.into(), nullable }
+        ColumnInfo { name: name.into(), data_type: ty.into(), nullable, pk: false }
     }
     fn model(objs: Vec<ObjectInfo>) -> SchemaModel {
         SchemaModel { schemas: vec![SchemaInfo { name: "public".into(), objects: objs }] }

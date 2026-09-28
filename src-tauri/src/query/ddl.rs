@@ -12,6 +12,9 @@ pub enum Dialect {
     Postgres,
     MySql,
     Sqlite,
+    SqlServer,
+    /// Postgres-shaped: `"…"` quoting, schemas, `ALTER COLUMN … TYPE`.
+    DuckDb,
 }
 
 impl Dialect {
@@ -19,14 +22,17 @@ impl Dialect {
         match engine {
             "mysql" => Dialect::MySql,
             "sqlite" => Dialect::Sqlite,
+            "sqlserver" => Dialect::SqlServer,
+            "duckdb" => Dialect::DuckDb,
             _ => Dialect::Postgres,
         }
     }
 
-    /// Quote a SQL identifier (backticks for MySQL, double-quotes elsewhere).
+    /// Quote a SQL identifier (backticks for MySQL, brackets for MSSQL, double-quotes else).
     pub fn quote(&self, ident: &str) -> String {
         match self {
             Dialect::MySql => format!("`{}`", ident.replace('`', "``")),
+            Dialect::SqlServer => format!("[{}]", ident.replace(']', "]]")),
             _ => format!("\"{}\"", ident.replace('"', "\"\"")),
         }
     }
@@ -85,6 +91,20 @@ pub enum DdlRequest {
         table: String,
         column: String,
     },
+    RenameColumn {
+        #[serde(default)]
+        schema: Option<String>,
+        table: String,
+        column: String,
+        new_name: String,
+    },
+    AlterColumnType {
+        #[serde(default)]
+        schema: Option<String>,
+        table: String,
+        column: String,
+        new_type: String,
+    },
 }
 
 fn column_def(c: &ColumnSpec, d: Dialect) -> String {
@@ -127,8 +147,11 @@ pub fn drop_table_sql(schema: Option<&str>, name: &str, d: Dialect) -> String {
 }
 
 pub fn add_column_sql(schema: Option<&str>, table: &str, col: &ColumnSpec, d: Dialect) -> String {
+    // T-SQL's ALTER TABLE ADD has no COLUMN keyword — "ADD COLUMN" is a syntax error on
+    // SQL Server, unlike Postgres/MySQL/SQLite, which all accept it.
+    let kw = if matches!(d, Dialect::SqlServer) { "ADD" } else { "ADD COLUMN" };
     format!(
-        "ALTER TABLE {} ADD COLUMN {};",
+        "ALTER TABLE {} {kw} {};",
         d.qualified(schema, table),
         column_def(col, d)
     )
@@ -142,6 +165,48 @@ pub fn drop_column_sql(schema: Option<&str>, table: &str, column: &str, d: Diale
     )
 }
 
+pub fn rename_column_sql(
+    schema: Option<&str>,
+    table: &str,
+    column: &str,
+    new_name: &str,
+    d: Dialect,
+) -> String {
+    // RENAME COLUMN old TO new is uniform across Postgres, MySQL 8+, and SQLite 3.25+.
+    format!(
+        "ALTER TABLE {} RENAME COLUMN {} TO {};",
+        d.qualified(schema, table),
+        d.quote(column),
+        d.quote(new_name)
+    )
+}
+
+pub fn alter_column_type_sql(
+    schema: Option<&str>,
+    table: &str,
+    column: &str,
+    new_type: &str,
+    d: Dialect,
+) -> String {
+    let qt = d.qualified(schema, table);
+    match d {
+        Dialect::Postgres | Dialect::DuckDb => {
+            format!("ALTER TABLE {} ALTER COLUMN {} TYPE {};", qt, d.quote(column), new_type)
+        }
+        Dialect::MySql => {
+            format!("ALTER TABLE {} MODIFY COLUMN {} {};", qt, d.quote(column), new_type)
+        }
+        // SQLite has no in-place type change — it requires a full table rebuild. Emit a
+        // non-executing note so the preview is honest rather than silently doing nothing.
+        Dialect::Sqlite => {
+            "-- SQLite cannot change a column's type in place (requires a table rebuild).".into()
+        }
+        Dialect::SqlServer => {
+            format!("ALTER TABLE {} ALTER COLUMN {} {};", qt, d.quote(column), new_type)
+        }
+    }
+}
+
 /// Generate the migration SQL for a request (the preview shown before applying).
 pub fn generate(req: &DdlRequest, d: Dialect) -> String {
     match req {
@@ -152,6 +217,12 @@ pub fn generate(req: &DdlRequest, d: Dialect) -> String {
         }
         DdlRequest::DropColumn { schema, table, column } => {
             drop_column_sql(schema.as_deref(), table, column, d)
+        }
+        DdlRequest::RenameColumn { schema, table, column, new_name } => {
+            rename_column_sql(schema.as_deref(), table, column, new_name, d)
+        }
+        DdlRequest::AlterColumnType { schema, table, column, new_type } => {
+            alter_column_type_sql(schema.as_deref(), table, column, new_type, d)
         }
     }
 }
@@ -217,6 +288,18 @@ mod tests {
         assert!(sql.contains("PRIMARY KEY (`id`)"));
     }
 
+    /// DuckDB speaks Postgres' identifier quoting, schema qualification and ALTER forms.
+    #[test]
+    fn duckdb_is_postgres_shaped() {
+        let d = Dialect::from_engine("duckdb");
+        assert_eq!(d, Dialect::DuckDb);
+        assert_eq!(drop_table_sql(Some("main"), "t", d), "DROP TABLE \"main\".\"t\";");
+        assert_eq!(
+            alter_column_type_sql(Some("main"), "t", "c", "BIGINT", d),
+            "ALTER TABLE \"main\".\"t\" ALTER COLUMN \"c\" TYPE BIGINT;"
+        );
+    }
+
     #[test]
     fn sqlite_ignores_schema_qualification() {
         let sql = drop_table_sql(Some("main"), "t", Dialect::Sqlite);
@@ -264,5 +347,113 @@ mod tests {
             name: "t".into(),
         };
         assert_eq!(generate(&req, Dialect::Postgres), "DROP TABLE \"t\";");
+    }
+
+    #[test]
+    fn rename_column_is_uniform_across_dialects() {
+        assert_eq!(
+            rename_column_sql(Some("public"), "users", "old", "new", Dialect::Postgres),
+            "ALTER TABLE \"public\".\"users\" RENAME COLUMN \"old\" TO \"new\";"
+        );
+        assert_eq!(
+            rename_column_sql(Some("app"), "t", "old", "new", Dialect::MySql),
+            "ALTER TABLE `app`.`t` RENAME COLUMN `old` TO `new`;"
+        );
+        // SQLite ignores schema qualification.
+        assert_eq!(
+            rename_column_sql(Some("main"), "t", "old", "new", Dialect::Sqlite),
+            "ALTER TABLE \"t\" RENAME COLUMN \"old\" TO \"new\";"
+        );
+    }
+
+    #[test]
+    fn alter_column_type_is_dialect_specific() {
+        assert_eq!(
+            alter_column_type_sql(Some("public"), "wide", "amount_numeric", "numeric(20,4)", Dialect::Postgres),
+            "ALTER TABLE \"public\".\"wide\" ALTER COLUMN \"amount_numeric\" TYPE numeric(20,4);"
+        );
+        assert_eq!(
+            alter_column_type_sql(None, "t", "amount", "DECIMAL(20,4)", Dialect::MySql),
+            "ALTER TABLE `t` MODIFY COLUMN `amount` DECIMAL(20,4);"
+        );
+        // SQLite can't change a column's type in place — emit an honest, non-executing note.
+        let sqlite = alter_column_type_sql(None, "t", "c", "INTEGER", Dialect::Sqlite);
+        assert!(sqlite.starts_with("-- SQLite"), "got: {sqlite}");
+        assert!(!sqlite.contains("ALTER COLUMN"));
+        // SQL Server: ALTER COLUMN takes the new type directly, with no TYPE keyword.
+        assert_eq!(
+            alter_column_type_sql(Some("dbo"), "t", "c", "nvarchar(50)", Dialect::SqlServer),
+            "ALTER TABLE [dbo].[t] ALTER COLUMN [c] nvarchar(50);"
+        );
+    }
+
+    #[test]
+    fn sqlserver_quote_uses_brackets_and_escapes_embedded_brackets() {
+        assert_eq!(Dialect::SqlServer.quote("users"), "[users]");
+        assert_eq!(Dialect::SqlServer.quote("we]ird"), "[we]]ird]");
+        assert_eq!(Dialect::SqlServer.qualified(Some("dbo"), "users"), "[dbo].[users]");
+        assert_eq!(Dialect::SqlServer.qualified(None, "users"), "[users]");
+        assert_eq!(Dialect::from_engine("sqlserver"), Dialect::SqlServer);
+    }
+
+    /// T-SQL's ALTER TABLE ADD has no COLUMN keyword — "ADD COLUMN" is a syntax error on
+    /// SQL Server. The other three dialects all accept (and this app uses) "ADD COLUMN".
+    #[test]
+    fn sqlserver_add_column_omits_the_column_keyword() {
+        let sql = add_column_sql(Some("dbo"), "users", &col("age", "int", true, false), Dialect::SqlServer);
+        assert_eq!(sql, "ALTER TABLE [dbo].[users] ADD [age] int;");
+        assert!(!sql.contains("ADD COLUMN"), "ADD COLUMN is a T-SQL syntax error: {sql}");
+
+        // Every other dialect keeps the COLUMN keyword.
+        for d in [Dialect::Postgres, Dialect::MySql, Dialect::Sqlite, Dialect::DuckDb] {
+            let sql = add_column_sql(None, "t", &col("age", "int", true, false), d);
+            assert!(sql.contains("ADD COLUMN"), "{d:?} should keep ADD COLUMN: {sql}");
+        }
+    }
+
+    #[test]
+    fn sqlserver_create_and_drop_table_and_column() {
+        let spec = TableSpec {
+            schema: Some("dbo".into()),
+            name: "users".into(),
+            columns: vec![col("id", "int", false, true), col("note", "nvarchar(max)", true, false)],
+        };
+        let create = create_table_sql(&spec, Dialect::SqlServer);
+        assert!(create.starts_with("CREATE TABLE [dbo].[users] (\n"));
+        assert!(create.contains("[id] int NOT NULL"));
+        assert!(create.contains("PRIMARY KEY ([id])"));
+
+        assert_eq!(
+            drop_table_sql(Some("dbo"), "users", Dialect::SqlServer),
+            "DROP TABLE [dbo].[users];"
+        );
+        assert_eq!(
+            drop_column_sql(Some("dbo"), "users", "note", Dialect::SqlServer),
+            "ALTER TABLE [dbo].[users] DROP COLUMN [note];"
+        );
+    }
+
+    #[test]
+    fn generate_dispatches_rename_and_type() {
+        let rename = DdlRequest::RenameColumn {
+            schema: None,
+            table: "t".into(),
+            column: "a".into(),
+            new_name: "b".into(),
+        };
+        assert_eq!(
+            generate(&rename, Dialect::Postgres),
+            "ALTER TABLE \"t\" RENAME COLUMN \"a\" TO \"b\";"
+        );
+        let retype = DdlRequest::AlterColumnType {
+            schema: None,
+            table: "t".into(),
+            column: "a".into(),
+            new_type: "text".into(),
+        };
+        assert_eq!(
+            generate(&retype, Dialect::Postgres),
+            "ALTER TABLE \"t\" ALTER COLUMN \"a\" TYPE text;"
+        );
     }
 }

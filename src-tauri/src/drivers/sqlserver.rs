@@ -1,26 +1,33 @@
 //! SQL Server `SqlDriver` via tiberius (TDS). Display-first browse: every cell is stringified to
 //! Utf8 (consistent with the other drivers). A single pinned connection behind an async mutex —
-//! pooling/cancellation are follow-ups. Inline edit is not yet implemented (browse + query + DDL).
+//! pooling is a follow-up, and cancellation needs a second connection to send an ATTENTION on,
+//! so it stays `NotImplemented`. Covered live by `tests/sqlserver.rs` (gated on `TIQ_MSSQL_URL`)
+//! against the seed in `docker/sqlserver/qa.sql`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Mutex as StdMutex;
 
 use arrow::array::{ArrayRef, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
-use tiberius::{Client, ColumnData, Config};
+use tiberius::{AuthMethod, Client, ColumnData, Config, EncryptionLevel};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
+use crate::sql_log::note;
+
 use super::{
-    build_insert_sql, build_where_clause, ColumnFilter, ColumnInfo, CursorId, DResult, DriverError,
-    EditSpec, ForeignKey, ObjectInfo, ObjectKind, QueryResult, SchemaInfo, SchemaModel, SqlDriver,
+    build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
+    ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec, ForeignKey, IndexInfo,
+    ObjectInfo, ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver,
+    StmtOutput, TableStat, TableStructure, TriggerInfo,
 };
 
 type Conn = Client<Compat<TcpStream>>;
+
+// tiberius logs nothing, so every call site below `note`s its SQL for the SQL log first.
 
 fn db<E: std::fmt::Display>(e: E) -> DriverError {
     DriverError::Db(e.to_string())
@@ -31,9 +38,71 @@ fn quote_ident(name: &str) -> String {
     format!("[{}]", name.replace(']', "]]"))
 }
 
-/// Stringify one cell for display. Date/time/xml fall back to a debug rendering (follow-up).
-fn cell_to_string(cd: &ColumnData) -> Option<String> {
+/// Tiberius binds `@P1, @P2, …` in declared order; SQL Server converts a text value to the
+/// target column type implicitly (display-first design), so no cast is added.
+fn mssql_placeholder(i: usize, _col: &str) -> String {
+    format!("@P{i}")
+}
+
+/// PK types a keyset cursor can seek on. The cursor is the grid's text, bound back as
+/// NVARCHAR, so the type must parse that text back exactly and compare it the way the column
+/// sorts: `varchar` compares as NVARCHAR (SQL_ collations sort the two differently),
+/// `datetime` rejects the 9 fractional digits its 1/300 s renders with, and binary types
+/// render as hex that doesn't convert back. Anything else pages by OFFSET.
+fn seekable(data_type: &str) -> bool {
+    matches!(
+        data_type,
+        "int" | "bigint" | "smallint" | "tinyint" | "uniqueidentifier" | "nvarchar" | "nchar"
+            | "date" | "datetime2"
+    )
+}
+
+/// `(columns, pk, column → DATA_TYPE)` for one table.
+type Meta = std::sync::Arc<(Vec<String>, Vec<String>, HashMap<String, String>)>;
+
+/// Left side of the textual comparisons (LIKE/ILIKE/Search), by the column's type. Most
+/// types CAST to NVARCHAR(MAX) (LOWER rejects `ntext` outright). The binary and CLR types
+/// (`image`, `geography`, …) have no conversion to text, so they compare as the hex the grid
+/// shows, and date/times in the grid's ISO shape (style 121) rather than `Sep 23 2026 1:45PM`.
+fn mssql_text_expr(col: &str, data_type: Option<&str>) -> String {
+    let q = quote_ident(col);
+    match data_type.unwrap_or("") {
+        "binary" | "varbinary" | "image" | "timestamp" | "geography" | "geometry"
+        | "hierarchyid" => format!("CONVERT(NVARCHAR(MAX), CONVERT(VARBINARY(MAX), {q}), 2)"),
+        "date" | "time" | "datetime" | "datetime2" | "smalldatetime" | "datetimeoffset" => {
+            format!("CONVERT(NVARCHAR(MAX), {q}, 121)")
+        }
+        _ => format!("CAST({q} AS NVARCHAR(MAX))"),
+    }
+}
+
+/// Render a `DECIMAL`/`NUMERIC` from its raw value and scale. tiberius' own `Display` builds
+/// the text from `int_part()` and `dec_part()`, which both carry the sign — so it renders
+/// -12.34 as `-12.-34`.
+fn numeric_to_string(n: &tiberius::numeric::Numeric) -> std::string::String {
+    let (value, scale) = (n.value(), n.scale() as usize);
+    if scale == 0 {
+        return value.to_string();
+    }
+    // Zero-pad so a value smaller than one scale unit still has an integer digit (0.05).
+    let digits = format!("{:0>width$}", value.unsigned_abs(), width = scale + 1);
+    let (int, frac) = digits.split_at(digits.len() - scale);
+    format!("{}{int}.{frac}", if value < 0 { "-" } else { "" })
+}
+
+/// Stringify one cell for display. Date/time render ISO with a space separator, matching how
+/// the text-protocol drivers (Postgres, MySQL) hand their timestamps over. `%.f` prints the
+/// fractional seconds only when the value has any.
+fn cell_to_string(cd: &ColumnData<'static>) -> Option<String> {
+    use tiberius::time::chrono as ch;
+    use tiberius::FromSql;
     use ColumnData::*;
+    const DATE: &str = "%Y-%m-%d";
+    const TIME: &str = "%H:%M:%S%.f";
+    const DATETIME: &str = "%Y-%m-%d %H:%M:%S%.f";
+    const DATETIME_TZ: &str = "%Y-%m-%d %H:%M:%S%.f %:z";
+    // A `from_sql` failure would mean tiberius disagreed with its own variant, which cannot
+    // happen from the arms below; render it as NULL rather than panicking on the unwrap.
     match cd {
         U8(v) => v.map(|x| x.to_string()),
         I16(v) => v.map(|x| x.to_string()),
@@ -45,49 +114,457 @@ fn cell_to_string(cd: &ColumnData) -> Option<String> {
         String(v) => v.as_ref().map(|s| s.to_string()),
         Guid(v) => v.map(|g| g.to_string()),
         Binary(v) => v.as_ref().map(|b| b.iter().map(|x| format!("{x:02x}")).collect()),
-        Numeric(v) => v.as_ref().map(|n| n.to_string()),
-        other => format!("{other:?}").into(),
+        Numeric(v) => v.as_ref().map(numeric_to_string),
+        Xml(v) => v.as_ref().map(|x| x.to_string()),
+        Date(_) => ch::NaiveDate::from_sql(cd).ok().flatten().map(|d| d.format(DATE).to_string()),
+        Time(_) => ch::NaiveTime::from_sql(cd).ok().flatten().map(|t| t.format(TIME).to_string()),
+        DateTime(_) | SmallDateTime(_) | DateTime2(_) => ch::NaiveDateTime::from_sql(cd)
+            .ok()
+            .flatten()
+            .map(|d| d.format(DATETIME).to_string()),
+        DateTimeOffset(_) => ch::DateTime::<ch::FixedOffset>::from_sql(cd)
+            .ok()
+            .flatten()
+            .map(|d| d.format(DATETIME_TZ).to_string()),
     }
 }
 
-/// Client-side cursor state: the wrapped query + how far we've paged.
-struct CursorState {
-    sql: String,
-    offset: usize,
+/// Turn a tiberius error into a per-statement [`QueryError`]. A server error carries the
+/// 1-based line inside the batch — and each statement is sent as its own batch, so that is
+/// the line inside the statement the user wrote.
+fn stmt_error(e: &tiberius::error::Error) -> QueryError {
+    match e {
+        tiberius::error::Error::Server(t) => QueryError {
+            message: t.message().to_string(),
+            line: (t.line() > 0).then(|| t.line()),
+            position: None,
+        },
+        _ => QueryError { message: e.to_string(), line: None, position: None },
+    }
 }
 
+/// Read one column of a catalog row as text. `try_get`, not `get`: `Row::get` is
+/// `try_get(idx).unwrap()` internally, so a decode or type mismatch panics the whole app.
+fn text(r: &tiberius::Row, col: &str) -> DResult<Option<std::string::String>> {
+    Ok(r.try_get::<&str, _>(col).map_err(db)?.map(std::string::String::from))
+}
+
+/// Read one `bit` column of a catalog row; a SQL NULL reads as false.
+fn flag(r: &tiberius::Row, col: &str) -> DResult<bool> {
+    Ok(r.try_get::<bool, _>(col).map_err(db)?.unwrap_or(false))
+}
+
+/// `@@ROWCOUNT` for the statement just run. It is session state, so it survives into the next
+/// batch on the same (pinned) connection.
+/// Roll back a transaction a batch left open on the pinned session.
+///
+/// This driver holds ONE `Client` behind a mutex, shared by the grid, introspection, edits
+/// and inserts, and it supports no cancellation — so an uncommitted `BEGIN TRANSACTION`
+/// holds its exclusive locks over everything that follows, silently enrols those writes,
+/// and loses them all when the connection drops. `IF @@TRANCOUNT > 0` makes this a no-op
+/// after a balanced BEGIN…COMMIT, so real work is never touched.
+/// Put the session back on the database it connected to, after a `USE` in a query tab.
+///
+/// The driver holds ONE connection behind a mutex and never resets session state — it does
+/// not go through `exec::run_sqlx`, so `touches_session` is never consulted. Browse, edit and
+/// delete all emit two-part names (`[schema].[table]`), which resolve inside the session's
+/// *current* database, so a single `USE OtherDatabase` silently retargeted every later grid
+/// read, cell edit and row delete while the UI still showed the original database.
+///
+/// This is the narrow fix: `SET ANSI_NULLS OFF`, isolation-level changes and other session
+/// settings still persist on the shared connection. A full session reset (or a pool, which is
+/// the real answer) is a larger change than this review should carry.
+async fn restore_database(c: &mut Conn, database: &str) {
+    use futures_util::StreamExt;
+    if database.is_empty() {
+        return;
+    }
+    let sql = format!("USE {}", quote_ident(database));
+    note(&sql);
+    if let Ok(mut s) = c.simple_query(sql).await {
+        while s.next().await.is_some() {}
+    }
+}
+
+async fn rollback_orphan_tx(c: &mut Conn) {
+    use futures_util::StreamExt;
+    const SQL: &str = "IF @@TRANCOUNT > 0 ROLLBACK";
+    note(SQL);
+    if let Ok(mut s) = c.simple_query(SQL).await {
+        while s.next().await.is_some() {}
+    }
+}
+
+/// Words that make a batch more than a plain read. `SET ROWCOUNT` caps DML, procedure calls
+/// and everything else in the batch too, so any of these — outside a string, comment or
+/// quoted identifier — means "don't cap". A false alarm just means reading to the end.
+const NOT_A_PLAIN_SELECT: &[&str] = &[
+    "INTO", "UPDATE", "DELETE", "INSERT", "MERGE", "EXEC", "EXECUTE", "TRUNCATE", "DROP",
+    "ALTER", "CREATE", "SET", "DECLARE", "BEGIN", "END", "COMMIT", "ROLLBACK", "SAVE", "WAITFOR",
+    "GRANT", "REVOKE", "DENY", "USE", "IF", "WHILE", "GOTO", "RETURN", "PRINT", "RAISERROR",
+    "THROW", "BULK", "BACKUP", "RESTORE", "DBCC", "KILL", "OPEN", "FETCH", "CLOSE", "DEALLOCATE",
+    "RECONFIGURE", "CHECKPOINT", "SHUTDOWN", "WRITETEXT", "UPDATETEXT", "ENABLE", "DISABLE",
+];
+
+/// True when `stmt` is only SELECTs: it starts with SELECT and no word in
+/// [`NOT_A_PLAIN_SELECT`] appears outside `'…'`, `"…"`, `[…]`, `--` and (nested) `/* */`.
+/// An unterminated string, identifier or comment is not trusted.
+fn plain_select(stmt: &str) -> bool {
+    if exec::first_keyword(stmt) != "SELECT" {
+        return false;
+    }
+    let b = stmt.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'\'' | b'"' | b'[' => {
+                let close = if b[i] == b'[' { b']' } else { b[i] };
+                i += 1;
+                // `''`, `""` and `]]` escape the closer; scanning past both halves is the same.
+                while i < b.len() && b[i] != close {
+                    i += 1;
+                }
+                if i == b.len() {
+                    return false;
+                }
+                i += 1;
+            }
+            b'-' if b.get(i + 1) == Some(&b'-') => {
+                i = stmt[i..].find('\n').map_or(b.len(), |n| i + n);
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                let mut depth = 0;
+                loop {
+                    if i + 1 >= b.len() {
+                        return false;
+                    }
+                    if b[i] == b'/' && b[i + 1] == b'*' {
+                        depth += 1;
+                        i += 2;
+                    } else if b[i] == b'*' && b[i + 1] == b'/' {
+                        depth -= 1;
+                        i += 2;
+                        if depth == 0 {
+                            break;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            c if c.is_ascii_alphabetic() || c == b'_' || c == b'@' || c == b'#' => {
+                let start = i;
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || matches!(b[i], b'_' | b'@' | b'#' | b'$')) {
+                    i += 1;
+                }
+                let word = stmt[start..i].to_ascii_uppercase();
+                if NOT_A_PLAIN_SELECT.contains(&word.as_str()) {
+                    return false;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    true
+}
+
+/// `SET ROWCOUNT n` on the pinned session (`0` lifts it).
+async fn set_rowcount(c: &mut Conn, n: usize) {
+    use futures_util::StreamExt;
+    let sql = format!("SET ROWCOUNT {n}");
+    note(&sql);
+    if let Ok(mut s) = c.simple_query(sql).await {
+        while s.next().await.is_some() {}
+    }
+}
+
+async fn rowcount(c: &mut Conn) -> Option<u64> {
+    const SQL: &str = "SELECT @@ROWCOUNT";
+    note(SQL);
+    let row = c.simple_query(SQL).await.ok()?.into_row().await.ok()??;
+    row.try_get::<i32, _>(0).ok().flatten().map(|n| n.max(0) as u64)
+}
+
+// ── Structure tab catalog queries (see `SqlDriver::describe_table`) ─────────────────────
+// `@P1` is the quoted, qualified relation name — bound, so no identifier reaches the SQL
+// text. Kept as consts so the unit tests below check the queries actually shipped.
+
+/// `sys.types` carries only the base type name, so the length/precision suffix is rebuilt
+/// here — `max_length` is in **bytes**, which is twice the character count for the N types.
+const STRUCT_COLUMNS_SQL: &str = "\
+SELECT c.name AS name, \
+       t.name + CASE \
+         WHEN t.name IN ('varchar','char','varbinary','binary') \
+           THEN '(' + IIF(c.max_length = -1, 'max', CAST(c.max_length AS varchar(10))) + ')' \
+         WHEN t.name IN ('nvarchar','nchar') \
+           THEN '(' + IIF(c.max_length = -1, 'max', CAST(c.max_length / 2 AS varchar(10))) + ')' \
+         WHEN t.name IN ('decimal','numeric') \
+           THEN '(' + CAST(c.precision AS varchar(10)) + ',' + CAST(c.scale AS varchar(10)) + ')' \
+         ELSE '' END AS data_type, \
+       c.is_nullable AS is_nullable, \
+       d.definition AS default_expr, \
+       CAST(CASE WHEN ic.column_id IS NULL THEN 0 ELSE 1 END AS bit) AS is_pk, \
+       CAST(ep.value AS nvarchar(max)) AS comment \
+FROM sys.columns c \
+JOIN sys.types t ON t.user_type_id = c.user_type_id \
+LEFT JOIN sys.default_constraints d ON d.object_id = c.default_object_id \
+LEFT JOIN sys.extended_properties ep \
+       ON ep.class = 1 AND ep.major_id = c.object_id AND ep.minor_id = c.column_id \
+      AND ep.name = 'MS_Description' \
+LEFT JOIN (sys.indexes pk \
+           JOIN sys.index_columns ic ON ic.object_id = pk.object_id AND ic.index_id = pk.index_id) \
+       ON pk.object_id = c.object_id AND pk.is_primary_key = 1 AND ic.column_id = c.column_id \
+WHERE c.object_id = OBJECT_ID(@P1) \
+ORDER BY c.column_id";
+
+/// One row per index *key* column. INCLUDE columns are not part of the key, and
+/// `index_id = 0` is the heap, so both are excluded.
+const STRUCT_INDEXES_SQL: &str = "\
+SELECT i.name AS name, i.is_unique AS is_unique, i.is_primary_key AS is_primary, \
+       c.name AS column_name \
+FROM sys.indexes i \
+JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id \
+JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id \
+WHERE i.object_id = OBJECT_ID(@P1) AND i.index_id > 0 AND ic.is_included_column = 0 \
+ORDER BY i.is_primary_key DESC, i.name, ic.key_ordinal";
+
+/// One row per trigger *event*, grouped in Rust — `STRING_AGG` would need SQL Server 2017+
+/// and this driver has no live test to prove a version on.
+const STRUCT_TRIGGERS_SQL: &str = "\
+SELECT tr.name AS name, tr.is_instead_of_trigger AS instead_of, te.type_desc AS event_type, \
+       OBJECT_DEFINITION(tr.object_id) AS definition \
+FROM sys.triggers tr \
+JOIN sys.trigger_events te ON te.object_id = tr.object_id \
+WHERE tr.parent_id = OBJECT_ID(@P1) AND tr.is_ms_shipped = 0 \
+ORDER BY tr.name, te.type";
+
 pub struct SqlServerDriver {
-    client: Mutex<Conn>,
-    cursors: StdMutex<HashMap<String, CursorState>>,
+    /// `None` once [`SqlDriver::abandon`]ed: the connection was closed.
+    client: Arc<Mutex<Option<Conn>>>,
+    /// Set by `abandon` before it waits for the lock, so every call already queued on the
+    /// connection fails at once instead of reading the stream the stuck query left half-read.
+    abandoned: Arc<std::sync::atomic::AtomicBool>,
+    /// How this session connected (credentials included, as sqlx's pools keep theirs): only
+    /// [`SqlDriver::abandon`] uses it, to `KILL` a stuck session from a second connection.
+    config: Config,
+    /// This session's `@@SPID`, for that `KILL`, and its `login_time` — checked before the
+    /// `KILL`, since a SPID is reused once its session ends.
+    spid: i16,
+    login_time: Option<std::string::String>,
+    /// The database this session belongs to, read back with `DB_NAME()` at connect (the
+    /// configured name may be empty, meaning "the login's default"). Everything outside the
+    /// query tab — browse, edit, delete — emits two-part names that resolve inside whatever
+    /// database the session is currently on, so a `USE` has to be undone. See
+    /// `run_statements`.
+    database: std::string::String,
+    /// Per table for the browse path (see [`super::MetaCache`]).
+    meta: super::MetaCache<Meta>,
+}
+
+const ABANDONED: &str =
+    "This SQL Server connection was closed after a query ran past its time limit; reconnect to continue.";
+
+/// Open one TDS connection for `config`, bounded by [`CONNECT_TIMEOUT`].
+async fn open(config: &Config) -> DResult<Conn> {
+    let tcp = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(config.get_addr()))
+        .await
+        .map_err(|_| DriverError::Db(format!("connection to {} timed out", config.get_addr())))?
+        .map_err(db)?;
+    tcp.set_nodelay(true).ok();
+    Client::connect(config.clone(), tcp.compat_write()).await.map_err(db)
+}
+
+/// Is the session `KILL` would hit still the one this driver opened? SPIDs are reused, so
+/// the `login_time` recorded at connect must match what the server shows now. Anything
+/// unknown is "no".
+fn same_session(recorded: Option<&str>, observed: Option<&str>) -> bool {
+    matches!((recorded, observed), (Some(a), Some(b)) if a == b)
+}
+
+/// `login_time` as text, stable to compare (ISO 8601 with milliseconds).
+const LOGIN_TIME: &str = "CONVERT(varchar(30), login_time, 126)";
+
+/// How long to wait for the TCP connect before giving up. Without it an unreachable host
+/// hangs on the OS default (~75s on macOS), which the UI reads as a frozen app.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Map the saved `sslmode` to a TDS encryption level plus whether a self-signed certificate
+/// is acceptable. `sslmode` is Postgres' vocabulary, which this app reuses for every engine.
+fn encryption_for(sslmode: &str) -> (EncryptionLevel, bool) {
+    match sslmode {
+        // `Off` still TLS-wraps the login packet (TDS always does), so without `trust_cert`
+        // rustls rejects the self-signed certificate and `disable` cannot connect at all.
+        "disable" => (EncryptionLevel::Off, true),
+        "require" => (EncryptionLevel::Required, true),
+        // Verifying the chain is the whole point of these two, so no `trust_cert`.
+        "verify-ca" | "verify-full" => (EncryptionLevel::Required, false),
+        // `prefer` (the default) and anything unrecognised: encrypt, but accept the
+        // self-signed certificate a stock SQL Server generates at setup.
+        _ => (EncryptionLevel::On, true),
+    }
 }
 
 impl SqlServerDriver {
-    /// Connect using an ADO connection string (built by `ConnConfig::url_with_password`).
-    pub async fn connect(ado: &str) -> DResult<Self> {
-        let config = Config::from_ado_string(ado).map_err(db)?;
-        let tcp = TcpStream::connect(config.get_addr()).await.map_err(db)?;
-        tcp.set_nodelay(true).ok();
-        let client = Client::connect(config, tcp.compat_write()).await.map_err(db)?;
-        Ok(Self { client: Mutex::new(client), cursors: StdMutex::new(HashMap::new()) })
+    /// Connect to `host:port`. The `tiberius::Config` is built from the parts rather than from
+    /// an ADO connection string: ADO has no escaping rule for `;` or `=`, so a password
+    /// containing either silently connected as something else (or not at all).
+    pub async fn connect(
+        host: &str,
+        port: u16,
+        database: &str,
+        username: &str,
+        password: &str,
+        sslmode: &str,
+    ) -> DResult<Self> {
+        let mut config = Config::new();
+        config.host(host);
+        config.port(port);
+        // An empty database means "the login's default database", which is what SSMS does.
+        if !database.is_empty() {
+            config.database(database);
+        }
+        config.authentication(AuthMethod::sql_server(username, password));
+        let (level, trust) = encryption_for(sslmode);
+        config.encryption(level);
+        if trust {
+            config.trust_cert();
+        }
+        let mut client = open(&config).await?;
+        // Ask the server rather than trusting `database`: it may be empty (the login's default).
+        let row = client
+            .simple_query(format!(
+                "SELECT DB_NAME(), @@SPID, (SELECT {LOGIN_TIME} FROM sys.dm_exec_sessions WHERE session_id = @@SPID)"
+            ))
+            .await
+            .map_err(db)?
+            .into_row()
+            .await
+            .map_err(db)?;
+        let database = row
+            .as_ref()
+            .and_then(|r| r.try_get::<&str, _>(0).ok().flatten())
+            .unwrap_or_default()
+            .to_string();
+        let spid = row.as_ref().and_then(|r| r.try_get::<i16, _>(1).ok().flatten()).unwrap_or(0);
+        let login_time =
+            row.as_ref().and_then(|r| r.try_get::<&str, _>(2).ok().flatten()).map(str::to_string);
+        Ok(Self {
+            client: Arc::new(Mutex::new(Some(client))),
+            abandoned: Default::default(),
+            config,
+            spid,
+            login_time,
+            database,
+            meta: Default::default(),
+        })
     }
 
-    /// Run `sql` and return (column names, column-major stringified data).
+    /// The pinned connection, or an error once it has been abandoned.
+    async fn lock(&self) -> DResult<tokio::sync::MappedMutexGuard<'_, Conn>> {
+        let guard = self.client.lock().await;
+        if self.abandoned.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(DriverError::Db(ABANDONED.into()));
+        }
+        tokio::sync::MutexGuard::try_map(guard, Option::as_mut).map_err(|_| DriverError::Db(ABANDONED.into()))
+    }
+
+    /// Cached `(columns, pk)` for the browse path. A missing relation is an error and is
+    /// not cached.
+    async fn browse_meta(&self, schema: &str, table: &str) -> DResult<Meta> {
+        if let Some(m) = self.meta.get(schema, table) {
+            return Ok(m);
+        }
+        let typed = self.columns_of(schema, table).await?;
+        if typed.is_empty() {
+            return Err(DriverError::Db(format!("no such table {schema}.{table}")));
+        }
+        let cols = typed.iter().map(|(c, _)| c.clone()).collect();
+        let pk = self.primary_key(schema, table).await?;
+        let m = std::sync::Arc::new((cols, pk, typed.into_iter().collect()));
+        self.meta.put(schema, table, m.clone());
+        Ok(m)
+    }
+
+    /// Ordered `(column, DATA_TYPE)` for one relation (empty ⇒ no such relation), used to
+    /// validate a requested sort column before it reaches the SQL text.
+    async fn columns_of(
+        &self,
+        schema: &str,
+        table: &str,
+    ) -> DResult<Vec<(std::string::String, std::string::String)>> {
+        let mut c = self.lock().await?;
+        let q = "SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS \
+                 WHERE TABLE_SCHEMA = @P1 AND TABLE_NAME = @P2 ORDER BY ORDINAL_POSITION";
+        note(q);
+        let rows = c
+            .query(q, &[&schema, &table])
+            .await
+            .map_err(db)?
+            .into_first_result()
+            .await
+            .map_err(db)?;
+        let mut cols = Vec::with_capacity(rows.len());
+        for r in &rows {
+            if let (Some(n), Some(t)) = (text(r, "COLUMN_NAME")?, text(r, "DATA_TYPE")?) {
+                cols.push((n, t));
+            }
+        }
+        Ok(cols)
+    }
+
+    /// Run `sql` and return (column names, **column-major** stringified data — `data[col][row]`).
+    /// Rows are stringified as they arrive off the wire, so the `Vec<Row>` that
+    /// `into_first_result` would build never exists alongside the text.
     async fn query_text(&self, sql: &str) -> DResult<(Vec<std::string::String>, Vec<Vec<Option<std::string::String>>>)> {
-        let mut c = self.client.lock().await;
-        let rows = c.simple_query(sql).await.map_err(db)?.into_first_result().await.map_err(db)?;
+        use futures_util::StreamExt;
+        use tiberius::QueryItem;
+        let mut c = self.lock().await?;
+        note(sql);
+        let mut stream = c.simple_query(sql).await.map_err(db)?;
         let mut columns: Vec<std::string::String> = Vec::new();
         let mut data: Vec<Vec<Option<std::string::String>>> = Vec::new();
-        for (ri, row) in rows.iter().enumerate() {
-            if ri == 0 {
-                columns = row.columns().iter().map(|col| col.name().to_string()).collect();
-                data = vec![Vec::new(); columns.len()];
-            }
-            for (ci, (_col, cd)) in row.cells().enumerate() {
-                data[ci].push(cell_to_string(cd));
+        while let Some(item) = stream.next().await {
+            match item.map_err(db)? {
+                QueryItem::Metadata(meta) if meta.result_index() == 0 => {
+                    columns = meta.columns().iter().map(|col| col.name().to_string()).collect();
+                    data = vec![Vec::new(); columns.len()];
+                }
+                QueryItem::Row(row) if row.result_index() == 0 => {
+                    for (ci, (_col, cd)) in row.cells().enumerate() {
+                        data[ci].push(cell_to_string(cd));
+                    }
+                }
+                // A helper query only ever reads its first result set.
+                _ => {}
             }
         }
         Ok((columns, data))
     }
+}
+
+/// Transpose `query_text`'s column-major `(name, rows, bytes)` result into one [`TableStat`]
+/// per row. Each cell is `query_text`'s own stringified form, parsed back to `i64`; column 0
+/// is the table name, column 1 the row count, column 2 the bytes (absent, or `NULL`, in the
+/// `sys.partitions` fallback).
+fn stats_from_columns(cols: &[Vec<Option<std::string::String>>]) -> Vec<TableStat> {
+    let names = match cols.first() {
+        Some(c) => c,
+        None => return Vec::new(),
+    };
+    let parse = |col: Option<&Vec<Option<std::string::String>>>, i: usize| {
+        col.and_then(|c| c.get(i)).and_then(|o| o.as_deref()).and_then(|s| s.parse::<i64>().ok())
+    };
+    names
+        .iter()
+        .enumerate()
+        .filter_map(|(i, name)| {
+            Some(TableStat {
+                name: name.clone()?,
+                rows: parse(cols.get(1), i),
+                bytes: parse(cols.get(2), i),
+            })
+        })
+        .collect()
 }
 
 /// Build an all-Utf8 batch from column-major string data. An empty result (e.g. end-of-cursor)
@@ -108,44 +585,174 @@ fn to_batch(columns: &[std::string::String], data: &[Vec<Option<std::string::Str
 
 #[async_trait]
 impl SqlDriver for SqlServerDriver {
-    async fn open_cursor(&self, sql: &str, _page_size: usize) -> DResult<CursorId> {
-        let id = format!(
-            "mssql-cur-{:x}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        );
-        self.cursors
-            .lock()
-            .unwrap()
-            .insert(id.clone(), CursorState { sql: sql.to_string(), offset: 0 });
-        Ok(CursorId(id))
+    /// Fail every queued and later call at once, then close the TCP connection (dropping
+    /// the client) as soon as the lock is free — which ends and rolls back the server-side
+    /// session. The caller's task holding the lock mid-query must be aborted for that.
+    fn database(&self) -> Option<std::string::String> {
+        Some(self.database.clone())
     }
 
-    async fn fetch_next(&self, cursor: &CursorId, n: usize) -> DResult<RecordBatch> {
-        let (sql, offset) = {
-            let map = self.cursors.lock().unwrap();
-            let s = map.get(&cursor.0).ok_or_else(|| DriverError::Db("unknown cursor".into()))?;
-            (s.sql.clone(), s.offset)
-        };
-        // Stable paging over an arbitrary query via OFFSET/FETCH (requires an ORDER BY).
-        let q = format!(
-            "SELECT * FROM ({sql}) AS _q ORDER BY (SELECT NULL) OFFSET {offset} ROWS FETCH NEXT {n} ROWS ONLY"
-        );
-        let (cols, d) = self.query_text(&q).await?;
-        let got = d.first().map(|c| c.len()).unwrap_or(0);
-        if got > 0 {
-            if let Some(s) = self.cursors.lock().unwrap().get_mut(&cursor.0) {
-                s.offset += got;
+    fn abandon(&self) {
+        self.abandoned.store(true, std::sync::atomic::Ordering::SeqCst);
+        let (client, config, spid) = (self.client.clone(), self.config.clone(), self.spid);
+        let login_time = self.login_time.clone();
+        tokio::spawn(async move {
+            // SQL Server notices a closed connection only when it next writes to it, so a
+            // long query would run on. KILL ends it (and rolls it back) at once — where the
+            // login may (ALTER ANY CONNECTION); otherwise it ends with its query. Only if the
+            // SPID is still this session: once it ends, the number goes to someone else.
+            if spid > 0 {
+                if let Ok(mut side) = open(&config).await {
+                    let check = format!("SELECT {LOGIN_TIME} FROM sys.dm_exec_sessions WHERE session_id = {spid}");
+                    let now = match side.simple_query(check).await {
+                        Ok(s) => s.into_row().await.ok().flatten(),
+                        Err(_) => None,
+                    };
+                    let now = now.as_ref().and_then(|r| r.try_get::<&str, _>(0).ok().flatten());
+                    if same_session(login_time.as_deref(), now) {
+                        let sql = format!("KILL {spid}");
+                        note(&sql);
+                        let _ = side.simple_query(sql).await;
+                    }
+                }
+            }
+            drop(client.lock().await.take());
+        });
+    }
+
+    /// One `simple_query` batch per statement, streamed: rows past `cap` are counted but never
+    /// materialised. tiberius only surfaces a server error at the *end* of the response, so the
+    /// stream is always drained to the end — which is also what leaves the connection clean.
+    ///
+    /// Draining a `SELECT * FROM` a trillion-row table never ends, so a plain SELECT runs under
+    /// `SET ROWCOUNT cap + 1`: the server itself stops one row past the cap, and the total is
+    /// reported unknown. Only a batch that is nothing but SELECTs ([`plain_select`]) — T-SQL
+    /// functions cannot write, so it has nothing to lose by stopping; `SET ROWCOUNT` would also
+    /// cap an UPDATE on the next line — and the limit is lifted before anything else runs.
+    async fn run_statements(
+        &self,
+        stmts: &[String],
+        cap: usize,
+        token: &CancelToken,
+    ) -> DResult<Vec<StmtOutput>> {
+        use futures_util::StreamExt;
+        use tiberius::QueryItem;
+
+        // One pinned connection, so BEGIN/…/COMMIT across statements lands on the same session.
+        let mut c = self.lock().await?;
+        // "Running now": a caller timing out can tell a query that holds the connection (and
+        // has to be abandoned) from one still queued (which can just stop waiting). Recorded,
+        // then the flag checked — the `CancelToken` protocol — so a cancel landing while this
+        // was queued stops it before it touches the connection.
+        token.set_backend_id(i64::from(self.spid));
+        if token.is_cancelled() {
+            return Err(DriverError::Cancelled);
+        }
+        let mut outs = Vec::with_capacity(stmts.len());
+        for stmt in stmts {
+            let start = std::time::Instant::now();
+            let (mut names, mut types): (Vec<std::string::String>, Vec<std::string::String>) =
+                (Vec::new(), Vec::new());
+            let mut rows: Vec<Vec<Option<std::string::String>>> = Vec::new();
+            let mut total: u64 = 0;
+            let mut failed: Option<tiberius::error::Error> = None;
+            let limit = cap < i32::MAX as usize && plain_select(stmt);
+            if limit {
+                set_rowcount(&mut c, cap + 1).await;
+            }
+
+            note(stmt);
+            match c.simple_query(stmt.as_str()).await {
+                // An error before any metadata is raised by `simple_query` itself.
+                Err(e) => failed = Some(e),
+                Ok(mut stream) => {
+                    while let Some(item) = stream.next().await {
+                        match item {
+                            Ok(QueryItem::Metadata(meta)) if meta.result_index() == 0 => {
+                                for col in meta.columns() {
+                                    names.push(col.name().to_string());
+                                    // tiberius exposes the TDS type category only — there is no
+                                    // declared `nvarchar(50)` in the result metadata.
+                                    types.push(format!("{:?}", col.column_type()));
+                                }
+                                names = exec::dedup_names(&names);
+                            }
+                            Ok(QueryItem::Row(row)) if row.result_index() == 0 => {
+                                total += 1;
+                                // Past the cap the row is still consumed, only the decode is skipped.
+                                if rows.len() < cap {
+                                    rows.push(row.cells().map(|(_, cd)| cell_to_string(cd)).collect());
+                                }
+                            }
+                            // ponytail: only a statement's first result set is shown; a second
+                            // one (a stored procedure returning several) is drained and dropped.
+                            // Upgrade path: one StmtOutput per result set.
+                            Ok(_) => {}
+                            Err(e) => {
+                                failed = Some(e);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            let exec_ms = start.elapsed().as_millis() as u64;
+            if limit {
+                set_rowcount(&mut c, 0).await;
+            }
+            if let Some(e) = failed {
+                // The pinned session outlives the failed batch, so an aborted transaction would
+                // otherwise hold its locks over every statement that follows it.
+                rollback_orphan_tx(&mut c).await;
+                outs.push(StmtOutput {
+                    exec_ms,
+                    error: Some(stmt_error(&e)),
+                    ..Default::default()
+                });
+                break;
+            }
+            // ponytail: tiberius' QueryStream drops the DONE tokens that carry the row count, so
+            // it takes a second round-trip. Upgrade path: a tiberius API that surfaces DONE.
+            // A statement with a result set reports its rows through `row_count` instead —
+            // surfacing @@ROWCOUNT there would have the UI claim `SELECT 1` affected a row.
+            let rows_affected = if names.is_empty() { rowcount(&mut c).await } else { None };
+            outs.push(StmtOutput {
+                rows_affected,
+                batch: if names.is_empty() { None } else { Some(exec::text_batch(&names, &rows)?) },
+                columns: names.into_iter().zip(types).collect(),
+                row_count: rows.len(),
+                total_rows: (!limit || total <= cap as u64).then_some(total),
+                truncated: total > rows.len() as u64,
+                exec_ms,
+                error: None,
+                notice: None,
+            });
+        }
+        // Session state this batch left behind on the shared connection. Slice to the
+        // statements that actually ran, exactly as `run_sqlx` does.
+        let ran = &stmts[..outs.len()];
+        let mut notices: Vec<std::string::String> = Vec::new();
+        // A batch that opened a transaction and never closed it reported plain success while
+        // the transaction stayed open on the shared connection. Postgres and MySQL get this
+        // from `exec::run_sqlx`; the pinned tiberius session needs it done here.
+        if exec::left_open(ran) {
+            rollback_orphan_tx(&mut c).await;
+            notices.push("Transaction was not committed and has been rolled back".into());
+        }
+        // …and a `USE` would have retargeted the grid. See `restore_database`.
+        if ran.iter().any(|s| exec::first_keyword(s) == "USE") {
+            restore_database(&mut c, &self.database).await;
+            notices.push(format!(
+                "Switched back to database {} — this connection also serves the table grid",
+                self.database
+            ));
+        }
+        if !notices.is_empty() {
+            if let Some(last) = outs.last_mut() {
+                last.notice = Some(notices.join(". "));
             }
         }
-        to_batch(&cols, &d)
-    }
-
-    async fn close_cursor(&self, cursor: &CursorId) -> DResult<()> {
-        self.cursors.lock().unwrap().remove(&cursor.0);
-        Ok(())
+        Ok(outs)
     }
 
     async fn introspect(&self) -> DResult<SchemaModel> {
@@ -155,16 +762,31 @@ impl SqlDriver for SqlServerDriver {
                  ORDER BY TABLE_SCHEMA, TABLE_NAME",
             )
             .await?;
+        // LEFT JOIN through the PK constraint so a non-key column still yields its row.
         let (_, col) = self
             .query_text(
-                "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE, IS_NULLABLE \
-                 FROM INFORMATION_SCHEMA.COLUMNS ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION",
+                "SELECT c.TABLE_SCHEMA, c.TABLE_NAME, c.COLUMN_NAME, c.DATA_TYPE, c.IS_NULLABLE, \
+                        CASE WHEN k.COLUMN_NAME IS NULL THEN 0 ELSE 1 END AS IS_PK \
+                 FROM INFORMATION_SCHEMA.COLUMNS c \
+                 LEFT JOIN (INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc \
+                            JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE k \
+                              ON k.CONSTRAINT_NAME = tc.CONSTRAINT_NAME \
+                             AND k.TABLE_SCHEMA = tc.TABLE_SCHEMA \
+                             AND tc.CONSTRAINT_TYPE = 'PRIMARY KEY') \
+                   ON k.TABLE_SCHEMA = c.TABLE_SCHEMA AND k.TABLE_NAME = c.TABLE_NAME \
+                  AND k.COLUMN_NAME = c.COLUMN_NAME \
+                 ORDER BY c.TABLE_SCHEMA, c.TABLE_NAME, c.ORDINAL_POSITION",
             )
             .await?;
 
-        use std::collections::BTreeMap;
-        let mut schemas: BTreeMap<std::string::String, Vec<ObjectInfo>> = BTreeMap::new();
+        let mut schemas: Vec<SchemaInfo> = Vec::new();
+        // (schema | schema+object) -> index, so attaching a column is O(1).
+        let mut schema_ix: HashMap<std::string::String, usize> = HashMap::new();
+        let mut object_ix: HashMap<(std::string::String, std::string::String), usize> =
+            HashMap::new();
         let tn = t.first().map(|c| c.len()).unwrap_or(0);
+        // `t` is column-major: one index addresses three parallel vectors, not one slice.
+        #[allow(clippy::needless_range_loop)]
         for i in 0..tn {
             let schema = t[0][i].clone().unwrap_or_default();
             let name = t[1][i].clone().unwrap_or_default();
@@ -173,84 +795,144 @@ impl SqlDriver for SqlServerDriver {
             } else {
                 ObjectKind::Table
             };
-            schemas.entry(schema).or_default().push(ObjectInfo { name, kind, columns: vec![] });
+            let si = *schema_ix.entry(schema.clone()).or_insert_with(|| {
+                schemas.push(SchemaInfo { name: schema.clone(), objects: Vec::new() });
+                schemas.len() - 1
+            });
+            object_ix.insert((schema, name.clone()), schemas[si].objects.len());
+            schemas[si].objects.push(ObjectInfo { name, kind, columns: vec![] });
         }
         let cn = col.first().map(|c| c.len()).unwrap_or(0);
+        #[allow(clippy::needless_range_loop)] // column-major, as above
         for i in 0..cn {
             let schema = col[0][i].clone().unwrap_or_default();
             let table = col[1][i].clone().unwrap_or_default();
-            if let Some(list) = schemas.get_mut(&schema) {
-                if let Some(o) = list.iter_mut().find(|o| o.name == table) {
-                    o.columns.push(ColumnInfo {
-                        name: col[2][i].clone().unwrap_or_default(),
-                        data_type: col[3][i].clone().unwrap_or_default(),
-                        nullable: col[4][i].as_deref() == Some("YES"),
-                    });
-                }
-            }
+            let (Some(&si), Some(&oi)) = (
+                schema_ix.get(&schema),
+                object_ix.get(&(schema.clone(), table.clone())),
+            ) else {
+                continue;
+            };
+            schemas[si].objects[oi].columns.push(ColumnInfo {
+                name: col[2][i].clone().unwrap_or_default(),
+                data_type: col[3][i].clone().unwrap_or_default(),
+                nullable: col[4][i].as_deref() == Some("YES"),
+                pk: col[5][i].as_deref() == Some("1"),
+            });
         }
-        Ok(SchemaModel {
-            schemas: schemas.into_iter().map(|(name, objects)| SchemaInfo { name, objects }).collect(),
-        })
+        Ok(SchemaModel { schemas })
     }
 
-    async fn row_estimate(&self, schema: &str, table: &str) -> DResult<i64> {
+    /// An unfiltered table reports its [`SqlDriver::estimate_rows`] at any size — it is
+    /// the maintained count — unless `force_exact`; a view (or any filter) needs the exact
+    /// count. There is no server-side cancel for this engine, so the token goes unused.
+    async fn count_rows(
+        &self,
+        schema: &str,
+        table: &str,
+        filters: &[ColumnFilter],
+        force_exact: Option<&CancelToken>,
+    ) -> DResult<RowCount> {
+        if filters.is_empty() && force_exact.is_none() {
+            if let Some(n) = self.estimate_rows(schema, table).await? {
+                return Ok(RowCount { count: Some(n), exact: false });
+            }
+        }
+        let meta = self.browse_meta(schema, table).await?;
+        let text_expr = |c: &str| mssql_text_expr(c, meta.2.get(c).map(|t| t.as_str()));
+        let (where_sql, binds) =
+            build_where_clause(filters, &meta.0, &quote_ident, &mssql_placeholder, &text_expr, 1);
+        let q = format!(
+            "SELECT COUNT_BIG(*) AS n FROM {}.{}{}",
+            quote_ident(schema),
+            quote_ident(table),
+            if where_sql.is_empty() { std::string::String::new() } else { format!(" WHERE {where_sql}") },
+        );
+        let owned: Vec<Option<std::string::String>> = binds.to_vec();
+        let params: Vec<&dyn tiberius::ToSql> =
+            owned.iter().map(|o| o as &dyn tiberius::ToSql).collect();
+        let mut c = self.lock().await?;
+        note(&q);
+        let rows = c
+            .query(q, &params)
+            .await
+            .map_err(db)?
+            .into_first_result()
+            .await
+            .map_err(db)?;
+        let n = match rows.first() {
+            Some(r) => r.try_get::<i64, _>(0).map_err(db)?.unwrap_or(0),
+            None => 0,
+        };
+        Ok(RowCount { count: Some(n.max(0)), exact: true })
+    }
+
+    /// `sys.partitions` is an O(1) read of the maintained row count, but it is only an
+    /// estimate and only exists for a real table.
+    async fn estimate_rows(&self, schema: &str, table: &str) -> DResult<Option<i64>> {
         let q = format!(
             "SELECT SUM(p.rows) AS n FROM sys.partitions p \
-             JOIN sys.tables t ON p.object_id = t.object_id \
-             JOIN sys.schemas s ON t.schema_id = s.schema_id \
-             WHERE s.name = '{}' AND t.name = '{}' AND p.index_id IN (0,1)",
+             JOIN sys.objects o ON p.object_id = o.object_id \
+             JOIN sys.schemas s ON o.schema_id = s.schema_id \
+             WHERE o.type = 'U' AND s.name = '{}' AND o.name = '{}' AND p.index_id IN (0,1)",
             schema.replace('\'', "''"),
             table.replace('\'', "''")
         );
         let (_, d) = self.query_text(&q).await?;
-        let est = d
-            .first()
+        Ok(d.first()
             .and_then(|c| c.first())
             .and_then(|o| o.as_ref())
             .and_then(|s| s.parse::<i64>().ok())
-            .unwrap_or(0);
-        Ok(est.max(0))
+            .map(|n| n.max(0)))
     }
 
-    async fn open_window(&self, schema: &str, table: &str, offset: usize, len: usize) -> DResult<RecordBatch> {
-        let q = format!(
-            "SELECT * FROM {}.{} ORDER BY (SELECT NULL) OFFSET {} ROWS FETCH NEXT {} ROWS ONLY",
-            quote_ident(schema),
-            quote_ident(table),
-            offset,
-            len
+    /// Every base table in `schema` with its maintained row count and reserved bytes from
+    /// `sys.dm_db_partition_stats`. A least-privilege login can't read that DMV (it needs
+    /// VIEW DATABASE STATE), so on error this falls back to `sys.partitions` — the same
+    /// view [`SqlDriver::estimate_rows`] uses — with `bytes: None`.
+    async fn table_stats(&self, schema: &str) -> DResult<Vec<TableStat>> {
+        let s = schema.replace('\'', "''");
+        let full = format!(
+            "SELECT o.name, SUM(CASE WHEN ps.index_id IN (0,1) THEN ps.row_count ELSE 0 END), \
+                    SUM(ps.reserved_page_count) * 8192 \
+             FROM sys.dm_db_partition_stats ps JOIN sys.objects o ON ps.object_id = o.object_id \
+             JOIN sys.schemas s ON o.schema_id = s.schema_id \
+             WHERE o.type = 'U' AND s.name = '{s}' GROUP BY o.name"
         );
-        let (cols, d) = self.query_text(&q).await?;
-        to_batch(&cols, &d)
-    }
-
-    async fn run_query(&self, sql: &str, cap: usize) -> DResult<QueryResult> {
-        let start = std::time::Instant::now();
-        let (cols, mut d) = self.query_text(sql).await?;
-        let nrows = d.first().map(|c| c.len()).unwrap_or(0);
-        let truncated = nrows > cap;
-        if truncated {
-            for c in d.iter_mut() {
-                c.truncate(cap);
-            }
-        }
-        let batch = to_batch(&cols, &d)?;
-        Ok(QueryResult { batch, truncated, exec_ms: start.elapsed().as_millis() as u64 })
+        let rows_only = format!(
+            "SELECT o.name, SUM(p.rows), NULL FROM sys.partitions p \
+             JOIN sys.objects o ON p.object_id = o.object_id JOIN sys.schemas s ON o.schema_id = s.schema_id \
+             WHERE o.type = 'U' AND s.name = '{s}' AND p.index_id IN (0,1) GROUP BY o.name"
+        );
+        let (_, cols) = match self.query_text(&full).await {
+            Ok(r) => r,
+            Err(_) => self.query_text(&rows_only).await?, // VIEW DATABASE STATE missing
+        };
+        Ok(stats_from_columns(&cols))
     }
 
     async fn primary_key(&self, schema: &str, table: &str) -> DResult<Vec<std::string::String>> {
-        let mut c = self.client.lock().await;
+        let mut c = self.lock().await?;
         let q = "SELECT kcu.COLUMN_NAME FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc \
                  JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu \
                    ON tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME AND tc.TABLE_SCHEMA = kcu.TABLE_SCHEMA \
                  WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY' AND tc.TABLE_SCHEMA = @P1 AND tc.TABLE_NAME = @P2 \
                  ORDER BY kcu.ORDINAL_POSITION";
+        note(q);
         let rows = c.query(q, &[&schema, &table]).await.map_err(db)?.into_first_result().await.map_err(db)?;
-        Ok(rows.iter().filter_map(|r| r.get::<&str, _>(0).map(|s| s.to_string())).collect())
+        let mut pk = Vec::with_capacity(rows.len());
+        for r in &rows {
+            if let Some(n) = r.try_get::<&str, _>(0).map_err(db)? {
+                pk.push(n.to_string());
+            }
+        }
+        Ok(pk)
     }
 
     async fn apply_edit(&self, schema: &str, table: &str, edit: &EditSpec) -> DResult<u64> {
+        if edit.pk.is_empty() {
+            return Err(DriverError::Db("cannot edit without a primary key".into()));
+        }
         // Optimistic-concurrency UPDATE: SET col = @P1 WHERE pk = … AND null-safe(col, orig).
         // SQL Server has no IS NOT DISTINCT FROM, so use the (= OR both-NULL) idiom.
         let col = quote_ident(&edit.column);
@@ -279,15 +961,61 @@ impl SqlDriver for SqlServerDriver {
         owned.push(edit.orig_value.clone());
         let params: Vec<&dyn tiberius::ToSql> = owned.iter().map(|o| o as &dyn tiberius::ToSql).collect();
 
-        let mut c = self.client.lock().await;
+        let mut c = self.lock().await?;
+        note(&sql);
         let res = c.execute(sql, &params).await.map_err(db)?;
         Ok(res.total())
     }
 
-    async fn run_script(&self, sql: &str) -> DResult<u64> {
-        let mut c = self.client.lock().await;
-        let res = c.execute(sql, &[]).await.map_err(db)?;
+    async fn delete_row(
+        &self,
+        schema: &str,
+        table: &str,
+        pk: &[(String, Option<String>)],
+    ) -> DResult<u64> {
+        if pk.is_empty() {
+            return Err(DriverError::Db("cannot delete without a primary key".into()));
+        }
+        // SQL Server has no IS NOT DISTINCT FROM; use the null-safe (= OR both-NULL) idiom.
+        let mut p = 1;
+        let wheres: Vec<std::string::String> = pk
+            .iter()
+            .map(|(name, _)| {
+                let col = quote_ident(name);
+                let w = format!("({col} = @P{p} OR ({col} IS NULL AND @P{p} IS NULL))");
+                p += 1;
+                w
+            })
+            .collect();
+        let sql = format!(
+            "DELETE FROM {}.{} WHERE {}",
+            quote_ident(schema),
+            quote_ident(table),
+            wheres.join(" AND ")
+        );
+        let owned: Vec<Option<std::string::String>> = pk.iter().map(|(_, v)| v.clone()).collect();
+        let params: Vec<&dyn tiberius::ToSql> =
+            owned.iter().map(|o| o as &dyn tiberius::ToSql).collect();
+        let mut c = self.lock().await?;
+        note(&sql);
+        let res = c.execute(sql, &params).await.map_err(db)?;
         Ok(res.total())
+    }
+
+    fn forget_meta(&self) {
+        self.meta.clear();
+    }
+
+    async fn run_script(&self, sql: &str) -> DResult<u64> {
+        let mut c = self.lock().await?;
+        note(sql);
+        let res = c.execute(sql, &[]).await;
+        // Same shared connection, same hazard — and a script that dies midway leaks its
+        // transaction just as a successful one does, so probe either way. There is no
+        // statement splitter here to hand `exec::left_open`, and `IF @@TRANCOUNT > 0` is
+        // one cheap round trip next to holding exclusive locks over the whole app.
+        rollback_orphan_tx(&mut c).await;
+        Ok(res.map_err(db)?.total())
     }
 
     async fn open_window_filtered(
@@ -297,25 +1025,41 @@ impl SqlDriver for SqlServerDriver {
         offset: usize,
         len: usize,
         filters: &[ColumnFilter],
+        order: &[SortKey],
+        after: Option<&[Option<String>]>,
     ) -> DResult<RecordBatch> {
-        if filters.is_empty() {
-            return self.open_window(schema, table, offset, len).await;
-        }
+        let meta = self.browse_meta(schema, table).await?;
+        let (cols, pk) = (&meta.0, &meta.1);
+        // OFFSET/FETCH is only legal after an ORDER BY, so a table with neither a sort
+        // nor a PK falls back to the no-op `(SELECT NULL)`.
+        let order_sql = match build_order_by(order, pk, cols, &quote_ident)?.as_str() {
+            "" => " ORDER BY (SELECT NULL)".to_string(),
+            s => s.to_string(),
+        };
         // Tiberius uses @P1, @P2, … in declared order; we bind text values.
-        let (where_sql, binds) =
-            build_where_clause(filters, &quote_ident, &|i| format!("@P{i}"), 1);
+        let text_expr = |c: &str| mssql_text_expr(c, meta.2.get(c).map(|t| t.as_str()));
+        let (mut where_sql, mut binds) =
+            build_where_clause(filters, cols, &quote_ident, &mssql_placeholder, &text_expr, 1);
+        let mut offset = offset;
+        let seek_ok = pk.iter().all(|c| meta.2.get(c).is_some_and(|t| seekable(t)));
+        if let Some((k, kb)) = after.filter(|_| seek_ok).and_then(|a| {
+            build_keyset(order, pk, a, &quote_ident, &mssql_placeholder, binds.len() + 1, true)
+        }) {
+            where_sql = if where_sql.is_empty() { k } else { format!("{where_sql} AND {k}") };
+            binds.extend(kb);
+            offset = 0;
+        }
         let q = format!(
-            "SELECT * FROM {}.{} WHERE {} ORDER BY (SELECT NULL) OFFSET {} ROWS FETCH NEXT {} ROWS ONLY",
+            "SELECT * FROM {}.{} AS _t{}{order_sql} OFFSET {offset} ROWS FETCH NEXT {len} ROWS ONLY",
             quote_ident(schema),
             quote_ident(table),
-            where_sql,
-            offset,
-            len
+            if where_sql.is_empty() { std::string::String::new() } else { format!(" WHERE {where_sql}") },
         );
-        let owned: Vec<Option<std::string::String>> = binds.iter().cloned().collect();
+        let owned: Vec<Option<std::string::String>> = binds.to_vec();
         let params: Vec<&dyn tiberius::ToSql> =
             owned.iter().map(|o| o as &dyn tiberius::ToSql).collect();
-        let mut c = self.client.lock().await;
+        let mut c = self.lock().await?;
+        note(&q);
         let rows = c
             .query(q, &params)
             .await
@@ -339,87 +1083,155 @@ impl SqlDriver for SqlServerDriver {
         to_batch(&columns, &data)
     }
 
-    async fn row_estimate_filtered(
-        &self,
-        schema: &str,
-        table: &str,
-        filters: &[ColumnFilter],
-    ) -> DResult<i64> {
-        if filters.is_empty() {
-            return self.row_estimate(schema, table).await;
-        }
-        let (where_sql, binds) =
-            build_where_clause(filters, &quote_ident, &|i| format!("@P{i}"), 1);
-        let q = format!(
-            "SELECT COUNT_BIG(*) AS n FROM {}.{} WHERE {}",
-            quote_ident(schema),
-            quote_ident(table),
-            where_sql
-        );
-        let owned: Vec<Option<std::string::String>> = binds.iter().cloned().collect();
-        let params: Vec<&dyn tiberius::ToSql> =
-            owned.iter().map(|o| o as &dyn tiberius::ToSql).collect();
-        let mut c = self.client.lock().await;
-        let rows = c
-            .query(q, &params)
-            .await
-            .map_err(db)?
-            .into_first_result()
-            .await
-            .map_err(db)?;
-        let n = rows
-            .first()
-            .and_then(|r| r.get::<i64, _>(0))
-            .unwrap_or(0);
-        Ok(n.max(0))
-    }
-
     async fn insert_row(
         &self,
         schema: &str,
         table: &str,
         values: &[(String, Option<String>)],
     ) -> DResult<u64> {
-        if values.is_empty() {
-            return Err(DriverError::Db("no columns to insert".into()));
-        }
-        let (sql, binds) = build_insert_sql(
-            schema,
-            table,
-            values,
-            &quote_ident,
-            &|i| format!("@P{i}"),
-            true,
-        );
-        let owned: Vec<Option<std::string::String>> = binds.iter().cloned().collect();
+        let (sql, binds) =
+            build_insert_sql(schema, table, values, &quote_ident, &mssql_placeholder, true);
+        let owned: Vec<Option<std::string::String>> = binds.to_vec();
         let params: Vec<&dyn tiberius::ToSql> =
             owned.iter().map(|o| o as &dyn tiberius::ToSql).collect();
-        let mut c = self.client.lock().await;
+        let mut c = self.lock().await?;
+        note(&sql);
         let res = c.execute(sql, &params).await.map_err(db)?;
         Ok(res.total())
     }
 
-    /// FK edges via the `sys.foreign_keys` catalog (joined for column + table names).
+    /// FK edges via the `sys.foreign_keys` catalog (joined for column + table names),
+    /// ordered by constraint then `constraint_column_id` so a composite key's pairs
+    /// arrive in key order.
     /// All metadata returned as Utf8 strings, matching how the rest of the driver renders.
     async fn foreign_keys(&self) -> DResult<Vec<ForeignKey>> {
-        let sql = "SELECT tp.name AS from_table, cp.name AS from_column, \
-                          tr.name AS to_table,   cr.name AS to_column \
+        let sql = "SELECT fk.name AS constraint_name, \
+                          sp.name AS from_schema, tp.name AS from_table, cp.name AS from_column, \
+                          sr.name AS to_schema,   tr.name AS to_table,   cr.name AS to_column \
                    FROM sys.foreign_keys fk \
                    JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id \
                    JOIN sys.tables  tp ON fkc.parent_object_id     = tp.object_id \
+                   JOIN sys.schemas sp ON tp.schema_id             = sp.schema_id \
                    JOIN sys.columns cp ON fkc.parent_object_id     = cp.object_id AND fkc.parent_column_id     = cp.column_id \
                    JOIN sys.tables  tr ON fkc.referenced_object_id = tr.object_id \
-                   JOIN sys.columns cr ON fkc.referenced_object_id = cr.object_id AND fkc.referenced_column_id = cr.column_id";
-        let (_cols, rows) = self.query_text(sql).await?;
-        Ok(rows
-            .into_iter()
-            .map(|r| ForeignKey {
-                from_table: r[0].clone().unwrap_or_default(),
-                from_column: r[1].clone().unwrap_or_default(),
-                to_table: r[2].clone().unwrap_or_default(),
-                to_column: r[3].clone().unwrap_or_default(),
+                   JOIN sys.schemas sr ON tr.schema_id             = sr.schema_id \
+                   JOIN sys.columns cr ON fkc.referenced_object_id = cr.object_id AND fkc.referenced_column_id = cr.column_id \
+                   ORDER BY sp.name, tp.name, fk.name, fkc.constraint_column_id";
+        // `query_text` hands back **column-major** data (`data[col][row]`), so walk the rows
+        // by index. Reading it row-major built one bogus edge per result *column*, and panicked
+        // outright whenever the FK count was under the column count.
+        let (_cols, data) = self.query_text(sql).await?;
+        let at = |c: usize, i: usize| data[c][i].clone().unwrap_or_default();
+        let rows = data.first().map(|c| c.len()).unwrap_or(0);
+        Ok((0..rows)
+            .map(|i| ForeignKey {
+                constraint: at(0, i),
+                from_schema: at(1, i),
+                from_table: at(2, i),
+                from_column: at(3, i),
+                to_schema: at(4, i),
+                to_table: at(5, i),
+                to_column: at(6, i),
             })
             .collect())
+    }
+
+    /// Structure tab from the `sys.*` catalog. The unit tests below pin the catalog views and
+    /// join keys; `tests/sqlserver.rs` checks the result against the QA seed.
+    async fn describe_table(&self, schema: &str, table: &str) -> DResult<TableStructure> {
+        let qualified = format!("{}.{}", quote_ident(schema), quote_ident(table));
+        let mut c = self.lock().await?;
+        note(STRUCT_COLUMNS_SQL);
+        let col_rows = c
+            .query(STRUCT_COLUMNS_SQL, &[&qualified])
+            .await
+            .map_err(db)?
+            .into_first_result()
+            .await
+            .map_err(db)?;
+        note(STRUCT_INDEXES_SQL);
+        let idx_rows = c
+            .query(STRUCT_INDEXES_SQL, &[&qualified])
+            .await
+            .map_err(db)?
+            .into_first_result()
+            .await
+            .map_err(db)?;
+        note(STRUCT_TRIGGERS_SQL);
+        let trg_rows = c
+            .query(STRUCT_TRIGGERS_SQL, &[&qualified])
+            .await
+            .map_err(db)?
+            .into_first_result()
+            .await
+            .map_err(db)?;
+        drop(c);
+
+        let mut indexes: Vec<IndexInfo> = Vec::new();
+        // index name -> position in `indexes`, so appending a key part is O(1).
+        let mut index_ix: HashMap<std::string::String, usize> = HashMap::new();
+        for r in &idx_rows {
+            let Some(name) = text(r, "name")? else { continue };
+            let i = match index_ix.get(&name) {
+                Some(&i) => i,
+                None => {
+                    indexes.push(IndexInfo {
+                        name: name.clone(),
+                        columns: Vec::new(),
+                        unique: flag(r, "is_unique")?,
+                        primary: flag(r, "is_primary")?,
+                        // SQL Server exposes no index DDL function (OBJECT_DEFINITION covers
+                        // modules only), so the column list is the whole story here.
+                        definition: None,
+                    });
+                    index_ix.insert(name, indexes.len() - 1);
+                    indexes.len() - 1
+                }
+            };
+            if let Some(col) = text(r, "column_name")? {
+                indexes[i].columns.push(col);
+            }
+        }
+
+        let mut triggers: Vec<TriggerInfo> = Vec::new();
+        let mut trigger_ix: HashMap<std::string::String, usize> = HashMap::new();
+        for r in &trg_rows {
+            let Some(name) = text(r, "name")? else { continue };
+            // SQL Server has no BEFORE triggers — only AFTER and INSTEAD OF.
+            let timing = if flag(r, "instead_of")? { "INSTEAD OF" } else { "AFTER" };
+            let i = match trigger_ix.get(&name) {
+                Some(&i) => i,
+                None => {
+                    triggers.push(TriggerInfo {
+                        name: name.clone(),
+                        timing_event: timing.to_string(),
+                        definition: text(r, "definition")?,
+                    });
+                    trigger_ix.insert(name, triggers.len() - 1);
+                    triggers.len() - 1
+                }
+            };
+            if let Some(event) = text(r, "event_type")? {
+                let te = &mut triggers[i].timing_event;
+                te.push_str(if te.ends_with(timing) { " " } else { " OR " });
+                te.push_str(&event);
+            }
+        }
+
+        let mut columns = Vec::with_capacity(col_rows.len());
+        for r in &col_rows {
+            let Some(name) = text(r, "name")? else { continue };
+            columns.push(ColumnDetail {
+                name,
+                data_type: text(r, "data_type")?.unwrap_or_default(),
+                nullable: flag(r, "is_nullable")?,
+                default: text(r, "default_expr")?,
+                is_pk: flag(r, "is_pk")?,
+                comment: text(r, "comment")?,
+            });
+        }
+
+        Ok(TableStructure { columns, indexes, triggers })
     }
 
     async fn list_databases(&self) -> DResult<Vec<String>> {
@@ -429,38 +1241,221 @@ impl SqlDriver for SqlServerDriver {
         let sql = "SELECT name FROM sys.databases \
                    WHERE database_id > 4 OR name = 'master' \
                    ORDER BY CASE WHEN name = 'master' THEN 0 ELSE 1 END, name";
-        let (_cols, rows) = self.query_text(sql).await?;
-        Ok(rows
-            .into_iter()
-            .filter_map(|r| r.into_iter().next().flatten())
-            .collect())
+        // Column-major: the whole list is the single column, not the first row of each.
+        let (_cols, data) = self.query_text(sql).await?;
+        Ok(data.into_iter().next().unwrap_or_default().into_iter().flatten().collect())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::{cell_to_string, encryption_for, plain_select, same_session, stats_from_columns};
+
+    /// A 2-row, 3-column fixture: `t` has a byte size (the `sys.dm_db_partition_stats` path),
+    /// `no_bytes` doesn't (the `sys.partitions` fallback, whose bytes column is a literal
+    /// `NULL` in every row).
+    #[test]
+    fn stats_from_columns_transposes_and_parses() {
+        let cols = vec![
+            vec![Some("t".to_string()), Some("no_bytes".to_string())],
+            vec![Some("10".to_string()), Some("20".to_string())],
+            vec![Some("1024".to_string()), None],
+        ];
+        let stats = stats_from_columns(&cols);
+        assert_eq!(stats.len(), 2);
+        assert_eq!(stats[0].name, "t");
+        assert_eq!(stats[0].rows, Some(10));
+        assert_eq!(stats[0].bytes, Some(1024));
+        assert_eq!(stats[1].name, "no_bytes");
+        assert_eq!(stats[1].rows, Some(20));
+        assert_eq!(stats[1].bytes, None);
+    }
+
+    /// `SET ROWCOUNT` also caps DML and procedure calls, so it may only wrap a batch that is
+    /// nothing but a SELECT. The query tab splits T-SQL on `;`/GO only, so a newline-separated
+    /// `SELECT …\nUPDATE …` arrives as ONE statement.
+    #[test]
+    fn rowcount_only_wraps_a_plain_select() {
+        for q in [
+            "SELECT * FROM t",
+            "-- c\nselect a, b FROM t WHERE x = 'UPDATE t SET y=1'",
+            "SELECT [update], [set] FROM t /* DELETE FROM t */",
+            "SELECT \"insert\" FROM t",
+            "SELECT 1\nSELECT 2",
+            "SELECT N'it''s EXEC' AS s",
+            "SELECT a FROM t /* nested /* DROP */ still comment */",
+        ] {
+            assert!(plain_select(q), "{q}");
+        }
+        for q in [
+            "SELECT * FROM t\nUPDATE t SET x = 1",
+            "SELECT * INTO t2 FROM t",
+            "select 1 delete from t",
+            "SELECT 1 EXEC sp_who",
+            "SELECT 1 execute('x')",
+            "SELECT 1\nINSERT INTO t VALUES (1)",
+            "SELECT 1 MERGE t USING s ON 1=1 WHEN MATCHED THEN DELETE;",
+            "SELECT 1 TRUNCATE TABLE t",
+            "SELECT 1 DROP TABLE t",
+            "SELECT 1 DECLARE @x int",
+            "SELECT 1 SET NOCOUNT ON",
+            "SELECT 1 WAITFOR DELAY '00:00:05'",
+            "SELECT 1 BEGIN TRAN",
+            "UPDATE t SET x = 1",
+            "WITH c AS (SELECT 1 a) SELECT * FROM c",
+            "SELECT 'unterminated",
+        ] {
+            assert!(!plain_select(q), "{q}");
+        }
+    }
+    use tiberius::{ColumnData, EncryptionLevel};
+
+    /// `sslmode` is the only TLS knob the UI exposes. The old driver hardcoded
+    /// `Encrypt=false;TrustServerCertificate=true` into an ADO string, so every credential and
+    /// every row travelled in cleartext whatever the user picked.
+    #[test]
+    fn sslmode_maps_to_an_encryption_level() {
+        assert_eq!(encryption_for("disable"), (EncryptionLevel::Off, true));
+        assert_eq!(encryption_for("prefer"), (EncryptionLevel::On, true));
+        assert_eq!(encryption_for(""), (EncryptionLevel::On, true), "default is `prefer`");
+        assert_eq!(encryption_for("nonsense"), (EncryptionLevel::On, true), "default is `prefer`");
+        assert_eq!(encryption_for("require"), (EncryptionLevel::Required, true));
+        // verify-ca / verify-full must NOT accept a self-signed certificate.
+        assert_eq!(encryption_for("verify-ca"), (EncryptionLevel::Required, false));
+        assert_eq!(encryption_for("verify-full"), (EncryptionLevel::Required, false));
+    }
+
+    /// Days since 0001-01-01, which is how TDS 7.3 stores a `date`.
+    fn days(y: i32, m: u32, d: u32) -> u32 {
+        use tiberius::time::chrono::NaiveDate;
+        NaiveDate::from_ymd_opt(y, m, d)
+            .unwrap()
+            .signed_duration_since(NaiveDate::from_ymd_opt(1, 1, 1).unwrap())
+            .num_days() as u32
+    }
+
+    #[test]
+    fn cell_to_string_renders_temporal_types_not_debug() {
+        use tiberius::time::{Date, DateTime2, DateTimeOffset, Time};
+        let date = Date::new(days(2026, 9, 23));
+        let time = Time::new(13 * 3600 + 45 * 60 + 7, 0); // 13:45:07, scale 0
+        let s = |cd: ColumnData<'static>| cell_to_string(&cd).unwrap();
+        assert_eq!(s(ColumnData::Date(Some(date))), "2026-09-23");
+        assert_eq!(s(ColumnData::Time(Some(time))), "13:45:07");
+        assert_eq!(s(ColumnData::DateTime2(Some(DateTime2::new(date, time)))), "2026-09-23 13:45:07");
+        // The stored datetime2 is UTC; +05:30 (330 minutes east) shifts the wall clock.
+        let dto = DateTimeOffset::new(DateTime2::new(date, time), 330);
+        assert_eq!(s(ColumnData::DateTimeOffset(Some(dto))), "2026-09-23 19:15:07 +05:30");
+    }
+
+    #[test]
+    fn cell_to_string_renders_xml_decimals_and_guids() {
+        use std::borrow::Cow;
+        use tiberius::numeric::Numeric;
+        use tiberius::xml::XmlData;
+        let s = |cd: ColumnData<'static>| cell_to_string(&cd).unwrap();
+        assert_eq!(s(ColumnData::Xml(Some(Cow::Owned(XmlData::new("<note>1</note>"))))), "<note>1</note>");
+        assert_eq!(s(ColumnData::Numeric(Some(Numeric::new_with_scale(123456, 2)))), "1234.56");
+        // tiberius' own `Display` builds this from int_part()/dec_part(), which both carry the
+        // sign, so it renders `-12.-34`.
+        assert_eq!(s(ColumnData::Numeric(Some(Numeric::new_with_scale(-1234, 2)))), "-12.34");
+        assert_eq!(s(ColumnData::Numeric(Some(Numeric::new_with_scale(5, 2)))), "0.05");
+        assert_eq!(s(ColumnData::Numeric(Some(Numeric::new_with_scale(42, 0)))), "42");
+        let g = tiberius::Uuid::from_u128(0x0192_3f4a_5b6c_7d8e_9f01_2345_6789_abcd);
+        assert_eq!(s(ColumnData::Guid(Some(g))), "01923f4a-5b6c-7d8e-9f01-23456789abcd");
+    }
+
+    /// A NULL of any variant must stay a NULL, never the string "None".
+    #[test]
+    fn cell_to_string_keeps_every_null_variant_null() {
+        for null in [
+            ColumnData::U8(None),
+            ColumnData::I16(None),
+            ColumnData::I32(None),
+            ColumnData::I64(None),
+            ColumnData::F32(None),
+            ColumnData::F64(None),
+            ColumnData::Bit(None),
+            ColumnData::String(None),
+            ColumnData::Guid(None),
+            ColumnData::Binary(None),
+            ColumnData::Numeric(None),
+            ColumnData::Xml(None),
+            ColumnData::DateTime(None),
+            ColumnData::SmallDateTime(None),
+            ColumnData::Time(None),
+            ColumnData::Date(None),
+            ColumnData::DateTime2(None),
+            ColumnData::DateTimeOffset(None),
+        ] {
+            assert!(cell_to_string(&null).is_none(), "NULL must stay NULL: {null:?}");
+        }
+    }
+
     /// Smoke-test that the FK query uses the documented sys.* tables and joins through
     /// foreign_key_columns to resolve both ends. Live verification is gated on the
     /// TIQ_MSSQL_URL env var in the integration test suite.
     #[test]
     fn fk_query_uses_sys_foreign_keys() {
-        let sql = "SELECT tp.name AS from_table, cp.name AS from_column, \
-                          tr.name AS to_table,   cr.name AS to_column \
+        let sql = "SELECT sp.name AS from_schema, tp.name AS from_table, cp.name AS from_column, \
+                          sr.name AS to_schema,   tr.name AS to_table,   cr.name AS to_column \
                    FROM sys.foreign_keys fk \
                    JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id \
                    JOIN sys.tables  tp ON fkc.parent_object_id     = tp.object_id \
+                   JOIN sys.schemas sp ON tp.schema_id             = sp.schema_id \
                    JOIN sys.columns cp ON fkc.parent_object_id     = cp.object_id AND fkc.parent_column_id     = cp.column_id \
                    JOIN sys.tables  tr ON fkc.referenced_object_id = tr.object_id \
+                   JOIN sys.schemas sr ON tr.schema_id             = sr.schema_id \
                    JOIN sys.columns cr ON fkc.referenced_object_id = cr.object_id AND fkc.referenced_column_id = cr.column_id";
         for needle in [
             "sys.foreign_keys",
             "sys.foreign_key_columns",
             "sys.tables",
+            "sys.schemas",
             "sys.columns",
             "parent_object_id",
             "referenced_object_id",
         ] {
             assert!(sql.contains(needle), "FK query is missing `{needle}`");
         }
+    }
+
+    /// Pin the shipped queries even though `tests/sqlserver.rs` now covers them live: the
+    /// documented catalog views, the bound `OBJECT_ID(@P1)` scope — never an interpolated
+    /// identifier — and the key ordering a composite index needs.
+    #[test]
+    fn structure_queries_use_the_sys_catalog_and_bind_the_relation() {
+        use super::{STRUCT_COLUMNS_SQL, STRUCT_INDEXES_SQL, STRUCT_TRIGGERS_SQL};
+        for needle in [
+            "sys.columns",
+            "sys.types",
+            "sys.default_constraints",
+            "sys.extended_properties",
+            "MS_Description",
+        ] {
+            assert!(STRUCT_COLUMNS_SQL.contains(needle), "columns query is missing `{needle}`");
+        }
+        for needle in ["sys.indexes", "sys.index_columns", "ic.key_ordinal", "is_primary_key"] {
+            assert!(STRUCT_INDEXES_SQL.contains(needle), "index query is missing `{needle}`");
+        }
+        for needle in ["sys.triggers", "sys.trigger_events", "OBJECT_DEFINITION", "is_ms_shipped"]
+        {
+            assert!(STRUCT_TRIGGERS_SQL.contains(needle), "trigger query is missing `{needle}`");
+        }
+        for sql in [STRUCT_COLUMNS_SQL, STRUCT_INDEXES_SQL, STRUCT_TRIGGERS_SQL] {
+            assert!(sql.contains("OBJECT_ID(@P1)"), "the relation must be bound: {sql}");
+        }
+    }
+
+    /// `KILL` only the session this driver opened: a SPID seen with another `login_time` (or
+    /// not visible at all) belongs to someone else by now, or can't be checked — skip it.
+    #[test]
+    fn kill_only_the_same_session() {
+        let t = "2026-09-27T10:00:00.123";
+        assert!(same_session(Some(t), Some(t)));
+        assert!(!same_session(Some(t), Some("2026-09-27T10:05:00.000")), "the SPID was reused");
+        assert!(!same_session(Some(t), None), "gone, or not visible to this login");
+        assert!(!same_session(None, Some(t)), "never recorded");
+        assert!(!same_session(None, None));
     }
 }

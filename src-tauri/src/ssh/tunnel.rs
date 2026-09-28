@@ -5,12 +5,16 @@
 //! both ways. `local_addr()` is what the DB driver connects to. Dropping the tunnel (or
 //! `close()`) stops the listener and disconnects the SSH session.
 //!
-//! Host-key handling (v1): accept-and-record. The bastion key fingerprint is logged via
-//! `eprintln!` so the trust decision is visible. This is a documented limitation (no
-//! `known_hosts` pinning yet) — see the spec.
+//! Host-key handling: trust on first use, pinned thereafter. `~/.ssh/known_hosts` is
+//! consulted first (the user's own trust decisions), then TableIQ's own `known_hosts` under
+//! `app_dir()`, which is also where an unknown host is learned — we never write to the
+//! user's file. A host that is recorded with a DIFFERENT key is refused outright: that is
+//! what an interception looks like, and continuing would hand the bastion password and all
+//! database traffic to whoever is in the middle.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -21,6 +25,7 @@ use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
 use super::{SshAuth, SshConfig};
+use crate::lk;
 
 /// The remote endpoint (the DB) reachable from the bastion.
 #[derive(Debug, Clone)]
@@ -29,8 +34,115 @@ pub struct RemoteTarget {
     pub port: u16,
 }
 
-/// russh client handler. Accepts-and-records the server host key (v1).
-struct TunnelHandler;
+/// TableIQ's own `known_hosts`. Learned keys go here, never into the user's `~/.ssh`.
+fn app_known_hosts() -> PathBuf {
+    crate::appdir::app_dir().join("known_hosts")
+}
+
+/// The files checked, in order: the user's own trust first, then TableIQ's.
+fn known_hosts_files() -> Vec<PathBuf> {
+    let mut files = Vec::with_capacity(2);
+    if let Some(home) = dirs::home_dir() {
+        files.push(home.join(".ssh").join("known_hosts"));
+    }
+    files.push(app_known_hosts());
+    files
+}
+
+/// What to do with the host key a bastion just offered.
+#[derive(Debug, PartialEq)]
+enum Verdict {
+    /// Recorded in one of the known_hosts files and it matches.
+    Known,
+    /// Not recorded anywhere — trust on first use.
+    Learn,
+    /// Recorded with a different key, or the recorded entry is unreadable. Never connect;
+    /// the payload is the message the user sees.
+    Changed(String),
+}
+
+/// Decide `key`'s fate against `files`, in order. The first file that has an opinion wins,
+/// so the user's `~/.ssh/known_hosts` can never be overridden by TableIQ's own store.
+fn verdict(host: &str, port: u16, key: &key::PublicKey, files: &[PathBuf]) -> Verdict {
+    for file in files {
+        // russh cannot tell "no such file" from "cannot open it": both end up as an empty
+        // list of recorded keys, i.e. `Ok(false)`. Falling through on the second would TOFU
+        // a key even though this file may pin the host, so open it ourselves first and only
+        // skip a genuinely absent one.
+        match std::fs::File::open(file) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                return Verdict::Changed(format!(
+                    "Refusing to connect: {} exists but cannot be read ({e}). It may record \
+                     the host key for {host}:{port} — fix its permissions, or remove it if \
+                     you no longer want it consulted.",
+                    file.display()
+                ))
+            }
+        }
+        // Compare key MATERIAL, never the algorithm name. `check_known_hosts_path` reports
+        // `KeyChanged` only when the offered key's name matches a recorded entry's
+        // (russh-keys 0.45 `lib.rs:488`: `(false, _) => Ok(false)`), so an attacker who
+        // offered a different algorithm for a pinned host read as "not recorded here" and
+        // was trusted on first use. Reading the entries ourselves also fixes the mirror
+        // bug: a recorded RSA entry always parses back as `rsa-sha2-256`, so an RSA bastion
+        // that negotiated another hash never matched its own pin and was re-learned on
+        // every connect. `PublicKey`'s `PartialEq` compares the RSA modulus and ignores the
+        // hash tag, which is exactly the identity we want.
+        let recorded = match russh::keys::known_host_keys_path(host, port, file) {
+            Ok(entries) => entries,
+            // The host may well be recorded here but we cannot read the entry (an
+            // unsupported key type). Learning past it would silently bypass the pinning.
+            Err(e) => {
+                return Verdict::Changed(format!(
+                    "Refusing to connect: TableIQ cannot read the recorded SSH host key for \
+                     {host}:{port} in {}: {e}",
+                    file.display()
+                ))
+            }
+        };
+        if recorded.is_empty() {
+            continue; // not recorded in this file — ask the next one
+        }
+        if recorded.iter().any(|(_, known)| known == key) {
+            return Verdict::Known;
+        }
+        // The host IS pinned here and none of its keys match what was offered.
+        return Verdict::Changed(changed_message(host, port, key, file, &recorded));
+    }
+    Verdict::Learn
+}
+
+/// The message for a changed key: the host, both fingerprints, and the file to edit.
+fn changed_message(
+    host: &str,
+    port: u16,
+    offered: &key::PublicKey,
+    file: &std::path::Path,
+    entries: &[(usize, key::PublicKey)],
+) -> String {
+    let (line, recorded) = entries
+        .first()
+        .map(|(l, k)| (*l, k.fingerprint()))
+        .unwrap_or((0, "unavailable".to_string()));
+    format!(
+        "SSH host key for {host}:{port} has CHANGED — refusing to connect. Someone may be \
+         intercepting this connection.\n  expected SHA256:{recorded}\n  received SHA256:{}\n\
+         If this change is expected, remove line {line} for {host} from {} and reconnect.",
+        offered.fingerprint(),
+        file.display()
+    )
+}
+
+/// russh client handler. Verifies the server host key against known_hosts (see module docs).
+struct TunnelHandler {
+    host: String,
+    port: u16,
+    /// Set when we refuse a key. `Tunnel::connect` swaps it in for russh's opaque
+    /// "unknown key" error so the user sees what actually happened.
+    rejection: Arc<Mutex<Option<String>>>,
+}
 
 #[async_trait]
 impl Handler for TunnelHandler {
@@ -40,13 +152,37 @@ impl Handler for TunnelHandler {
         &mut self,
         server_public_key: &key::PublicKey,
     ) -> Result<bool, Self::Error> {
-        // v1: accept-and-record. We do NOT silently swallow this — the fingerprint is surfaced
-        // so the user can see exactly what was trusted. Follow-up: known_hosts pinning.
-        eprintln!(
-            "[tableiq ssh] accepting bastion host key (fingerprint {})",
-            server_public_key.fingerprint()
-        );
-        Ok(true)
+        match verdict(&self.host, self.port, server_public_key, &known_hosts_files()) {
+            Verdict::Known => Ok(true),
+            Verdict::Learn => {
+                let store = app_known_hosts();
+                if let Err(e) = russh::keys::learn_known_hosts_path(
+                    &self.host,
+                    self.port,
+                    server_public_key,
+                    &store,
+                ) {
+                    *lk(&self.rejection) =
+                        Some(format!("cannot record the SSH host key in {}: {e}", store.display()));
+                    return Ok(false);
+                }
+                crate::applog::log(
+                    "warn",
+                    &format!(
+                        "trusting NEW ssh host key for {}:{} (SHA256:{}) — recorded in {}",
+                        self.host,
+                        self.port,
+                        server_public_key.fingerprint(),
+                        store.display()
+                    ),
+                );
+                Ok(true)
+            }
+            Verdict::Changed(msg) => {
+                *lk(&self.rejection) = Some(msg);
+                Ok(false)
+            }
+        }
     }
 }
 
@@ -72,9 +208,20 @@ impl Tunnel {
             ..Default::default()
         });
 
-        let mut handle = client::connect(config, (cfg.host.as_str(), cfg.port), TunnelHandler)
+        // A refused host key surfaces here as a generic russh error; `rejection` carries the
+        // real reason out of the handler so the user sees it instead.
+        let rejection: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let handler = TunnelHandler {
+            host: cfg.host.clone(),
+            port: cfg.port,
+            rejection: Arc::clone(&rejection),
+        };
+        let mut handle = client::connect(config, (cfg.host.as_str(), cfg.port), handler)
             .await
-            .map_err(|e| format!("ssh connect to bastion failed: {e}"))?;
+            .map_err(|e| match lk(&rejection).take() {
+                Some(msg) => msg,
+                None => format!("ssh connect to bastion failed: {e}"),
+            })?;
 
         authenticate(&mut handle, cfg, secret).await?;
 
@@ -230,6 +377,184 @@ fn spawn_accept_loop(
 mod tests {
     use super::*;
     use crate::ssh::SshAuth;
+
+    /// A throwaway host key. Each call is a different key, which is exactly what a
+    /// man-in-the-middle would present.
+    fn pubkey() -> key::PublicKey {
+        russh::keys::key::KeyPair::generate_ed25519()
+            .expect("generate ed25519")
+            .clone_public_key()
+            .expect("public half")
+    }
+
+    /// `known_host_keys_path` answers `Ok(vec![])` when it cannot open the file, which is
+    /// indistinguishable from "no entry for this host" — so an unreadable `~/.ssh/known_hosts`
+    /// fell through and TOFU'd whatever key was offered, even though that file may pin this
+    /// very bastion. It must refuse instead.
+    #[test]
+    fn unreadable_known_hosts_is_refused_not_learned() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path().join("user_known_hosts");
+        let app = dir.path().join("known_hosts");
+        let recorded = pubkey();
+        russh::keys::learn_known_hosts_path("bastion", 22, &recorded, &user).unwrap();
+        std::fs::set_permissions(&user, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let impostor = pubkey();
+        match verdict("bastion", 22, &impostor, &[user.clone(), app]) {
+            Verdict::Changed(msg) => {
+                assert!(msg.contains(&user.display().to_string()), "no file named in: {msg}")
+            }
+            v => panic!("an unreadable known_hosts must never fall through to TOFU, got {v:?}"),
+        }
+    }
+
+    /// A *missing* file is not an unreadable one: it just means "ask the next file".
+    #[test]
+    fn a_missing_known_hosts_file_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = [dir.path().join("nope"), dir.path().join("known_hosts")];
+        assert_eq!(verdict("h", 22, &pubkey(), &files), Verdict::Learn);
+    }
+
+    /// This is what a user reads while an interception may be under way; it must not be
+    /// littered with stray runs of spaces from a wrapped format string.
+    #[test]
+    fn refusal_messages_are_cleanly_spaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("known_hosts");
+        let recorded = pubkey();
+        russh::keys::learn_known_hosts_path("bastion", 22, &recorded, &app).unwrap();
+        let Verdict::Changed(msg) = verdict("bastion", 22, &pubkey(), &[app]) else {
+            panic!("expected Changed");
+        };
+        for l in msg.lines() {
+            assert!(!l.trim_start().contains("  "), "stray run of spaces in: {l:?}");
+        }
+    }
+
+    /// An unrecorded host is trusted on first use and recorded in TableIQ's own store;
+    /// the same key is `Known` afterwards.
+    #[test]
+    fn unknown_host_is_learned_then_known() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = vec![dir.path().join("user_known_hosts"), dir.path().join("known_hosts")];
+        let k = pubkey();
+        assert_eq!(verdict("bastion.example.com", 2222, &k, &files), Verdict::Learn);
+        russh::keys::learn_known_hosts_path("bastion.example.com", 2222, &k, &files[1]).unwrap();
+        assert_eq!(verdict("bastion.example.com", 2222, &k, &files), Verdict::Known);
+    }
+
+    /// The whole point of the task: a DIFFERENT key for a recorded host is a hard error,
+    /// and the message names the host, both fingerprints, and the file to edit.
+    #[test]
+    fn changed_key_is_a_hard_error_naming_host_fingerprints_and_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("known_hosts");
+        let files = vec![dir.path().join("user_known_hosts"), app.clone()];
+        let recorded = pubkey();
+        russh::keys::learn_known_hosts_path("bastion.example.com", 22, &recorded, &app).unwrap();
+
+        let impostor = pubkey();
+        match verdict("bastion.example.com", 22, &impostor, &files) {
+            Verdict::Changed(msg) => {
+                assert!(msg.contains("bastion.example.com"), "no host in: {msg}");
+                assert!(msg.contains(&recorded.fingerprint()), "no expected fingerprint in: {msg}");
+                assert!(msg.contains(&impostor.fingerprint()), "no received fingerprint in: {msg}");
+                assert!(msg.contains(&app.display().to_string()), "no file to edit in: {msg}");
+            }
+            v => panic!("a changed host key must never be trusted, got {v:?}"),
+        }
+    }
+
+    /// `~/.ssh/known_hosts` is authoritative and is consulted first: a mismatch there is
+    /// refused even though TableIQ's own store would have accepted the key.
+    #[test]
+    fn user_known_hosts_wins_over_the_app_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path().join("user_known_hosts");
+        let app = dir.path().join("known_hosts");
+        let files = vec![user.clone(), app.clone()];
+        let recorded = pubkey();
+        let offered = pubkey();
+        russh::keys::learn_known_hosts_path("db.internal", 22, &recorded, &user).unwrap();
+        russh::keys::learn_known_hosts_path("db.internal", 22, &offered, &app).unwrap();
+        match verdict("db.internal", 22, &offered, &files) {
+            Verdict::Changed(msg) => assert!(
+                msg.contains(&user.display().to_string()),
+                "the user's known_hosts must be the file named: {msg}"
+            ),
+            v => panic!("expected Changed from the user's known_hosts, got {v:?}"),
+        }
+    }
+
+    /// TableIQ never writes to the user's `~/.ssh/known_hosts` — a learned key lands in
+    /// its own store.
+    #[test]
+    fn learning_writes_only_to_the_app_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path().join("user_known_hosts");
+        let app = dir.path().join("known_hosts");
+        let k = pubkey();
+        assert_eq!(verdict("h", 22, &k, &[user.clone(), app.clone()]), Verdict::Learn);
+        russh::keys::learn_known_hosts_path("h", 22, &k, &app).unwrap();
+        assert!(!user.exists(), "the user's known_hosts must not be created");
+        assert!(app.exists());
+    }
+
+    /// An RSA host key, whose recorded form parses back with a DIFFERENT algorithm name
+    /// than the one the session negotiates (`ssh-rsa` vs `rsa-sha2-256`/`512`).
+    fn rsa_pubkey(hash: russh::keys::key::SignatureHash) -> key::PublicKey {
+        russh::keys::key::KeyPair::generate_rsa(2048, hash)
+            .expect("generate rsa")
+            .clone_public_key()
+            .expect("public half")
+    }
+
+    /// THE BYPASS: `check_known_hosts_path` only reports `KeyChanged` when the offered key's
+    /// ALGORITHM NAME matches a recorded entry; a different algorithm returns `Ok(false)` =
+    /// "not recorded here". A pinned host that suddenly offers an RSA key instead of its
+    /// ed25519 one therefore fell through to `Learn` and the attacker's key was trusted.
+    #[test]
+    fn a_pinned_host_offering_a_different_algorithm_is_changed_not_learned() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("known_hosts");
+        let files = vec![dir.path().join("user_known_hosts"), app.clone()];
+        let recorded = pubkey(); // ed25519, pinned
+        russh::keys::learn_known_hosts_path("bastion.example.com", 22, &recorded, &app).unwrap();
+
+        // The man in the middle offers RSA instead — a different algorithm name.
+        let impostor = rsa_pubkey(russh::keys::key::SignatureHash::SHA2_256);
+        match verdict("bastion.example.com", 22, &impostor, &files) {
+            Verdict::Changed(msg) => {
+                assert!(msg.contains("bastion.example.com"), "no host in: {msg}");
+                assert!(msg.contains(&impostor.fingerprint()), "no received fingerprint in: {msg}");
+            }
+            v => panic!("a pinned host must never be re-learned for a new algorithm, got {v:?}"),
+        }
+    }
+
+    /// The same bug's other half: an RSA bastion never matched its OWN pin, because the
+    /// recorded entry parses as one hash name while the offered key carries the negotiated
+    /// one. It was re-learned on every single connect, growing known_hosts without bound.
+    #[test]
+    fn an_rsa_host_matches_its_own_pin_on_the_second_connect() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("known_hosts");
+        let files = vec![dir.path().join("user_known_hosts"), app.clone()];
+        // A recorded entry always parses back as `rsa-sha2-256` (russh-keys `parse_public_key`
+        // hardcodes that default), so a session that negotiated `rsa-sha2-512` never matched.
+        let k = rsa_pubkey(russh::keys::key::SignatureHash::SHA2_512);
+
+        assert_eq!(verdict("rsa.example.com", 22, &k, &files), Verdict::Learn);
+        russh::keys::learn_known_hosts_path("rsa.example.com", 22, &k, &app).unwrap();
+        assert_eq!(
+            verdict("rsa.example.com", 22, &k, &files),
+            Verdict::Known,
+            "the same RSA key must be recognised, not re-learned every connect"
+        );
+    }
 
     #[test]
     fn remote_target_constructs() {
