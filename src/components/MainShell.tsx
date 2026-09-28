@@ -1,6 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { ConnectionRail } from "./ConnectionRail";
-import { Wordmark } from "./Brand";
 import { NEXT_THEME, ThemeToggle } from "./ThemeToggle";
 import { useTheme } from "../theme/ThemeProvider";
 import { TitleBar, type TitleBarItem } from "./TitleBar";
@@ -21,6 +20,7 @@ import { isFileEngine } from "./ConnectionManager";
 import { Onboarding } from "./Onboarding";
 import { WorkspaceOverview } from "./WorkspaceOverview";
 import { SqlLogPanel } from "./SqlLogPanel";
+import { Lobby } from "./Lobby";
 import { useSettingsUi } from "./Settings";
 import { Inspector } from "./Inspector";
 import { ContextMenu, type ContextMenuItem } from "./ui/ContextMenu";
@@ -122,6 +122,8 @@ export function MainShell() {
   } = useConnections();
   const [reconnecting, setReconnecting] = useState(false);
   const [refreshingSchema, setRefreshingSchema] = useState(false);
+  /** Bumped after each completed schema refresh; the lobby refetches its stats on it. */
+  const [schemaRefreshes, setSchemaRefreshes] = useState(0);
   // A dropped session (broken pipe, server shutdown, …) raises the reconnect
   // banner. commands.ts fires this from any live-session invoke that errors.
   // A background session's failure must not flag this one (the shell is keyed by
@@ -452,6 +454,7 @@ export function MainShell() {
     try {
       clearMetaCaches(id);
       updateSession(id, { schema: await listObjects(id) });
+      setSchemaRefreshes((n) => n + 1);
     } catch (e) {
       console.error("schema refresh failed", e);
     } finally {
@@ -635,16 +638,24 @@ export function MainShell() {
           </div>
         ))}
       {!activeTab && (
-        <div className="flex h-full items-center justify-center">
-          <div className="max-w-md text-center">
-            <Wordmark className="mb-3 justify-center text-base" />
-            <div className="mb-1 text-sm font-medium text-text">Connected to {active.name}</div>
-            <div className="text-xs text-muted">
-              Pick a table from the sidebar, or press <span className="tiq-kbd">⌘K</span> for the
-              command palette, or <span className="tiq-kbd">⌘T</span> for a new query.
-            </div>
-          </div>
-        </div>
+        <ErrorBoundary label="lobby">
+          <Lobby
+            connId={active.id}
+            database={active.database}
+            schema={schema}
+            schemaName={activeSchema ?? defaultSchema(schema.schemas.map((s) => s.name)) ?? "public"}
+            cfg={saved.find((c) => c.id === active.id) ?? { name: active.name, engine, database: active.database }}
+            pins={livePins(pinned, schema)}
+            refreshKey={schemaRefreshes}
+            onOpenTable={(s, t) => void tabGuard.openTable(s, t)}
+            onRunSql={(sql, title) => void tabGuard.openQuery(sql, title)}
+            onOpenErd={() => void tabGuard.openErd()}
+            onImport={() => setShowImport(true)}
+            onPalette={() => setShowPalette(true)}
+            onNewTable={() => setShowStructure(true)}
+            onOpenSettingsAi={() => useSettingsUi.getState().show("ai")}
+          />
+        </ErrorBoundary>
       )}
       {activeTab?.kind === "erd" && (
         <ErrorBoundary key={activeTab.key} label={`erd tab ${activeTab.key}`}>

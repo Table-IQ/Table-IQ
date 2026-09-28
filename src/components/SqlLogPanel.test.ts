@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { escapeHtml, highlightSql } from "./SqlLogPanel";
+import { escapeHtml, highlightSql } from "../lib/sqlHighlightHtml";
 
 describe("escapeHtml", () => {
   it("escapes &, < and >", () => {
