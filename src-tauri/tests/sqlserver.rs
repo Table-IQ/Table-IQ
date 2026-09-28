@@ -13,6 +13,9 @@ use tableiq_lib::drivers::{
     ObjectKind, SortKey, SqlDriver,
 };
 
+#[allow(dead_code)]
+mod changes_common;
+
 /// `TIQ_MSSQL_URL` is an ADO connection string (that is what CI and the docs set), while the
 /// driver takes the parts — ADO has no escaping rule for a password containing `;`. Split it
 /// here rather than teaching the driver an ADO parser it would never use in the app.
@@ -923,4 +926,17 @@ async fn sqlserver_like_filter_on_datetime_and_varbinary() {
     assert_eq!(got[1].0.as_ref().unwrap(), &vec![one], "varbinary LIKE on the hex");
     assert_eq!(got[1].1.as_ref().unwrap().count, Some(1));
     assert!(got[2].0.as_ref().unwrap().is_empty(), "not the legacy `Sep 23 2026` rendering");
+}
+
+#[tokio::test]
+async fn sqlserver_apply_changes() {
+    let _serialised = serialised().await;
+    let Some(d) = connect().await else { return };
+    use changes_common::*;
+    commits_all_in_order(&d, "dbo").await;
+    same_value_update_is_not_a_conflict(&d, "dbo").await;
+    null_and_empty_inserts_stay_distinct(&d, "dbo").await;
+    conflict_rolls_back_everything(&d, "dbo").await;
+    delete_miss_and_db_error_roll_back(&d, "dbo").await;
+    d.run_script("DROP TABLE tiq_changes").await.ok();
 }

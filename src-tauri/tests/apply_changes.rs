@@ -57,3 +57,17 @@ async fn sqlite_apply_changes() {
     conflict_rolls_back_everything(&d, "main").await;
     delete_miss_and_db_error_roll_back(&d, "main").await;
 }
+
+#[tokio::test]
+async fn duckdb_apply_changes() {
+    // In-process: always runs.
+    let dir = tempfile::tempdir().unwrap();
+    let d = tableiq_lib::drivers::duckdb::DuckDriver::connect(dir.path().join("c.duckdb").to_str().unwrap())
+        .await
+        .unwrap();
+    commits_all_in_order(&d, "main").await;
+    same_value_update_is_not_a_conflict(&d, "main").await;
+    null_and_empty_inserts_stay_distinct(&d, "main").await;
+    conflict_rolls_back_everything(&d, "main").await;
+    delete_miss_and_db_error_roll_back(&d, "main").await;
+}
