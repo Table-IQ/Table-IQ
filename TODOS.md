@@ -17,3 +17,9 @@ Deferred from the Connected Home plan review (2026-09-27, `docs/superpowers/plan
   - Add `aria-live` to the "Copied" confirmation.
   - Make the "Saved" status neutral instead of green.
   - Let Test fall back to the saved keychain password when the field is blank. This needs a backend change.
+- **Staged changes follow-ups** (2026-09-28):
+  - Merge a row's edits into one UPDATE (fixes the composite-PK two-column edit).
+  - Refresh the Inspector after a commit.
+  - Hide the UPDATE footnote in a delete-only Review.
+  - Add a "Delete rows" menu item for multi-row selection.
+  - Guard against repeated inserts when retrying a commit whose outcome was uncertain.
