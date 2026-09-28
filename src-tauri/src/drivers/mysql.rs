@@ -10,7 +10,8 @@ use sqlx::mysql::{MySqlDatabaseError, MySqlPoolOptions, MySqlQueryResult, MySqlR
 use sqlx::{MySql, Pool, Row};
 
 use super::{
-    build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
+    build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken, Change,
+    ChangesResult, ColumnDetail,
     ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec, FilterOp, ForeignKey, IndexInfo,
     ObjectInfo, ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver,
     StmtOutput, TableStat, TableStructure, TriggerInfo, EXACT_COUNT_MAX,
@@ -95,6 +96,37 @@ fn insert_sql(schema: &str, table: &str, values: &[(String, Option<String>)]) ->
 /// Backtick-quote a MySQL identifier (escape embedded backticks).
 fn quote_ident(name: &str) -> String {
     format!("`{}`", name.replace('`', "``"))
+}
+
+/// The optimistic-concurrency UPDATE for one cell edit; binds in `?` order (SET value
+/// first, then the WHERE's pk values, then the original cell value).
+fn update_sql(schema: &str, table: &str, edit: &EditSpec) -> (String, Vec<Option<String>>) {
+    let mut wheres: Vec<String> = edit.pk.iter().map(|(n, _)| pk_match(n)).collect();
+    wheres.push(value_match(&edit.column));
+    let sql = format!(
+        "UPDATE {}.{} SET {} = ? WHERE {}",
+        quote_ident(schema), quote_ident(table), quote_ident(&edit.column), wheres.join(" AND ")
+    );
+    let mut binds = vec![edit.new_value.clone()];
+    binds.extend(edit.pk.iter().map(|(_, v)| v.clone()));
+    binds.push(edit.orig_value.clone());
+    (sql, binds)
+}
+
+/// DELETE matching a row by its primary key (null-safe `<=>`, see [`pk_match`]).
+fn delete_sql(schema: &str, table: &str, pk: &[(String, Option<String>)]) -> (String, Vec<Option<String>>) {
+    let wheres: Vec<String> = pk.iter().map(|(n, _)| pk_match(n)).collect();
+    let sql = format!("DELETE FROM {}.{} WHERE {}", quote_ident(schema), quote_ident(table), wheres.join(" AND "));
+    (sql, pk.iter().map(|(_, v)| v.clone()).collect())
+}
+
+/// One staged change as `(sql, binds)` — the same statements the single-row commands send.
+fn change_sql(schema: &str, table: &str, c: &Change) -> (String, Vec<Option<String>>) {
+    match c {
+        Change::Update { edit } => update_sql(schema, table, edit),
+        Change::Delete { pk } => delete_sql(schema, table, pk),
+        Change::Insert { values } => insert_sql(schema, table, values),
+    }
 }
 
 /// One primary-key column of a row identity, matched null-safely (`<=>`) so a NULL value
@@ -683,24 +715,11 @@ impl SqlDriver for MySqlDriver {
         if edit.pk.is_empty() {
             return Err(DriverError::Db("cannot edit without a primary key".into()));
         }
-        let mut wheres = vec![];
-        for (name, _) in &edit.pk {
-            wheres.push(pk_match(name));
+        let (sql, binds) = update_sql(schema, table, edit);
+        let mut q = sqlx::query(&sql);
+        for b in &binds {
+            q = q.bind(b.clone());
         }
-        wheres.push(value_match(&edit.column));
-        let sql = format!(
-            "UPDATE {}.{} SET {} = ? WHERE {}",
-            quote_ident(schema),
-            quote_ident(table),
-            quote_ident(&edit.column),
-            wheres.join(" AND ")
-        );
-        // MySQL placeholders are positional `?` in statement order: SET value first, then WHERE.
-        let mut q = sqlx::query(&sql).bind(edit.new_value.clone());
-        for (_, v) in &edit.pk {
-            q = q.bind(v.clone());
-        }
-        q = q.bind(edit.orig_value.clone());
         Ok(q.execute(&self.pool).await.map_err(db)?.rows_affected())
     }
 
@@ -713,18 +732,36 @@ impl SqlDriver for MySqlDriver {
         if pk.is_empty() {
             return Err(DriverError::Db("cannot delete without a primary key".into()));
         }
-        let wheres: Vec<String> = pk.iter().map(|(name, _)| pk_match(name)).collect();
-        let sql = format!(
-            "DELETE FROM {}.{} WHERE {}",
-            quote_ident(schema),
-            quote_ident(table),
-            wheres.join(" AND ")
-        );
+        let (sql, binds) = delete_sql(schema, table, pk);
         let mut q = sqlx::query(&sql);
-        for (_, v) in pk {
-            q = q.bind(v.clone());
+        for b in &binds {
+            q = q.bind(b.clone());
         }
         Ok(q.execute(&self.pool).await.map_err(db)?.rows_affected())
+    }
+
+    async fn apply_changes(&self, schema: &str, table: &str, changes: &[Change]) -> DResult<ChangesResult> {
+        super::check_keys(changes)?;
+        let stmts: Vec<_> = changes.iter().map(|c| change_sql(schema, table, c)).collect();
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let mut out = ChangesResult::default();
+        for i in super::change_order(changes) {
+            let (sql, binds) = &stmts[i];
+            let mut q = sqlx::query(sql);
+            for b in binds {
+                q = q.bind(b.clone());
+            }
+            let step = match q.execute(&mut *tx).await {
+                Ok(r) => super::tally(&mut out, i, &changes[i], r.rows_affected()),
+                Err(e) => Err(super::change_err(i, db(e))),
+            };
+            if let Err(e) = step {
+                let _ = tx.rollback().await;
+                return Err(e);
+            }
+        }
+        tx.commit().await.map_err(db)?;
+        Ok(out)
     }
 
     async fn run_script(&self, sql: &str) -> DResult<u64> {
@@ -908,7 +945,8 @@ impl SqlDriver for MySqlDriver {
 
 #[cfg(test)]
 mod tests {
-    use super::{insert_sql, kill_query_sql};
+    use super::{change_sql, delete_sql, insert_sql, kill_query_sql, update_sql};
+    use crate::drivers::{Change, EditSpec};
 
     /// MySQL has no `DEFAULT VALUES`; an all-blank draft is `() VALUES ()`.
     #[test]
@@ -918,6 +956,25 @@ mod tests {
         assert!(binds.is_empty());
         let (sql, _) = insert_sql("db", "t", &[("c".into(), Some("v".into()))]);
         assert_eq!(sql, "INSERT INTO `db`.`t` (`c`) VALUES (?)");
+    }
+
+    /// Pins the SQL `apply_edit` / `delete_row` have always sent.
+    #[test]
+    fn update_and_delete_sql_match_the_edit_path() {
+        let edit = EditSpec {
+            pk: vec![("id".into(), Some("7".into()))],
+            column: "name".into(),
+            new_value: Some("B".into()),
+            orig_value: None,
+        };
+        let (sql, binds) = update_sql("db", "t", &edit);
+        assert_eq!(sql, "UPDATE `db`.`t` SET `name` = ? WHERE `id` <=> ? AND CAST(`name` AS CHAR) COLLATE utf8mb4_bin <=> ?");
+        assert_eq!(binds, vec![Some("B".into()), Some("7".into()), None]);
+        let (sql, binds) = delete_sql("db", "t", &[("a".into(), Some("1".into())), ("b".into(), None)]);
+        assert_eq!(sql, "DELETE FROM `db`.`t` WHERE `a` <=> ? AND `b` <=> ?");
+        assert_eq!(binds, vec![Some("1".into()), None]);
+        let (sql, _) = change_sql("db", "t", &Change::Insert { values: vec![] });
+        assert_eq!(sql, "INSERT INTO `db`.`t` () VALUES ()");
     }
 
     #[test]

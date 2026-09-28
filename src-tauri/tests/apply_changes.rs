@@ -26,3 +26,34 @@ async fn pg_apply_changes() {
     delete_miss_and_db_error_roll_back(&d, "public").await;
     d.run_script("DROP TABLE tiq_changes").await.ok();
 }
+
+use tableiq_lib::drivers::{mysql::MySqlDriver, sqlite::SqliteDriver};
+
+#[tokio::test]
+async fn mysql_apply_changes() {
+    let Ok(url) = std::env::var("TIQ_MYSQL_URL") else {
+        eprintln!("SKIP: TIQ_MYSQL_URL unset");
+        return;
+    };
+    // Schema = database: the URL's path segment.
+    let db = url.rsplit('/').next().unwrap().split('?').next().unwrap().to_string();
+    let d = MySqlDriver::connect(&url).await.expect("connect");
+    commits_all_in_order(&d, &db).await;
+    same_value_update_is_not_a_conflict(&d, &db).await;
+    null_and_empty_inserts_stay_distinct(&d, &db).await;
+    conflict_rolls_back_everything(&d, &db).await;
+    delete_miss_and_db_error_roll_back(&d, &db).await;
+    d.run_script("DROP TABLE tiq_changes").await.ok();
+}
+
+#[tokio::test]
+async fn sqlite_apply_changes() {
+    // In-process: always runs.
+    let dir = tempfile::tempdir().unwrap();
+    let d = SqliteDriver::connect(dir.path().join("c.db").to_str().unwrap()).await.unwrap();
+    commits_all_in_order(&d, "main").await;
+    same_value_update_is_not_a_conflict(&d, "main").await;
+    null_and_empty_inserts_stay_distinct(&d, "main").await;
+    conflict_rolls_back_everything(&d, "main").await;
+    delete_miss_and_db_error_roll_back(&d, "main").await;
+}
