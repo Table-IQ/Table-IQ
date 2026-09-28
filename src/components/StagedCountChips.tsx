@@ -11,7 +11,7 @@ export function StagedCountChips({ counts }: { counts: StagedCounts }) {
   ].filter((p) => p.n > 0);
   if (parts.length === 0) return null;
   return (
-    <span className="inline-flex items-center gap-1" aria-label="Staged changes">
+    <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap" aria-label="Staged changes">
       {parts.map((p, i) => (
         <Fragment key={p.label}>
           {i > 0 && <span className="text-muted-2">·</span>}
