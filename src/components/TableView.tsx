@@ -74,16 +74,22 @@ import {
   IconChevronLeft,
   IconChevronRight,
   IconClose,
+  IconColumns,
   IconExport,
   IconFilter,
   IconLink,
+  IconPlus,
   IconRefresh,
+  IconRow,
+  IconTable,
 } from "./ui/Icon";
 
 /** Rows-per-page choices; one more row than the page is fetched — the extra row
  *  is how we know a next page exists without a second query. */
 const PAGE_SIZES = [100, 300, 1000, 5000] as const;
 const DEFAULT_PAGE_SIZE = 300;
+/** Status-bar icons render smaller than the 14px default (DESIGN.md). */
+const STATUSBAR_ICON = { size: 11, strokeWidth: 1.5 } as const;
 let ruleSeq = 0;
 /** A blank filter-bar row. Defaults to Any column — the old search box's job. */
 const newRule = (column = ANY_COLUMN, op: FilterOp = "Eq", value = ""): FilterRule => ({
@@ -1042,8 +1048,8 @@ export function TableView({ connId, schema, object, view }: Props) {
           <>
             <SegmentedToggle
               options={[
-                { value: "data", label: "Data" },
-                { value: "structure", label: "Structure" },
+                { value: "data", label: "Data", icon: <IconTable {...STATUSBAR_ICON} /> },
+                { value: "structure", label: "Structure", icon: <IconColumns {...STATUSBAR_ICON} /> },
               ]}
               value={view}
               onChange={(v) => {
@@ -1056,7 +1062,7 @@ export function TableView({ connId, schema, object, view }: Props) {
               active={draft !== null}
               title="Insert a new row"
             >
-              + Row
+              <IconPlus {...STATUSBAR_ICON} /> Row
             </StatusBarButton>
           </>
         }
@@ -1102,25 +1108,28 @@ export function TableView({ connId, schema, object, view }: Props) {
                   </StatusBarButton>
                 )
               )}
-              <select
-                aria-label="Rows per page"
-                title="Rows per page"
-                value={pageSize}
-                disabled={committing}
-                onChange={(e) => {
-                  if (blockedByEdits()) return;
-                  setPageSize(Number(e.target.value));
-                  setPage(0);
-                  gridRef.current?.scrollToRow(0);
-                }}
-                className="h-[18px] rounded-[var(--radius-sm)] border border-border bg-bg px-1 text-[11px] text-muted hover:text-text disabled:opacity-40"
-              >
-                {PAGE_SIZES.map((n) => (
-                  <option key={n} value={n}>
-                    {n.toLocaleString("en-US")} / page
-                  </option>
-                ))}
-              </select>
+              <span className="inline-flex items-center gap-1">
+                <IconRow {...STATUSBAR_ICON} />
+                <select
+                  aria-label="Rows per page"
+                  title="Rows per page"
+                  value={pageSize}
+                  disabled={committing}
+                  onChange={(e) => {
+                    if (blockedByEdits()) return;
+                    setPageSize(Number(e.target.value));
+                    setPage(0);
+                    gridRef.current?.scrollToRow(0);
+                  }}
+                  className="h-[18px] rounded-[var(--radius-sm)] border border-border bg-bg px-1 text-[11px] text-muted hover:text-text disabled:opacity-40"
+                >
+                  {PAGE_SIZES.map((n) => (
+                    <option key={n} value={n}>
+                      {n.toLocaleString("en-US")} / page
+                    </option>
+                  ))}
+                </select>
+              </span>
             </>
           )
         }
@@ -1143,10 +1152,10 @@ export function TableView({ connId, schema, object, view }: Props) {
               active={barOpen || filters.length > 0}
               title={`Filter rows (${isMacPlatform() ? "⌘F" : "Ctrl F"})`}
             >
-              Filters{filters.length > 0 ? ` · ${filters.length}` : ""}
+              <IconFilter {...STATUSBAR_ICON} /> Filters{filters.length > 0 ? ` · ${filters.length}` : ""}
             </StatusBarButton>
             <StatusBarButton title="Choose columns to display (coming soon)" disabled>
-              Columns
+              <IconColumns {...STATUSBAR_ICON} /> Columns
             </StatusBarButton>
             {editable ? (
               <span className="inline-flex items-center gap-1 text-ok" title="This table has a primary key — cells are editable">

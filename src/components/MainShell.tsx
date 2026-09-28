@@ -40,8 +40,13 @@ import {
   IconOverview,
   IconPlus,
   IconRefresh,
+  IconSidebar,
+  IconSidebarRight,
+  IconSliders,
   IconSqlLog,
+  IconStop,
 } from "./ui/Icon";
+import { engineLabel } from "./ui/EngineIcon";
 import {
   cancelConnecting,
   canLeaveSession,
@@ -1097,12 +1102,42 @@ export function MainShell() {
               left={
                 <>
                   <StatusDot tone="ok" />
-                  <span>Connected · {active.engine}</span>
+                  <span>Connected · {engineLabel(active.engine as Engine)}</span>
                 </>
               }
-              center={tabs.length > 0 ? <span>{tabs.length} tab{tabs.length !== 1 ? "s" : ""}</span> : null}
+              center={
+                tabs.length > 0 ? (
+                  <span>
+                    {tabs.length} tab{tabs.length !== 1 ? "s" : ""}
+                  </span>
+                ) : (
+                  <span>No open tabs</span>
+                )
+              }
               right={
-                <span>⌘K palette · ⌘T new query · ⌘[ sidebar · ⌘] inspector</span>
+                <span className="flex items-center gap-2 overflow-hidden">
+                  <span className="inline-flex items-center gap-1">
+                    <IconCommand size={12} /> <kbd className="tiq-kbd">⌘K</kbd> palette
+                  </span>
+                  <span className="inline-flex items-center gap-1">
+                    <IconPlus size={12} /> <kbd className="tiq-kbd">⌘T</kbd> new query
+                  </span>
+                  <span className="hidden xl:inline-flex items-center gap-1">
+                    <IconSidebar size={12} /> <kbd className="tiq-kbd">⌘[</kbd> sidebar
+                  </span>
+                  <span className="hidden xl:inline-flex items-center gap-1">
+                    <IconSidebarRight size={12} /> <kbd className="tiq-kbd">⌘]</kbd> inspector
+                  </span>
+                  <span className="hidden 2xl:inline-flex items-center gap-1">
+                    <IconSqlLog size={12} /> <kbd className="tiq-kbd">⌘⇧C</kbd> SQL log
+                  </span>
+                  <span className="hidden 2xl:inline-flex items-center gap-1">
+                    <IconSliders size={12} /> <kbd className="tiq-kbd">⌘,</kbd> settings
+                  </span>
+                  <span className="hidden 2xl:inline-flex items-center gap-1">
+                    <IconStop size={12} /> <kbd className="tiq-kbd">⌘.</kbd> cancel
+                  </span>
+                </span>
               }
             />
           )}
