@@ -58,6 +58,7 @@ import { buildDeleteStatement, quoteIdent } from "../lib/tableScript";
 import { buildInsertValues, isDraftDirty } from "../lib/insertRow";
 import {
   buildBatch,
+  buildPreviewSql,
   commitErrorMessage,
   NO_STAGED,
   stagedLock,
@@ -65,6 +66,7 @@ import {
   type StagedCounts,
   type StagedSnapshot,
 } from "../lib/stagedChanges";
+import { StagedCountChips } from "./StagedCountChips";
 import {
   chipLabel,
   fetchErrorMessage,
@@ -555,17 +557,19 @@ export function TableView({ connId, schema, object, view }: Props) {
   );
 
   // The titlebar's Discard / Review / Commit (G2) act on this tab's staged edits.
-  // `rowOffset` is `firstRow` (the page on screen): `PendingEdit.row` indexes that page.
+  // `preview` builds the Review SQL from the grid's snapshot.
   const publishStaged = useStaged((s) => s.publish);
   const unregisterStaged = useStaged((s) => s.unregister);
   useEffect(() => {
     publishStaged(requestKey, stagedTotal, committing, {
-      list: () => gridRef.current?.listPending() ?? [],
+      preview: () => {
+        const snap = gridRef.current?.snapshot();
+        return snap && pk ? buildPreviewSql(schema, object.name, buildBatch(snap, pk, firstRow).changes, engine) : "";
+      },
       commit: () => gridRef.current?.commitPending(),
       discard: () => gridRef.current?.discardPending(),
-      rowOffset: firstRow,
     });
-  }, [requestKey, stagedTotal, committing, publishStaged, firstRow]);
+  }, [requestKey, stagedTotal, committing, publishStaged, firstRow, pk, schema, object.name, engine]);
   useEffect(() => () => unregisterStaged(requestKey), [requestKey, unregisterStaged]);
 
   // Production connections confirm every commit (⌘S, the in-grid and titlebar Commit).
@@ -1085,6 +1089,7 @@ export function TableView({ connId, schema, object, view }: Props) {
             >
               <IconPlus {...STATUSBAR_ICON} /> Row
             </StatusBarButton>
+            <StagedCountChips counts={counts} />
           </>
         }
         center={

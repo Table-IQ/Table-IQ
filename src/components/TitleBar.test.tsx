@@ -76,7 +76,7 @@ describe("TitleBar", () => {
   });
 
   describe("with staged edits", () => {
-    const api = { list: () => [], commit() {}, discard() {}, rowOffset: 0 };
+    const api = { preview: () => "", commit() {}, discard() {} };
     const stage = (patch: Partial<typeof staged.current>) => {
       staged.current = { ...staged.current, ...patch };
     };
@@ -103,22 +103,21 @@ describe("TitleBar", () => {
 });
 
 describe("StagedReview", () => {
-  it("pluralises the header, groups by absolute row, and shows NULL for a missing before value", () => {
-    const edits = [
-      { row: 0, col: "status", before: "paid", newValue: "shipped" },
-      { row: 0, col: "note", before: null, newValue: "gift" },
-    ];
+  const sql = ["BEGIN;", `DELETE FROM "public"."t" WHERE "id" = '<b>';`, "COMMIT;"].join("\n");
+  it("says how many changes run in one transaction, offers Copy SQL, and shows the highlighted SQL escaped", () => {
     const html = renderToStaticMarkup(
-      <StagedReview edits={edits} rowOffset={300} committing={false} onCommit={noop} onDiscard={noop} onClose={noop} />,
+      <StagedReview sql={sql} total={5} committing={false} onCommit={noop} onDiscard={noop} onClose={noop} />,
     );
-    expect(html).toContain("2 staged changes");
-    expect(html.match(/Row 301/g)?.length).toBe(1);
-    expect(html).toContain("NULL");
+    expect(html).toContain("Review 5 changes · one transaction");
+    expect(html).toContain("Copy SQL");
+    expect(html).toContain("BEGIN");
+    expect(html).toContain("&lt;b&gt;");
+    expect(html).not.toContain("<b>");
+    expect(html).toContain("nothing is committed"); // the optimistic-check footnote
+    expect(html).toContain("Discard all");
     expect(html).toContain("tiq-no-drag");
     expect(
-      renderToStaticMarkup(
-        <StagedReview edits={[edits[0]]} rowOffset={0} committing onCommit={noop} onDiscard={noop} onClose={noop} />,
-      ),
-    ).toContain("1 staged change<");
+      renderToStaticMarkup(<StagedReview sql={sql} total={1} committing onCommit={noop} onDiscard={noop} onClose={noop} />),
+    ).toContain("Review 1 change · one transaction");
   });
 });

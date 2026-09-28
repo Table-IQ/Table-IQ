@@ -34,7 +34,6 @@ import {
   removePending,
   stageEdit,
   movedTints,
-  type PendingEdit,
   type PendingMap,
 } from "../lib/stagedEdits";
 
@@ -96,8 +95,6 @@ export interface DataGridHandle {
   commitPending: () => void;
   /** Drop every staged change and revert the display. */
   discardPending: () => void;
-  /** The staged edits, in commit order (for the titlebar's Review popover). */
-  listPending: () => PendingEdit[];
   /** Everything staged, for the commit batch and the Review SQL. */
   snapshot: () => StagedSnapshot;
   /** Stage these page rows for delete. Rows past the page, already staged, or whose page
@@ -973,7 +970,6 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     scrollToRow: (row: number) => gridRef.current?.scrollTo(0, row, "vertical"),
     commitPending: () => void commitPending(),
     discardPending,
-    listPending: () => listPending(pending.current),
     snapshot: snapshotNow,
     stageDeleteRows,
     undoDelete,
