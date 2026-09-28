@@ -71,3 +71,9 @@ strip = "symbols"
 lto = "thin"
 codegen-units = 1
 panic = "unwind"
+
+# ponytail: don't strip host-side proc-macro/build-script dylibs. rustc <1.98 + macOS 27
+# ld leaves a 4-byte-aligned LINKEDIT string pool that dyld rejects ("mis-aligned LINKEDIT
+# string pool"), breaking the sqlx_macros load. These artifacts never ship. Drop when on rustc >=1.98.
+[profile.release.build-override]
+strip = false
