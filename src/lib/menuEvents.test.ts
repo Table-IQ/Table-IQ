@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { hasNativeMenu } from "./commands";
 import { bridgeEffect, dispatchMenu, isMenuId, menuBlocked, MENU_IDS } from "./menuEvents";
 
 describe("menuEvents", () => {
@@ -53,5 +54,30 @@ describe("menuEvents", () => {
 
   it("menuBlocked: nothing open lets every item through", () => {
     expect(menuBlocked("view.sqllog", false, false)).toBe(false);
+  });
+});
+
+// The native menu is macOS-only (src-tauri/src/lib.rs gates `.menu` on target_os = "macos").
+describe("hasNativeMenu", () => {
+  const MAC = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15";
+  const WIN = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("is true in a Tauri webview on macOS", () => {
+    vi.stubGlobal("navigator", { userAgent: MAC });
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+    expect(hasNativeMenu()).toBe(true);
+  });
+
+  it("is false in a Tauri webview off macOS (no native menu there)", () => {
+    vi.stubGlobal("navigator", { userAgent: WIN });
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+    expect(hasNativeMenu()).toBe(false);
+  });
+
+  it("is false in a plain browser on macOS (mock or HTTP bridge)", () => {
+    vi.stubGlobal("navigator", { userAgent: MAC });
+    vi.stubGlobal("window", {});
+    expect(hasNativeMenu()).toBe(false);
   });
 });

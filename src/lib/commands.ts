@@ -2,6 +2,7 @@ import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { synthWindowIpc, MOCK_TOTAL_ROWS } from "./mockSource";
 import type { SshConfig } from "./ssh";
 import { restoreConfirmName } from "./backup";
+import { isMacPlatform } from "./shortcut";
 
 // ── connection-loss detection ────────────────────────────────────────────
 // Every Rust command returns its error as `e.to_string()`, so sqlx / the
@@ -158,10 +159,12 @@ function inTauri(): boolean {
   return BRIDGE || (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window);
 }
 
-/** True only in a real Tauri webview, where the native menu bar (src-tauri/src/menu.rs)
- *  exists. Unlike `inTauri`, false under the HTTP bridge: that's a plain browser with no
- *  menu, so ⌘K/⌥⌘1/⌥⌘2 must stay on the webview keymap there. */
+/** True only in a real Tauri webview on macOS, where the native menu bar
+ *  (src-tauri/src/menu.rs, macOS-only) exists. Unlike `inTauri`, false under the HTTP
+ *  bridge (a plain browser, no menu) and on Windows/Linux, so ⌘K/⌥⌘1/⌥⌘2 stay on the
+ *  webview keymap there. */
 export function hasNativeMenu(): boolean {
+  if (!isMacPlatform()) return false;
   if (!import.meta.env.DEV) return true;
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }

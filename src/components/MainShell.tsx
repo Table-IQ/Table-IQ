@@ -416,8 +416,8 @@ export function MainShell() {
   });
 
   // Native View/Help menu (`tiq:menu`, src/lib/menuEvents.ts), with useShellKeymap's guards.
-  // Data/Structure/Filter Rows belong to the mounted TableView; with no table tab they
-  // explain themselves here. View → Appearance is handled by ThemeProvider.
+  // Data/Structure/Filter Rows belong to the mounted TableView; with none mounted (no table
+  // tab, or "Table not found.") they explain themselves here. Appearance: ThemeProvider.
   useEffect(() => {
     const onMenu = (e: Event) => {
       const id = (e as CustomEvent<unknown>).detail;
@@ -447,15 +447,17 @@ export function MainShell() {
         case "view.structure":
         case "view.filter": {
           const { tabs, activeKey } = useTabs.getState();
-          if (tabs.find((t) => t.key === activeKey)?.kind !== "table")
-            setNoticeMsg("Open a table first");
+          const t = tabs.find((x) => x.key === activeKey);
+          const mounted =
+            t?.kind === "table" && !!t.schema && !!t.table && !!findObject(schema, t.schema, t.table);
+          if (!mounted) setNoticeMsg("Open a table first");
           break;
         }
       }
     };
     window.addEventListener("tiq:menu", onMenu);
     return () => window.removeEventListener("tiq:menu", onMenu);
-  }, []);
+  }, [schema]);
 
   // Commands, then Tables/Databases/Queries groups (`commandGroups.ts`). Extracted
   // to `usePaletteCommands` (Task 11b) so PR-C can add Backup/Restore/MCP entries

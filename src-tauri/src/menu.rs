@@ -3,7 +3,14 @@
 //! accelerator (see `accelerator`) — ⌘F/⌘[/⌘] stay with CodeMirror. Each item emits
 //! `tiq:menu` with its id (src/lib/menuEvents.ts routes it to the shortcut's handler).
 
+//!
+//! macOS only (see `mod menu` in lib.rs): `build`/`on_event` are compiled for macOS; the
+//! item table (`accelerator`, `view_items`, …) also builds under `test` so the id-parity
+//! test runs on every CI platform.
+
+#[cfg(target_os = "macos")]
 use tauri::menu::{IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID};
+#[cfg(target_os = "macos")]
 use tauri::{AppHandle, Emitter, Runtime};
 
 /// Native accelerator for an item, only where no webview/editor binding conflicts. Never
@@ -44,24 +51,20 @@ const APPEARANCE_ITEMS: [(&str, &str); 3] = [
 /// Appended to the default Help menu.
 const TOUR_ITEM: (&str, &str) = ("help.tour", "Show Tour");
 
+#[cfg(target_os = "macos")]
 pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
-    // Menu::default already has View (macOS: Enter Full Screen) and Help (the macOS Help
-    // search field); fill those instead of adding a second of each.
+    // Menu::default already has View (Enter Full Screen) and Help (the macOS Help search
+    // field); fill those instead of adding a second of each.
     let menu = Menu::default(app)?;
     let item = |(id, text): (&str, &str)| MenuItem::with_id(app, id, text, true, accelerator(id));
 
-    let view = match menu
+    // The default View submenu has an auto id; find it by title.
+    let Some(view) = menu
         .items()?
         .iter()
         .find_map(|k| k.as_submenu().filter(|s| s.text().ok().as_deref() == Some("View")).cloned())
-    {
-        Some(v) => v,
-        // No default View off macOS: add one before Window and Help (the last two).
-        None => {
-            let v = Submenu::new(app, "View", true)?;
-            menu.insert(&v, menu.items()?.len().saturating_sub(2))?;
-            v
-        }
+    else {
+        return Ok(menu);
     };
 
     let appearance_items =
@@ -79,9 +82,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         ours.push(Box::new(item(entry)?));
     }
     ours.push(Box::new(appearance));
-    if !view.items()?.is_empty() {
-        ours.push(Box::new(PredefinedMenuItem::separator(app)?));
-    }
+    ours.push(Box::new(PredefinedMenuItem::separator(app)?));
     let refs: Vec<&dyn IsMenuItem<R>> = ours.iter().map(|b| b.as_ref()).collect();
     view.prepend_items(&refs)?; // Enter Full Screen stays last
 
@@ -92,6 +93,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
 }
 
 /// Forward our items to the webview; predefined items (copy, quit, …) are handled natively.
+#[cfg(target_os = "macos")]
 pub fn on_event<R: Runtime>(app: &AppHandle<R>, event: MenuEvent) {
     let id = event.id().0.as_str();
     if id.starts_with("view.") || id.starts_with("help.") {

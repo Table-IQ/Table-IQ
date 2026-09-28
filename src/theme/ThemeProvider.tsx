@@ -9,11 +9,11 @@ import {
 } from "../lib/theme";
 
 /** View → Appearance items (src-tauri/src/menu.rs); `ThemeChoice` calls System "auto". */
-const MENU_THEMES: Record<string, ThemeChoice> = {
-  "view.theme.light": "light",
-  "view.theme.dark": "dark",
-  "view.theme.system": "auto",
-};
+const MENU_THEMES = new Map<unknown, ThemeChoice>([
+  ["view.theme.light", "light"],
+  ["view.theme.dark", "dark"],
+  ["view.theme.system", "auto"],
+]);
 
 interface ThemeContextValue {
   choice: ThemeChoice;
@@ -52,13 +52,12 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   };
 
   // Native View → Appearance. Lives here, not in MainShell, so it works on every screen.
+  // `setChoice` only touches storage and the state setter, so the first render's copy is
+  // as good as any (no re-subscribe per render).
   useEffect(() => {
     const onMenu = (e: Event) => {
-      const c = MENU_THEMES[(e as CustomEvent<string>).detail];
-      if (c) {
-        saveThemeChoice(c);
-        setChoiceState(c);
-      }
+      const c = MENU_THEMES.get((e as CustomEvent<unknown>).detail);
+      if (c) setChoice(c);
     };
     window.addEventListener("tiq:menu", onMenu);
     return () => window.removeEventListener("tiq:menu", onMenu);
