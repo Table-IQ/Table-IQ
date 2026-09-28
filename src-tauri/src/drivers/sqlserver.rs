@@ -19,10 +19,10 @@ use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 use crate::sql_log::note;
 
 use super::{
-    build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
-    ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec, ForeignKey, IndexInfo,
-    ObjectInfo, ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver,
-    StmtOutput, TableStat, TableStructure, TriggerInfo,
+    build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken, Change,
+    ChangesResult, ColumnDetail, ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec,
+    ForeignKey, IndexInfo, ObjectInfo, ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel,
+    SortKey, SqlDriver, StmtOutput, TableStat, TableStructure, TriggerInfo,
 };
 
 type Conn = Client<Compat<TcpStream>>;
@@ -42,6 +42,69 @@ fn quote_ident(name: &str) -> String {
 /// target column type implicitly (display-first design), so no cast is added.
 fn mssql_placeholder(i: usize, _col: &str) -> String {
     format!("@P{i}")
+}
+
+/// The optimistic-concurrency UPDATE for one cell edit, exactly as `apply_edit` sends it:
+/// `@P1` is the new value, the pk `=` clauses start at `@P2`, and the null-safe original-value
+/// check (`= OR (IS NULL AND IS NULL)`) comes last. SQL Server has no `IS NOT DISTINCT FROM`.
+fn update_sql(schema: &str, table: &str, edit: &EditSpec) -> (String, Vec<Option<String>>) {
+    let col = quote_ident(&edit.column);
+    let mut wheres: Vec<String> = Vec::new();
+    let mut p = 2; // @P1 is the new value
+    for (name, _) in &edit.pk {
+        wheres.push(format!("{} = @P{}", quote_ident(name), p));
+        p += 1;
+    }
+    wheres.push(format!("({col} = @P{p} OR ({col} IS NULL AND @P{p} IS NULL))"));
+    let sql = format!(
+        "UPDATE {}.{} SET {} = @P1 WHERE {}",
+        quote_ident(schema),
+        quote_ident(table),
+        col,
+        wheres.join(" AND ")
+    );
+    // Params in @P order: new_value, pk values…, orig_value. Values carried as text;
+    // SQL Server implicitly converts to the target column type (display-first design).
+    let mut binds: Vec<Option<String>> = Vec::new();
+    binds.push(edit.new_value.clone());
+    for (_, v) in &edit.pk {
+        binds.push(v.clone());
+    }
+    binds.push(edit.orig_value.clone());
+    (sql, binds)
+}
+
+/// DELETE matching a row by its primary key, exactly as `delete_row` sends it: the null-safe
+/// (`= OR (IS NULL AND IS NULL)`) form from `@P1`.
+fn delete_sql(schema: &str, table: &str, pk: &[(String, Option<String>)]) -> (String, Vec<Option<String>>) {
+    let mut p = 1;
+    let wheres: Vec<String> = pk
+        .iter()
+        .map(|(name, _)| {
+            let col = quote_ident(name);
+            let w = format!("({col} = @P{p} OR ({col} IS NULL AND @P{p} IS NULL))");
+            p += 1;
+            w
+        })
+        .collect();
+    let sql = format!(
+        "DELETE FROM {}.{} WHERE {}",
+        quote_ident(schema),
+        quote_ident(table),
+        wheres.join(" AND ")
+    );
+    (sql, pk.iter().map(|(_, v)| v.clone()).collect())
+}
+
+/// One staged change as `(sql, binds)` — the same statements the single-row commands send.
+fn change_sql(schema: &str, table: &str, c: &Change) -> (String, Vec<Option<String>>) {
+    match c {
+        Change::Update { edit } => update_sql(schema, table, edit),
+        Change::Delete { pk } => delete_sql(schema, table, pk),
+        Change::Insert { values } => {
+            build_insert_sql(schema, table, values, &quote_ident, &mssql_placeholder, true)
+        }
+    }
 }
 
 /// PK types a keyset cursor can seek on. The cursor is the grid's text, bound back as
@@ -933,34 +996,8 @@ impl SqlDriver for SqlServerDriver {
         if edit.pk.is_empty() {
             return Err(DriverError::Db("cannot edit without a primary key".into()));
         }
-        // Optimistic-concurrency UPDATE: SET col = @P1 WHERE pk = … AND null-safe(col, orig).
-        // SQL Server has no IS NOT DISTINCT FROM, so use the (= OR both-NULL) idiom.
-        let col = quote_ident(&edit.column);
-        let mut wheres: Vec<std::string::String> = Vec::new();
-        let mut p = 2; // @P1 is the new value
-        for (name, _) in &edit.pk {
-            wheres.push(format!("{} = @P{}", quote_ident(name), p));
-            p += 1;
-        }
-        wheres.push(format!("({col} = @P{p} OR ({col} IS NULL AND @P{p} IS NULL))"));
-        let sql = format!(
-            "UPDATE {}.{} SET {} = @P1 WHERE {}",
-            quote_ident(schema),
-            quote_ident(table),
-            col,
-            wheres.join(" AND ")
-        );
-
-        // Params in @P order: new_value, pk values…, orig_value. Values carried as text;
-        // SQL Server implicitly converts to the target column type (display-first design).
-        let mut owned: Vec<Option<std::string::String>> = Vec::new();
-        owned.push(edit.new_value.clone());
-        for (_, v) in &edit.pk {
-            owned.push(v.clone());
-        }
-        owned.push(edit.orig_value.clone());
+        let (sql, owned) = update_sql(schema, table, edit);
         let params: Vec<&dyn tiberius::ToSql> = owned.iter().map(|o| o as &dyn tiberius::ToSql).collect();
-
         let mut c = self.lock().await?;
         note(&sql);
         let res = c.execute(sql, &params).await.map_err(db)?;
@@ -976,30 +1013,70 @@ impl SqlDriver for SqlServerDriver {
         if pk.is_empty() {
             return Err(DriverError::Db("cannot delete without a primary key".into()));
         }
-        // SQL Server has no IS NOT DISTINCT FROM; use the null-safe (= OR both-NULL) idiom.
-        let mut p = 1;
-        let wheres: Vec<std::string::String> = pk
-            .iter()
-            .map(|(name, _)| {
-                let col = quote_ident(name);
-                let w = format!("({col} = @P{p} OR ({col} IS NULL AND @P{p} IS NULL))");
-                p += 1;
-                w
-            })
-            .collect();
-        let sql = format!(
-            "DELETE FROM {}.{} WHERE {}",
-            quote_ident(schema),
-            quote_ident(table),
-            wheres.join(" AND ")
-        );
-        let owned: Vec<Option<std::string::String>> = pk.iter().map(|(_, v)| v.clone()).collect();
-        let params: Vec<&dyn tiberius::ToSql> =
-            owned.iter().map(|o| o as &dyn tiberius::ToSql).collect();
+        let (sql, owned) = delete_sql(schema, table, pk);
+        let params: Vec<&dyn tiberius::ToSql> = owned.iter().map(|o| o as &dyn tiberius::ToSql).collect();
         let mut c = self.lock().await?;
         note(&sql);
         let res = c.execute(sql, &params).await.map_err(db)?;
         Ok(res.total())
+    }
+
+    async fn apply_changes(&self, schema: &str, table: &str, changes: &[Change]) -> DResult<ChangesResult> {
+        super::check_keys(changes)?;
+        let stmts: Vec<_> = changes.iter().map(|c| change_sql(schema, table, c)).collect();
+        let mut c = self.lock().await?;
+        note("BEGIN TRANSACTION");
+        // Reading BEGIN's response can fail after the server has already opened the
+        // transaction; left open on this shared connection it would hold locks app-wide.
+        let begun = match c.simple_query("BEGIN TRANSACTION").await {
+            Ok(s) => s.into_results().await.map(|_| ()),
+            Err(e) => Err(e),
+        };
+        if let Err(e) = begun {
+            rollback_orphan_tx(&mut c).await;
+            return Err(db(e));
+        }
+        let mut out = ChangesResult::default();
+        for i in super::change_order(changes) {
+            let (sql, owned) = &stmts[i];
+            let params: Vec<&dyn tiberius::ToSql> = owned.iter().map(|o| o as &dyn tiberius::ToSql).collect();
+            // `ExecuteResult::total()` sums every DONE/DONEINPROC token in the response,
+            // including the ones an AFTER trigger's own statements emit — a 1-row DELETE on
+            // an audited table reports `total() == 3`. `@@ROWCOUNT`, read back in the same
+            // batch, is reset to the firing statement's own count once the trigger returns
+            // (see the docs on `@@ROWCOUNT` and triggers), and is unaffected by a session-level
+            // `SET NOCOUNT ON` a query tab may have left on this shared connection.
+            let counted = format!("{sql}; SELECT @@ROWCOUNT");
+            note(&counted);
+            let step = match c.query(counted.as_str(), &params).await {
+                Err(e) => Err(super::change_err(i, db(e))),
+                Ok(stream) => match stream.into_row().await {
+                    Err(e) => Err(super::change_err(i, db(e))),
+                    Ok(row) => {
+                        let n = row
+                            .as_ref()
+                            .and_then(|r| r.try_get::<i32, _>(0).ok().flatten())
+                            .map(|n| n.max(0) as u64)
+                            .unwrap_or(0);
+                        super::tally(&mut out, i, &changes[i], n)
+                    }
+                },
+            };
+            if let Err(e) = step {
+                rollback_orphan_tx(&mut c).await;
+                return Err(e);
+            }
+        }
+        note("COMMIT");
+        let committed = match c.simple_query("COMMIT").await {
+            Ok(s) => s.into_results().await.map(|_| ()),
+            Err(e) => Err(e),
+        };
+        if let Err(e) = committed {
+            rollback_orphan_tx(&mut c).await;
+            return Err(db(e));
+        }
+        Ok(out)
     }
 
     fn forget_meta(&self) {
@@ -1249,7 +1326,30 @@ impl SqlDriver for SqlServerDriver {
 
 #[cfg(test)]
 mod tests {
-    use super::{cell_to_string, encryption_for, plain_select, same_session, stats_from_columns};
+    use super::{cell_to_string, change_sql, delete_sql, encryption_for, plain_select, same_session, stats_from_columns, update_sql};
+    use crate::drivers::{Change, EditSpec};
+
+    /// Pins the SQL `apply_edit` / `delete_row` have always sent.
+    #[test]
+    fn update_and_delete_sql_match_the_edit_path() {
+        let edit = EditSpec {
+            pk: vec![("id".into(), Some("7".into()))],
+            column: "na]me".into(),
+            new_value: Some("B".into()),
+            orig_value: None,
+        };
+        let (sql, binds) = update_sql("dbo", "t", &edit);
+        assert_eq!(
+            sql,
+            "UPDATE [dbo].[t] SET [na]]me] = @P1 WHERE [id] = @P2 AND ([na]]me] = @P3 OR ([na]]me] IS NULL AND @P3 IS NULL))"
+        );
+        assert_eq!(binds, vec![Some("B".into()), Some("7".into()), None]);
+        let (sql, binds) = delete_sql("dbo", "t", &[("id".into(), Some("7".into()))]);
+        assert_eq!(sql, "DELETE FROM [dbo].[t] WHERE ([id] = @P1 OR ([id] IS NULL AND @P1 IS NULL))");
+        assert_eq!(binds, vec![Some("7".into())]);
+        let (sql, _) = change_sql("dbo", "t", &Change::Insert { values: vec![] });
+        assert_eq!(sql, "INSERT INTO [dbo].[t] DEFAULT VALUES");
+    }
 
     /// A 2-row, 3-column fixture: `t` has a byte size (the `sys.dm_db_partition_stats` path),
     /// `no_bytes` doesn't (the `sys.partitions` fallback, whose bytes column is a literal

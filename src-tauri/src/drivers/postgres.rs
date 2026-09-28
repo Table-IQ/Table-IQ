@@ -11,7 +11,8 @@ use sqlx::postgres::{PgDatabaseError, PgErrorPosition, PgPoolOptions, PgQueryRes
 use sqlx::{Executor, Pool, Postgres, Row};
 
 use super::{
-    build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
+    build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken, Change,
+    ChangesResult, ColumnDetail,
     ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec, IndexInfo, ObjectInfo,
     ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver, StmtOutput,
     TableStat, TableStructure, TriggerInfo, EXACT_COUNT_MAX,
@@ -99,6 +100,34 @@ fn build_delete_sql(schema: &str, table: &str, pk_cols: &[String]) -> String {
         quote_ident(table),
         wheres.join(" AND ")
     )
+}
+
+/// One staged change as `(sql, binds)`, built and bound exactly like `apply_edit` /
+/// `delete_row` / `insert_row` build and bind theirs.
+fn pg_change_sql(
+    schema: &str,
+    table: &str,
+    change: &Change,
+    udts: &HashMap<String, String>,
+) -> (String, Vec<Option<String>>) {
+    let udt = |c: &str| udts.get(c).cloned().unwrap_or_else(|| "text".into());
+    match change {
+        Change::Update { edit } => {
+            let pk: Vec<(String, String)> = edit.pk.iter().map(|(n, _)| (n.clone(), udt(n))).collect();
+            let sql = build_update_sql(schema, table, &edit.column, &udt(&edit.column), &pk);
+            let mut binds = vec![edit.new_value.clone()];
+            binds.extend(edit.pk.iter().map(|(_, v)| v.clone()));
+            binds.push(edit.orig_value.clone());
+            (sql, binds)
+        }
+        Change::Delete { pk } => {
+            let cols: Vec<String> = pk.iter().map(|(n, _)| n.clone()).collect();
+            (build_delete_sql(schema, table, &cols), pk.iter().map(|(_, v)| v.clone()).collect())
+        }
+        Change::Insert { values } => {
+            build_insert_sql(schema, table, values, &quote_ident, &pg_placeholder(udts), true)
+        }
+    }
 }
 
 /// Unwrap `sqlx::Error::Database` to the bare server message — sqlx otherwise prefixes it with
@@ -863,6 +892,31 @@ impl SqlDriver for PgDriver {
         Ok(q.execute(&self.pool).await.map_err(db)?.rows_affected())
     }
 
+    async fn apply_changes(&self, schema: &str, table: &str, changes: &[Change]) -> DResult<ChangesResult> {
+        super::check_keys(changes)?;
+        let udts: HashMap<String, String> = self.column_udts(schema, table).await?.into_iter().collect();
+        let stmts: Vec<_> = changes.iter().map(|c| pg_change_sql(schema, table, c, &udts)).collect();
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let mut out = ChangesResult::default();
+        for i in super::change_order(changes) {
+            let (sql, binds) = &stmts[i];
+            let mut q = sqlx::query(sql);
+            for b in binds {
+                q = q.bind(b.clone());
+            }
+            let step = match q.execute(&mut *tx).await {
+                Ok(r) => super::tally(&mut out, i, &changes[i], r.rows_affected()),
+                Err(e) => Err(super::change_err(i, db(e))),
+            };
+            if let Err(e) = step {
+                let _ = tx.rollback().await;
+                return Err(e);
+            }
+        }
+        tx.commit().await.map_err(db)?;
+        Ok(out)
+    }
+
     async fn run_script(&self, sql: &str) -> DResult<u64> {
         Ok(sqlx::raw_sql(sql).execute(&self.pool).await.map_err(db)?.rows_affected())
     }
@@ -1081,7 +1135,34 @@ fn text_rows_to_batch(cols: &[String], rows: &[PgRow]) -> DResult<RecordBatch> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_delete_sql, build_update_sql};
+    use super::{build_delete_sql, build_update_sql, pg_change_sql};
+    use crate::drivers::{Change, EditSpec};
+    use std::collections::HashMap;
+
+    #[test]
+    fn change_sql_reuses_the_edit_builders_and_bind_order() {
+        let udts: HashMap<String, String> =
+            [("id".to_string(), "int4".to_string()), ("name".to_string(), "text".to_string())].into();
+        let edit = EditSpec {
+            pk: vec![("id".into(), Some("7".into()))],
+            column: "name".into(),
+            new_value: Some("B".into()),
+            orig_value: Some("b".into()),
+        };
+        let (sql, binds) = pg_change_sql("public", "t", &Change::Update { edit }, &udts);
+        assert_eq!(sql, build_update_sql("public", "t", "name", "text", &[("id".into(), "int4".into())]));
+        assert_eq!(binds, vec![Some("B".into()), Some("7".into()), Some("b".into())]);
+
+        let (sql, binds) =
+            pg_change_sql("public", "t", &Change::Delete { pk: vec![("id".into(), Some("7".into()))] }, &udts);
+        assert_eq!(sql, build_delete_sql("public", "t", &["id".into()]));
+        assert_eq!(binds, vec![Some("7".into())]);
+
+        let values = vec![("id".into(), Some("9".into())), ("name".into(), None)];
+        let (sql, binds) = pg_change_sql("public", "t", &Change::Insert { values }, &udts);
+        assert_eq!(sql, "INSERT INTO \"public\".\"t\" (\"id\", \"name\") VALUES ($1::\"int4\", $2::\"text\")");
+        assert_eq!(binds, vec![Some("9".into()), None]);
+    }
 
     #[test]
     fn delete_sql_is_parameterized_and_quoted() {

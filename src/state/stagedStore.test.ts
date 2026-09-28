@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useStaged } from "./stagedStore";
 
-const api = () => ({ list: vi.fn(() => []), commit: vi.fn(), discard: vi.fn(), rowOffset: 0 });
+const api = () => ({ preview: vi.fn(() => ""), commit: vi.fn(), discard: vi.fn() });
 
 describe("stagedStore", () => {
   beforeEach(() => useStaged.setState({ owner: null, count: 0, committing: false, api: null }));

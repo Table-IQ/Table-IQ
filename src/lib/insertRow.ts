@@ -14,23 +14,7 @@ export function buildInsertValues(
   });
 }
 
-/** The inserted row's PK values, so the grid can find it after the refetch.
- *  Null when any PK column was left to the database (serial, default). */
-export function insertedPkMatch(
-  pk: string[],
-  values: [string, string | null][],
-): Record<string, string> | null {
-  if (pk.length === 0) return null;
-  const out: Record<string, string> = {};
-  for (const c of pk) {
-    const v = values.find(([col]) => col === c)?.[1];
-    if (v == null) return null;
-    out[c] = v;
-  }
-  return out;
-}
-
-/** Has any cell been touched? Used to enable the Commit button. */
+/** Has any cell been touched? Used to enable the Add button. */
 export function isDraftDirty(draft: Record<string, string | null | undefined>): boolean {
   return Object.values(draft).some((v) => v !== undefined && v !== "");
 }

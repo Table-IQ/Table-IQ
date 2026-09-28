@@ -848,6 +848,34 @@ export async function applyEdit(
   return { rowsAffected: r.rows_affected };
 }
 
+/** One staged change for `apply_changes` (mirrors Rust `Change`, tagged by `kind`). */
+export type Change =
+  | { kind: "update"; edit: EditSpec }
+  | { kind: "delete"; pk: [string, string | null][] }
+  | { kind: "insert"; values: [string, string | null][] };
+
+/** What a committed `apply_changes` batch wrote (mirrors Rust `ChangesResult`). */
+export interface ChangesResult {
+  updated: number;
+  deleted: number;
+  inserted: number;
+}
+
+/** Run every staged change for one table in ONE transaction (updates → deletes →
+ *  inserts). Rejects with `change {i}: {reason}` — nothing written — on any failure. */
+export async function applyChanges(
+  id: string,
+  schema: string,
+  table: string,
+  changes: Change[],
+): Promise<ChangesResult> {
+  if (!inTauri()) {
+    const n = (k: Change["kind"]) => changes.filter((c) => c.kind === k).length;
+    return { updated: n("update"), deleted: n("delete"), inserted: n("insert") };
+  }
+  return invoke<ChangesResult>("apply_changes", { id, schema, table, changes });
+}
+
 // ── export & transactions ─────────────────────────────────────────────────
 export type ExportFormat = "csv" | "json";
 

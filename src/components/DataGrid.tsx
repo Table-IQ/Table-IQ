@@ -4,6 +4,7 @@ import {
   type EditableGridCell,
   type GridCell,
   type GridColumn,
+  type GridSelection,
   type Item,
   type DataEditorRef,
 } from "@glideapps/glide-data-grid";
@@ -18,7 +19,6 @@ import {
   useState,
 } from "react";
 import { decodeWindow, searchHits, WindowCache, type DecodedWindow } from "../lib/arrowWindow";
-import { originalRowGetter } from "../lib/edit";
 import { visibleColumns } from "../lib/keyset";
 import { gridTheme, gridRowTints, editTints, nullCellStyle, searchHitBg } from "../lib/theme";
 import { fadeOutAlpha, mixHex, prefersReducedMotion, pulseAlpha } from "../lib/motion";
@@ -26,6 +26,7 @@ import { useTheme } from "../theme/ThemeProvider";
 import type { ForeignKey, SortKey } from "../lib/commands";
 import {
   discardAll,
+  exclusive,
   gatedCommit,
   isNullLeftEmpty,
   listPending,
@@ -33,12 +34,19 @@ import {
   removePending,
   stageEdit,
   movedTints,
-  type PendingEdit,
   type PendingMap,
 } from "../lib/stagedEdits";
 
 import { DEFAULT_COL_WIDTH } from "../lib/colWidths";
 import { autoFitWidths } from "../lib/autoFit";
+import {
+  insertCellDisplay,
+  stagedCounts,
+  totalStaged,
+  type StagedCounts,
+  type StagedInsert,
+  type StagedSnapshot,
+} from "../lib/stagedChanges";
 
 /** Same column list, same order? */
 function sameNames(a: string[], b: string[]): boolean {
@@ -57,14 +65,12 @@ const SAVED_HOLD_REDUCED = 1100; // reduced motion: solid green, then off (no fa
 const TINT_FADE = 300;
 const PULSE_PERIOD = 1000; // amber "saving" breath
 
-/** A tint fading out on the canvas. Keyed like `editState` (`row:col`), or
- *  `row:*` for a whole row. `done` fires once it has fully faded. */
+/** A tint fading out on the canvas. Keyed like `editState` (`row:col`). */
 interface TintFx {
   tint: "saved" | "error";
   start: number;
   hold: number;
   dur: number;
-  done?: () => void;
 }
 
 /** A windowed data source the grid pages over. `key` identity resets the cache. */
@@ -85,30 +91,32 @@ export interface GridSource {
 
 export interface DataGridHandle {
   scrollToRow: (row: number) => void;
-  /** Commit all staged edits to the DB (TablePlus ⌘S). */
+  /** Commit every staged change to the DB in one call (TablePlus ⌘S). */
   commitPending: () => void;
-  /** Drop all staged edits and revert the display. */
+  /** Drop every staged change and revert the display. */
   discardPending: () => void;
-  /** The staged edits, in commit order (for the titlebar's Review popover). */
-  listPending: () => PendingEdit[];
-  /** Fade a red tint off `row`; resolves when it has faded (at once under
-   *  reduced motion). Used just before a deleted row is refetched away. */
-  fadeRow: (row: number) => Promise<void>;
-  /** After the next re-read, flash the row whose columns equal `match` (a
-   *  just-inserted row's PK). Does nothing if that row isn't on the page. */
-  flashRowWhere: (match: Record<string, string>) => void;
+  /** Everything staged, for the commit batch and the Review SQL. */
+  snapshot: () => StagedSnapshot;
+  /** Stage these page rows for delete. Rows past the page, already staged, or whose page
+   *  isn't loaded are skipped; a no-op unless the grid is editable and has a PK. */
+  stageDeleteRows: (rows: number[]) => void;
+  /** Unstage a staged delete (its staged cell edits come back into the batch). */
+  undoDelete: (row: number) => void;
+  /** Append a staged new row after the page's rows. False when the grid has no
+   *  `onCommitChanges` (read-only, or the parent withholds it while a page is in flight)
+   *  or a commit is in flight, so the caller can keep the draft. */
+  stageInsert: (values: [string, string | null][]) => boolean;
+  /** Remove a staged new row, by its grid row. */
+  removeInsertedRow: (row: number) => void;
 }
 
 interface Props {
   source: GridSource;
   onWindowFetched?: (ms: number) => void;
-  /** When set, cells are editable; return false to revert (e.g. on conflict). */
-  onEdit?: (
-    row: number,
-    col: string,
-    newValue: string,
-    getOriginal: (c: string) => string | null,
-  ) => Promise<boolean>;
+  /** When set, the grid is editable: cells stage edits, rows stage deletes and inserts,
+   *  and every commit path hands everything staged to this in ONE call. Resolve true once
+   *  it is all written (the grid clears and calls `onSave`), false to keep it all staged. */
+  onCommitChanges?: (snap: StagedSnapshot) => Promise<boolean>;
   /** Map of column-name → foreign-key edge; cells whose column is a FK show a chevron affordance. */
   fkByColumn?: Map<string, ForeignKey>;
   /** Fires when the user clicks a FK chevron / cell. */
@@ -125,6 +133,8 @@ interface Props {
      *  Use this (never `values`) for anything that identifies the row: a PK in a
      *  DELETE/UPDATE WHERE clause. Null when the page hasn't loaded. */
     serverValues: Record<string, string | null> | null;
+    /** A staged row: its menu offers Undo delete / Remove row instead. */
+    staged?: "deleted" | "inserted";
     x: number;
     y: number;
   }) => void;
@@ -143,12 +153,12 @@ interface Props {
   /** Columns whose values are numeric — rendered right-aligned (TablePlus
    *  parity, Slice 29). */
   rightAlignColumns?: ReadonlySet<string>;
-  /** Called after a successful full commit (with how many edits it wrote) so
-   *  the parent can re-sync the page. */
+  /** Called after a successful commit (with how many changes it wrote) so the
+   *  parent can re-sync the page. */
   onSave?: (saved: number) => void;
-  /** Fires whenever the count of staged (uncommitted) edits changes. */
-  onPendingCountChange?: (count: number) => void;
-  /** True while {@link DataGridHandle.commitPending} is walking its staged edits.
+  /** Fires whenever the staged counts change. */
+  onStagedCountsChange?: (counts: StagedCounts) => void;
+  /** True while {@link DataGridHandle.commitPending} is writing the staged batch.
    *  The parent MUST use it to lock anything that would change what a row index
    *  means (sort, paging, refresh) — see the generation guard in `commitPending`. */
   onCommittingChange?: (busy: boolean) => void;
@@ -187,7 +197,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   {
     source,
     onWindowFetched,
-    onEdit,
+    onCommitChanges,
     fkByColumn,
     onFkClick,
     onCellContext,
@@ -197,7 +207,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     onColumnResize,
     rightAlignColumns,
     onSave,
-    onPendingCountChange,
+    onStagedCountsChange,
     onCommittingChange,
     onFetchError,
     sort,
@@ -215,7 +225,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     const c = gridTheme(resolved).accentColor;
     return { textDark: c, textLight: c };
   }, [resolved]);
-  const editable = !!onEdit;
+  const editable = !!onCommitChanges;
   const gridRef = useRef<DataEditorRef>(null);
   const cacheRef = useRef(new WindowCache(source.pageSize ?? PAGE, MAX_PAGES));
   // Pages whose fetch failed. They are NOT retried on repaint — glide re-asks for
@@ -230,9 +240,12 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   // Staged (uncommitted) edits in the TablePlus batch model — committed/discarded
   // as a set. `overlay` mirrors their values for display; `pending` drives the bar.
   const pending = useRef<PendingMap>(new Map());
+  // Staged row deletes (page-relative rows) and new rows, committed with the edits.
+  const deletes = useRef(new Set<number>());
+  const inserts = useRef<StagedInsert[]>([]);
   const notifyPending = useCallback(() => {
-    onPendingCountChange?.(pending.current.size);
-  }, [onPendingCountChange]);
+    onStagedCountsChange?.(stagedCounts(listPending(pending.current), deletes.current, inserts.current.length));
+  }, [onStagedCountsChange]);
   // Per-cell tint: blue while staged, amber while committing, green on success
   // (auto-clears), red on conflict/error (TablePlus parity).
   const editState = useRef(new Map<string, "staged" | "saving" | "saved" | "error">());
@@ -247,6 +260,10 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   pkRef.current = pk;
   const confirmCommitRef = useRef(confirmCommit);
   confirmCommitRef.current = confirmCommit;
+  // A commit (its confirm included) is in flight: a second ⌘S is dropped, not re-sent,
+  // and staging is frozen — a successful commit clears everything staged, so anything
+  // staged or unstaged meanwhile would be lost silently.
+  const committingRef = useRef(false);
   // Monotonic per-cell edit token — a resolving write that's been superseded by
   // a newer edit on the same cell bails instead of clobbering it.
   const editSeq = useRef(new Map<string, number>());
@@ -257,8 +274,6 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   const rafId = useRef<number | null>(null);
   const pulseStart = useRef(0);
   const reducedMotion = useRef(prefersReducedMotion());
-  // An inserted row to flash once the re-read lands (see `flashRowWhere`).
-  const pendingFlash = useRef<{ match: Record<string, string>; gen: number } | null>(null);
   const [columns, setColumns] = useState<GridColumn[]>([]);
   const colNames = useRef<string[]>([]);
   // Search hits per decoded page, computed once per (page, term, columns) — a
@@ -381,6 +396,8 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     // and a leftover undo entry would write into a freshly-refetched row.
     editState.current.clear();
     pending.current = new Map();
+    deletes.current = new Set();
+    inserts.current = [];
     // notifyPending() is intentionally left out of this effect's deps — the parent
     // passes a stable setState, and re-running the reset on its identity change
     // would wipe staged edits unexpectedly.
@@ -390,10 +407,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     editTimers.current.forEach((id) => window.clearTimeout(id));
     editTimers.current.clear();
     savedIds.current.clear();
-    // Settle anything awaiting a fade (a delete) rather than leave it hanging.
-    fx.current.forEach((f) => f.done?.());
     fx.current.clear();
-    pendingFlash.current = null;
     autoFitRef.current = {};
     autoFitDoneRef.current = false;
     setSelRow(undefined); // stale selection must not linger across table/result switches
@@ -425,6 +439,8 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     // refreshed row (its clear timer still owns it).
     for (const [k, st] of editState.current) if (st !== "saved") editState.current.delete(k);
     pending.current = new Map();
+    deletes.current = new Set();
+    inserts.current = [];
     notifyPending();
     undoStack.current = [];
     setVersion((v) => v + 1);
@@ -449,14 +465,12 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
       const i = key.indexOf(":");
       const row = Number(key.slice(0, i));
       const name = key.slice(i + 1);
-      if (name === "*") cols.forEach((_, c) => damage.push({ cell: [c, row] }));
-      else if (cols.includes(name)) damage.push({ cell: [cols.indexOf(name), row] });
+      if (cols.includes(name)) damage.push({ cell: [cols.indexOf(name), row] });
     };
     for (const [key, f] of fx.current) {
       add(key);
       if (now - f.start >= f.hold + f.dur) {
         fx.current.delete(key); // this frame repaints it without the tint
-        f.done?.();
       }
     }
     let saving = false;
@@ -520,26 +534,6 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
             applyColumns(names);
           }
           maybeAutoFit();
-          // A just-inserted row: once the re-read after the insert lands, find it
-          // by PK and flash it. One try only — if it sorted onto another page, skip.
-          const pf = pendingFlash.current;
-          if (pf && gen > pf.gen) {
-            pendingFlash.current = null;
-            const keys = Object.keys(pf.match);
-            const end = Math.min(source.totalRows, (page + 1) * size);
-            for (let r = page * size; r < end; r++) {
-              if (keys.every((c) => cacheRef.current.getCell(r, c) === pf.match[c])) {
-                fx.current.set(`${r}:*`, {
-                  tint: "saved",
-                  start: performance.now(),
-                  hold: SAVED_HOLD,
-                  dur: TINT_FADE,
-                });
-                animate();
-                break;
-              }
-            }
-          }
           onFetchedRef.current?.(ms);
           setVersion((v) => v + 1);
         })
@@ -557,7 +551,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
           if (gen === generation.current) inflight.current.delete(page);
         });
     },
-    [source, maybeAutoFit, applyColumns, animate],
+    [source, maybeAutoFit, applyColumns],
   );
 
   useEffect(() => {
@@ -578,6 +572,26 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   const getCellContent = useCallback(
     ([col, row]: Item): GridCell => {
       const name = colNames.current[col];
+      // A staged new row: read-only (v1), green, DEFAULT / NULL muted italic.
+      if (row >= source.totalRows) {
+        const ins = inserts.current[row - source.totalRows];
+        if (!ins || !name) return { kind: GridCellKind.Loading, allowOverlay: false };
+        const cell = insertCellDisplay(ins.values, name);
+        return {
+          kind: GridCellKind.Text,
+          data: cell.kind === "value" ? cell.text : "",
+          displayData: cell.text,
+          allowOverlay: false,
+          readonly: true,
+          contentAlign: cell.kind === "value" && rightAlignColumns?.has(name) ? "right" : undefined,
+          themeOverride: {
+            bgCell: editTints(resolved).inserted,
+            ...(cell.kind === "value" ? {} : nullCellStyle(resolved)),
+          },
+        };
+      }
+      // A row staged for delete paints red over any cell tint, and can't be edited.
+      const deleted = deletes.current.has(row);
       const ov = name ? overlay.current.get(`${row}:${name}`) : undefined;
       const value = ov ?? (name ? cacheRef.current.getCell(row, name) : undefined);
       if (value === undefined) {
@@ -593,12 +607,14 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
       // whose `→ value` affordance reads left-to-right.
       const numeric = !fk && name ? rightAlignColumns?.has(name) : false;
       // Save-state tint: amber while writing (breathing, unless reduced motion),
-      // green on save, red on error. A fading tint (saved cell, deleted or
-      // inserted row) blends toward the row's own background.
+      // green on save, red on error. A fading saved tint blends toward the row's
+      // own background.
       const save = name ? editState.current.get(`${row}:${name}`) : undefined;
-      const fade = save ? undefined : (fx.current.get(`${row}:${name}`) ?? fx.current.get(`${row}:*`));
+      const fade = save ? undefined : fx.current.get(`${row}:${name}`);
       let saveBg: string | undefined;
-      if (save || fade) {
+      if (deleted) {
+        saveBg = editTints(resolved).deleted;
+      } else if (save || fade) {
         const tints = editTints(resolved);
         const now = performance.now();
         if (save === "saving" && !reducedMotion.current) {
@@ -638,13 +654,13 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
         // `data` is what the overlay editor opens with, so a NULL edits from empty.
         data: value ?? "",
         displayData: isNull ? "NULL" : (display ?? ""),
-        allowOverlay: editable,
-        readonly: !editable,
+        allowOverlay: editable && !deleted && !committingRef.current,
+        readonly: !editable || deleted,
         contentAlign: numeric ? "right" : undefined,
         themeOverride,
       };
     },
-    [ensurePage, editable, fkByColumn, rightAlignColumns, resolved, rowBg, highlight, fkText],
+    [ensurePage, editable, fkByColumn, rightAlignColumns, resolved, rowBg, highlight, fkText, source.totalRows],
   );
 
   /** Build the full {col → value} map for `row` by walking columns through the
@@ -675,6 +691,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   const onCellClicked = useCallback(
     ([col, row]: Item) => {
       setSelRow(row);
+      if (row >= source.totalRows) return; // a staged new row has no server row
       if (onRowSelected) {
         onRowSelected(row, readRow(row));
       }
@@ -685,7 +702,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
       const value = name ? (overlay.current.get(`${row}:${name}`) ?? cacheRef.current.getCell(row, name)) : null;
       onFkClick(fk.to_table, fk.to_column, value ?? null);
     },
-    [fkByColumn, onFkClick, onRowSelected, readRow],
+    [fkByColumn, onFkClick, onRowSelected, readRow, source.totalRows],
   );
 
   // Schedule a saved-tint clear, tracking the timer so a source switch / unmount
@@ -722,7 +739,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
    *  commit still targets the DB value. */
   const applyCellEdit = useCallback(
     (row: number, name: string, newValue: string, pushUndo: boolean) => {
-      if (!onEdit) return;
+      if (!onCommitChanges || committingRef.current || deletes.current.has(row) || row >= source.totalRows) return;
       const key = pendingKey(row, name);
       const existing = pending.current.get(key);
       const priorOverlay = overlay.current.get(key);
@@ -748,107 +765,180 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
       notifyPending();
       setVersion((v) => v + 1);
     },
-    [onEdit, notifyPending],
+    [onCommitChanges, source.totalRows, notifyPending],
   );
 
-  /** Commit all staged edits to the DB, in stage order. Drives saving→saved/error
-   *  tints per cell; stops at the first failure, leaving the rest staged so the
-   *  user can fix and retry. Refreshes only when every edit committed. */
+  /** Repaint whole rows now: a staged tint lives in refs, which glide can't see change. */
+  const repaintRows = useCallback((rows: number[]) => {
+    const cols = colNames.current;
+    gridRef.current?.updateCells(rows.flatMap((r) => cols.map((_, c) => ({ cell: [c, r] as Item }))));
+  }, []);
+
+  const stageDeleteRows = useCallback(
+    (rows: number[]) => {
+      const keyCols = pkRef.current ?? [];
+      if (!onCommitChanges || committingRef.current || keyCols.length === 0) return;
+      const added = rows.filter(
+        (r) =>
+          r >= 0 &&
+          r < source.totalRows &&
+          !deletes.current.has(r) &&
+          cacheRef.current.getCell(r, keyCols[0]) !== undefined,
+      );
+      if (added.length === 0) return;
+      for (const r of added) deletes.current.add(r);
+      notifyPending();
+      repaintRows(added);
+      setVersion((v) => v + 1);
+    },
+    [onCommitChanges, source.totalRows, notifyPending, repaintRows],
+  );
+
+  const undoDelete = useCallback(
+    (row: number) => {
+      if (committingRef.current || !deletes.current.delete(row)) return;
+      notifyPending();
+      repaintRows([row]);
+      setVersion((v) => v + 1);
+    },
+    [notifyPending, repaintRows],
+  );
+
+  const stageInsert = useCallback(
+    (values: [string, string | null][]) => {
+      if (!onCommitChanges || committingRef.current) return false;
+      inserts.current = [...inserts.current, { values }];
+      notifyPending();
+      setVersion((v) => v + 1); // `rows` grows, so glide redraws
+      return true;
+    },
+    [onCommitChanges, notifyPending],
+  );
+
+  const removeInsertedRow = useCallback(
+    (row: number) => {
+      const i = row - source.totalRows;
+      if (committingRef.current || i < 0 || i >= inserts.current.length) return;
+      inserts.current = inserts.current.filter((_, j) => j !== i);
+      notifyPending();
+      setVersion((v) => v + 1);
+    },
+    [source.totalRows, notifyPending],
+  );
+
+  /** ⌫ with rows selected (row-number clicks) stages them all for delete. Without a row
+   *  selection glide's own delete (clear the selected cells) runs, as before. */
+  const onGridDelete = useCallback(
+    (sel: GridSelection) => {
+      if (sel.rows.length === 0) return true;
+      stageDeleteRows(sel.rows.toArray());
+      return false;
+    },
+    [stageDeleteRows],
+  );
+
+  /** What's staged now. `serverValue` closes over THIS page's cache, so the batch keeps
+   *  reading the page it was staged against. */
+  const snapshotNow = useCallback((): StagedSnapshot => {
+    const cache = cacheRef.current;
+    return {
+      edits: listPending(pending.current),
+      deletes: [...deletes.current].sort((a, b) => a - b),
+      inserts: [...inserts.current],
+      serverValue: (r, c) => cache.getCell(r, c),
+    };
+  }, []);
+
+  /** Commit everything staged in ONE `onCommitChanges` call (one transaction). Success:
+   *  every staged change clears and `onSave` re-syncs the page. Failure: nothing was
+   *  written, so everything stays staged for the user to fix or discard. */
   const doCommit = useCallback(async () => {
-    if (!onEdit) return;
-    const edits = listPending(pending.current);
-    if (edits.length === 0) return;
-    // Each edit costs a round trip, and `e.row` is an index into the CURRENT window —
-    // so a sort, page or refresh landing mid-loop would silently re-point the remaining
-    // edits at different rows. The reset effects swap `cacheRef.current` and clear
-    // `pending`/`overlay` under us; an UPDATE whose row happens to share the original
-    // value (enums, flags, booleans, NULL) then succeeds against the WRONG row. Pin the
-    // generation and stop the moment it moves, exactly as `ensurePage` already does.
+    if (!onCommitChanges) return;
+    const snap = snapshotNow();
+    const dead = new Set(snap.deletes);
+    const n = totalStaged(stagedCounts(snap.edits, dead, snap.inserts.length));
+    if (n === 0) return;
+    // `row` indexes the CURRENT page. The parent locks sort / paging / refresh while
+    // committing; the pinned generation is the backstop, exactly as in `ensurePage`.
     const gen = generation.current;
+    const live = snap.edits.filter((e) => !dead.has(e.row));
+    for (const e of live) editState.current.set(pendingKey(e.row, e.col), "saving");
     onCommittingChange?.(true);
     pulseStart.current = performance.now();
+    animate();
+    setVersion((v) => v + 1);
+    let ok = false;
     try {
-      for (const e of edits) {
-        if (gen !== generation.current) break; // source changed mid-commit
-        const key = pendingKey(e.row, e.col);
-        editState.current.set(key, "saving");
-        animate(); // pulses while any cell is saving; stops by itself after
-        setVersion((v) => v + 1);
-        // Row identity (the PK in the WHERE clause) comes from the loaded page —
-        // the staged overlay must never reach it, or an edit to a PK column would
-        // re-point the remaining edits at whichever row already holds the new key.
-        const getOriginal = originalRowGetter(e, (c) => cacheRef.current.getCell(e.row, c));
-        // A throw is a failed write: without the catch the cell would pulse
-        // "saving" forever and the rest of the batch would silently stop.
-        let keep: boolean;
-        try {
-          keep = await onEdit(e.row, e.col, e.newValue, getOriginal);
-        } catch {
-          keep = false;
-        }
-        // The await above is the window: re-check before writing anything down, so a
-        // reset that landed while the round trip was in flight cannot have its freshly
-        // cleared `pending` repopulated or an unrelated cell tinted.
-        if (gen !== generation.current) break;
-        if (keep) {
-          editState.current.set(key, "saved");
-          // The row as it now is (staged values included — an edited PK column
-          // is the row's new key), so the re-read can tell if it moved.
-          const shown = readRow(e.row);
-          const keyCols = pkRef.current ?? [];
-          if (shown && keyCols.length > 0) {
-            savedIds.current.set(key, Object.fromEntries(keyCols.map((c) => [c, shown[c] ?? null])));
-          }
-          pending.current = removePending(pending.current, e.row, e.col);
-          notifyPending();
-          clearTintLater(key);
-          setVersion((v) => v + 1);
-        } else {
-          editState.current.set(key, "error");
-          setVersion((v) => v + 1);
-          break; // partial-failure: stop, keep remaining staged
-        }
-      }
+      ok = await onCommitChanges(snap);
+    } catch {
+      ok = false;
     } finally {
       onCommittingChange?.(false);
     }
-    if (gen === generation.current && pending.current.size === 0) {
-      undoStack.current = [];
-      onSave?.(edits.length);
+    if (gen !== generation.current) return; // the page changed under the call
+    if (!ok) {
+      for (const e of live) editState.current.set(pendingKey(e.row, e.col), "staged");
+      setVersion((v) => v + 1);
+      return;
     }
-  }, [onEdit, notifyPending, clearTintLater, onSave, onCommittingChange, animate, readRow]);
+    const keyCols = pkRef.current ?? [];
+    for (const e of live) {
+      const key = pendingKey(e.row, e.col);
+      editState.current.set(key, "saved");
+      const shown = readRow(e.row);
+      if (shown && keyCols.length > 0) {
+        savedIds.current.set(key, Object.fromEntries(keyCols.map((c) => [c, shown[c] ?? null])));
+      }
+      clearTintLater(key);
+    }
+    for (const e of snap.edits) if (dead.has(e.row)) editState.current.delete(pendingKey(e.row, e.col));
+    pending.current = new Map();
+    deletes.current = new Set();
+    inserts.current = [];
+    undoStack.current = [];
+    notifyPending();
+    setVersion((v) => v + 1);
+    onSave?.(n);
+  }, [onCommitChanges, snapshotNow, notifyPending, clearTintLater, onSave, onCommittingChange, animate, readRow]);
 
   /** {@link doCommit}, behind `confirmCommit` when one is set. Nothing staged means
-   *  nothing to confirm, so an empty ⌘S never prompts. */
+   *  nothing to confirm, so an empty ⌘S never prompts; one already in flight (confirm
+   *  open or `apply_changes` running) drops this call. */
   const commitPending = useCallback(async () => {
-    if (!onEdit || pending.current.size === 0) return;
-    await gatedCommit(confirmCommitRef.current, doCommit);
-  }, [onEdit, doCommit]);
+    if (!onCommitChanges) return;
+    if (pending.current.size + deletes.current.size + inserts.current.length === 0) return;
+    await exclusive(committingRef, () => gatedCommit(confirmCommitRef.current, doCommit));
+  }, [onCommitChanges, doCommit]);
 
-  /** Drop every staged edit and revert the display to each cell's saved value. */
+  /** Drop every staged change and revert the display to each cell's saved value. */
   const discardPending = useCallback(() => {
     for (const e of discardAll(pending.current)) {
       overlay.current.delete(pendingKey(e.row, e.col));
       editState.current.delete(pendingKey(e.row, e.col));
     }
+    const undeleted = [...deletes.current];
     pending.current = new Map();
+    deletes.current = new Set();
+    inserts.current = [];
     undoStack.current = [];
     notifyPending();
+    repaintRows(undeleted);
     setVersion((v) => v + 1);
-  }, [notifyPending]);
+  }, [notifyPending, repaintRows]);
 
   const onCellEdited = useCallback(
     ([col, row]: Item, newCell: EditableGridCell) => {
-      if (!onEdit || newCell.kind !== GridCellKind.Text) return;
+      if (!onCommitChanges || newCell.kind !== GridCellKind.Text) return;
       const name = colNames.current[col];
       if (!name) return;
       applyCellEdit(row, name, String(newCell.data), true);
     },
-    [onEdit, applyCellEdit],
+    [onCommitChanges, applyCellEdit],
   );
 
   /** ⌘Z — revert the most recent edit by re-applying its previous value. */
   const undoLastEdit = useCallback(() => {
+    if (committingRef.current) return; // before the pop, or the entry is lost
     const last = undoStack.current.pop();
     if (!last || last.prev === null) return; // null restore can't go through the string edit path
     applyCellEdit(last.row, last.col, last.prev, false);
@@ -884,23 +974,11 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     scrollToRow: (row: number) => gridRef.current?.scrollTo(0, row, "vertical"),
     commitPending: () => void commitPending(),
     discardPending,
-    listPending: () => listPending(pending.current),
-    fadeRow: (row: number) =>
-      new Promise<void>((resolve) => {
-        if (reducedMotion.current) return resolve();
-        fx.current.get(`${row}:*`)?.done?.();
-        fx.current.set(`${row}:*`, {
-          tint: "error",
-          start: performance.now(),
-          hold: 0,
-          dur: TINT_FADE,
-          done: resolve,
-        });
-        animate();
-      }),
-    flashRowWhere: (match: Record<string, string>) => {
-      pendingFlash.current = { match, gen: generation.current };
-    },
+    snapshot: snapshotNow,
+    stageDeleteRows,
+    undoDelete,
+    stageInsert,
+    removeInsertedRow,
   }));
 
   // Update only the dragged column's width in local state so the resize feels
@@ -921,13 +999,22 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   // before the early return below so hook order stays stable across renders.
   const getRowThemeOverride = useCallback(
     (row: number) => {
+      // Red wins over glide's row-selection fill too, so ⌫ on selected rows shows at once.
+      if (deletes.current.has(row)) {
+        const red = editTints(resolved).deleted;
+        return { bgCell: red, accentLight: red };
+      }
+      // Only real staged-insert rows: glide also asks for the blank filler rows past the data.
+      if (row >= source.totalRows) {
+        return row < source.totalRows + inserts.current.length ? { bgCell: editTints(resolved).inserted } : undefined;
+      }
       const t = gridRowTints(resolved);
       if (row === selRow) return { bgCell: t.selected };
       if (row === hoverRow) return { bgCell: t.hover };
       if (row % 2 === 1) return { bgCell: t.zebra };
       return undefined;
     },
-    [resolved, hoverRow, selRow],
+    [resolved, hoverRow, selRow, source.totalRows],
   );
 
   if (columns.length === 0) {
@@ -938,7 +1025,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     <DataEditor
       ref={gridRef}
       columns={columns}
-      rows={source.totalRows}
+      rows={source.totalRows + inserts.current.length}
       rowHeight={ROW_HEIGHT}
       headerHeight={HEADER_HEIGHT}
       getRowThemeOverride={getRowThemeOverride}
@@ -970,6 +1057,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
                 value,
                 values: readRow(row),
                 serverValues: readRow(row, true),
+                staged: row >= source.totalRows ? "inserted" : deletes.current.has(row) ? "deleted" : undefined,
                 x: event.bounds.x + event.localEventX,
                 y: event.bounds.y + event.localEventY,
               });
@@ -985,9 +1073,11 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
             }
           : undefined
       }
-      rowMarkers="number"
+      // Clicking a row number selects the row: the row selection ⌫ stages for delete.
+      rowMarkers={editable ? "clickable-number" : "number"}
       rowMarkerStartIndex={rowMarkerStart}
-      rowMarkerWidth={markerWidth(rowMarkerStart + source.totalRows - 1)}
+      rowMarkerWidth={markerWidth(rowMarkerStart + source.totalRows + inserts.current.length - 1)}
+      onDelete={editable ? onGridDelete : undefined}
       smoothScrollX
       smoothScrollY
       verticalBorder

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   discardAll,
+  exclusive,
   gatedCommit,
   productionCommitMessage,
   listPending,
@@ -119,5 +120,27 @@ describe("production commit gate", () => {
     const commit = vi.fn();
     expect(await gatedCommit(undefined, commit)).toBe(true);
     expect(commit).toHaveBeenCalledOnce();
+  });
+});
+
+describe("exclusive (one commit in flight)", () => {
+  it("drops a second call while the first is still running", async () => {
+    const flag = { current: false };
+    let release!: () => void;
+    const run = vi.fn(() => new Promise<void>((r) => (release = r)));
+    const first = exclusive(flag, run);
+    expect(await exclusive(flag, run)).toBe(false); // a repeated ⌘S
+    expect(run).toHaveBeenCalledOnce();
+    release();
+    expect(await first).toBe(true);
+    expect(flag.current).toBe(false);
+  });
+
+  it("clears the flag when the run throws, so the next commit can go", async () => {
+    const flag = { current: false };
+    await expect(exclusive(flag, async () => Promise.reject(new Error("x")))).rejects.toThrow("x");
+    expect(flag.current).toBe(false);
+    const run = vi.fn(async () => {});
+    expect(await exclusive(flag, run)).toBe(true);
   });
 });

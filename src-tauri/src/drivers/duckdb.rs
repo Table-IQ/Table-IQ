@@ -20,10 +20,10 @@ use async_trait::async_trait;
 use crate::sql_log::{note, CURRENT};
 
 use super::{
-    build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken,
-    ColumnDetail, ColumnFilter, ColumnInfo, ColsPk, DResult, DriverError, EditSpec, ForeignKey,
-    IndexInfo, MetaCache, ObjectInfo, ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel,
-    SortKey, SqlDriver, StmtOutput, TableStat, TableStructure,
+    build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken, Change,
+    ChangesResult, ColumnDetail, ColumnFilter, ColumnInfo, ColsPk, DResult, DriverError, EditSpec,
+    ForeignKey, IndexInfo, MetaCache, ObjectInfo, ObjectKind, QueryError, RowCount, SchemaInfo,
+    SchemaModel, SortKey, SqlDriver, StmtOutput, TableStat, TableStructure,
 };
 
 fn db(e: ::duckdb::Error) -> DriverError {
@@ -54,6 +54,40 @@ fn where_of(sql: &str) -> String {
         String::new()
     } else {
         format!(" WHERE {sql}")
+    }
+}
+
+/// The optimistic-concurrency UPDATE for one cell edit, exactly as `apply_edit` sends it: `?`
+/// binds untyped, so DuckDB casts each to the column's type; `IS NOT DISTINCT FROM` is DuckDB's
+/// native null-safe comparison.
+fn update_sql(schema: &str, table: &str, edit: &EditSpec) -> (String, Vec<Option<String>>) {
+    let mut wheres: Vec<String> = edit.pk.iter().map(|(n, _)| format!("{} = ?", quote_ident(n))).collect();
+    wheres.push(format!("{} IS NOT DISTINCT FROM ?", quote_ident(&edit.column)));
+    let sql = format!(
+        "UPDATE {} SET {} = ? WHERE {}",
+        qualified(schema, table),
+        quote_ident(&edit.column),
+        wheres.join(" AND ")
+    );
+    let mut binds = vec![edit.new_value.clone()];
+    binds.extend(edit.pk.iter().map(|(_, v)| v.clone()));
+    binds.push(edit.orig_value.clone());
+    (sql, binds)
+}
+
+/// DELETE matching a row by its primary key, exactly as `delete_row` sends it.
+fn delete_sql(schema: &str, table: &str, pk: &[(String, Option<String>)]) -> (String, Vec<Option<String>>) {
+    let wheres: Vec<String> = pk.iter().map(|(n, _)| format!("{} = ?", quote_ident(n))).collect();
+    let sql = format!("DELETE FROM {} WHERE {}", qualified(schema, table), wheres.join(" AND "));
+    (sql, pk.iter().map(|(_, v)| v.clone()).collect())
+}
+
+/// One staged change as `(sql, binds)` — the same statements the single-row commands send.
+fn change_sql(schema: &str, table: &str, c: &Change) -> (String, Vec<Option<String>>) {
+    match c {
+        Change::Update { edit } => update_sql(schema, table, edit),
+        Change::Delete { pk } => delete_sql(schema, table, pk),
+        Change::Insert { values } => build_insert_sql(schema, table, values, &quote_ident, &placeholder, true),
     }
 }
 
@@ -481,19 +515,7 @@ impl SqlDriver for DuckDriver {
             return Err(DriverError::Db("cannot edit without a primary key".into()));
         }
         reject_null_pk(&edit.pk)?;
-        // The original value binds untyped, so DuckDB casts it to the column's type: the
-        // grid's text and a query tab's text both match however each rendered it.
-        let mut wheres: Vec<String> = edit.pk.iter().map(|(n, _)| format!("{} = ?", quote_ident(n))).collect();
-        wheres.push(format!("{} IS NOT DISTINCT FROM ?", quote_ident(&edit.column)));
-        let sql = format!(
-            "UPDATE {} SET {} = ? WHERE {}",
-            qualified(schema, table),
-            quote_ident(&edit.column),
-            wheres.join(" AND ")
-        );
-        let mut binds = vec![edit.new_value.clone()];
-        binds.extend(edit.pk.iter().map(|(_, v)| v.clone()));
-        binds.push(edit.orig_value.clone());
+        let (sql, binds) = update_sql(schema, table, edit);
         self.exec(sql, binds).await
     }
 
@@ -502,9 +524,44 @@ impl SqlDriver for DuckDriver {
             return Err(DriverError::Db("cannot delete without a primary key".into()));
         }
         reject_null_pk(pk)?;
-        let wheres: Vec<String> = pk.iter().map(|(n, _)| format!("{} = ?", quote_ident(n))).collect();
-        let sql = format!("DELETE FROM {} WHERE {}", qualified(schema, table), wheres.join(" AND "));
-        self.exec(sql, pk.iter().map(|(_, v)| v.clone()).collect()).await
+        let (sql, binds) = delete_sql(schema, table, pk);
+        self.exec(sql, binds).await
+    }
+
+    async fn apply_changes(&self, schema: &str, table: &str, changes: &[Change]) -> DResult<ChangesResult> {
+        super::check_keys(changes)?;
+        for (i, c) in changes.iter().enumerate() {
+            match c {
+                Change::Update { edit } => reject_null_pk(&edit.pk),
+                Change::Delete { pk } => reject_null_pk(pk),
+                Change::Insert { .. } => Ok(()),
+            }
+            .map_err(|e| super::change_err(i, e))?;
+        }
+        let stmts: Vec<_> = changes.iter().map(|c| change_sql(schema, table, c)).collect();
+        let changes = changes.to_vec();
+        self.with(move |c| {
+            note("BEGIN TRANSACTION");
+            c.execute_batch("BEGIN TRANSACTION").map_err(db)?;
+            let mut out = ChangesResult::default();
+            for i in super::change_order(&changes) {
+                let (sql, binds) = &stmts[i];
+                note(sql);
+                let step = c
+                    .prepare(sql)
+                    .and_then(|mut st| st.execute(::duckdb::params_from_iter(binds.iter())))
+                    .map_err(|e| super::change_err(i, db(e)))
+                    .and_then(|n| super::tally(&mut out, i, &changes[i], n as u64));
+                if let Err(e) = step {
+                    let _ = c.execute_batch("ROLLBACK");
+                    return Err(e);
+                }
+            }
+            note("COMMIT");
+            c.execute_batch("COMMIT").map_err(db)?;
+            Ok(out)
+        })
+        .await
     }
 
     async fn run_script(&self, sql: &str) -> DResult<u64> {
@@ -645,4 +702,29 @@ impl SqlDriver for DuckDriver {
 fn list_items(text: &str) -> Vec<String> {
     let inner = text.trim().trim_start_matches('[').trim_end_matches(']');
     inner.split(", ").map(str::trim).filter(|x| !x.is_empty()).map(String::from).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{change_sql, delete_sql, update_sql};
+    use crate::drivers::{Change, EditSpec};
+
+    /// Pins the SQL `apply_edit` / `delete_row` have always sent.
+    #[test]
+    fn update_and_delete_sql_match_the_edit_path() {
+        let edit = EditSpec {
+            pk: vec![("id".into(), Some("7".into()))],
+            column: "name".into(),
+            new_value: Some("B".into()),
+            orig_value: Some("b".into()),
+        };
+        let (sql, binds) = update_sql("main", "t", &edit);
+        assert_eq!(sql, "UPDATE \"main\".\"t\" SET \"name\" = ? WHERE \"id\" = ? AND \"name\" IS NOT DISTINCT FROM ?");
+        assert_eq!(binds, vec![Some("B".into()), Some("7".into()), Some("b".into())]);
+        let (sql, binds) = delete_sql("main", "t", &[("id".into(), Some("7".into()))]);
+        assert_eq!(sql, "DELETE FROM \"main\".\"t\" WHERE \"id\" = ?");
+        assert_eq!(binds, vec![Some("7".into())]);
+        let (sql, _) = change_sql("main", "t", &Change::Insert { values: vec![] });
+        assert_eq!(sql, "INSERT INTO \"main\".\"t\" DEFAULT VALUES");
+    }
 }

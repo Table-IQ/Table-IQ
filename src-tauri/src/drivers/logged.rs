@@ -11,7 +11,7 @@ use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 
 use super::{
-    CancelToken, ColumnFilter, DResult, EditSpec, ForeignKey, QueryResult, RowCount,
+    CancelToken, Change, ChangesResult, ColumnFilter, DResult, EditSpec, ForeignKey, QueryResult, RowCount,
     SchemaModel, SortKey, SqlDriver, StmtOutput, TableStat, TableStructure,
 };
 use crate::sql_log::{SqlLog, CURRENT};
@@ -124,6 +124,9 @@ impl SqlDriver for Logged {
         pk: &[(String, Option<String>)],
     ) -> DResult<u64> {
         CURRENT.scope(self.log.clone(), self.inner.delete_row(schema, table, pk)).await
+    }
+    async fn apply_changes(&self, schema: &str, table: &str, changes: &[Change]) -> DResult<ChangesResult> {
+        CURRENT.scope(self.log.clone(), self.inner.apply_changes(schema, table, changes)).await
     }
     async fn run_script(&self, sql: &str) -> DResult<u64> {
         CURRENT.scope(self.log.clone(), self.inner.run_script(sql)).await
@@ -258,6 +261,10 @@ mod tests {
             rec("delete_row");
             Ok(107)
         }
+        async fn apply_changes(&self, _: &str, _: &str, _: &[Change]) -> DResult<ChangesResult> {
+            rec("apply_changes");
+            Ok(ChangesResult { updated: 109, deleted: 0, inserted: 0 })
+        }
         async fn run_script(&self, _: &str) -> DResult<u64> {
             rec("run_script");
             Ok(108)
@@ -326,6 +333,7 @@ mod tests {
         assert_eq!(ok(d.primary_key("s", "t").await), ["primary_key"]);
         assert_eq!(ok(d.apply_edit("s", "t", &edit).await), 106);
         assert_eq!(ok(d.delete_row("s", "t", &[]).await), 107);
+        assert_eq!(ok(d.apply_changes("s", "t", &[]).await).updated, 109);
         assert_eq!(ok(d.run_script("x").await), 108);
         assert_eq!(ok(d.explain_json("x").await), "explain_json");
         assert_eq!(ok(d.foreign_keys().await)[0].constraint, "foreign_keys");
@@ -339,7 +347,7 @@ mod tests {
             [
                 "introspect", "count_rows", "estimate_rows", "table_stats", "open_window_filtered",
                 "open_window_cancellable", "open_window", "insert_row", "run_statements",
-                "run_query", "cancel", "primary_key", "apply_edit", "delete_row", "run_script",
+                "run_query", "cancel", "primary_key", "apply_edit", "delete_row", "apply_changes", "run_script",
                 "explain_json", "foreign_keys", "describe_table", "list_databases", "close",
             ],
             "every call ran inside the log's scope"

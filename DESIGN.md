@@ -237,9 +237,7 @@ State is never carried by motion alone; a tint, label or text always remains.
 | Panels (Alter, New table, …) | `.tiq-pop-in` scale .98→1 + fade; `.tiq-pop-out` on close |
 | Cell saving | amber tint breathes (1s period) while any cell is writing |
 | Cell saved | green holds 800ms, then fades out over 300ms (canvas rAF) |
-| Row deleted | red tint fades over 300ms, then the page refetches |
-| Row inserted | the new row flashes green if its PK was typed |
-| Saved n changes | status-bar text, `.tiq-flash`: fade in, hold, fade out over 2s |
+| Committed n changes | status-bar text, `.tiq-flash`: fade in, hold, fade out over 2s |
 
 ## Connection manager (welcome) — TablePlus parity
 
@@ -361,8 +359,11 @@ floats recently-used connections to the top of the list without any UI grouping
 | Search hit (cell matches the table search) | `#c7d2fe` | `#312e81` | `searchHitBg` — the accent, one step stronger than the selected-row band so a hit still reads on a selected row |
 | Selected row | `#e0e7ff` | `#1e2540` | `gridRowTints.selected` |
 | FK cell text | `#4f46e5` | `#6366f1` | `gridTheme().accentColor` |
+| Row staged for delete | `#fdd5d5` | `#4a1c21` | `editTints().deleted` — whole row, over any cell tint and over glide's row-selection fill; read-only until Undo delete / Discard |
+| Staged new row | `#ccf3d9` | `#173a24` | `editTints().inserted` — appended after the page's rows, read-only; omitted columns show a muted italic `DEFAULT` |
 
 A save-state tint (staged / saving / saved / error) wins over a search hit on the same cell.
+Staged deletes and inserts are static tints (no motion): they hold until Commit or Discard.
 
 ## Connection rail — TablePlus parity
 

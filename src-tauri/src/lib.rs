@@ -24,7 +24,7 @@ pub(crate) fn lk<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 use ipc::connect::{
-    ai_egress_preview, ai_explain_sql, ai_fix_sql, ai_generate_sql, ai_optimize_sql, apply_edit,
+    ai_egress_preview, ai_explain_sql, ai_fix_sql, ai_generate_sql, ai_optimize_sql, apply_changes, apply_edit,
     backup_database, backup_job, cancel_backup_job, detect_backup_tools, restore_database,
     cancel_all, cancel_query, connect, count_rows_exact, delete_connection, delete_row, describe_table,
     estimate_rows, table_stats,
@@ -65,6 +65,7 @@ pub fn invoke_handler<R: tauri::Runtime>(
         primary_key,
         apply_edit,
         delete_row,
+        apply_changes,
         export_result,
         export_table,
         run_script,

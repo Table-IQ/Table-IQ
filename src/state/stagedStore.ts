@@ -1,13 +1,11 @@
 import { create } from "zustand";
-import type { PendingEdit } from "../lib/stagedEdits";
 
 /** What the titlebar's Discard / Review / Commit act on: the visible table tab's grid. */
 export interface StagedApi {
-  list: () => PendingEdit[];
+  /** The Review popover's SQL: the whole staged batch, quoted for the connection's engine. */
+  preview: () => string;
   commit: () => void;
   discard: () => void;
-  /** The on-screen page's first-row offset (TableView's `firstRow`); `PendingEdit.row` is page-relative. */
-  rowOffset: number;
 }
 
 interface StagedState {

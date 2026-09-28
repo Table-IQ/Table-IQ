@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildInsertValues, insertedPkMatch, isDraftDirty } from "./insertRow";
+import { buildInsertValues, isDraftDirty } from "./insertRow";
 
 describe("insertRow", () => {
   it("sends only the columns the user filled, in column-list order", () => {
@@ -30,18 +30,5 @@ describe("insertRow", () => {
     expect(isDraftDirty({})).toBe(false);
     expect(isDraftDirty({ a: "", b: undefined })).toBe(false);
     expect(isDraftDirty({ a: "x" })).toBe(true);
-  });
-});
-
-describe("insertedPkMatch", () => {
-  it("returns the PK values the user typed", () => {
-    expect(insertedPkMatch(["id"], [["id", "42"], ["name", "x"]])).toEqual({ id: "42" });
-  });
-  it("is null when any PK column was left for the database to fill", () => {
-    expect(insertedPkMatch(["id"], [["id", null], ["name", "x"]])).toBeNull();
-    expect(insertedPkMatch(["a", "b"], [["a", "1"]])).toBeNull();
-  });
-  it("is null without a primary key", () => {
-    expect(insertedPkMatch([], [["name", "x"]])).toBeNull();
   });
 });

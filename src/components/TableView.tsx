@@ -1,16 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { DataGrid, type DataGridHandle, type GridSource } from "./DataGrid";
 import {
+  applyChanges,
   applyEdit,
   cancelQuery,
   countRowsExact,
-  deleteRow,
   describeTable,
   downloadText,
   estimateRows,
   exportTable,
   fetchTableWindow,
-  insertRow,
   isNotImplementedError,
   openTable,
   type ColumnDetail,
@@ -56,7 +55,18 @@ import { Elapsed } from "./ui/Elapsed";
 import { ContextMenu, type ContextMenuItem } from "./ui/ContextMenu";
 import { buildRowAs } from "../lib/rowFormat";
 import { buildDeleteStatement, quoteIdent } from "../lib/tableScript";
-import { buildInsertValues, insertedPkMatch, isDraftDirty } from "../lib/insertRow";
+import { buildInsertValues, isDraftDirty } from "../lib/insertRow";
+import {
+  buildBatch,
+  buildPreviewSql,
+  commitErrorMessage,
+  NO_STAGED,
+  stagedLock,
+  totalStaged,
+  type StagedCounts,
+  type StagedSnapshot,
+} from "../lib/stagedChanges";
+import { StagedCountChips } from "./StagedCountChips";
 import {
   chipLabel,
   fetchErrorMessage,
@@ -155,7 +165,6 @@ export function TableView({ connId, schema, object, view }: Props) {
   /** An exact COUNT(*) the user asked for, cancellable by `token`. */
   const [counting, setCounting] = useState<{ token: string; started: number } | null>(null);
   const countingRef = useRef<string | null>(null);
-  const [dirty, setDirty] = useState(0);
   const [refreshKey, setRefreshKey] = useState(0);
   /** The applied filters — what the grid is fetched with. */
   const [filters, setFilters] = useState<ColumnFilter[]>([]);
@@ -173,20 +182,24 @@ export function TableView({ connId, schema, object, view }: Props) {
     values: Record<string, string | null> | null;
     /** Row as the database still has it. The ONLY source for a WHERE clause. */
     serverValues: Record<string, string | null> | null;
+    staged?: "deleted" | "inserted";
   } | null>(null);
-  const [pendingCount, setPendingCount] = useState(0);
-  // True while the grid is walking its staged edits, one round trip each. Sorting or
-  // paging mid-commit would change what the remaining edits' row indices mean, so both
-  // are locked for the duration (the grid also stops itself — see its generation guard).
+  // What the grid has staged, by kind (status-bar chips; the total drives the lock).
+  // `stagedTotal`, not `total`: that name is the table's row total.
+  const [counts, setCounts] = useState<StagedCounts>(NO_STAGED);
+  const stagedTotal = totalStaged(counts);
+  // True while the grid's one commit call is in flight. Sorting or paging mid-commit
+  // would change what the staged row indices mean, so both are locked for the
+  // duration (the grid also stops itself — see its generation guard).
   const [committing, setCommitting] = useState(false);
-  // "Saved n changes" in the status bar for 2s after a commit. `id` re-keys the
+  // "Committed n changes" in the status bar for 2s after a commit. `id` re-keys the
   // element so a second save inside the window restarts its fade.
   const [saved, setSaved] = useState<{ n: number; id: number } | null>(null);
-  // Staged edits are keyed to rows of the page on screen, so anything that swaps
-  // that page (search, filter, sort, paging, refresh) would silently drop them.
-  // Those actions are refused until the edits are committed or discarded, and the
-  // unsaved-changes bar says so. Not while the fetch errored: the grid is gone.
-  const locked = !error && (committing || pendingCount > 0);
+  // Staged edits, deletes and inserts are keyed to rows of the page on screen, so
+  // anything that swaps that page (search, filter, sort, paging, refresh) would
+  // silently drop them. Those actions are refused until they are committed or
+  // discarded, and the unsaved-changes bar says so. Not while the fetch errored.
+  const locked = stagedLock(error, committing, counts);
   const lockedRef = useRef(locked);
   lockedRef.current = locked;
   // Published so leaving this connection (rail, ⌘O, Disconnect) can ask first.
@@ -259,7 +272,6 @@ export function TableView({ connId, schema, object, view }: Props) {
     if (!painted) return;
     let cancelled = false;
     setNotice(null);
-    setDirty(0);
     setPkError(null);
     loadTableMeta(connId, schema, object.name)
       .then((m) => {
@@ -484,44 +496,17 @@ export function TableView({ connId, schema, object, view }: Props) {
   useEffect(() => {
     const onEdited = (e: Event) => {
       const target = (e as CustomEvent<string>).detail;
-      if (target === `${schema}.${object.name}`) refresh();
+      if (target !== `${schema}.${object.name}`) return;
+      // A re-read would wipe everything staged here: say so instead of refreshing.
+      if (lockedRef.current) {
+        setNotice("Saved from the Inspector — commit or discard staged changes, then refresh to see it.");
+      } else refresh();
     };
     window.addEventListener("tiq:row-edited", onEdited);
     return () => window.removeEventListener("tiq:row-edited", onEdited);
   }, [schema, object.name, refresh]);
 
   const editable = object.kind === "Table" && !!pk && pk.length > 0;
-
-  const onEdit = useCallback(
-    async (
-      _row: number,
-      col: string,
-      newValue: string,
-      getOriginal: (c: string) => string | null,
-    ): Promise<boolean> => {
-      if (!pk || pk.length === 0) return false;
-      setNotice(null);
-      setDirty((d) => d + 1);
-      try {
-        // Inside the try: a throw here would otherwise leave "1 saving…" forever.
-        const edit = buildEdit(pk, getOriginal, col, newValue);
-        const { rowsAffected } = await applyEdit(connId, schema, object.name, edit);
-        setDirty((d) => Math.max(0, d - 1));
-        // Only rows_affected === 1 is a clean write. 0 and >1 are both the user's
-        // business and are reported verbatim — nothing is rolled back (the backend
-        // UPDATE is a single non-transactional statement), so we never claim it was.
-        const problem = writeOutcomeMessage("update", rowsAffected);
-        if (!problem) return true;
-        setNotice(`Update "${col}": ${problem}`);
-        return false;
-      } catch (e) {
-        setNotice(`Update failed: ${e}`);
-        setDirty((d) => Math.max(0, d - 1));
-        return false;
-      }
-    },
-    [connId, schema, object.name, pk],
-  );
 
   // Build the FK lookup the grid uses to render the cell-level "go to referenced row" chevron.
   const fkByColumn = useMemo(() => {
@@ -550,18 +535,41 @@ export function TableView({ connId, schema, object, view }: Props) {
   const hasNext = !!pageData && pageData.rows > pageData.size;
   const firstRow = pageData ? pageData.page * pageData.size : 0;
 
+  /** The one commit path (⌘S, the in-grid bar, the titlebar, Review): every staged change
+   *  goes to `apply_changes` as ONE transaction. A failure leaves everything staged. */
+  const commitChanges = useCallback(
+    async (snap: StagedSnapshot): Promise<boolean> => {
+      if (!pk || pk.length === 0) {
+        setNotice("This table has no primary key — changes can't be committed.");
+        return false;
+      }
+      const batch = buildBatch(snap, pk, firstRow);
+      setNotice(null);
+      try {
+        await applyChanges(connId, schema, object.name, batch.changes);
+        return true;
+      } catch (e) {
+        setNotice(commitErrorMessage(e, batch.labels));
+        return false;
+      }
+    },
+    [connId, schema, object.name, pk, firstRow],
+  );
+
   // The titlebar's Discard / Review / Commit (G2) act on this tab's staged edits.
-  // `rowOffset` is `firstRow` (the page on screen): `PendingEdit.row` indexes that page.
+  // `preview` builds the Review SQL from the grid's snapshot.
   const publishStaged = useStaged((s) => s.publish);
   const unregisterStaged = useStaged((s) => s.unregister);
   useEffect(() => {
-    publishStaged(requestKey, pendingCount, committing, {
-      list: () => gridRef.current?.listPending() ?? [],
+    publishStaged(requestKey, stagedTotal, committing, {
+      preview: () => {
+        const snap = gridRef.current?.snapshot();
+        return snap && pk ? buildPreviewSql(schema, object.name, buildBatch(snap, pk, firstRow).changes, engine) : "";
+      },
       commit: () => gridRef.current?.commitPending(),
       discard: () => gridRef.current?.discardPending(),
-      rowOffset: firstRow,
     });
-  }, [requestKey, pendingCount, committing, publishStaged, firstRow]);
+  }, [requestKey, stagedTotal, committing, publishStaged, firstRow, pk, schema, object.name, engine]);
   useEffect(() => () => unregisterStaged(requestKey), [requestKey, unregisterStaged]);
 
   // Production connections confirm every commit (⌘S, the in-grid and titlebar Commit).
@@ -572,13 +580,13 @@ export function TableView({ connId, schema, object, view }: Props) {
         ? async () => {
             const name =
               useConnections.getState().saved.find((c) => c.id === connId)?.name ?? "production";
-            return confirmDialog(productionCommitMessage(pendingCount, name), "Production", {
+            return confirmDialog(productionCommitMessage(stagedTotal, name), "Production", {
               ok: "Commit to production",
               cancel: "Cancel",
             });
           }
         : undefined,
-    [env, connId, pendingCount],
+    [env, connId, stagedTotal],
   );
 
   const source = useMemo<GridSource | null>(() => {
@@ -611,24 +619,17 @@ export function TableView({ connId, schema, object, view }: Props) {
     gridRef.current?.scrollToRow(0);
   };
 
-  const commitDraft = useCallback(async () => {
+  /** "+ Row" Add/Enter stages a new row (green, read-only) — nothing is written until Commit. */
+  const commitDraft = useCallback(() => {
     if (!draft) return;
-    setNotice(null);
-    const values = buildInsertValues(
-      object.columns.map((c) => c.name),
-      draft,
-    );
-    try {
-      await insertRow(connId, schema, object.name, values);
+    const values = buildInsertValues(object.columns.map((c) => c.name), draft);
+    if (gridRef.current?.stageInsert(values)) {
       setDraft(null);
-      // Flash the new row once the refetch lands — only if the user typed its PK.
-      const match = insertedPkMatch(pk ?? [], values);
-      if (match) gridRef.current?.flashRowWhere(match);
-      refresh();
-    } catch (e) {
-      setNotice(`Insert failed: ${e}`);
+      setNotice(null);
+    } else {
+      setNotice("Wait for the page to load or the commit to finish, then add the row.");
     }
-  }, [connId, schema, object, draft, pk, refresh]);
+  }, [object, draft]);
 
   const cancelDraft = useCallback(() => {
     setDraft(null);
@@ -860,7 +861,7 @@ export function TableView({ connId, schema, object, view }: Props) {
         />
         <ToolbarButton label="Profile" onClick={() => setShowProfile(true)} />
         {object.kind === "Table" && (
-          <ToolbarButton label="Alter" onClick={() => setShowAlter(true)} />
+          <ToolbarButton label="Alter" onClick={() => !blockedByEdits() && setShowAlter(true)} />
         )}
         <ToolbarSpacer />
         {(["csv", "json"] as ExportFormat[]).map((fmt) => (
@@ -886,7 +887,7 @@ export function TableView({ connId, schema, object, view }: Props) {
 
       {filterRail}
 
-      {/* Draft-row rail (Slice 21 #2). Editable inputs for each column; Enter commits. */}
+      {/* Draft-row rail (Slice 21 #2). Editable inputs for each column; Enter stages it. */}
       {draft !== null && editable && (
         <div className="tiq-rail flex items-center gap-2 border-b border-border bg-bg px-3 py-1.5">
           <span className="text-[10px] uppercase tracking-wider text-primary">new row</span>
@@ -899,8 +900,8 @@ export function TableView({ connId, schema, object, view }: Props) {
                   setDraft({ ...draft, [c.name]: e.target.value === "" ? "" : e.target.value })
                 }
                 onKeyDown={(e) => {
-                  // Same rule as the Commit button: an untouched draft inserts nothing.
-                  if (e.key === "Enter" && isDraftDirty(draft)) void commitDraft();
+                  // Same rule as the Add button: an untouched draft inserts nothing.
+                  if (e.key === "Enter" && !e.repeat && isDraftDirty(draft)) commitDraft();
                   if (e.key === "Escape") cancelDraft();
                 }}
                 placeholder={c.name}
@@ -911,10 +912,10 @@ export function TableView({ connId, schema, object, view }: Props) {
           </div>
           <button
             disabled={!isDraftDirty(draft)}
-            onClick={() => void commitDraft()}
+            onClick={() => commitDraft()}
             className="rounded-md bg-primary px-2.5 py-0.5 text-[11px] font-medium text-white hover:opacity-90 disabled:opacity-40"
           >
-            Commit ↵
+            Add ↵
           </button>
           <button
             onClick={cancelDraft}
@@ -946,13 +947,13 @@ export function TableView({ connId, schema, object, view }: Props) {
         </div>
       )}
 
-      {/* Staged-edits Commit/Discard bar — TablePlus batch model. Appears whenever
-          there are uncommitted cell edits; Commit (⌘S) writes them all, Discard
-          reverts the display. */}
-      {pendingCount > 0 && (
+      {/* Staged-changes Commit/Discard bar — TablePlus batch model. Appears whenever
+          anything is staged (edits, deletes, inserts); Commit (⌘S) writes it all in
+          one transaction, Discard reverts the display. */}
+      {stagedTotal > 0 && (
         <div className="tiq-rail flex items-center gap-2 border-b border-l-2 border-l-primary border-border bg-primary-soft px-3 py-1.5">
           <span className="text-[11px] font-medium text-primary">
-            {pendingCount} unsaved {pendingCount === 1 ? "change" : "changes"}
+            {stagedTotal} unsaved {stagedTotal === 1 ? "change" : "changes"}
           </span>
           {lockHint && (
             <span className="tiq-slide-in text-[11px] text-warn" role="status">
@@ -1021,7 +1022,7 @@ export function TableView({ connId, schema, object, view }: Props) {
             // Read-only while a page is in flight: the grid stays live for
             // scrolling and copying, but an edit staged now would be wiped when
             // the new page lands.
-            onEdit={editable && !fetching ? onEdit : undefined}
+            onCommitChanges={editable && !fetching ? commitChanges : undefined}
             fkByColumn={fkByColumn}
             onFkClick={(toTable) => {
               const fk = fks.find((f) => f.to_table === toTable);
@@ -1044,7 +1045,7 @@ export function TableView({ connId, schema, object, view }: Props) {
               savedTimer.current = window.setTimeout(() => setSaved(null), 2000);
               refresh();
             }}
-            onPendingCountChange={setPendingCount}
+            onStagedCountsChange={setCounts}
             onCommittingChange={setCommitting}
             onFetchError={setError}
             sort={sort}
@@ -1088,6 +1089,7 @@ export function TableView({ connId, schema, object, view }: Props) {
             >
               <IconPlus {...STATUSBAR_ICON} /> Row
             </StatusBarButton>
+            <StagedCountChips counts={counts} />
           </>
         }
         center={
@@ -1159,17 +1161,11 @@ export function TableView({ connId, schema, object, view }: Props) {
         }
         right={
           <>
-            {dirty > 0 ? (
-              <span className="text-warn">
-                {dirty} saving…
+            {saved && (
+              <span key={saved.id} className="tiq-flash inline-flex items-center gap-1 text-ok" role="status">
+                <StatusDot tone="ok" />
+                Committed {saved.n} {saved.n === 1 ? "change" : "changes"}
               </span>
-            ) : (
-              saved && (
-                <span key={saved.id} className="tiq-flash inline-flex items-center gap-1 text-ok" role="status">
-                  <StatusDot tone="ok" />
-                  Saved {saved.n} {saved.n === 1 ? "change" : "changes"}
-                </span>
-              )
             )}
             <StatusBarButton
               onClick={() => (barOpen && filters.length === 0 ? closeBar() : openBar())}
@@ -1227,7 +1223,10 @@ export function TableView({ connId, schema, object, view }: Props) {
           columns={object.columns}
           onClose={() => {
             setShowAlter(false);
-            refresh();
+            // Backstop to the guarded open: a re-read would wipe everything staged.
+            if (lockedRef.current) {
+              setNotice("Altered — commit or discard staged changes, then refresh to see it.");
+            } else refresh();
           }}
         />
       )}
@@ -1252,6 +1251,8 @@ export function TableView({ connId, schema, object, view }: Props) {
             copy(buildRowAs(fmt, rowValues, colNames, { table: qualified, engine }));
           const applyCellValue = async (newValue: string | null) => {
             if (!pk || pk.length === 0 || !srv) return;
+            // It writes directly, then re-reads the page: that would wipe what's staged.
+            if (blockedByEdits()) return;
             const edit = buildEdit(pk, (c) => srv[c] ?? null, cellMenu.col, newValue);
             setNotice(null);
             try {
@@ -1272,29 +1273,7 @@ export function TableView({ connId, schema, object, view }: Props) {
               engine,
             );
           };
-          const deleteRowAction = async () => {
-            if (!pk || pk.length === 0 || !srv) return;
-            const pkPairs = pk.map((c) => [c, srv[c] ?? null] as [string, string | null]);
-            const ok = await confirmDialog(
-              `Delete this row from ${qualified}? This cannot be undone.`,
-              "Delete row",
-            );
-            if (!ok) return;
-            setNotice(null);
-            try {
-              const { rowsAffected } = await deleteRow(connId, schema, object.name, pkPairs);
-              // The confirm said "this row" — say so plainly when it was not one row.
-              const problem = writeOutcomeMessage("delete", rowsAffected);
-              if (problem) setNotice(`Delete row: ${problem}`);
-              // The row's tint fades out first, so the refetch doesn't just yank it.
-              else await gridRef.current?.fadeRow(cellMenu.row);
-              refresh();
-            } catch (e) {
-              setNotice(`Delete failed: ${e}`);
-            }
-          };
-
-          const items: (ContextMenuItem | "separator")[] = [
+          const rowItems: (ContextMenuItem | "separator")[] = [
             { id: "refresh", label: "Refresh", onSelect: () => !blockedByEdits() && refresh() },
             {
               id: "add-row",
@@ -1371,14 +1350,20 @@ export function TableView({ connId, schema, object, view }: Props) {
               disabled: !pk || pk.length === 0 || !srv,
               onSelect: () => copy(deleteStmt()),
             },
-            {
-              id: "delete-row",
-              label: "Delete row",
-              tone: "danger",
-              disabled: !editable || !srv,
-              onSelect: () => void deleteRowAction(),
-            },
+            cellMenu.staged === "deleted"
+              ? { id: "undo-delete", label: "Undo delete", onSelect: () => gridRef.current?.undoDelete(cellMenu.row) }
+              : {
+                  id: "delete-row",
+                  label: "Delete row",
+                  tone: "danger",
+                  disabled: !editable || !srv,
+                  onSelect: () => gridRef.current?.stageDeleteRows([cellMenu.row]),
+                },
           ];
+          const items: (ContextMenuItem | "separator")[] =
+            cellMenu.staged === "inserted"
+              ? [{ id: "remove-row", label: "Remove row", onSelect: () => gridRef.current?.removeInsertedRow(cellMenu.row) }]
+              : rowItems;
           return (
             <ContextMenu
               x={cellMenu.x}

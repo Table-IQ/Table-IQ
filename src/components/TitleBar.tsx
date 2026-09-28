@@ -161,8 +161,8 @@ export function TitleBar(p: TitleBarProps) {
           />
           {review && api && count > 0 && (
             <StagedReview
-              edits={api.list()}
-              rowOffset={api.rowOffset}
+              sql={api.preview()}
+              total={count}
               committing={committing}
               onCommit={api.commit}
               onDiscard={api.discard}
