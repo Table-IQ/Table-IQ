@@ -93,6 +93,17 @@ describe("IPC bridge invoke", () => {
     reply("[]", 200, "application/json");
     await expect(cmds.listConnections()).resolves.toEqual([]); // the mock would return "Local Postgres"
   });
+
+  it("sends apply_changes the tagged change list and returns the counts", async () => {
+    reply(JSON.stringify({ updated: 1, deleted: 1, inserted: 0 }), 200, "application/json");
+    const changes: import("./commands").Change[] = [
+      { kind: "update", edit: { pk: [["id", "1"]], column: "name", new_value: "B", orig_value: "b" } },
+      { kind: "delete", pk: [["id", "2"]] },
+    ];
+    await expect(cmds.applyChanges("c1", "public", "users", changes)).resolves.toEqual({ updated: 1, deleted: 1, inserted: 0 });
+    expect(fetchMock.mock.calls[0][0]).toBe("/__ipc/apply_changes");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ id: "c1", schema: "public", table: "users", changes });
+  });
 });
 
 // The Structure tab's two failure branches both arrive as a rejected string from Rust:

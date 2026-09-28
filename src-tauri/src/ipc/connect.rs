@@ -16,8 +16,8 @@ use crate::connections::{self, ConnConfig, ConnStore};
 use crate::lk;
 use crate::drivers::{
     doc_mongo::MongoDriver, duckdb::DuckDriver, kv_redis::RedisDriver, logged::Logged, mysql::MySqlDriver,
-    postgres::PgDriver, sqlite::SqliteDriver, sqlserver::SqlServerDriver, CancelToken,
-    ColumnFilter, DocumentDriver, DriverError, EditSpec, KeyInfo, KvDriver, KvValue, SchemaModel,
+    postgres::PgDriver, sqlite::SqliteDriver, sqlserver::SqlServerDriver, CancelToken, Change,
+    ChangesResult, ColumnFilter, DocumentDriver, DriverError, EditSpec, KeyInfo, KvDriver, KvValue, SchemaModel,
     SortKey, SqlDriver, validate_filters,
 };
 use crate::sql_log::SqlLog;
@@ -898,6 +898,21 @@ pub async fn delete_row(
     drv.delete_row(&schema, &table, &pk)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Apply a batch of staged changes to one table in ONE transaction (updates → deletes →
+/// inserts). Any failure rolls the batch back; the error names the 0-based change
+/// (`change {i}: {reason}`). Returns what was written.
+#[tauri::command]
+pub async fn apply_changes(
+    state: State<'_, ConnState>,
+    id: String,
+    schema: String,
+    table: String,
+    changes: Vec<Change>,
+) -> Result<ChangesResult, String> {
+    let drv = state.session(&id)?;
+    drv.apply_changes(&schema, &table, &changes).await.map_err(|e| e.to_string())
 }
 
 /// One result column of a statement, as sent to the UI.

@@ -307,6 +307,93 @@ pub struct EditSpec {
     pub orig_value: Option<String>,
 }
 
+/// One staged data change for [`SqlDriver::apply_changes`]. Tagged by `kind` so the
+/// frontend sends `{ "kind": "update", "edit": … }` / `{ "kind": "delete", "pk": … }` /
+/// `{ "kind": "insert", "values": … }`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum Change {
+    /// A cell edit, exactly `apply_edit`'s payload (optimistic match on `orig_value`).
+    Update { edit: EditSpec },
+    /// A row matched by its primary-key `(name, text_value)` pairs.
+    Delete { pk: Vec<(String, Option<String>)> },
+    /// A new row; columns left out take their DEFAULT.
+    Insert { values: Vec<(String, Option<String>)> },
+}
+
+/// What one committed [`SqlDriver::apply_changes`] batch wrote: one per change.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct ChangesResult {
+    pub updated: u64,
+    pub deleted: u64,
+    pub inserted: u64,
+}
+
+/// An update matched 0 rows: the optimistic match failed. The frontend matches this text.
+pub const CHANGED_SINCE_LOADED: &str = "row changed since it was loaded";
+/// A delete matched 0 rows.
+pub const ROW_GONE: &str = "row no longer exists";
+
+/// The order a batch runs in: updates, then deletes, then inserts — stable within a kind.
+/// Indexes into `changes`, so an error still names the change the caller sent.
+pub fn change_order(changes: &[Change]) -> Vec<usize> {
+    let rank = |c: &Change| match c {
+        Change::Update { .. } => 0,
+        Change::Delete { .. } => 1,
+        Change::Insert { .. } => 2,
+    };
+    let mut order: Vec<usize> = (0..changes.len()).collect();
+    order.sort_by_key(|&i| rank(&changes[i])); // stable
+    order
+}
+
+/// `change {i}: {reason}`. `i` is the 0-based index into the batch as sent; the frontend
+/// parses it back out to name the row.
+pub fn change_err(i: usize, reason: impl std::fmt::Display) -> DriverError {
+    DriverError::Db(format!("change {i}: {reason}"))
+}
+
+/// Check one statement's rows-affected against what its change promises and count it.
+/// An `Err` means the caller must roll the whole transaction back.
+pub fn tally(out: &mut ChangesResult, i: usize, change: &Change, rows_affected: u64) -> DResult<()> {
+    match change {
+        Change::Update { .. } if rows_affected == 0 => Err(change_err(i, CHANGED_SINCE_LOADED)),
+        Change::Update { .. } => {
+            out.updated += 1;
+            Ok(())
+        }
+        Change::Delete { .. } if rows_affected == 0 => Err(change_err(i, ROW_GONE)),
+        Change::Delete { .. } if rows_affected != 1 => {
+            Err(change_err(i, format!("matched {rows_affected} rows, not 1")))
+        }
+        Change::Delete { .. } => {
+            out.deleted += 1;
+            Ok(())
+        }
+        Change::Insert { .. } => {
+            out.inserted += 1;
+            Ok(())
+        }
+    }
+}
+
+/// Refuse the batch before BEGIN when an update or delete has no primary key — the same
+/// words `apply_edit` / `delete_row` use.
+pub fn check_keys(changes: &[Change]) -> DResult<()> {
+    for (i, c) in changes.iter().enumerate() {
+        match c {
+            Change::Update { edit } if edit.pk.is_empty() => {
+                return Err(change_err(i, "cannot edit without a primary key"))
+            }
+            Change::Delete { pk } if pk.is_empty() => {
+                return Err(change_err(i, "cannot delete without a primary key"))
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// Per-column filter operator. NULL ops emit no bind; the rest emit one bind each.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FilterOp {
@@ -767,6 +854,19 @@ pub trait SqlDriver: Send + Sync {
         Err(DriverError::NotImplemented)
     }
 
+    /// Apply a staged batch to one table in ONE transaction on ONE connection: updates, then
+    /// deletes, then inserts ([`change_order`]). Rolls everything back when a statement
+    /// errors, an update matches 0 rows, or a delete matches anything but 1 row; the error
+    /// is [`change_err`] naming the failing change. Default: unsupported.
+    async fn apply_changes(
+        &self,
+        _schema: &str,
+        _table: &str,
+        _changes: &[Change],
+    ) -> DResult<ChangesResult> {
+        Err(DriverError::NotImplemented)
+    }
+
     /// Execute a raw (possibly multi-statement) script — used for `BEGIN; …; COMMIT/ROLLBACK`.
     async fn run_script(&self, sql: &str) -> DResult<u64>;
 
@@ -1189,6 +1289,77 @@ mod tests {
         let t2 = t.clone();
         t2.set_backend_id(4242);
         assert_eq!(t.backend_id(), Some(4242));
+    }
+
+    fn pk1(id: &str) -> Vec<(String, Option<String>)> {
+        vec![("id".into(), Some(id.into()))]
+    }
+    fn upd(id: &str) -> Change {
+        Change::Update {
+            edit: EditSpec { pk: pk1(id), column: "c".into(), new_value: None, orig_value: None },
+        }
+    }
+
+    #[test]
+    fn change_order_runs_updates_then_deletes_then_inserts_stably() {
+        let changes = vec![
+            Change::Insert { values: vec![] },
+            Change::Delete { pk: pk1("1") },
+            upd("1"),
+            Change::Insert { values: vec![] },
+            upd("2"),
+            Change::Delete { pk: pk1("2") },
+        ];
+        assert_eq!(change_order(&changes), vec![2, 4, 1, 5, 0, 3]);
+    }
+
+    #[test]
+    fn tally_rolls_back_on_update_miss_and_non_single_delete() {
+        let mut out = ChangesResult::default();
+        assert_eq!(tally(&mut out, 3, &upd("1"), 0).unwrap_err().to_string(), "change 3: row changed since it was loaded");
+        assert_eq!(
+            tally(&mut out, 4, &Change::Delete { pk: pk1("1") }, 0).unwrap_err().to_string(),
+            "change 4: row no longer exists"
+        );
+        assert_eq!(
+            tally(&mut out, 5, &Change::Delete { pk: pk1("1") }, 2).unwrap_err().to_string(),
+            "change 5: matched 2 rows, not 1"
+        );
+        tally(&mut out, 0, &upd("1"), 1).unwrap();
+        tally(&mut out, 1, &Change::Delete { pk: pk1("1") }, 1).unwrap();
+        // An engine may count trigger rows into an INSERT; one change is one insert.
+        tally(&mut out, 2, &Change::Insert { values: vec![] }, 3).unwrap();
+        assert_eq!(out, ChangesResult { updated: 1, deleted: 1, inserted: 1 });
+    }
+
+    #[test]
+    fn check_keys_names_the_change_without_a_key() {
+        let no_pk_update = Change::Update {
+            edit: EditSpec { pk: vec![], column: "c".into(), new_value: None, orig_value: None },
+        };
+        assert_eq!(
+            check_keys(&[upd("1"), no_pk_update]).unwrap_err().to_string(),
+            "change 1: cannot edit without a primary key"
+        );
+        assert_eq!(
+            check_keys(&[Change::Delete { pk: vec![] }]).unwrap_err().to_string(),
+            "change 0: cannot delete without a primary key"
+        );
+        // An insert needs no key.
+        check_keys(&[Change::Insert { values: vec![] }]).unwrap();
+    }
+
+    #[test]
+    fn change_deserializes_from_the_frontend_shape() {
+        let json = r#"[
+            {"kind":"update","edit":{"pk":[["id","1"]],"column":"name","new_value":"B","orig_value":null}},
+            {"kind":"delete","pk":[["id",null]]},
+            {"kind":"insert","values":[["name","x"],["note",null]]}
+        ]"#;
+        let v: Vec<Change> = serde_json::from_str(json).unwrap();
+        assert!(matches!(&v[0], Change::Update { edit } if edit.column == "name" && edit.orig_value.is_none()));
+        assert!(matches!(&v[1], Change::Delete { pk } if pk[0].1.is_none()));
+        assert!(matches!(&v[2], Change::Insert { values } if values.len() == 2));
     }
 }
 
