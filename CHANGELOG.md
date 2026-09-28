@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.8.0 — 2026-09-28
+
+A TablePlus-style home. The titlebar is rebuilt as glass capsules with an environment pill. A database lobby opens when no tabs are open. The connection sheet is redesigned. Deletes and new rows are now staged just like cell edits, and everything commits together in one transaction.
+
+### Added
+- **Filter bar (⌘F).** TablePlus rule rows: pick a column, **Any column** or **Raw SQL**, then Apply or Apply All. A raw filter with `;` is refused.
+- **Titlebar.** Big icons in rounded glass groups:
+  - sidebar and connection
+  - discard, review and commit (with a count badge)
+  - Open database, **SQL**, ERD, and + (New Table, Import, Diff, Backup, Restore)
+  - your customizable items, which collapse behind » in narrow windows
+  - Settings, inspector and Disconnect
+- **Environment pill.** Tag a connection Local, Dev, Test, Staging or Prod. The pill is coloured to match and reads `ENV | Engine : connection : database : schema.table`. Production connections ask before committing.
+- **Database lobby.** Shown when no tabs are open:
+  - largest tables with their sizes
+  - pinned tables with 3-row previews
+  - recent queries
+  - a mini ERD
+  - an AI Ask bar
+
+  On production connections, stats load only when you click "Load stats".
+- **Status bars** with icons, and **native macOS View and Help menus**: ⌘K, ⌥⌘1 Data, ⌥⌘2 Structure, Appearance, Show Tour.
+- **Connection sheet redesign.**
+  - Paste a connection URL (`postgres://`, `mysql://`, `mongodb://`, …) and every field fills in.
+  - Engine tiles, a one-click environment switch and preset colours.
+  - Browse… for SQLite/DuckDB files and SSH keys, and an SSH tunnel switch.
+  - Test results inline ("Connected in 38 ms") with copyable error details.
+  - ⌘T tests, ⌘S saves, ⌘↵ connects. It asks before discarding unsaved edits.
+- **Staged deletes and inserts.**
+  - Delete Row turns the row red; Undo delete brings it back. ⌫ stages the selected rows.
+  - + Row adds a green row, with `DEFAULT` shown for empty columns.
+  - Chips show `N updated · N deleted · N inserted`.
+  - Review shows the exact SQL, with Copy SQL.
+- **One-transaction commit.** All staged updates, deletes and inserts go to the database in a single transaction, on Postgres, MySQL/MariaDB, SQLite, SQL Server and DuckDB. If any row changed since you loaded it, nothing is written, everything stays staged, and the message names the row.
+
+### Changed
+- Pinned tables are saved per connection. Pins for tables that no longer exist are hidden.
+- Anything that would drop unsaved edits asks first: switching or closing tabs, following a foreign key, opening a saved query, and paging or refreshing while changes are staged.
+
 ## 0.7.0 — 2026-09-27
 
 Back up and restore any database from ⌘K. Let Claude read the connections you choose
