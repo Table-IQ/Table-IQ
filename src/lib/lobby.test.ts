@@ -7,6 +7,7 @@ import {
   largestTables,
   lobbyErrorHint,
   lobbyRows,
+  lobbyShouldLoad,
   shareOfTotal,
   totalBytes,
 } from "./lobby";
@@ -138,5 +139,31 @@ describe("askErrorMessage", () => {
   it("falls back to a generic message for anything else", () => {
     expect(askErrorMessage("something odd")).toMatch(/Couldn't generate SQL/);
     expect(askErrorMessage(undefined)).toMatch(/Couldn't generate SQL/);
+  });
+});
+
+describe("lobbyShouldLoad", () => {
+  const cached = { refreshKey: 0, stats: [] };
+
+  it("loads when autoload is on, whatever the cache holds", () => {
+    expect(lobbyShouldLoad({ autoload: true, requested: false, entry: undefined })).toBe(true);
+  });
+
+  it("waits for Load stats when autoload is off and nothing loaded before", () => {
+    expect(lobbyShouldLoad({ autoload: false, requested: false, entry: undefined })).toBe(false);
+  });
+
+  it("reloads on a revisit once this key has loaded, even under a newer refresh", () => {
+    expect(lobbyShouldLoad({ autoload: false, requested: false, entry: cached })).toBe(true);
+    // A schema refresh bumped the key since: the old entry still proves the user asked.
+    expect(lobbyShouldLoad({ autoload: false, requested: false, entry: { refreshKey: 3, stats: [] } })).toBe(true);
+  });
+
+  it("keeps loading after ↻ on a revisit (↻ drops the entry but counts as a request)", () => {
+    expect(lobbyShouldLoad({ autoload: false, requested: true, entry: undefined })).toBe(true);
+  });
+
+  it("does not auto-retry a load that never succeeded", () => {
+    expect(lobbyShouldLoad({ autoload: false, requested: false, entry: { refreshKey: 0 } })).toBe(false);
   });
 });

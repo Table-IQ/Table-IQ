@@ -13,7 +13,7 @@ import {
   type SchemaModel,
   type TableStat,
 } from "../lib/commands";
-import { loadForeignKeys } from "../state/connectionStore";
+import { clearMetaCaches, loadForeignKeys } from "../state/connectionStore";
 import { decodeWindow } from "../lib/arrowWindow";
 import { computeErdLayout, edgePath, selfLoopPath } from "../lib/erdLayout";
 import { formatRelative, oneLine } from "../lib/history";
@@ -29,6 +29,7 @@ import {
   largestTables,
   lobbyErrorHint,
   lobbyRows,
+  lobbyShouldLoad,
   shareOfTotal,
   totalBytes,
   type LobbyCell,
@@ -72,7 +73,8 @@ export interface Preview {
 
 // ── Cache ────────────────────────────────────────────────────────────────────
 // One entry per connection + database + schema, tagged with the MainShell refresh it was
-// loaded under. Only successful loads are kept: an error retries on the next visit.
+// loaded under. Entries are created only by a successful load, and `stats` marks "this key
+// has loaded" for `lobbyShouldLoad`: a failure leaves nothing behind.
 // ponytail: unbounded, but it holds one entry per connection+schema visited in a session.
 interface CacheEntry {
   refreshKey: number;
@@ -126,9 +128,10 @@ export function Lobby(p: LobbyProps) {
   const { connId, database, schemaName, refreshKey } = p;
   const key = `${connId}:${database}:${schemaName}`;
   const [autoload] = useState(() => loadLobbyAutoload(p.cfg.env));
-  const [requested, setRequested] = useState(false);
+  // "Load stats" / ↻ for this key; a schema switch changes the key and needs its own request.
+  const [requestedKey, setRequestedKey] = useState<string | null>(null);
   const [manual, setManual] = useState(0);
-  const loaded = autoload || requested || lobbyCache.get(key)?.refreshKey === refreshKey;
+  const loaded = lobbyShouldLoad({ autoload, requested: requestedKey === key, entry: lobbyCache.get(key) });
 
   const [stats, setStats] = useState<Loadable<TableStat[]>>(undefined);
   const [statsAt, setStatsAt] = useState<number | null>(null);
@@ -177,8 +180,9 @@ export function Lobby(p: LobbyProps) {
     };
   }, [loaded, key, connId, schemaName, refreshKey, manual]);
 
-  // Foreign keys: `loadForeignKeys` already caches per connection, and MainShell's schema
-  // refresh clears that cache (clearMetaCaches), so no second cache here.
+  // Foreign keys: `loadForeignKeys` already caches per connection; a schema refresh, a database
+  // switch and ↻ all clear it (clearMetaCaches), so no second cache here. `key` carries the
+  // database, so a ⌘D switch refetches instead of keeping the old database's edges.
   useEffect(() => {
     if (!loaded) return;
     let cancelled = false;
@@ -194,18 +198,20 @@ export function Lobby(p: LobbyProps) {
     return () => {
       cancelled = true;
     };
-  }, [loaded, connId, refreshKey]);
+  }, [loaded, key, connId, refreshKey, manual]);
 
   // Pinned previews: tables only — a view would run its arbitrary SQL on every visit.
   useEffect(() => {
     if (!loaded) return;
     let cancelled = false;
-    const entry = cacheEntry(key, refreshKey);
+    // Read-only here: an entry is only created by a successful load.
+    const hit = lobbyCache.get(key);
+    const cached = hit?.refreshKey === refreshKey ? hit.previews : {};
     const initial: Record<string, Loadable<Preview>> = {};
-    for (const pin of tablePins) initial[pin] = entry.previews[pin];
+    for (const pin of tablePins) initial[pin] = cached[pin];
     setPreviews(initial);
     for (const pin of tablePins) {
-      if (entry.previews[pin]) continue;
+      if (cached[pin]) continue;
       const r = resolvePin(p.schema, pin);
       if (!r) continue;
       fetchTableWindow(connId, r.schema, r.name, 0, PREVIEW_ROWS, undefined, undefined, undefined, `lobby:${pin}`)
@@ -299,9 +305,13 @@ export function Lobby(p: LobbyProps) {
       previews={previews}
       recent={recent}
       aiReady={aiReady}
-      onLoad={() => setRequested(true)}
+      onLoad={() => setRequestedKey(key)}
       onRefresh={() => {
+        // Drop every cached layer (stats + previews here, FKs in the store) and count the click
+        // as a request, so an autoload-off revisit doesn't fall back to "Load stats".
         lobbyCache.delete(key);
+        clearMetaCaches(connId);
+        setRequestedKey(key);
         setManual((m) => m + 1);
       }}
       onOpenTable={p.onOpenTable}
@@ -439,7 +449,7 @@ export function LobbyView(p: LobbyViewProps) {
               {p.recent === undefined ? (
                 <Skeleton rows={RECENT_N} name="recent" h="h-[46px]" />
               ) : isLoadError(p.recent) ? (
-                <LoadError what="query history" engine={p.cfg.engine} message={p.recent.error} />
+                <LoadError what="query history" message={p.recent.error} />
               ) : (
                 p.recent.map((h, i) => <RecentRow key={`${h.ts}-${i}`} entry={h} onRun={(sql) => p.onRunSql(sql)} />)
               )}
@@ -725,8 +735,9 @@ function Skeleton({ rows, name, h }: { rows: number; name: string; h: string }) 
   );
 }
 
-function LoadError({ what, engine, message }: { what: string; engine: string; message: string }) {
-  const hint = lobbyErrorHint(engine, message);
+/** `engine` only for catalog errors: the history file is local, so no database hint applies. */
+function LoadError({ what, engine, message }: { what: string; engine?: string; message: string }) {
+  const hint = engine ? lobbyErrorHint(engine, message) : null;
   return (
     <div className="px-2.5 py-2 text-xs text-muted">
       <div>{`Couldn't read ${what}: ${message}`}</div>

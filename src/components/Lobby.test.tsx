@@ -81,6 +81,12 @@ describe("LobbyView", () => {
     expect(html).toContain("GRANT VIEW DATABASE STATE");
   });
 
+  it("never gives a database hint for the local history file", () => {
+    const html = render({ recent: { error: "permission denied" } });
+    expect(html).toContain("Couldn&#x27;t read query history: permission denied");
+    expect(html).not.toContain("pg_read_all_stats");
+  });
+
   it("hides a section whose source loaded empty", () => {
     const html = render({ stats: [], recent: [], fks: [] });
     expect(html).not.toContain("Largest tables");

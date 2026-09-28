@@ -131,3 +131,15 @@ export function askErrorMessage(e: unknown): string {
     return "Couldn't reach the AI provider. Check your network connection and try again.";
   return "Couldn't generate SQL. Try rephrasing the question.";
 }
+
+/** Whether the lobby should run its catalog queries. `entry` is this connection+database+schema's
+ *  cache entry, which only holds `stats` after a successful load: once the user has loaded a
+ *  key, revisits and schema refreshes keep loading it even with autoload off, a failed load
+ *  does not silently retry, and `requested` covers "Load stats" and ↻ (which drops the entry). */
+export function lobbyShouldLoad(s: {
+  autoload: boolean;
+  requested: boolean;
+  entry: { refreshKey: number; stats?: unknown } | undefined;
+}): boolean {
+  return s.autoload || s.requested || s.entry?.stats !== undefined;
+}
