@@ -466,7 +466,10 @@ export function TableView({ connId, schema, object, view }: Props) {
       if (menuBlocked(id, useSettingsUi.getState().open, !!document.querySelector(".tiq-overlay")))
         return;
       if (id === "view.filter") {
+        // Same guarded path as View → Data: switch out of Structure first, then
+        // open the bar once the switch has landed (or immediately if already same).
         if (view === "data") openBar();
+        else if (!blockedByEdits()) void tabGuard.openTable(schema, object.name, "data").then(openBar);
       } else if (id === "view.data" || id === "view.structure") {
         const v = id === "view.data" ? "data" : "structure";
         if (v !== view && !blockedByEdits()) void tabGuard.openTable(schema, object.name, v);

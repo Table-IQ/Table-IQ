@@ -75,4 +75,30 @@ describe("tabGuard", () => {
     expect(confirm).toHaveBeenCalledTimes(1);
     expect(useTabs.getState().activeKey).toBe(users.key);
   });
+
+  it("two concurrent openTable calls while edits are staged share one prompt, not two", async () => {
+    // Regression for the double-prompt bug: rapid double-clicks on a guarded
+    // action (e.g. a lobby tile) while a confirm is already in flight used to
+    // open a second native dialog. Spies on `canLeaveSession` directly — the
+    // one place every guard prompt goes through — rather than counting calls
+    // to the mocked `@tauri-apps/plugin-dialog` `confirm`, since two
+    // concurrent dynamic imports of that mocked module race in this test
+    // environment and undercount.
+    seed(true);
+    const connectionStore = await import("./connectionStore");
+    let resolveConfirm!: (v: boolean) => void;
+    const spy = vi
+      .spyOn(connectionStore, "canLeaveSession")
+      .mockImplementation(() => new Promise<boolean>((resolve) => (resolveConfirm = resolve)));
+    const first = tabGuard.openTable("public", "items");
+    const second = tabGuard.openTable("public", "items");
+    // Both calls reach `canLeaveSession` synchronously (no await before it in
+    // `guard()`), so the dedup — or lack of it — is already decided here.
+    expect(spy).toHaveBeenCalledTimes(1);
+    resolveConfirm(true);
+    await Promise.all([first, second]);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(useTabs.getState().activeKey).toBe("table:public.items");
+    spy.mockRestore();
+  });
 });

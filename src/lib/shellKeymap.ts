@@ -73,6 +73,7 @@ export function shortcutFor(
     if (e.shiftKey) return "open-connection";
     return native ? null : "palette";
   }
+  if (key === "p") return "palette";
   if (key === "o") return "open-connection";
   if (key === "d") return "open-database";
   if (key === "t") return "new-query";

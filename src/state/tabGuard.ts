@@ -11,9 +11,25 @@ type TabActions = ReturnType<typeof useTabs.getState>;
 
 /** Only the active table tab is mounted, so changing or closing it drops its staged
  *  edits. Every tab-changing action goes through here. */
+// One confirm dialog at a time: a second guarded action fired while the first
+// prompt is still awaiting the user (rapid double-click) joins the same
+// promise instead of opening a second native dialog.
+let pendingGuard: Promise<boolean> | null = null;
+
 async function guard(kind: "switch" | "close"): Promise<boolean> {
   if (!useConnections.getState().editsPending) return true;
-  return canLeaveSession(kind === "switch" ? TAB_SWITCH_MESSAGE : TAB_CLOSE_MESSAGE, TAB_GUARD_LABELS);
+  if (pendingGuard) return pendingGuard;
+  pendingGuard = (async () => {
+    try {
+      return await canLeaveSession(
+        kind === "switch" ? TAB_SWITCH_MESSAGE : TAB_CLOSE_MESSAGE,
+        TAB_GUARD_LABELS,
+      );
+    } finally {
+      pendingGuard = null;
+    }
+  })();
+  return pendingGuard;
 }
 
 export const tabGuard = {

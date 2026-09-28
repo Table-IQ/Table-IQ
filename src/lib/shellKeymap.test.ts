@@ -40,6 +40,10 @@ describe("shortcutFor", () => {
     expect(shortcutFor(keyEvent({ key: "k", shiftKey: true }), false)).toBe("open-connection");
   });
 
+  it("⌘P opens the command palette (Lobby's Open Table tile)", () => {
+    expect(shortcutFor(keyEvent({ key: "p" }), false)).toBe("palette");
+  });
+
   it("⌘O opens the connection picker", () => {
     expect(shortcutFor(keyEvent({ key: "o" }), false)).toBe("open-connection");
   });
@@ -151,5 +155,9 @@ describe("shortcutFor", () => {
 
   it("native: keys without a native accelerator still map (⌘[)", () => {
     expect(shortcutFor(keyEvent({ key: "[" }), false, true)).toBe("toggle-sidebar");
+  });
+
+  it("native: ⌘P still opens the palette (no native accelerator for it)", () => {
+    expect(shortcutFor(keyEvent({ key: "p" }), false, true)).toBe("palette");
   });
 });

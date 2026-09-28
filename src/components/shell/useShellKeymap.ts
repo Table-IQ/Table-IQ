@@ -22,7 +22,7 @@ export interface UseShellKeymapOptions {
 }
 
 /**
- * The shell's global keyboard shortcuts (⌘K, ⌘O, ⌘⇧K, ⌘D, ⌘T, ⌘W, ⌘[, ⌘],
+ * The shell's global keyboard shortcuts (⌘K, ⌘P, ⌘O, ⌘⇧K, ⌘D, ⌘T, ⌘W, ⌘[, ⌘],
  * ⌘., ⌘⇧\, ⌘⇧C, ⌥⌘1, ⌥⌘2). Extracted from `MainShell` (Task 11b) so new bindings don't
  * grow that file; `shortcutFor` (`lib/shellKeymap.ts`)
  * holds the pure binding table and is unit-tested there.

@@ -29,11 +29,14 @@ export function ImportDialog({
   engine,
   schema,
   onClose,
+  onSchemaChanged,
 }: {
   connId: string;
   engine: Engine;
   schema: SchemaModel;
   onClose: () => void;
+  /** Called after an import creates/populates a table, so callers (e.g. the lobby's stats) can refetch. */
+  onSchemaChanged?: () => void;
 }) {
   const { updateSession } = useConnections();
   const [preview, setPreview] = useState<ImportPreview | null>(null);
@@ -142,6 +145,7 @@ export function ImportDialog({
         rows,
       );
       updateSession(connId, { schema: await listObjects(connId).catch(() => schema) });
+      onSchemaChanged?.();
       setStatus({ kind: "ok", msg: `Imported ${inserted} rows` });
     } catch (e) {
       setStatus({ kind: "err", msg: String(e) });
@@ -184,6 +188,7 @@ export function ImportDialog({
         pq.bytes,
       );
       updateSession(connId, { schema: await listObjects(connId).catch(() => schema) });
+      onSchemaChanged?.();
       setStatus({ kind: "ok", msg: `Imported ${inserted.toLocaleString()} rows` });
     } catch (e) {
       setStatus({ kind: "err", msg: String(e) });

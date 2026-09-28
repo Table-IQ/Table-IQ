@@ -1220,6 +1220,7 @@ export function MainShell() {
           engine={active.engine as Engine}
           schema={schema}
           onClose={() => setShowStructure(false)}
+          onSchemaChanged={() => setSchemaRefreshes((n) => n + 1)}
         />
       )}
       {showImport && (
@@ -1228,6 +1229,7 @@ export function MainShell() {
           engine={active.engine as Engine}
           schema={schema}
           onClose={() => setShowImport(false)}
+          onSchemaChanged={() => setSchemaRefreshes((n) => n + 1)}
         />
       )}
       {showBackup && (
