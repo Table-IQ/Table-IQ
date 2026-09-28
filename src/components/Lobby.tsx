@@ -59,7 +59,8 @@ const ERD_TABLES = 4;
 const ERD_H = 150;
 // Layout units, not px: text and strokes scale with the cards (240×28), so a name always
 // fits its box whatever width the lobby column renders at.
-const ERD_FONT_UNITS = 13;
+const ERD_FONT_UNITS = 18; // ~0.65 of the 28-unit card height
+const MONO_CHAR_EM = 0.62; // monospace advance ÷ font size
 const ERD_STROKE_UNITS = 1.5;
 /** Room past the right-most card for a self-referencing FK's loop (erdLayout's LOOP_W + margin). */
 const ERD_LOOP_PAD = 64;
@@ -903,7 +904,7 @@ function MiniErd({ tables, edges }: { tables: string[]; edges: ForeignKey[] }) {
               y={box.y + box.h / 2}
               textAnchor="middle"
               dominantBaseline="central"
-              fontSize={ERD_FONT_UNITS}
+              fontSize={Math.min(ERD_FONT_UNITS, (box.w * 0.85) / (MONO_CHAR_EM * name.length))}
               className="fill-text font-mono"
             >
               {name}
