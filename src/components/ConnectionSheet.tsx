@@ -1,4 +1,4 @@
-import { useState, type ClipboardEvent, type ReactNode } from "react";
+import { useEffect, useId, useState, type ClipboardEvent, type ReactNode } from "react";
 import type { ConnConfig, Engine } from "../lib/commands";
 import { defaultSshConfig, type SshConfig } from "../lib/ssh";
 import { CONN_ENVS, envTone, type ConnEnv } from "../lib/connEnv";
@@ -63,18 +63,26 @@ const focusRing = "focus-visible:outline-none focus-visible:ring-2 focus-visible
 const btn = `inline-flex h-[30px] items-center gap-1.5 rounded-[7px] border border-border bg-bg px-3 text-[12.5px] font-medium text-text transition-colors hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`;
 const btnPrimary = `inline-flex h-[30px] items-center gap-1.5 rounded-[7px] border border-primary bg-primary px-3 text-[12.5px] font-medium text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`;
 const kbd = "font-sans text-[10.5px] font-normal opacity-70";
-const segBase = `flex-1 border-r border-border text-[11px] last:border-r-0 transition-colors ${focusRing}`;
+const segBase = `flex-1 border-r border-border text-[11px] last:border-r-0 transition-colors ${focusRing} focus-visible:ring-inset`;
 
 /** Digits only; empty → 0 so the validator (and not a stray NaN) explains it. */
 const toPort = (s: string) => Number(s.replace(/\D/g, "") || 0);
 
-function Field({ label, error, className = "", children }: { label: string; error?: string; className?: string; children: ReactNode }) {
+/** Label above, control, then the error — outside the label and linked by
+ *  `aria-describedby` (see `ids`), so only the label text names the control. */
+function Field({ id, label, error, className = "", children }: { id: string; label: string; error?: string; className?: string; children: ReactNode }) {
   return (
-    <label className={`block min-w-0 ${className}`}>
-      <span className="mb-[3px] block text-[11.5px] text-muted">{label}</span>
+    <div className={`min-w-0 ${className}`}>
+      <label htmlFor={id} className="mb-[3px] block text-[11.5px] text-muted">
+        {label}
+      </label>
       {children}
-      {error && <span className="mt-[3px] block text-[11px] text-danger">{error}</span>}
-    </label>
+      {error && (
+        <div id={`${id}-err`} className="mt-[3px] text-[11px] text-danger">
+          {error}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -88,6 +96,19 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
   const [showPw, setShowPw] = useState(false);
   const [urlText, setUrlText] = useState("");
   const [urlBad, setUrlBad] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const uid = useId();
+  const ids = (k: string, err?: string) => ({
+    id: `${uid}${k}`,
+    "aria-invalid": !!err,
+    "aria-describedby": err ? `${uid}${k}-err` : undefined,
+  });
+
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(t);
+  }, [copied]);
 
   const errs = validateConn(form);
   const firstErr = (Object.keys(errs) as (keyof ConnFieldErrors)[])[0];
@@ -118,6 +139,7 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
     }`;
 
   const applyUrl = (text: string) => {
+    if (!text.trim()) return false;
     const parsed = parseConnUrl(text);
     if (parsed) {
       p.onApplyUrl(parsed);
@@ -138,14 +160,15 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
   };
 
   const passwordField = (label: string) => (
-    <Field label={label}>
+    <Field id={`${uid}pw`} label={label}>
       <span className="relative block">
         <input
+          {...ids("pw")}
           className={`${field()} pr-8`}
           type={showPw ? "text" : "password"}
           value={p.password}
           onChange={(e) => p.onPassword(e.target.value)}
-          placeholder={mode === "edit" ? "Leave blank to keep the saved password" : "Password"}
+          placeholder={mode === "edit" ? "Keep saved password" : "Password"}
         />
         <button
           type="button"
@@ -160,11 +183,11 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
   );
   const hostPort = (
     <div className="mb-[9px] grid grid-cols-[1fr_80px] gap-[9px]">
-      <Field label="Host" error={errs.host}>
-        <input className={field(errs.host)} value={form.host} onChange={(e) => p.onField("host", e.target.value)} onPaste={onHostPaste} />
+      <Field id={`${uid}host`} label="Host" error={errs.host}>
+        <input {...ids("host", errs.host)} className={field(errs.host)} value={form.host} onChange={(e) => p.onField("host", e.target.value)} onPaste={onHostPaste} />
       </Field>
-      <Field label="Port" error={errs.port}>
-        <input className={field(errs.port)} inputMode="numeric" value={form.port || ""} onChange={(e) => p.onField("port", toPort(e.target.value))} />
+      <Field id={`${uid}port`} label="Port" error={errs.port}>
+        <input {...ids("port", errs.port)} className={field(errs.port)} inputMode="numeric" value={form.port || ""} onChange={(e) => p.onField("port", toPort(e.target.value))} />
       </Field>
     </div>
   );
@@ -212,7 +235,7 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
 
       {/* Body */}
       <div className="min-w-0 flex-1 overflow-auto px-4 py-3">
-        <label className="flex h-[34px] items-center gap-2 rounded-lg border border-dashed border-border bg-surface px-2.5 focus-within:border-primary">
+        <label className="flex h-[32px] items-center gap-2 rounded-lg border border-dashed border-border bg-surface px-2.5 focus-within:border-primary">
           <IconLink size={13} className="shrink-0 text-muted" />
           <input
             aria-label="Paste a connection URL"
@@ -220,14 +243,11 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
             value={urlText}
             onChange={(e) => {
               setUrlText(e.target.value);
-              setUrlBad(false);
+              // A failed paste still inserts natively; keep its "not a URL" note.
+              if ((e.nativeEvent as InputEvent).inputType !== "insertFromPaste") setUrlBad(false);
             }}
             onPaste={(e) => {
-              // Take the paste over entirely: a native paste would fire onChange and
-              // wipe the "not a URL" note the moment it appeared.
-              e.preventDefault();
-              const text = e.clipboardData.getData("text");
-              if (!applyUrl(text)) setUrlText(text);
+              if (applyUrl(e.clipboardData.getData("text"))) e.preventDefault();
             }}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
@@ -263,8 +283,8 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
           </div>
         )}
 
-        <Field label="Name" className="mt-3 mb-[9px]">
-          <input className={field()} value={form.name} onChange={(e) => p.onField("name", e.target.value)} placeholder="e.g. Orders (staging)" />
+        <Field id={`${uid}name`} label="Name" className="mt-3 mb-[9px]">
+          <input {...ids("name")} className={field()} value={form.name} onChange={(e) => p.onField("name", e.target.value)} placeholder="e.g. Orders (staging)" />
         </Field>
 
         <div className="mb-[9px] grid grid-cols-[1fr_auto] gap-[9px]">
@@ -313,9 +333,10 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
         {isFile ? (
           <>
             <Section>File</Section>
-            <Field label="Database file" error={errs.database}>
+            <Field id={`${uid}file`} label="Database file" error={errs.database}>
               <span className="flex gap-2">
                 <input
+                  {...ids("file", errs.database)}
                   className={field(errs.database)}
                   value={form.database}
                   onChange={(e) => p.onField("database", e.target.value)}
@@ -335,26 +356,26 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
             {hostPort}
             {form.engine === "redis" ? (
               <div className="mb-[9px] grid grid-cols-2 gap-[9px]">
-                <Field label="DB number">
-                  <input className={field()} value={form.database} onChange={(e) => p.onField("database", e.target.value)} placeholder="0" />
+                <Field id={`${uid}db`} label="DB number">
+                  <input {...ids("db")} className={field()} value={form.database} onChange={(e) => p.onField("database", e.target.value)} placeholder="0" />
                 </Field>
                 {passwordField("Password (optional)")}
               </div>
             ) : (
               <>
                 <div className="mb-[9px] grid grid-cols-2 gap-[9px]">
-                  <Field label="User">
-                    <input className={field()} value={form.username} onChange={(e) => p.onField("username", e.target.value)} />
+                  <Field id={`${uid}user`} label="User">
+                    <input {...ids("user")} className={field()} value={form.username} onChange={(e) => p.onField("username", e.target.value)} />
                   </Field>
                   {passwordField("Password")}
                 </div>
                 <div className="mb-[9px] grid grid-cols-2 gap-[9px]">
-                  <Field label="Database" className={form.engine === "postgres" ? "" : "col-span-2"}>
-                    <input className={field()} value={form.database} onChange={(e) => p.onField("database", e.target.value)} />
+                  <Field id={`${uid}db`} label="Database" className={form.engine === "postgres" ? "" : "col-span-2"}>
+                    <input {...ids("db")} className={field()} value={form.database} onChange={(e) => p.onField("database", e.target.value)} />
                   </Field>
                   {form.engine === "postgres" && (
-                    <Field label="SSL mode">
-                      <select className={field()} value={form.sslmode} onChange={(e) => p.onField("sslmode", e.target.value)}>
+                    <Field id={`${uid}ssl`} label="SSL mode">
+                      <select {...ids("ssl")} className={field()} value={form.sslmode} onChange={(e) => p.onField("sslmode", e.target.value)}>
                         {SSL_MODES.map((m) => (
                           <option key={m} value={m}>
                             {m}
@@ -390,20 +411,21 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
               {ssh.enabled && (
                 <div className="border-t border-border px-[11px] pt-[9px] pb-[11px]">
                   <div className="mb-[9px] grid grid-cols-[1fr_80px] gap-[9px]">
-                    <Field label="Server">
+                    <Field id={`${uid}sshhost`} label="Server">
                       <input
+                        {...ids("sshhost")}
                         className={field()}
                         value={ssh.host}
                         onChange={(e) => p.onSsh({ host: e.target.value })}
                         placeholder="bastion.example.com or ~/.ssh/config alias"
                       />
                     </Field>
-                    <Field label="Port">
-                      <input className={field()} inputMode="numeric" value={ssh.port || ""} onChange={(e) => p.onSsh({ port: toPort(e.target.value) })} />
+                    <Field id={`${uid}sshport`} label="Port">
+                      <input {...ids("sshport")} className={field()} inputMode="numeric" value={ssh.port || ""} onChange={(e) => p.onSsh({ port: toPort(e.target.value) })} />
                     </Field>
                   </div>
-                  <Field label="User" className="mb-[9px]">
-                    <input className={field()} value={ssh.username} onChange={(e) => p.onSsh({ username: e.target.value })} placeholder="ubuntu" />
+                  <Field id={`${uid}sshuser`} label="User" className="mb-[9px]">
+                    <input {...ids("sshuser")} className={field()} value={ssh.username} onChange={(e) => p.onSsh({ username: e.target.value })} placeholder="ubuntu" />
                   </Field>
                   <div role="group" aria-label="SSH authentication" className="mb-[9px] flex h-[28px] overflow-hidden rounded-[7px] border border-border">
                     {[
@@ -423,9 +445,10 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
                   </div>
                   {useKey ? (
                     <>
-                      <Field label="Private key path" className="mb-[9px]">
+                      <Field id={`${uid}key`} label="Private key path" className="mb-[9px]">
                         <span className="flex gap-2">
                           <input
+                            {...ids("key")}
                             className={field()}
                             value={keyPath}
                             onChange={(e) => p.onSsh({ auth: { mode: "keyfile", path: e.target.value } })}
@@ -450,8 +473,9 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
                           )}
                         </span>
                       </Field>
-                      <Field label="Passphrase" className="mb-[9px]">
+                      <Field id={`${uid}keypass`} label="Passphrase" className="mb-[9px]">
                         <input
+                          {...ids("keypass")}
                           className={field()}
                           type="password"
                           value={p.sshKeyPass}
@@ -461,8 +485,9 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
                       </Field>
                     </>
                   ) : (
-                    <Field label="Password" className="mb-[9px]">
+                    <Field id={`${uid}sshpw`} label="Password" className="mb-[9px]">
                       <input
+                        {...ids("sshpw")}
                         className={field()}
                         type="password"
                         value={p.sshPassword}
@@ -502,14 +527,21 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
                 <div className="truncate text-danger" title={status.msg}>
                   ✕ {firstLine}
                 </div>
-                <div className="relative mt-1.5 max-h-[74px] overflow-auto rounded-[7px] border border-border bg-bg py-[7px] pr-14 pl-[9px] font-mono text-[11px] leading-[1.45] whitespace-pre-wrap break-words text-text">
-                  {status.msg}
+                <div className="relative mt-1.5">
+                  <div className="max-h-[74px] overflow-auto rounded-[7px] border border-border bg-bg py-[7px] pr-16 pl-[9px] font-mono text-[11px] leading-[1.45] whitespace-pre-wrap break-words text-text">
+                    {status.msg}
+                  </div>
                   <button
                     type="button"
-                    onClick={() => void navigator.clipboard.writeText(status.msg)}
+                    onClick={() =>
+                      navigator.clipboard
+                        .writeText(status.msg)
+                        .then(() => setCopied(true))
+                        .catch(() => {})
+                    }
                     className={`absolute top-1.5 right-1.5 rounded-[5px] border border-border bg-surface px-1.5 font-sans text-[10.5px] font-medium text-muted hover:text-text ${focusRing}`}
                   >
-                    Copy
+                    {copied ? "Copied" : "Copy"}
                   </button>
                 </div>
               </>

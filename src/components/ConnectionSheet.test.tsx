@@ -18,7 +18,7 @@ describe("ConnectionSheet", () => {
   it("new mode: title, engine tiles, URL paste, password placeholder, no ⋯ menu", () => {
     const h = html();
     expect(h).toContain("New Connection");
-    expect(h).toMatch(/aria-pressed="true"[^>]*>[\s\S]*?PostgreSQL|PostgreSQL/);
+    expect(h).toMatch(/<button[^>]*aria-pressed="true"[^>]*title="PostgreSQL"/);
     expect(h).toContain("Paste a connection URL");
     expect(h).toContain('placeholder="Password"');
     expect(h).not.toContain('aria-label="More actions"');
@@ -27,7 +27,7 @@ describe("ConnectionSheet", () => {
   it("edit mode: name as title, keep-password placeholder, ⋯ menu, unsaved marker and Discard when dirty", () => {
     const h = html({ mode: "edit", dirty: true, form: { ...base.form, name: "analytics" } });
     expect(h).toContain(">analytics<");
-    expect(h).toContain("Leave blank to keep the saved password");
+    expect(h).toContain('placeholder="Keep saved password"');
     expect(h).toContain('aria-label="More actions"');
     expect(h).toContain("Unsaved changes");
     expect(h).toContain(">Discard<");
@@ -41,7 +41,7 @@ describe("ConnectionSheet", () => {
   it("blocks Save and Connect with an inline reason for an invalid port", () => {
     const h = html({ form: { ...base.form, port: 70000 } });
     expect(h).toContain("1–65535");
-    expect(h).toMatch(/<button[^>]*disabled=""[^>]*>[\s\S]*?Connect/);
+    expect(h).toMatch(/<button[^>]*disabled=""[^>]*title="Port: 1–65535"[^>]*>Connect\b/);
   });
 
   it("file engines show a Browse… button (when picking is possible) and no host/port", () => {
