@@ -64,6 +64,13 @@ describe("editTints", () => {
     expect(new Set([d.saving, d.saved, d.error]).size).toBe(3);
     expect(l.saved).not.toBe(d.saved);
   });
+  it("adds a deleted (red) and an inserted (green) row tint, distinct from every other tint", () => {
+    for (const mode of ["light", "dark"] as const) {
+      const t = editTints(mode);
+      expect(new Set([t.staged, t.saving, t.saved, t.error, t.deleted, t.inserted]).size).toBe(6);
+    }
+    expect(editTints("light").deleted).not.toBe(editTints("dark").deleted);
+  });
 });
 
 describe("nullCellStyle", () => {
