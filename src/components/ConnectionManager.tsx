@@ -29,6 +29,7 @@ import {
 } from "../lib/commands";
 import { defaultSshConfig, type SshConfig } from "../lib/ssh";
 import { CONN_ENVS, type ConnEnv } from "../lib/connEnv";
+import { DEFAULT_PORT } from "../lib/connUrl";
 import { cancelConnecting, openConnection, useConnections, type ConnectingState } from "../state/connectionStore";
 import { getLastConnected } from "../lib/lastConnected";
 import { version as APP_VERSION } from "../../package.json";
@@ -44,16 +45,6 @@ const BUSY_LABEL: Record<ConnectingState["stage"], string> = {
 /** Default connection color (light-mode `--primary`). Connections still on this
  *  value are treated as "no custom tag" — so the row dot is suppressed. */
 const DEFAULT_CONN_COLOR = "#4f46e5";
-
-const DEFAULT_PORT: Record<string, number> = {
-  postgres: 5432,
-  mysql: 3306,
-  sqlite: 0,
-  duckdb: 0,
-  redis: 6379,
-  mongodb: 27017,
-  sqlserver: 1433,
-};
 
 function blankConfig(): ConnConfig {
   return {
