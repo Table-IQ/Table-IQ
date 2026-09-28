@@ -187,6 +187,30 @@ export async function pickKeyFile(): Promise<string | null> {
   return typeof picked === "string" ? picked : null;
 }
 
+/** Whether the native file pickers (`pickKeyFile`, `pickDatabaseFile`) can open here. */
+export function canPickFiles(): boolean {
+  return !BRIDGE && inTauri();
+}
+
+/** Native file picker for a SQLite / DuckDB database file. Null under the bridge
+ *  or in the browser, like `pickKeyFile`. */
+export async function pickDatabaseFile(engine: "sqlite" | "duckdb"): Promise<string | null> {
+  if (BRIDGE || !inTauri()) return null;
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const picked = await open({
+    multiple: false,
+    directory: false,
+    title: engine === "sqlite" ? "Select SQLite database" : "Select DuckDB database",
+    filters: [
+      engine === "sqlite"
+        ? { name: "SQLite databases", extensions: ["db", "sqlite", "sqlite3", "db3"] }
+        : { name: "DuckDB databases", extensions: ["duckdb", "db"] },
+      { name: "All files", extensions: ["*"] },
+    ],
+  });
+  return typeof picked === "string" ? picked : null;
+}
+
 // ── browser-mode mock backend (lets /browse exercise the full flow) ──────
 const mockStore: ConnConfig[] = [
   {

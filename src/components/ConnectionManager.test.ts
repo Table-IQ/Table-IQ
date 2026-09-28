@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isFileEngine, sortByRecency } from "./ConnectionManager";
+import { isDirty, isFileEngine, sortByRecency } from "./ConnectionManager";
 import type { ConnConfig } from "../lib/commands";
 
 function conn(id: string, name: string, engine: ConnConfig["engine"] = "postgres"): ConnConfig {
@@ -46,4 +46,12 @@ describe("isFileEngine", () => {
       expect(isFileEngine(e)).toBe(false);
     }
   });
+});
+
+describe("isDirty", () => {
+  const cfg = { id: "a", name: "x", engine: "postgres" as const, host: "h", port: 5432, database: "d", username: "u", sslmode: "prefer" };
+  const none = { password: "", sshPassword: "", sshKeyPass: "" };
+  it("is clean for an untouched form", () => expect(isDirty(cfg, { ...cfg }, none)).toBe(false));
+  it("is dirty after a field change", () => expect(isDirty(cfg, { ...cfg, port: 5433 }, none)).toBe(true));
+  it("is dirty when a secret was typed", () => expect(isDirty(cfg, cfg, { ...none, password: "p" })).toBe(true));
 });

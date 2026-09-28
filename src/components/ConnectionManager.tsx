@@ -5,22 +5,17 @@ import { useSettingsUi } from "./Settings";
 import { Onboarding } from "./Onboarding";
 import { EngineIcon } from "./ui/EngineIcon";
 import { Elapsed } from "./ui/Elapsed";
-import {
-  IconClose,
-  IconExport,
-  IconImport,
-  IconKey,
-  IconPlus,
-  IconRefresh,
-  IconSearch,
-} from "./ui/Icon";
+import { IconExport, IconImport, IconPlus, IconRefresh, IconSearch } from "./ui/Icon";
 import { ContextMenu } from "./ui/ContextMenu";
+import { ConnectionSheet, type SheetStatus } from "./ConnectionSheet";
 import {
+  canPickFiles,
   deleteConnection,
   downloadText,
   exportConnections,
   importConnections,
   listConnections,
+  pickDatabaseFile,
   pickKeyFile,
   saveConnection,
   testConnection,
@@ -28,8 +23,8 @@ import {
   type Engine,
 } from "../lib/commands";
 import { defaultSshConfig, type SshConfig } from "../lib/ssh";
-import { CONN_ENVS, type ConnEnv } from "../lib/connEnv";
-import { DEFAULT_PORT } from "../lib/connUrl";
+import { DEFAULT_PORT, toConnUrl, validateConn } from "../lib/connUrl";
+import { confirmDialog } from "../lib/confirmDialog";
 import { cancelConnecting, openConnection, useConnections, type ConnectingState } from "../state/connectionStore";
 import { getLastConnected } from "../lib/lastConnected";
 import { version as APP_VERSION } from "../../package.json";
@@ -77,6 +72,19 @@ export function sortByRecency(
   });
 }
 
+/** Unsaved changes: any field differs from what was loaded or last saved, or a
+ *  secret was typed (secrets are never loaded back, so any text is new). */
+export function isDirty(
+  initial: ConnConfig,
+  form: ConnConfig,
+  secrets: { password: string; sshPassword: string; sshKeyPass: string },
+): boolean {
+  return (
+    JSON.stringify(form) !== JSON.stringify(initial) ||
+    !!(secrets.password || secrets.sshPassword || secrets.sshKeyPass)
+  );
+}
+
 /**
  * Format the host:port/db line shown under each connection name. Mirrors
  * TablePlus's "host:port : database" idiom but keeps our `/` separator since
@@ -118,10 +126,9 @@ export function ConnectionManager() {
   // `effectiveSshSecret`. Both live in keychain under `ssh:<conn_id>`.
   const [sshPassword, setSshPassword] = useState("");
   const [sshKeyPass, setSshKeyPass] = useState("");
-  const [status, setStatus] = useState<{ kind: "idle" | "busy" | "ok" | "err"; msg: string }>({
-    kind: "idle",
-    msg: "",
-  });
+  const [status, setStatus] = useState<SheetStatus>({ kind: "idle", msg: "" });
+  // The form as last loaded or saved; the dirty guard compares against it.
+  const [initial, setInitial] = useState<ConnConfig>(blankConfig);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [search, setSearch] = useState("");
   // Inline 2-click delete confirmation. Tauri v2's webview disables window.confirm
@@ -145,10 +152,7 @@ export function ConnectionManager() {
   // KeyFile; key off → Password (and an empty password falls back to the agent on
   // the backend). The active method's secret is what gets sent.
   const useKey = ssh.auth.mode === "keyfile";
-  const keyPath = ssh.auth.mode === "keyfile" ? ssh.auth.path : "";
   const effectiveSshSecret = useKey ? sshKeyPass : sshPassword;
-  const toggleUseKey = (on: boolean) =>
-    setSsh({ auth: on ? { mode: "keyfile", path: keyPath } : { mode: "password" } });
   const setKeyPath = (path: string) => setSsh({ auth: { mode: "keyfile", path } });
 
   useEffect(() => {
@@ -178,18 +182,32 @@ export function ConnectionManager() {
       // Settings.tsx for why), so `open` reads true here for this whole
       // keypress no matter which window listener runs first.
       if (useSettingsUi.getState().open) return;
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "n") {
+      const mod = e.metaKey || e.ctrlKey;
+      const key = e.key.toLowerCase();
+      if (mod && key === "n") {
         e.preventDefault();
         openSheetForNew();
+      } else if (sheetOpen && mod && (key === "t" || key === "s" || key === "enter")) {
+        // ⌘T test · ⌘S save · ⌘↵ connect — gated like the footer buttons.
+        e.preventDefault();
+        if (status.kind === "busy") return;
+        if (key === "t") void doTest();
+        else if (Object.keys(validateConn(form)).length === 0) {
+          if (key === "s") void doSave();
+          else void doConnect(form, password);
+        }
       } else if (e.key === "Escape") {
-        if (sheetOpen) setSheetOpen(false);
-        else if (connecting) handleCancel();
+        // The sheet's ⋯ menu closes itself on this same Escape; leave the sheet open.
+        // (Capture phase, below, so the menu is still in the DOM when we look.)
+        if (sheetOpen) {
+          if (!document.querySelector('[data-testid="context-menu"]')) void requestClose();
+        } else if (connecting) handleCancel();
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sheetOpen, connecting]);
+  }, [sheetOpen, connecting, status.kind, form, password, sshPassword, sshKeyPass, initial]);
 
   const refresh = () =>
     listConnections()
@@ -206,6 +224,7 @@ export function ConnectionManager() {
 
   const loadInto = (c: ConnConfig) => {
     setForm(c);
+    setInitial(c);
     setPassword("");
     setSshPassword("");
     setSshKeyPass("");
@@ -226,11 +245,35 @@ export function ConnectionManager() {
     setSheetOpen(true);
   };
 
+  const dirty = isDirty(initial, form, { password, sshPassword, sshKeyPass });
+  // A duplicate has a fresh id, so it opens as "new".
+  const mode = saved.some((s) => s.id === form.id) ? "edit" : "new";
+  const requestClose = async () => {
+    if (
+      dirty &&
+      !(await confirmDialog("Discard unsaved changes?", "Unsaved changes", {
+        ok: "Discard",
+        cancel: "Keep editing",
+      }))
+    )
+      return;
+    setSheetOpen(false);
+  };
+  const pickOrReport = async (pick: () => Promise<string | null>, use: (path: string) => void) => {
+    try {
+      const picked = await pick();
+      if (picked) use(picked);
+    } catch (e) {
+      setStatus({ kind: "err", msg: `Could not open file picker: ${e}` });
+    }
+  };
+
   const doTest = async () => {
     setStatus({ kind: "busy", msg: "Testing…" });
     try {
+      const t0 = performance.now();
       await testConnection(form, password);
-      setStatus({ kind: "ok", msg: "Connection OK" });
+      setStatus({ kind: "ok", msg: "Connection OK", ms: Math.round(performance.now() - t0) });
     } catch (e) {
       setStatus({ kind: "err", msg: String(e) });
     }
@@ -241,6 +284,11 @@ export function ConnectionManager() {
     try {
       await saveConnection(form, password || undefined, effectiveSshSecret || undefined);
       await refresh();
+      // The keychain has the secrets now; clear them so the sheet reads clean.
+      setInitial(form);
+      setPassword("");
+      setSshPassword("");
+      setSshKeyPass("");
       setStatus({ kind: "ok", msg: "Saved" });
     } catch (e) {
       setStatus({ kind: "err", msg: String(e) });
@@ -259,23 +307,6 @@ export function ConnectionManager() {
       setStatus({ kind: "err", msg: String(e) });
     }
   };
-
-  // Whole-form test feedback (TablePlus parity): every field borders green on a
-  // successful Test, red on failure, neutral otherwise. `h-[34px]` is an explicit
-  // px height (root font is 12px, so rem-based `h-*` would shrink) — this is what
-  // makes inputs, selects, and number fields line up to the same height.
-  const tone: "idle" | "ok" | "err" =
-    status.kind === "ok" ? "ok" : status.kind === "err" ? "err" : "idle";
-  const fieldBase =
-    "h-[34px] w-full rounded-md border bg-bg px-2.5 text-[13px] text-text placeholder:text-muted transition-colors focus:outline-none focus:ring-2";
-  const fieldNeutral = `${fieldBase} border-border focus:border-primary focus:ring-primary/25`;
-  const field = `${fieldBase} ${
-    tone === "ok"
-      ? "border-ok/60 focus:border-ok focus:ring-ok/20"
-      : tone === "err"
-        ? "border-danger/60 focus:border-danger focus:ring-danger/20"
-        : "border-border focus:border-primary focus:ring-primary/25"
-  }`;
 
   const filtered = useMemo(() => {
     const sorted = sortByRecency(saved);
@@ -499,411 +530,80 @@ export function ConnectionManager() {
         className={`fixed inset-0 z-40 flex items-stretch justify-end transition-opacity duration-150 ${
           sheetOpen ? "pointer-events-auto bg-black/30 opacity-100" : "pointer-events-none opacity-0"
         }`}
-        onClick={() => setSheetOpen(false)}
+        onClick={() => void requestClose()}
         aria-hidden={!sheetOpen}
       >
         <div
           onClick={(e) => e.stopPropagation()}
           className={`tiq-sheet flex h-full w-[460px] flex-col overflow-hidden border-l border-border bg-bg shadow-[var(--shadow-pop)] transition-transform duration-200 ease-out ${
-            sheetOpen ? "translate-x-0" : "translate-x-full"
+            sheetOpen ? "translate-none" : "translate-x-full"
           }`}
         >
-          <div
-            className="flex shrink-0 items-center border-b border-border px-4"
-            style={{ height: "var(--header-h)" }}
-          >
-            <span className="text-[13px] font-semibold text-text">
-              {form.name || "New Connection"}
-            </span>
-            <button
-              onClick={() => setSheetOpen(false)}
-              className="ml-auto inline-flex h-8 w-8 items-center justify-center rounded-md text-muted transition-colors hover:bg-surface-2 hover:text-text"
-              aria-label="Close"
-              title="Close (Esc)"
-            >
-              <IconClose size={16} />
-            </button>
-          </div>
-          <div className="min-w-0 flex-1 overflow-auto p-5">
-            <div className="mb-3 flex items-center gap-3">
-              <span className="text-sm font-semibold">Connection</span>
-              <select
-                className={`${fieldNeutral} w-auto`}
-                value={form.engine}
-                onChange={(e) => {
-                  const eng = e.target.value as Engine;
-                  setForm((f) => ({ ...f, engine: eng, port: DEFAULT_PORT[eng] ?? f.port }));
-                  clearStatus();
-                }}
-              >
-                <option value="postgres">PostgreSQL</option>
-                <option value="mysql">MySQL / MariaDB</option>
-                <option value="sqlserver">SQL Server</option>
-                <option value="sqlite">SQLite</option>
-                <option value="duckdb">DuckDB</option>
-                <option value="redis">Redis</option>
-                <option value="mongodb">MongoDB</option>
-              </select>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <label className="col-span-2 text-xs text-muted">
-                Name
-                <input
-                  className={field}
-                  value={form.name}
-                  onChange={(e) => set("name", e.target.value)}
-                  placeholder="My database"
-                />
-              </label>
-              {isFileEngine(form.engine) ? (
-                <label className="col-span-2 text-xs text-muted">
-                  Database file
-                  <input
-                    className={field}
-                    value={form.database}
-                    onChange={(e) => set("database", e.target.value)}
-                    placeholder={
-                      form.engine === "duckdb"
-                        ? "/path/to/file.duckdb or :memory:"
-                        : "/path/to/database.db"
-                    }
-                  />
-                </label>
-              ) : form.engine === "redis" ? (
-                <>
-                  <label className="text-xs text-muted">
-                    Host
-                    <input
-                      className={field}
-                      value={form.host}
-                      onChange={(e) => set("host", e.target.value)}
-                    />
-                  </label>
-                  <label className="text-xs text-muted">
-                    Port
-                    <input
-                      className={field}
-                      type="number"
-                      value={form.port}
-                      onChange={(e) => set("port", Number(e.target.value))}
-                    />
-                  </label>
-                  <label className="text-xs text-muted">
-                    DB number
-                    <input
-                      className={field}
-                      value={form.database}
-                      onChange={(e) => set("database", e.target.value)}
-                      placeholder="0"
-                    />
-                  </label>
-                  <label className="text-xs text-muted">
-                    Password (optional)
-                    <input
-                      className={field}
-                      type="password"
-                      value={password}
-                      onChange={(e) => {
-                        setPassword(e.target.value);
-                        clearStatus();
-                      }}
-                      placeholder="•••• (keychain)"
-                    />
-                  </label>
-                </>
-              ) : (
-                <>
-                  <label className="text-xs text-muted">
-                    Host
-                    <input
-                      className={field}
-                      value={form.host}
-                      onChange={(e) => set("host", e.target.value)}
-                    />
-                  </label>
-                  <label className="text-xs text-muted">
-                    Port
-                    <input
-                      className={field}
-                      type="number"
-                      value={form.port}
-                      onChange={(e) => set("port", Number(e.target.value))}
-                    />
-                  </label>
-                  <label className="text-xs text-muted">
-                    Database
-                    <input
-                      className={field}
-                      value={form.database}
-                      onChange={(e) => set("database", e.target.value)}
-                    />
-                  </label>
-                  <label className="text-xs text-muted">
-                    User
-                    <input
-                      className={field}
-                      value={form.username}
-                      onChange={(e) => set("username", e.target.value)}
-                    />
-                  </label>
-                  <label className="text-xs text-muted">
-                    Password
-                    <input
-                      className={field}
-                      type="password"
-                      value={password}
-                      onChange={(e) => {
-                        setPassword(e.target.value);
-                        clearStatus();
-                      }}
-                      placeholder="•••••••• (stored in keychain)"
-                    />
-                  </label>
-                  {form.engine === "postgres" && (
-                    <label className="text-xs text-muted">
-                      SSL mode
-                      <select
-                        className={field}
-                        value={form.sslmode}
-                        onChange={(e) => set("sslmode", e.target.value)}
-                      >
-                        <option value="disable">disable</option>
-                        <option value="allow">allow</option>
-                        <option value="prefer">prefer</option>
-                        <option value="require">require</option>
-                        <option value="verify-ca">verify-ca</option>
-                        <option value="verify-full">verify-full</option>
-                      </select>
-                    </label>
-                  )}
-                </>
-              )}
-            </div>
-
-            {!isFileEngine(form.engine) && (
-              <details className="mt-4 rounded-md border border-border" open={ssh.enabled}>
-                <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-xs font-medium text-text">
-                  <span>SSH Tunnel</span>
-                  {ssh.enabled && (
-                    <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] text-primary">
-                      enabled
-                    </span>
-                  )}
-                  <span className="ml-auto text-[10px] font-normal text-muted">
-                    Reach a DB behind a bastion
-                  </span>
-                </summary>
-                <div className="border-t border-border p-3">
-                  <label className="flex items-center gap-2 text-xs text-text">
-                    <input
-                      type="checkbox"
-                      checked={ssh.enabled}
-                      onChange={(e) => setSsh({ enabled: e.target.checked })}
-                    />
-                    Tunnel this connection through an SSH bastion
-                  </label>
-                  {ssh.enabled && (
-                    <>
-                      {/* TablePlus "Over SSH" layout: Server / Port / User, an
-                          always-visible Password, and a "Use SSH key" toggle that
-                          reveals the PEM file picker. No auth dropdown. */}
-                      <div className="mt-3 grid grid-cols-2 gap-3">
-                        <label className="col-span-2 text-xs text-muted">
-                          Server (bastion host)
-                          <input
-                            className={field}
-                            value={ssh.host}
-                            onChange={(e) => setSsh({ host: e.target.value })}
-                            placeholder="13.126.235.15 (or ~/.ssh/config alias)"
-                          />
-                        </label>
-                        <label className="text-xs text-muted">
-                          Port
-                          <input
-                            className={field}
-                            type="number"
-                            value={ssh.port}
-                            onChange={(e) => setSsh({ port: Number(e.target.value) })}
-                          />
-                        </label>
-                        <label className="text-xs text-muted">
-                          User
-                          <input
-                            className={field}
-                            value={ssh.username}
-                            onChange={(e) => setSsh({ username: e.target.value })}
-                            placeholder="ubuntu"
-                          />
-                        </label>
-                        {!useKey && (
-                          <label className="col-span-2 text-xs text-muted">
-                            Password
-                            <input
-                              className={field}
-                              type="password"
-                              value={sshPassword}
-                              onChange={(e) => {
-                                setSshPassword(e.target.value);
-                                if (ssh.auth.mode !== "password") setSsh({ auth: { mode: "password" } });
-                                clearStatus();
-                              }}
-                              placeholder="•••••••• (stored in keychain · leave empty for agent)"
-                            />
-                          </label>
-                        )}
-                      </div>
-
-                      {/* Use SSH key — the PEM picker, always one click away. */}
-                      <label className="mt-3 flex items-center gap-2 text-xs font-medium text-text">
-                        <input
-                          type="checkbox"
-                          checked={useKey}
-                          onChange={(e) => toggleUseKey(e.target.checked)}
-                        />
-                        Use SSH key (PEM / OpenSSH)
-                      </label>
-                      {useKey && (
-                        <div className="mt-2 flex flex-col gap-3">
-                          <label className="text-xs text-muted">
-                            Private key file
-                            <div className="flex gap-2">
-                              <input
-                                className={field}
-                                value={keyPath}
-                                onChange={(e) => setKeyPath(e.target.value)}
-                                placeholder="~/Downloads/prod-rhobots.pem or ~/.ssh/id_ed25519"
-                              />
-                              <button
-                                type="button"
-                                onClick={async () => {
-                                  try {
-                                    const picked = await pickKeyFile();
-                                    if (picked) setKeyPath(picked);
-                                  } catch (err) {
-                                    setStatus({ kind: "err", msg: `Could not open file picker: ${err}` });
-                                  }
-                                }}
-                                title="Choose a .pem / key file"
-                                className="inline-flex h-[34px] shrink-0 items-center gap-1.5 rounded-md border border-border px-3 text-[12px] text-text transition-colors hover:bg-surface-2"
-                              >
-                                <IconKey size={12} className="text-muted" />
-                                Browse…
-                              </button>
-                              {keyPath && (
-                                <button
-                                  type="button"
-                                  onClick={() => setKeyPath("")}
-                                  title="Clear key"
-                                  aria-label="Clear key"
-                                  className="inline-flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-md border border-border text-muted transition-colors hover:bg-surface-2 hover:text-text"
-                                >
-                                  <IconClose size={13} />
-                                </button>
-                              )}
-                            </div>
-                          </label>
-                          <label className="text-xs text-muted">
-                            Key passphrase (optional)
-                            <input
-                              className={field}
-                              type="password"
-                              value={sshKeyPass}
-                              onChange={(e) => {
-                                setSshKeyPass(e.target.value);
-                                clearStatus();
-                              }}
-                              placeholder="•••• (stored in keychain)"
-                            />
-                          </label>
-                        </div>
-                      )}
-                      <p className="mt-2 text-[10px] leading-snug text-muted">
-                        The DB driver connects to a local forward (127.0.0.1) over this tunnel.
-                        Leave the password and key empty to use your ssh-agent / ~/.ssh/config.
-                        Host keys are accepted on first use (v1) — the fingerprint is logged.
-                      </p>
-                    </>
-                  )}
-                </div>
-              </details>
-            )}
-
-            <div className="mt-5 border-t border-border pt-4">
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => doConnect(form, password)}
-                  className="inline-flex h-[34px] items-center rounded-md bg-primary px-4 text-[13px] font-medium text-white shadow-[var(--shadow-soft)] transition-colors hover:bg-primary-hover"
-                >
-                  Connect
-                </button>
-                <button
-                  onClick={doSave}
-                  className="inline-flex h-[34px] items-center rounded-md border border-border px-3.5 text-[13px] text-text transition-colors hover:bg-surface-2"
-                >
-                  Save
-                </button>
-                <button
-                  onClick={doTest}
-                  disabled={status.kind === "busy"}
-                  className="inline-flex h-[34px] items-center rounded-md border border-border px-3.5 text-[13px] text-text transition-colors hover:bg-surface-2 disabled:opacity-50"
-                >
-                  Test
-                </button>
-                <label className="ml-auto flex flex-col gap-1 text-[11px] text-muted">
-                  <span>Environment</span>
-                  <select
-                    className={`${field} w-36`}
-                    value={form.env ?? ""}
-                    onChange={(e) => set("env", (e.target.value || null) as ConnEnv | null)}
-                  >
-                    <option value="">None</option>
-                    {CONN_ENVS.map((env) => (
-                      <option key={env} value={env}>
-                        {env[0].toUpperCase() + env.slice(1)}
-                      </option>
-                    ))}
-                  </select>
-                  <span className="text-[10px] text-muted">
-                    Production asks before committing staged edits
-                  </span>
-                </label>
-                <label
-                  className="inline-flex items-center gap-2 text-[11px] text-muted"
-                  title="Pick a color for this connection (shown as the env tag dot)"
-                >
-                  <span>Color tag</span>
-                  <span className="relative inline-flex h-7 w-9 items-center justify-center overflow-hidden rounded-md border border-border shadow-[var(--shadow-soft)] focus-within:ring-2 focus-within:ring-primary/30">
-                    <input
-                      type="color"
-                      value={form.color ?? DEFAULT_CONN_COLOR}
-                      onChange={(e) => set("color", e.target.value)}
-                      className="absolute inset-0 h-[150%] w-[150%] -translate-x-2 -translate-y-2 cursor-pointer border-0 bg-transparent p-0"
-                    />
-                  </span>
-                </label>
-              </div>
-
-              {/* TablePlus-style result banner: green on success, red + the real
-                  error on failure, muted spinner while testing. */}
-              {status.kind !== "idle" && (
-                <div
-                  className={`mt-3 flex items-start gap-2 rounded-md border px-3 py-2 text-[12px] ${
-                    status.kind === "ok"
-                      ? "border-ok/30 bg-ok/10 text-ok"
-                      : status.kind === "err"
-                        ? "border-danger/30 bg-danger/10 text-danger"
-                        : "border-border bg-surface text-muted"
-                  }`}
-                  role="status"
-                >
-                  <span aria-hidden className="mt-px shrink-0 font-semibold">
-                    {status.kind === "ok" ? "✓" : status.kind === "err" ? "✕" : "⋯"}
-                  </span>
-                  <span className="min-w-0 break-words">{status.msg}</span>
-                </div>
-              )}
-            </div>
-          </div>
+          <ConnectionSheet
+            mode={mode}
+            form={form}
+            dirty={dirty}
+            status={status}
+            password={password}
+            sshPassword={sshPassword}
+            sshKeyPass={sshKeyPass}
+            onField={set}
+            onEngine={(eng) => {
+              setForm((f) => ({ ...f, engine: eng, port: DEFAULT_PORT[eng] ?? f.port }));
+              clearStatus();
+            }}
+            onSsh={setSsh}
+            onPassword={(v) => {
+              setPassword(v);
+              clearStatus();
+            }}
+            onSshPassword={(v) => {
+              setSshPassword(v);
+              clearStatus();
+            }}
+            onSshKeyPass={(v) => {
+              setSshKeyPass(v);
+              clearStatus();
+            }}
+            onApplyUrl={(p) => {
+              setForm((f) => ({
+                ...f,
+                engine: p.engine,
+                host: p.host,
+                port: p.port,
+                username: p.username,
+                database: p.database,
+                ...(p.sslmode ? { sslmode: p.sslmode } : {}),
+                name: f.name || p.database || p.host,
+              }));
+              if (p.password) setPassword(p.password);
+              clearStatus();
+            }}
+            onPickFile={() =>
+              void pickOrReport(() => pickDatabaseFile(form.engine as "sqlite" | "duckdb"), (f) => set("database", f))
+            }
+            onPickKey={() => void pickOrReport(pickKeyFile, setKeyPath)}
+            onTest={() => void doTest()}
+            onSave={() => void doSave()}
+            onConnect={() => void doConnect(form, password)}
+            onDiscard={() => loadInto(initial)}
+            onClose={() => void requestClose()}
+            onCopyUrl={() => void navigator.clipboard.writeText(toConnUrl(form))}
+            onDuplicate={() => duplicate(form)}
+            onDelete={async () => {
+              if (
+                await confirmDialog(`Delete connection "${form.name}"?`, "Delete connection", {
+                  ok: "Delete",
+                  cancel: "Cancel",
+                })
+              ) {
+                await deleteConnection(form.id);
+                setSheetOpen(false);
+                await refresh();
+              }
+            }}
+            canPickFiles={canPickFiles()}
+          />
         </div>
       </div>
       <Onboarding />
