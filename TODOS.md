@@ -11,3 +11,9 @@ Deferred from the Connected Home plan review (2026-09-27, `docs/superpowers/plan
 - **Show Tour on non-main screens.** Help → Show Tour does nothing on the ConnectionManager, Kv and Doc screens; the tour lives in MainShell.
 - **Narrow-window pill** (QA ISSUE-003, low). At 960px with both side panels open, the titlebar pill shrinks to env + engine only; the full text is in its tooltip. Consider collapsing a side panel or the engine label before the connection name.
 - **Tauri-build QA pending.** Check the native View/Help menu bar (one of each), ⌘K twice toggles once, editor keys ⌘F/⌘[/⌘]/⌘⇧\ in CodeMirror, window drag from header gaps, and traffic-light centring on the ConnectionManager/Kv/Doc screens.
+- **Connection sheet follow-ups** (2026-09-28):
+  - Validate the SSH host and port.
+  - Strip `?query` from pasted `sqlite://` URLs.
+  - Add `aria-live` to the "Copied" confirmation.
+  - Make the "Saved" status neutral instead of green.
+  - Let Test fall back to the saved keychain password when the field is blank. This needs a backend change.

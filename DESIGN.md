@@ -299,6 +299,28 @@ successful connect (from welcome and from `⌘O` swap in MainShell). `sortByRece
 floats recently-used connections to the top of the list without any UI grouping
 — we deliberately don't show a "Recent" header because TablePlus doesn't.
 
+### Connection sheet
+`ConnectionSheet.tsx`, a 460px right-hand slide-in over a `bg-black/30` scrim.
+- **Header:** EngineIcon (lg), the title (the only 600 weight: "New Connection" or
+  the name), then the engine label and, when editing, `● Unsaved changes` in
+  `text-warn`. A ⋯ menu (edit only) holds Copy as URL (never includes the
+  password), Duplicate and Delete. Then ×.
+- **Body:** a dashed paste-a-URL field that fills the form. In new mode, a row of
+  7 engine tiles. Name, then an Environment segmented control (tinted with
+  `--env-<tone>`) and the colour dots. Then Server (or File for SQLite/DuckDB),
+  with 32px inputs and validation errors under their field. Then Advanced: the
+  SSH tunnel switch.
+- **Footer:** pinned, `bg-surface`. A result line: spinner, `✓ Connected in N ms`,
+  or `✕` plus the first line with the full error in a mono box you can copy.
+  Then Test ⌘T on the left, and Discard (edit + dirty), Save ⌘S and **Connect ⌘↵**
+  on the right. Save and Connect are disabled while the form is invalid, with the
+  reason in their tooltip. After a Test, the whole form borders green or red.
+- **Closing:** ×, the scrim or Esc. If anything changed, it asks
+  "Discard unsaved changes?" first.
+- **Colour presets:** `#4f46e5` (default, light `--primary`), `#16a34a`,
+  `#ea580c`, `#dc2626`, `#0891b2`, `#71717a`. These six swatches are the only
+  literal colours in the sheet. A saved custom colour shows as a seventh dot.
+
 ## Surfaces redesigned in earlier slices
 
 | Surface | Change |
