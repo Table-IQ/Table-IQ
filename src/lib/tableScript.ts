@@ -76,6 +76,15 @@ export function buildTableScript(
   }
 }
 
+/** `a = '1' AND b IS NULL` — a row's primary key as a WHERE for `engine` (`= NULL` never matches). */
+export function pkWhere(pk: [string, string | null][], engine?: Engine): string {
+  return pk
+    .map(([c, v]) =>
+      v == null ? `${quoteIdent(c, engine)} IS NULL` : `${quoteIdent(c, engine)} = ${quoteLiteral(v, engine)}`,
+    )
+    .join(" AND ");
+}
+
 /**
  * The row's `DELETE … WHERE <pk>` for the clipboard ("Copy DELETE statement").
  * Identifiers AND literals are quoted for `engine`: with the default `"…"` form
@@ -90,12 +99,5 @@ export function buildDeleteStatement(
   engine?: Engine,
 ): string {
   const qualified = `${quoteIdent(schema, engine)}.${quoteIdent(table, engine)}`;
-  const where = pk
-    .map(([c, v]) =>
-      v == null
-        ? `${quoteIdent(c, engine)} IS NULL`
-        : `${quoteIdent(c, engine)} = ${quoteLiteral(v, engine)}`,
-    )
-    .join(" AND ");
-  return `DELETE FROM ${qualified} WHERE ${where};`;
+  return `DELETE FROM ${qualified} WHERE ${pkWhere(pk, engine)};`;
 }

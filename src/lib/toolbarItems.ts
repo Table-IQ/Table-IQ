@@ -13,10 +13,11 @@ export interface ToolbarItemInfo {
   label: string;
 }
 
-/** Order here is also the default order (before any user customization). */
+/** Order here is also the default order (before any user customization).
+ *  Open database is not here: it's pinned in the titlebar's G3 capsule, so a
+ *  stored pref that still lists `switch-database` is simply ignored. */
 export const TOOLBAR_ITEMS = [
   { id: "refresh-schema", label: "Refresh schema" },
-  { id: "switch-database", label: "Switch database" },
   { id: "command-palette", label: "Command palette" },
   { id: "theme-toggle", label: "Theme" },
   { id: "help", label: "Help / Show tour" },

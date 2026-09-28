@@ -1,16 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { DataGrid, type DataGridHandle, type GridSource } from "./DataGrid";
 import {
+  applyChanges,
   applyEdit,
   cancelQuery,
   countRowsExact,
-  deleteRow,
   describeTable,
   downloadText,
   estimateRows,
   exportTable,
   fetchTableWindow,
-  insertRow,
   isNotImplementedError,
   openTable,
   type ColumnDetail,
@@ -31,7 +30,12 @@ import { pagerLabel } from "../lib/pager";
 import { mergeTotal, staleTotal, type RowTotal } from "../lib/rowTotal";
 import { isFindShortcut, isMacPlatform } from "../lib/shortcut";
 import { cycleSort } from "../lib/tableSort";
-import { useTabs } from "../state/tabsStore";
+import { tabGuard } from "../state/tabGuard";
+import { isMenuId, menuBlocked } from "../lib/menuEvents";
+import { useSettingsUi } from "./Settings";
+import { useStaged } from "../state/stagedStore";
+import { normalizeEnv } from "../lib/connEnv";
+import { productionCommitMessage } from "../lib/stagedEdits";
 import {
   invalidateTableMeta,
   loadForeignKeys,
@@ -51,7 +55,18 @@ import { Elapsed } from "./ui/Elapsed";
 import { ContextMenu, type ContextMenuItem } from "./ui/ContextMenu";
 import { buildRowAs } from "../lib/rowFormat";
 import { buildDeleteStatement, quoteIdent } from "../lib/tableScript";
-import { buildInsertValues, insertedPkMatch, isDraftDirty } from "../lib/insertRow";
+import { buildInsertValues, isDraftDirty } from "../lib/insertRow";
+import {
+  buildBatch,
+  buildPreviewSql,
+  commitErrorMessage,
+  NO_STAGED,
+  stagedLock,
+  totalStaged,
+  type StagedCounts,
+  type StagedSnapshot,
+} from "../lib/stagedChanges";
+import { StagedCountChips } from "./StagedCountChips";
 import {
   chipLabel,
   fetchErrorMessage,
@@ -60,28 +75,42 @@ import {
   isSuperseded,
   retrySuperseded,
   MANUAL_FILTER_OPS,
-  removeFilter,
   searchTerm,
-  upsertFilter,
-  withSearch,
+  ANY_COLUMN,
+  RAW_SQL,
+  ruleToFilter,
+  rulesToFilters,
+  type FilterRule,
 } from "../lib/filterBuilder";
 import {
   IconChevronLeft,
   IconChevronRight,
   IconClose,
+  IconColumns,
   IconExport,
   IconFilter,
   IconLink,
+  IconPlus,
   IconRefresh,
-  IconSearch,
+  IconRow,
+  IconTable,
 } from "./ui/Icon";
 
 /** Rows-per-page choices; one more row than the page is fetched — the extra row
  *  is how we know a next page exists without a second query. */
 const PAGE_SIZES = [100, 300, 1000, 5000] as const;
 const DEFAULT_PAGE_SIZE = 300;
-/** Typing pause before the search box re-queries. */
-const SEARCH_DEBOUNCE_MS = 300;
+/** Status-bar icons render smaller than the 14px default (DESIGN.md). */
+const STATUSBAR_ICON = { size: 11, strokeWidth: 1.5 } as const;
+let ruleSeq = 0;
+/** A blank filter-bar row. Defaults to Any column — the old search box's job. */
+const newRule = (column = ANY_COLUMN, op: FilterOp = "Eq", value = ""): FilterRule => ({
+  id: ++ruleSeq,
+  enabled: true,
+  column,
+  op,
+  value,
+});
 
 interface Props {
   connId: string;
@@ -131,16 +160,17 @@ export function TableView({ connId, schema, object, view }: Props) {
     key: "",
     map: new Map(),
   });
-  /** The search box (its text is local to {@link SearchBox}; the applied term
-   *  lives in `filters` as one Search filter). */
-  const searchRef = useRef<HTMLInputElement>(null);
+  /** The filter bar, for focusing a row's value input. */
+  const barRef = useRef<HTMLDivElement>(null);
   /** An exact COUNT(*) the user asked for, cancellable by `token`. */
   const [counting, setCounting] = useState<{ token: string; started: number } | null>(null);
   const countingRef = useRef<string | null>(null);
-  const [dirty, setDirty] = useState(0);
   const [refreshKey, setRefreshKey] = useState(0);
+  /** The applied filters — what the grid is fetched with. */
   const [filters, setFilters] = useState<ColumnFilter[]>([]);
-  const [filterDraft, setFilterDraft] = useState<{ column: string; op: FilterOp; value: string } | null>(null);
+  /** The filter bar's rows (TablePlus parity); only Apply turns them into `filters`. */
+  const [rules, setRules] = useState<FilterRule[]>([]);
+  const [barOpen, setBarOpen] = useState(false);
   const [draft, setDraft] = useState<Record<string, string | null | undefined> | null>(null);
   const [cellMenu, setCellMenu] = useState<{
     x: number;
@@ -152,20 +182,24 @@ export function TableView({ connId, schema, object, view }: Props) {
     values: Record<string, string | null> | null;
     /** Row as the database still has it. The ONLY source for a WHERE clause. */
     serverValues: Record<string, string | null> | null;
+    staged?: "deleted" | "inserted";
   } | null>(null);
-  const [pendingCount, setPendingCount] = useState(0);
-  // True while the grid is walking its staged edits, one round trip each. Sorting or
-  // paging mid-commit would change what the remaining edits' row indices mean, so both
-  // are locked for the duration (the grid also stops itself — see its generation guard).
+  // What the grid has staged, by kind (status-bar chips; the total drives the lock).
+  // `stagedTotal`, not `total`: that name is the table's row total.
+  const [counts, setCounts] = useState<StagedCounts>(NO_STAGED);
+  const stagedTotal = totalStaged(counts);
+  // True while the grid's one commit call is in flight. Sorting or paging mid-commit
+  // would change what the staged row indices mean, so both are locked for the
+  // duration (the grid also stops itself — see its generation guard).
   const [committing, setCommitting] = useState(false);
-  // "Saved n changes" in the status bar for 2s after a commit. `id` re-keys the
+  // "Committed n changes" in the status bar for 2s after a commit. `id` re-keys the
   // element so a second save inside the window restarts its fade.
   const [saved, setSaved] = useState<{ n: number; id: number } | null>(null);
-  // Staged edits are keyed to rows of the page on screen, so anything that swaps
-  // that page (search, filter, sort, paging, refresh) would silently drop them.
-  // Those actions are refused until the edits are committed or discarded, and the
-  // unsaved-changes bar says so. Not while the fetch errored: the grid is gone.
-  const locked = !error && (committing || pendingCount > 0);
+  // Staged edits, deletes and inserts are keyed to rows of the page on screen, so
+  // anything that swaps that page (search, filter, sort, paging, refresh) would
+  // silently drop them. Those actions are refused until they are committed or
+  // discarded, and the unsaved-changes bar says so. Not while the fetch errored.
+  const locked = stagedLock(error, committing, counts);
   const lockedRef = useRef(locked);
   lockedRef.current = locked;
   // Published so leaving this connection (rail, ⌘O, Disconnect) can ask first.
@@ -187,7 +221,6 @@ export function TableView({ connId, schema, object, view }: Props) {
   const savedTimer = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearTimeout(savedTimer.current), []);
   const gridRef = useRef<DataGridHandle>(null);
-  const openTab = useTabs((s) => s.openTable);
   const engine = useConnections((s) => s.active?.engine ?? "postgres") as Engine;
   const setSelectedRow = useSelectedRow((s) => s.setRow);
   const clearSelectedRowIfFrom = useSelectedRow((s) => s.clearIfFrom);
@@ -239,7 +272,6 @@ export function TableView({ connId, schema, object, view }: Props) {
     if (!painted) return;
     let cancelled = false;
     setNotice(null);
-    setDirty(0);
     setPkError(null);
     loadTableMeta(connId, schema, object.name)
       .then((m) => {
@@ -399,16 +431,30 @@ export function TableView({ connId, schema, object, view }: Props) {
     };
   }, [connId, schema, object.name, page, pageSize, pageKey, filters, order, requestKey, refreshKey]);
 
-  // Search box → one Search filter. A no-op when the term is unchanged
-  // (withSearch returns the same array), so nothing refetches or re-pages.
-  const onSearch = useCallback(
-    (text: string) => {
-      const next = withSearch(filters, text);
-      if (next !== filters) applyFilters(next);
-    },
-    [filters, applyFilters],
-  );
-  // ⌘F (Ctrl+F off macOS) focuses the search box — only the active tab's view is
+  /** Focus a filter-bar row's value input (the first row's by default), once
+   *  the render that adds the row has landed. */
+  const focusRule = useCallback((id?: number) => {
+    requestAnimationFrame(() => {
+      const row = id === undefined ? "" : `[data-rule="${id}"] `;
+      barRef.current?.querySelector<HTMLInputElement>(`${row}input[type=text]`)?.select();
+    });
+  }, []);
+  /** Show the filter bar with at least one row, and focus it. */
+  const openBar = useCallback(() => {
+    setBarOpen(true);
+    setRules((r) => (r.length ? r : [newRule()]));
+    focusRule();
+  }, [focusRule]);
+  /** Hide the filter bar, dropping its rows and whatever they applied. */
+  const closeBar = useCallback(() => {
+    if (filters.length) {
+      if (blockedByEdits()) return;
+      applyFilters([]);
+    }
+    setRules([]);
+    setBarOpen(false);
+  }, [filters.length, blockedByEdits, applyFilters]);
+  // ⌘F (Ctrl+F off macOS) opens the filter bar — only the active tab's view is
   // mounted. Not while a modal / panel is open over it: that owns the keyboard.
   useEffect(() => {
     if (view !== "data") return;
@@ -416,57 +462,51 @@ export function TableView({ connId, schema, object, view }: Props) {
     const onKey = (e: KeyboardEvent) => {
       if (isFindShortcut(e, mac) && !document.querySelector(".tiq-overlay")) {
         e.preventDefault();
-        searchRef.current?.focus();
-        searchRef.current?.select();
+        openBar();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [view]);
+  }, [view, openBar]);
+  // Native View → Filter Rows… / Data / Structure (⌥⌘1/⌥⌘2 land here too, via
+  // useShellKeymap). Only the active table tab is mounted. Data/Structure take the same
+  // guarded path as the status-bar toggle: Structure unmounts the grid and its staged edits.
+  useEffect(() => {
+    const onMenu = (e: Event) => {
+      const id = (e as CustomEvent<unknown>).detail;
+      if (!isMenuId(id)) return;
+      if (menuBlocked(id, useSettingsUi.getState().open, !!document.querySelector(".tiq-overlay")))
+        return;
+      if (id === "view.filter") {
+        // Same guarded path as View → Data: switch out of Structure first, then
+        // open the bar once the switch has landed (or immediately if already same).
+        if (view === "data") openBar();
+        else if (!blockedByEdits()) void tabGuard.openTable(schema, object.name, "data").then(openBar);
+      } else if (id === "view.data" || id === "view.structure") {
+        const v = id === "view.data" ? "data" : "structure";
+        if (v !== view && !blockedByEdits()) void tabGuard.openTable(schema, object.name, v);
+      }
+    };
+    window.addEventListener("tiq:menu", onMenu);
+    return () => window.removeEventListener("tiq:menu", onMenu);
+  }, [view, openBar, blockedByEdits, schema, object.name]);
 
   // Re-sync the grid when a cell is edited from the Inspector panel (Slice 33),
   // so the data grid reflects the committed value.
   useEffect(() => {
     const onEdited = (e: Event) => {
       const target = (e as CustomEvent<string>).detail;
-      if (target === `${schema}.${object.name}`) refresh();
+      if (target !== `${schema}.${object.name}`) return;
+      // A re-read would wipe everything staged here: say so instead of refreshing.
+      if (lockedRef.current) {
+        setNotice("Saved from the Inspector — commit or discard staged changes, then refresh to see it.");
+      } else refresh();
     };
     window.addEventListener("tiq:row-edited", onEdited);
     return () => window.removeEventListener("tiq:row-edited", onEdited);
   }, [schema, object.name, refresh]);
 
   const editable = object.kind === "Table" && !!pk && pk.length > 0;
-
-  const onEdit = useCallback(
-    async (
-      _row: number,
-      col: string,
-      newValue: string,
-      getOriginal: (c: string) => string | null,
-    ): Promise<boolean> => {
-      if (!pk || pk.length === 0) return false;
-      setNotice(null);
-      setDirty((d) => d + 1);
-      try {
-        // Inside the try: a throw here would otherwise leave "1 saving…" forever.
-        const edit = buildEdit(pk, getOriginal, col, newValue);
-        const { rowsAffected } = await applyEdit(connId, schema, object.name, edit);
-        setDirty((d) => Math.max(0, d - 1));
-        // Only rows_affected === 1 is a clean write. 0 and >1 are both the user's
-        // business and are reported verbatim — nothing is rolled back (the backend
-        // UPDATE is a single non-transactional statement), so we never claim it was.
-        const problem = writeOutcomeMessage("update", rowsAffected);
-        if (!problem) return true;
-        setNotice(`Update "${col}": ${problem}`);
-        return false;
-      } catch (e) {
-        setNotice(`Update failed: ${e}`);
-        setDirty((d) => Math.max(0, d - 1));
-        return false;
-      }
-    },
-    [connId, schema, object.name, pk],
-  );
 
   // Build the FK lookup the grid uses to render the cell-level "go to referenced row" chevron.
   const fkByColumn = useMemo(() => {
@@ -494,6 +534,60 @@ export function TableView({ connId, schema, object, view }: Props) {
   const rowsOnPage = pageData ? Math.min(pageData.size, pageData.rows) : 0;
   const hasNext = !!pageData && pageData.rows > pageData.size;
   const firstRow = pageData ? pageData.page * pageData.size : 0;
+
+  /** The one commit path (⌘S, the in-grid bar, the titlebar, Review): every staged change
+   *  goes to `apply_changes` as ONE transaction. A failure leaves everything staged. */
+  const commitChanges = useCallback(
+    async (snap: StagedSnapshot): Promise<boolean> => {
+      if (!pk || pk.length === 0) {
+        setNotice("This table has no primary key — changes can't be committed.");
+        return false;
+      }
+      const batch = buildBatch(snap, pk, firstRow);
+      setNotice(null);
+      try {
+        await applyChanges(connId, schema, object.name, batch.changes);
+        return true;
+      } catch (e) {
+        setNotice(commitErrorMessage(e, batch.labels));
+        return false;
+      }
+    },
+    [connId, schema, object.name, pk, firstRow],
+  );
+
+  // The titlebar's Discard / Review / Commit (G2) act on this tab's staged edits.
+  // `preview` builds the Review SQL from the grid's snapshot.
+  const publishStaged = useStaged((s) => s.publish);
+  const unregisterStaged = useStaged((s) => s.unregister);
+  useEffect(() => {
+    publishStaged(requestKey, stagedTotal, committing, {
+      preview: () => {
+        const snap = gridRef.current?.snapshot();
+        return snap && pk ? buildPreviewSql(schema, object.name, buildBatch(snap, pk, firstRow).changes, engine) : "";
+      },
+      commit: () => gridRef.current?.commitPending(),
+      discard: () => gridRef.current?.discardPending(),
+    });
+  }, [requestKey, stagedTotal, committing, publishStaged, firstRow, pk, schema, object.name, engine]);
+  useEffect(() => () => unregisterStaged(requestKey), [requestKey, unregisterStaged]);
+
+  // Production connections confirm every commit (⌘S, the in-grid and titlebar Commit).
+  const env = useConnections((s) => normalizeEnv(s.saved.find((c) => c.id === connId)?.env));
+  const confirmCommit = useMemo(
+    () =>
+      env === "production"
+        ? async () => {
+            const name =
+              useConnections.getState().saved.find((c) => c.id === connId)?.name ?? "production";
+            return confirmDialog(productionCommitMessage(stagedTotal, name), "Production", {
+              ok: "Commit to production",
+              cancel: "Cancel",
+            });
+          }
+        : undefined,
+    [env, connId, stagedTotal],
+  );
 
   const source = useMemo<GridSource | null>(() => {
     if (!pageData) return null;
@@ -525,133 +619,176 @@ export function TableView({ connId, schema, object, view }: Props) {
     gridRef.current?.scrollToRow(0);
   };
 
-  const commitDraft = useCallback(async () => {
+  /** "+ Row" Add/Enter stages a new row (green, read-only) — nothing is written until Commit. */
+  const commitDraft = useCallback(() => {
     if (!draft) return;
-    setNotice(null);
-    const values = buildInsertValues(
-      object.columns.map((c) => c.name),
-      draft,
-    );
-    try {
-      await insertRow(connId, schema, object.name, values);
+    const values = buildInsertValues(object.columns.map((c) => c.name), draft);
+    if (gridRef.current?.stageInsert(values)) {
       setDraft(null);
-      // Flash the new row once the refetch lands — only if the user typed its PK.
-      const match = insertedPkMatch(pk ?? [], values);
-      if (match) gridRef.current?.flashRowWhere(match);
-      refresh();
-    } catch (e) {
-      setNotice(`Insert failed: ${e}`);
+      setNotice(null);
+    } else {
+      setNotice("Wait for the page to load or the commit to finish, then add the row.");
     }
-  }, [connId, schema, object, draft, pk, refresh]);
+  }, [object, draft]);
 
   const cancelDraft = useCallback(() => {
     setDraft(null);
     setNotice(null);
   }, []);
 
-  /** Filter builder + chip rail (Slice 21 #1). Declared before the early returns
-   *  so the error view can show it too — a filter that the engine rejects has to
-   *  stay visible and removable, or the tab is stuck. */
+  /** Filter bar (TablePlus parity): one row per rule. Enter / Apply applies that
+   *  row alone; ⌘↵ / Apply All applies every ticked row. Declared before the early
+   *  returns so the error view can show it too — a filter that the engine rejects
+   *  has to stay visible and removable, or the tab is stuck. */
+  const setRule = (id: number, patch: Partial<FilterRule>) =>
+    setRules((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  const applyRule = (r: FilterRule) => {
+    const f = ruleToFilter({ ...r, enabled: true });
+    setRule(r.id, { enabled: true });
+    applyFilters(f ? [f] : []);
+  };
+  const applyAll = () => applyFilters(rulesToFilters(rules));
+  const ctl =
+    "h-6 rounded-md border border-border bg-surface px-1.5 text-[11px] text-text focus:border-primary focus:outline-none";
+  const btn = "h-6 rounded-md border border-border px-2 text-[11px] text-muted hover:text-text";
   const filterRail =
-    filterDraft || filters.length > 0 ? (
-        <div className="tiq-rail flex flex-wrap items-center gap-1.5 border-b border-border bg-bg px-3 py-1.5">
-          <IconFilter size={11} className="text-primary" />
-          <span className="text-[10px] uppercase tracking-wider text-muted">filters</span>
-          {filters.map((f) => (
-            <Chip
-              key={`${f.column}-${f.op}`}
-              tone="primary"
-              onClick={() => applyFilters(removeFilter(filters, f.column, f.op))}
-              title="Click to remove"
-            >
-              {chipLabel(f)} ×
-            </Chip>
-          ))}
-          {filterDraft && (
-            <div className="flex items-center gap-1">
+    barOpen || filters.length > 0 ? (
+      <div
+        ref={barRef}
+        className="tiq-rail flex flex-col gap-1 border-b border-border bg-bg px-3 py-1.5"
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            e.stopPropagation();
+            applyAll();
+          }
+        }}
+      >
+        {rules.map((r) => {
+          const raw = r.column === RAW_SQL;
+          return (
+            <div key={r.id} data-rule={r.id} className="flex items-center gap-1">
+              <input
+                type="checkbox"
+                checked={r.enabled}
+                onChange={(e) => setRule(r.id, { enabled: e.target.checked })}
+                aria-label="Include in Apply All"
+                title="Include in Apply All"
+                className="accent-[var(--primary)]"
+              />
               <select
-                value={filterDraft.column}
-                onChange={(e) => setFilterDraft({ ...filterDraft, column: e.target.value })}
-                className="rounded-md border border-border bg-surface px-1.5 py-0.5 text-[11px] text-text"
+                value={r.column}
+                onChange={(e) => setRule(r.id, { column: e.target.value })}
+                aria-label="Filter column"
+                className={`${ctl} max-w-44`}
               >
                 {object.columns.map((c) => (
                   <option key={c.name} value={c.name}>
                     {c.name}
                   </option>
                 ))}
+                <option disabled>──────────</option>
+                <option value={ANY_COLUMN}>Any column</option>
+                <option value={RAW_SQL}>Raw SQL</option>
               </select>
-              <select
-                value={filterDraft.op}
-                onChange={(e) =>
-                  setFilterDraft({ ...filterDraft, op: e.target.value as FilterOp })
-                }
-                className="rounded-md border border-border bg-surface px-1.5 py-0.5 text-[11px] text-text"
-              >
-                {MANUAL_FILTER_OPS.map((op) => (
-                  <option key={op} value={op}>
-                    {FILTER_OP_LABEL[op]}
-                  </option>
-                ))}
-              </select>
-              {!isNullOp(filterDraft.op) && (
+              {r.column === ANY_COLUMN ? (
+                <span className="w-16 text-center text-[11px] text-muted">contains</span>
+              ) : (
+                !raw && (
+                  <select
+                    value={r.op}
+                    onChange={(e) => setRule(r.id, { op: e.target.value as FilterOp })}
+                    aria-label="Filter operator"
+                    className={ctl}
+                  >
+                    {MANUAL_FILTER_OPS.map((op) => (
+                      <option key={op} value={op}>
+                        {FILTER_OP_LABEL[op]}
+                      </option>
+                    ))}
+                  </select>
+                )
+              )}
+              {raw || !isNullOp(r.op) || r.column === ANY_COLUMN ? (
                 <input
-                  autoFocus
-                  value={filterDraft.value}
-                  onChange={(e) => setFilterDraft({ ...filterDraft, value: e.target.value })}
+                  type="text"
+                  value={r.value}
+                  onChange={(e) => setRule(r.id, { value: e.target.value })}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      applyFilters(
-                        upsertFilter(filters, {
-                          column: filterDraft.column,
-                          op: filterDraft.op,
-                          value: filterDraft.value === "" ? null : filterDraft.value,
-                        }),
-                      );
-                      setFilterDraft(null);
-                    } else if (e.key === "Escape") {
-                      setFilterDraft(null);
+                    if (e.key === "Enter" && !e.metaKey && !e.ctrlKey) {
+                      e.preventDefault();
+                      applyRule(r);
+                    } else if (e.key === "Escape" && filters.length === 0) {
+                      // Nothing applied: Esc cancels the bar, as it cancelled the old draft.
+                      e.preventDefault();
+                      e.stopPropagation();
+                      closeBar();
                     }
                   }}
-                  placeholder="value…"
-                  className="w-32 rounded-md border border-border bg-surface px-1.5 py-0.5 text-[11px] text-text placeholder:text-muted"
+                  aria-label={raw ? "Raw SQL WHERE expression" : "Filter value"}
+                  spellCheck={false}
+                  placeholder={raw ? "WHERE … e.g. id > 10 AND name LIKE 'a%'" : r.column === ANY_COLUMN ? "Search rows" : "value…"}
+                  className={`${ctl} min-w-0 flex-1 placeholder:text-muted ${raw ? "font-mono" : ""}`}
                 />
+              ) : (
+                <span className="flex-1" />
               )}
+              <button onClick={() => applyRule(r)} className={btn} title="Apply this filter only (↵)">
+                Apply
+              </button>
+              <button
+                onClick={() => (rules.length > 1 ? setRules((rs) => rs.filter((x) => x.id !== r.id)) : closeBar())}
+                className={`${btn} w-6 px-0`}
+                aria-label="Remove filter row"
+                title="Remove filter row"
+              >
+                −
+              </button>
               <button
                 onClick={() => {
-                  applyFilters(
-                    upsertFilter(filters, {
-                      column: filterDraft.column,
-                      op: filterDraft.op,
-                      value: isNullOp(filterDraft.op)
-                        ? null
-                        : filterDraft.value === ""
-                          ? null
-                          : filterDraft.value,
-                    }),
-                  );
-                  setFilterDraft(null);
+                  const next = newRule(r.column === RAW_SQL ? ANY_COLUMN : r.column, r.op);
+                  setRules((rs) => rs.flatMap((x) => (x.id === r.id ? [x, next] : [x])));
+                  focusRule(next.id);
                 }}
-                className="rounded-md bg-primary px-2 py-0.5 text-[11px] font-medium text-white hover:opacity-90"
+                className={`${btn} w-6 px-0`}
+                aria-label="Add filter row"
+                title="Add filter row"
               >
-                Add
-              </button>
-              <button
-                onClick={() => setFilterDraft(null)}
-                className="rounded-md border border-border px-1.5 py-0.5 text-[11px] text-muted hover:text-text"
-              >
-                <IconClose size={9} />
+                +
               </button>
             </div>
-          )}
-          {filters.length > 0 && (
-            <button
-              onClick={() => applyFilters([])}
-              className="ml-auto text-[10px] text-muted hover:text-text"
-              title="Clear all filters"
-            >
-              clear all
-            </button>
-          )}
+          );
+        })}
+        <div className="flex items-center gap-1.5">
+          <IconFilter size={11} className="text-primary" />
+          <span className="text-[10px] text-muted">
+            {filters.length > 0 ? filters.map(chipLabel).join(" AND ") : "no filter applied"}
+          </span>
+          <span className="flex-1" />
+          <button
+            onClick={() => {
+              if (filters.length) {
+                if (blockedByEdits()) return;
+                applyFilters([]);
+              }
+              setRules([newRule()]);
+              focusRule();
+            }}
+            className={btn}
+          >
+            Clear
+          </button>
+          <button
+            onClick={applyAll}
+            className="h-6 rounded-md bg-primary px-2 text-[11px] font-medium text-white hover:opacity-90"
+            title="Apply every ticked filter"
+          >
+            Apply All <span className="opacity-70">{isMacPlatform() ? "⌘↵" : "Ctrl ↵"}</span>
+          </button>
+          <button onClick={closeBar} className={`${btn} w-6 px-0`} aria-label="Close filter bar" title="Close filter bar">
+            <IconClose size={9} className="mx-auto" />
+          </button>
+        </div>
       </div>
     ) : null;
 
@@ -724,17 +861,9 @@ export function TableView({ connId, schema, object, view }: Props) {
         />
         <ToolbarButton label="Profile" onClick={() => setShowProfile(true)} />
         {object.kind === "Table" && (
-          <ToolbarButton label="Alter" onClick={() => setShowAlter(true)} />
+          <ToolbarButton label="Alter" onClick={() => !blockedByEdits() && setShowAlter(true)} />
         )}
         <ToolbarSpacer />
-        {view === "data" && (
-          <SearchBox
-            term={searchTerm(filters)}
-            onSearch={onSearch}
-            disabled={locked}
-            inputRef={searchRef}
-          />
-        )}
         {(["csv", "json"] as ExportFormat[]).map((fmt) => (
           <ToolbarButton
             key={fmt}
@@ -758,7 +887,7 @@ export function TableView({ connId, schema, object, view }: Props) {
 
       {filterRail}
 
-      {/* Draft-row rail (Slice 21 #2). Editable inputs for each column; Enter commits. */}
+      {/* Draft-row rail (Slice 21 #2). Editable inputs for each column; Enter stages it. */}
       {draft !== null && editable && (
         <div className="tiq-rail flex items-center gap-2 border-b border-border bg-bg px-3 py-1.5">
           <span className="text-[10px] uppercase tracking-wider text-primary">new row</span>
@@ -771,8 +900,8 @@ export function TableView({ connId, schema, object, view }: Props) {
                   setDraft({ ...draft, [c.name]: e.target.value === "" ? "" : e.target.value })
                 }
                 onKeyDown={(e) => {
-                  // Same rule as the Commit button: an untouched draft inserts nothing.
-                  if (e.key === "Enter" && isDraftDirty(draft)) void commitDraft();
+                  // Same rule as the Add button: an untouched draft inserts nothing.
+                  if (e.key === "Enter" && !e.repeat && isDraftDirty(draft)) commitDraft();
                   if (e.key === "Escape") cancelDraft();
                 }}
                 placeholder={c.name}
@@ -783,10 +912,10 @@ export function TableView({ connId, schema, object, view }: Props) {
           </div>
           <button
             disabled={!isDraftDirty(draft)}
-            onClick={() => void commitDraft()}
+            onClick={() => commitDraft()}
             className="rounded-md bg-primary px-2.5 py-0.5 text-[11px] font-medium text-white hover:opacity-90 disabled:opacity-40"
           >
-            Commit ↵
+            Add ↵
           </button>
           <button
             onClick={cancelDraft}
@@ -807,7 +936,7 @@ export function TableView({ connId, schema, object, view }: Props) {
           {fks.map((fk, i) => (
             <button
               key={`${fk.from_column}->${fk.to_table}`}
-              onClick={() => openTab(fk.to_schema ?? schema, fk.to_table)}
+              onClick={() => void tabGuard.openTable(fk.to_schema ?? schema, fk.to_table)}
               title={`${fk.from_column} → ${fk.to_schema ?? schema}.${fk.to_table}.${fk.to_column}`}
               className="text-text/80 transition-colors hover:text-primary"
             >
@@ -818,13 +947,13 @@ export function TableView({ connId, schema, object, view }: Props) {
         </div>
       )}
 
-      {/* Staged-edits Commit/Discard bar — TablePlus batch model. Appears whenever
-          there are uncommitted cell edits; Commit (⌘S) writes them all, Discard
-          reverts the display. */}
-      {pendingCount > 0 && (
+      {/* Staged-changes Commit/Discard bar — TablePlus batch model. Appears whenever
+          anything is staged (edits, deletes, inserts); Commit (⌘S) writes it all in
+          one transaction, Discard reverts the display. */}
+      {stagedTotal > 0 && (
         <div className="tiq-rail flex items-center gap-2 border-b border-l-2 border-l-primary border-border bg-primary-soft px-3 py-1.5">
           <span className="text-[11px] font-medium text-primary">
-            {pendingCount} unsaved {pendingCount === 1 ? "change" : "changes"}
+            {stagedTotal} unsaved {stagedTotal === 1 ? "change" : "changes"}
           </span>
           {lockHint && (
             <span className="tiq-slide-in text-[11px] text-warn" role="status">
@@ -889,14 +1018,15 @@ export function TableView({ connId, schema, object, view }: Props) {
             rowMarkerStart={firstRow + 1}
             highlight={searchTerm(pageData?.filters ?? [])}
             pk={pk}
+            confirmCommit={confirmCommit}
             // Read-only while a page is in flight: the grid stays live for
             // scrolling and copying, but an edit staged now would be wiped when
             // the new page lands.
-            onEdit={editable && !fetching ? onEdit : undefined}
+            onCommitChanges={editable && !fetching ? commitChanges : undefined}
             fkByColumn={fkByColumn}
             onFkClick={(toTable) => {
               const fk = fks.find((f) => f.to_table === toTable);
-              openTab(fk?.to_schema ?? schema, toTable);
+              void tabGuard.openTable(fk?.to_schema ?? schema, toTable);
             }}
             onCellContext={(c) => setCellMenu(c)}
             onRowSelected={(row, values) => {
@@ -915,7 +1045,7 @@ export function TableView({ connId, schema, object, view }: Props) {
               savedTimer.current = window.setTimeout(() => setSaved(null), 2000);
               refresh();
             }}
-            onPendingCountChange={setPendingCount}
+            onStagedCountsChange={setCounts}
             onCommittingChange={setCommitting}
             onFetchError={setError}
             sort={sort}
@@ -943,11 +1073,13 @@ export function TableView({ connId, schema, object, view }: Props) {
           <>
             <SegmentedToggle
               options={[
-                { value: "data", label: "Data" },
-                { value: "structure", label: "Structure" },
+                { value: "data", label: "Data", icon: <IconTable {...STATUSBAR_ICON} /> },
+                { value: "structure", label: "Structure", icon: <IconColumns {...STATUSBAR_ICON} /> },
               ]}
               value={view}
-              onChange={(v) => v !== view && !blockedByEdits() && openTab(schema, object.name, v)}
+              onChange={(v) => {
+                if (v !== view && !blockedByEdits()) void tabGuard.openTable(schema, object.name, v);
+              }}
             />
             <StatusBarButton
               onClick={() => setDraft(draft ? null : {})}
@@ -955,8 +1087,9 @@ export function TableView({ connId, schema, object, view }: Props) {
               active={draft !== null}
               title="Insert a new row"
             >
-              + Row
+              <IconPlus {...STATUSBAR_ICON} /> Row
             </StatusBarButton>
+            <StagedCountChips counts={counts} />
           </>
         }
         center={
@@ -1001,61 +1134,48 @@ export function TableView({ connId, schema, object, view }: Props) {
                   </StatusBarButton>
                 )
               )}
-              <select
-                aria-label="Rows per page"
-                title="Rows per page"
-                value={pageSize}
-                disabled={committing}
-                onChange={(e) => {
-                  if (blockedByEdits()) return;
-                  setPageSize(Number(e.target.value));
-                  setPage(0);
-                  gridRef.current?.scrollToRow(0);
-                }}
-                className="h-[18px] rounded-[var(--radius-sm)] border border-border bg-bg px-1 text-[11px] text-muted hover:text-text disabled:opacity-40"
-              >
-                {PAGE_SIZES.map((n) => (
-                  <option key={n} value={n}>
-                    {n.toLocaleString("en-US")} / page
-                  </option>
-                ))}
-              </select>
+              <span className="inline-flex items-center gap-1">
+                <IconRow {...STATUSBAR_ICON} />
+                <select
+                  aria-label="Rows per page"
+                  title="Rows per page"
+                  value={pageSize}
+                  disabled={committing}
+                  onChange={(e) => {
+                    if (blockedByEdits()) return;
+                    setPageSize(Number(e.target.value));
+                    setPage(0);
+                    gridRef.current?.scrollToRow(0);
+                  }}
+                  className="h-[18px] rounded-[var(--radius-sm)] border border-border bg-bg px-1 text-[11px] text-muted hover:text-text disabled:opacity-40"
+                >
+                  {PAGE_SIZES.map((n) => (
+                    <option key={n} value={n}>
+                      {n.toLocaleString("en-US")} / page
+                    </option>
+                  ))}
+                </select>
+              </span>
             </>
           )
         }
         right={
           <>
-            {dirty > 0 ? (
-              <span className="text-warn">
-                {dirty} saving…
+            {saved && (
+              <span key={saved.id} className="tiq-flash inline-flex items-center gap-1 text-ok" role="status">
+                <StatusDot tone="ok" />
+                Committed {saved.n} {saved.n === 1 ? "change" : "changes"}
               </span>
-            ) : (
-              saved && (
-                <span key={saved.id} className="tiq-flash inline-flex items-center gap-1 text-ok" role="status">
-                  <StatusDot tone="ok" />
-                  Saved {saved.n} {saved.n === 1 ? "change" : "changes"}
-                </span>
-              )
             )}
             <StatusBarButton
-              onClick={() =>
-                setFilterDraft(
-                  filterDraft
-                    ? null
-                    : {
-                        column: object.columns[0]?.name ?? "",
-                        op: "Eq",
-                        value: "",
-                      },
-                )
-              }
-              active={filterDraft !== null || filters.length > 0}
-              title="Filter rows"
+              onClick={() => (barOpen && filters.length === 0 ? closeBar() : openBar())}
+              active={barOpen || filters.length > 0}
+              title={`Filter rows (${isMacPlatform() ? "⌘F" : "Ctrl F"})`}
             >
-              Filters{filters.length > 0 ? ` · ${filters.length}` : ""}
+              <IconFilter {...STATUSBAR_ICON} /> Filters{filters.length > 0 ? ` · ${filters.length}` : ""}
             </StatusBarButton>
             <StatusBarButton title="Choose columns to display (coming soon)" disabled>
-              Columns
+              <IconColumns {...STATUSBAR_ICON} /> Columns
             </StatusBarButton>
             {editable ? (
               <span className="inline-flex items-center gap-1 text-ok" title="This table has a primary key — cells are editable">
@@ -1103,7 +1223,10 @@ export function TableView({ connId, schema, object, view }: Props) {
           columns={object.columns}
           onClose={() => {
             setShowAlter(false);
-            refresh();
+            // Backstop to the guarded open: a re-read would wipe everything staged.
+            if (lockedRef.current) {
+              setNotice("Altered — commit or discard staged changes, then refresh to see it.");
+            } else refresh();
           }}
         />
       )}
@@ -1128,6 +1251,8 @@ export function TableView({ connId, schema, object, view }: Props) {
             copy(buildRowAs(fmt, rowValues, colNames, { table: qualified, engine }));
           const applyCellValue = async (newValue: string | null) => {
             if (!pk || pk.length === 0 || !srv) return;
+            // It writes directly, then re-reads the page: that would wipe what's staged.
+            if (blockedByEdits()) return;
             const edit = buildEdit(pk, (c) => srv[c] ?? null, cellMenu.col, newValue);
             setNotice(null);
             try {
@@ -1148,29 +1273,7 @@ export function TableView({ connId, schema, object, view }: Props) {
               engine,
             );
           };
-          const deleteRowAction = async () => {
-            if (!pk || pk.length === 0 || !srv) return;
-            const pkPairs = pk.map((c) => [c, srv[c] ?? null] as [string, string | null]);
-            const ok = await confirmDialog(
-              `Delete this row from ${qualified}? This cannot be undone.`,
-              "Delete row",
-            );
-            if (!ok) return;
-            setNotice(null);
-            try {
-              const { rowsAffected } = await deleteRow(connId, schema, object.name, pkPairs);
-              // The confirm said "this row" — say so plainly when it was not one row.
-              const problem = writeOutcomeMessage("delete", rowsAffected);
-              if (problem) setNotice(`Delete row: ${problem}`);
-              // The row's tint fades out first, so the refetch doesn't just yank it.
-              else await gridRef.current?.fadeRow(cellMenu.row);
-              refresh();
-            } catch (e) {
-              setNotice(`Delete failed: ${e}`);
-            }
-          };
-
-          const items: (ContextMenuItem | "separator")[] = [
+          const rowItems: (ContextMenuItem | "separator")[] = [
             { id: "refresh", label: "Refresh", onSelect: () => !blockedByEdits() && refresh() },
             {
               id: "add-row",
@@ -1230,10 +1333,15 @@ export function TableView({ connId, schema, object, view }: Props) {
             {
               id: "quick-filter",
               label: `Filter "${cellMenu.col}" = ${cellMenu.value ?? "NULL"}`,
-              onSelect: () =>
-                applyFilters(
-                  upsertFilter(filters, { column: cellMenu.col, op: "Eq", value: cellMenu.value }),
-                ),
+              onSelect: () => {
+                // `= NULL` matches nothing; a NULL cell filters as IS NULL.
+                const r = newRule(cellMenu.col, cellMenu.value === null ? "IsNull" : "Eq", cellMenu.value ?? "");
+                const f = ruleToFilter(r);
+                if (!f || blockedByEdits()) return;
+                setRules((rs) => [...rs, r]);
+                setBarOpen(true);
+                applyFilters([...filters, f]);
+              },
             },
             {
               id: "copy-delete",
@@ -1242,14 +1350,20 @@ export function TableView({ connId, schema, object, view }: Props) {
               disabled: !pk || pk.length === 0 || !srv,
               onSelect: () => copy(deleteStmt()),
             },
-            {
-              id: "delete-row",
-              label: "Delete row",
-              tone: "danger",
-              disabled: !editable || !srv,
-              onSelect: () => void deleteRowAction(),
-            },
+            cellMenu.staged === "deleted"
+              ? { id: "undo-delete", label: "Undo delete", onSelect: () => gridRef.current?.undoDelete(cellMenu.row) }
+              : {
+                  id: "delete-row",
+                  label: "Delete row",
+                  tone: "danger",
+                  disabled: !editable || !srv,
+                  onSelect: () => gridRef.current?.stageDeleteRows([cellMenu.row]),
+                },
           ];
+          const items: (ContextMenuItem | "separator")[] =
+            cellMenu.staged === "inserted"
+              ? [{ id: "remove-row", label: "Remove row", onSelect: () => gridRef.current?.removeInsertedRow(cellMenu.row) }]
+              : rowItems;
           return (
             <ContextMenu
               x={cellMenu.x}
@@ -1466,73 +1580,6 @@ function Ellipsis({ text }: { text: string | null }) {
   );
 }
 
-/** The toolbar's all-column search. Its text is local state, so a keystroke
- *  re-renders only this box — never the table view or the grid. The term is
- *  applied after a typing pause, or at once on Enter; Esc clears the box. */
-function SearchBox({
-  term,
-  onSearch,
-  disabled,
-  inputRef,
-}: {
-  /** The applied term (from the filters). */
-  term: string;
-  onSearch: (text: string) => void;
-  disabled: boolean;
-  inputRef: RefObject<HTMLInputElement | null>;
-}) {
-  const [text, setText] = useState(term);
-  const onSearchRef = useRef(onSearch);
-  onSearchRef.current = onSearch;
-  // The last term this box applied. When the applied term moves to anything
-  // else (its chip removed, "clear all"), the box follows — but the echo of its
-  // own apply must not clobber what the user has typed since.
-  const pushed = useRef(term);
-  useEffect(() => {
-    if (term === pushed.current) return;
-    pushed.current = term;
-    setText(term);
-  }, [term]);
-  const apply = (t: string) => {
-    pushed.current = t.trim();
-    onSearchRef.current(t);
-  };
-  // `disabled` re-arms it: a term typed just before an edit was staged applies
-  // once the edit is committed or discarded.
-  useEffect(() => {
-    if (disabled || text.trim() === term) return;
-    const id = window.setTimeout(() => apply(text), SEARCH_DEBOUNCE_MS);
-    return () => window.clearTimeout(id);
-  }, [text, term, disabled]);
-  return (
-    <label className="mr-1 flex h-6 w-52 items-center gap-1.5 rounded-[var(--radius)] border border-border bg-bg px-1.5 text-muted focus-within:border-primary focus-within:text-text">
-      <IconSearch size={11} />
-      <input
-        ref={inputRef}
-        type="search"
-        aria-label="Search all columns"
-        value={text}
-        disabled={disabled}
-        title={disabled ? "Commit or discard your changes to search" : undefined}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            apply(text);
-          } else if (e.key === "Escape") {
-            // Clearing the box is this Esc's whole job — no panel above may close on it.
-            e.preventDefault();
-            e.stopPropagation();
-            setText("");
-          }
-        }}
-        placeholder="Search rows"
-        className="min-w-0 flex-1 bg-transparent text-[11px] text-text outline-none placeholder:text-muted [&::-webkit-search-cancel-button]:hidden"
-      />
-      {text === "" && <span className="tiq-kbd">{isMacPlatform() ? "⌘F" : "Ctrl F"}</span>}
-    </label>
-  );
-}
 
 /** TablePlus-style row pager — `‹ 1–300 of 1,234 ›`. The label is built by the
  *  tested {@link pagerLabel}; this only draws it. */
@@ -1557,7 +1604,7 @@ function RowPager({
       <StatusBarButton onClick={onPrev} disabled={!hasPrev} title="Previous page">
         <IconChevronLeft size={10} />
       </StatusBarButton>
-      <span className={`tabular-nums transition-colors ${stale ? "text-muted" : "text-text"}`}>{label}</span>
+      <span className={`whitespace-nowrap tabular-nums transition-colors ${stale ? "text-muted" : "text-text"}`}>{label}</span>
       <StatusBarButton onClick={onNext} disabled={!hasNext} title="Next page">
         <IconChevronRight size={10} />
       </StatusBarButton>

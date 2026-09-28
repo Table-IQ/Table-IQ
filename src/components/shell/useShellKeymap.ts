@@ -2,10 +2,11 @@ import { useEffect } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { useSettingsUi } from "../Settings";
 import { shortcutFor } from "../../lib/shellKeymap";
+import { tabGuard } from "../../state/tabGuard";
+import { hasNativeMenu } from "../../lib/commands";
+import { dispatchMenu } from "../../lib/menuEvents";
 
 export interface UseShellKeymapOptions {
-  openQuery: () => void;
-  close: (key: string) => void;
   activeKey: string | null;
   /** Included only to force a re-subscribe when the active connection changes,
    *  same as before the extraction — see the deps comment below. */
@@ -21,15 +22,16 @@ export interface UseShellKeymapOptions {
 }
 
 /**
- * The shell's global keyboard shortcuts (⌘K, ⌘O, ⌘⇧K, ⌘D, ⌘T, ⌘W, ⌘[, ⌘],
- * ⌘., ⌘⇧\, ⌘⇧C). Extracted from `MainShell` (Task 11b) so new bindings don't
+ * The shell's global keyboard shortcuts (⌘K, ⌘P, ⌘O, ⌘⇧K, ⌘D, ⌘T, ⌘W, ⌘[, ⌘],
+ * ⌘., ⌘⇧\, ⌘⇧C, ⌥⌘1, ⌥⌘2). Extracted from `MainShell` (Task 11b) so new bindings don't
  * grow that file; `shortcutFor` (`lib/shellKeymap.ts`)
  * holds the pure binding table and is unit-tested there.
  */
 export function useShellKeymap(options: UseShellKeymapOptions): void {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const action = shortcutFor(e, useSettingsUi.getState().open);
+      // In the Tauri build the native menu owns ⌘K/⌥⌘1/⌥⌘2 (they arrive via `tiq:menu`).
+      const action = shortcutFor(e, useSettingsUi.getState().open, hasNativeMenu());
       if (!action) return;
       e.preventDefault();
       switch (action) {
@@ -43,10 +45,10 @@ export function useShellKeymap(options: UseShellKeymapOptions): void {
           void options.openDbPicker();
           break;
         case "new-query":
-          options.openQuery();
+          void tabGuard.openQuery();
           break;
         case "close-tab":
-          if (options.activeKey) options.close(options.activeKey);
+          if (options.activeKey) void tabGuard.close([options.activeKey]);
           break;
         case "toggle-sidebar":
           options.setShowSidebar((v) => !v);
@@ -63,6 +65,13 @@ export function useShellKeymap(options: UseShellKeymapOptions): void {
         case "sql-log":
           options.setShowSqlLog((v) => !v);
           break;
+        // Same path as View → Data / Structure: TableView's `tiq:menu` listener (guarded).
+        case "view-data":
+          dispatchMenu("view.data");
+          break;
+        case "view-structure":
+          dispatchMenu("view.structure");
+          break;
       }
     };
     window.addEventListener("keydown", onKey);
@@ -73,5 +82,5 @@ export function useShellKeymap(options: UseShellKeymapOptions): void {
     // fresh closure) whenever the active connection changes, which is what those
     // two actually depend on.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [options.openQuery, options.close, options.activeKey, options.activeConnId]);
+  }, [options.activeKey, options.activeConnId]);
 }

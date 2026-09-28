@@ -13,6 +13,7 @@ export const FILTER_OP_LABEL: Record<FilterOp, string> = {
   IsNull: "is null",
   IsNotNull: "not null",
   Search: "contains",
+  Raw: "sql",
 };
 
 /** Ops that don't take a value (so the popover hides the value input). */
@@ -20,44 +21,52 @@ export function isNullOp(op: FilterOp): boolean {
   return op === "IsNull" || op === "IsNotNull";
 }
 
-/** Ops the filter rail offers. `Search` is set only by the toolbar search box. */
+/** Ops a column rule offers. Search and Raw come from the Any column / Raw SQL picks. */
 export const MANUAL_FILTER_OPS = (Object.keys(FILTER_OP_LABEL) as FilterOp[]).filter(
-  (op) => op !== "Search",
+  (op) => op !== "Search" && op !== "Raw",
 );
 
 /** "{column} {op} {value}" with smart formatting for null ops + missing values. */
 export function chipLabel(f: ColumnFilter): string {
   if (f.op === "Search") return `search "${f.value ?? ""}"`;
+  if (f.op === "Raw") return `where (${f.value ?? ""})`;
   if (isNullOp(f.op)) return `${f.column} ${FILTER_OP_LABEL[f.op]}`;
   const v = f.value ?? "∅";
   return `${f.column} ${FILTER_OP_LABEL[f.op]} ${v}`;
 }
 
-/** Add a filter, replacing any prior filter on the same column+op. */
-export function upsertFilter(filters: ColumnFilter[], next: ColumnFilter): ColumnFilter[] {
-  const i = filters.findIndex((f) => f.column === next.column && f.op === next.op);
-  if (i < 0) return [...filters, next];
-  const out = filters.slice();
-  out[i] = next;
-  return out;
+/** The column picker's two non-column choices. */
+export const ANY_COLUMN = "*any";
+export const RAW_SQL = "*raw";
+
+/** One row of the filter bar: a column (or {@link ANY_COLUMN} / {@link RAW_SQL}),
+ *  an op, a value, and whether Apply All includes it. */
+export interface FilterRule {
+  id: number;
+  enabled: boolean;
+  column: string;
+  op: FilterOp;
+  value: string;
 }
 
-export function removeFilter(filters: ColumnFilter[], column: string, op: FilterOp): ColumnFilter[] {
-  return filters.filter((f) => !(f.column === column && f.op === op));
+/** The filter a rule sends, or null when it sends none (disabled, or a blank
+ *  Any column / Raw SQL value). */
+export function ruleToFilter(r: FilterRule): ColumnFilter | null {
+  if (!r.enabled) return null;
+  if (r.column === ANY_COLUMN || r.column === RAW_SQL) {
+    const v = r.value.trim();
+    return v ? { column: "*", op: r.column === ANY_COLUMN ? "Search" : "Raw", value: v } : null;
+  }
+  return { column: r.column, op: r.op, value: isNullOp(r.op) || r.value === "" ? null : r.value };
+}
+
+export function rulesToFilters(rules: FilterRule[]): ColumnFilter[] {
+  return rules.map(ruleToFilter).filter((f): f is ColumnFilter => f !== null);
 }
 
 /** The all-column search term in `filters`, or "" when there is none. */
 export function searchTerm(filters: ColumnFilter[]): string {
   return filters.find((f) => f.op === "Search")?.value ?? "";
-}
-
-/** Set the table's one all-column search (a blank term removes it). Returns
- *  `filters` itself when the term is unchanged, so no refetch is triggered. */
-export function withSearch(filters: ColumnFilter[], term: string): ColumnFilter[] {
-  const t = term.trim();
-  if (t === searchTerm(filters)) return filters;
-  const rest = filters.filter((f) => f.op !== "Search");
-  return t === "" ? rest : [...rest, { column: "*", op: "Search", value: t }];
 }
 
 /** A window fetch that a newer one for the same tab replaced. Not an error. */

@@ -7,6 +7,7 @@ export interface KeymapEvent {
   metaKey: boolean;
   ctrlKey: boolean;
   shiftKey: boolean;
+  altKey: boolean;
   key: string;
   code: string;
   defaultPrevented: boolean;
@@ -23,7 +24,9 @@ export type ShellAction =
   | "toggle-inspector"
   | "cancel-all"
   | "workspace-overview"
-  | "sql-log";
+  | "sql-log"
+  | "view-data"
+  | "view-structure";
 
 /**
  * Pure decision function for the shell's global keydown handler
@@ -40,13 +43,26 @@ export type ShellAction =
  * Callers still own the actual dispatch and `e.preventDefault()` (only called
  * when an action is returned) — this only encodes the binding table, so it's
  * easy to test and easy to extend.
+ *
+ * `native` is true in the Tauri build, where the native menu (src-tauri/src/menu.rs)
+ * carries accelerators for ⌘K, ⌥⌘1 and ⌥⌘2: those keys then arrive only through
+ * `tiq:menu`, so they are skipped here (one toggle per press, whether or not the
+ * webview also sees the keydown).
  */
-export function shortcutFor(e: KeymapEvent, settingsOpen: boolean): ShellAction | null {
+export function shortcutFor(
+  e: KeymapEvent,
+  settingsOpen: boolean,
+  native = false,
+): ShellAction | null {
   if (e.defaultPrevented) return null;
   if (settingsOpen) return null;
 
   const meta = e.metaKey || e.ctrlKey;
   if (!meta) return null;
+  // ⌥⌘1 / ⌥⌘2: on macOS ⌥1 makes `key` "¡", so match the physical key.
+  if (e.altKey && (e.code === "Digit1" || e.code === "Digit2")) {
+    return native ? null : e.code === "Digit1" ? "view-data" : "view-structure";
+  }
 
   const key = e.key.toLowerCase();
   if (key === "k") {
@@ -54,8 +70,10 @@ export function shortcutFor(e: KeymapEvent, settingsOpen: boolean): ShellAction 
     // as deleteLine when the editor has focus — it calls preventDefault
     // first, so the `defaultPrevented` guard above means this alias only
     // fires when the editor doesn't consume it.
-    return e.shiftKey ? "open-connection" : "palette";
+    if (e.shiftKey) return "open-connection";
+    return native ? null : "palette";
   }
+  if (key === "p") return "palette";
   if (key === "o") return "open-connection";
   if (key === "d") return "open-database";
   if (key === "t") return "new-query";

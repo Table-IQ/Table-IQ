@@ -26,17 +26,13 @@ import type { ConnectedInfo, Engine, SavedQuery, SchemaModel } from "../../lib/c
 import { savedQueriesForConn } from "../../lib/history";
 import { supportsUserMgmt } from "../../lib/userMgmt";
 import { supportsBackup, supportsRestore } from "../../lib/backup";
-import type { ViewKind } from "../../state/tabsStore";
+import { tabGuard } from "../../state/tabGuard";
 
 export interface UsePaletteCommandsOptions {
   active: ConnectedInfo | null;
   schema: SchemaModel | null;
   dbItems: string[];
   paletteSaved: SavedQuery[];
-  openTable: (schema: string, table: string) => void;
-  openQuery: (sql?: string, title?: string) => void;
-  openErd: () => void;
-  openView: (kind: ViewKind, title: string) => void;
   openDbPicker: () => Promise<void>;
   pickDatabase: (db: string) => Promise<void>;
   setShowConnPicker: Dispatch<SetStateAction<boolean>>;
@@ -61,10 +57,6 @@ export function usePaletteCommands(options: UsePaletteCommandsOptions): Command[
     schema,
     dbItems,
     paletteSaved,
-    openTable,
-    openQuery,
-    openErd,
-    openView,
     openDbPicker,
     pickDatabase,
     setShowConnPicker,
@@ -80,7 +72,7 @@ export function usePaletteCommands(options: UsePaletteCommandsOptions): Command[
 
   return useMemo<Command[]>(() => {
     const list: Command[] = [
-      { id: "act:erd", label: "Diagram", group: "Commands", icon: <IconErd />, run: openErd },
+      { id: "act:erd", label: "Diagram", group: "Commands", icon: <IconErd />, run: () => void tabGuard.openErd() },
       // Hidden for engines with no user-management SQL (sqlite/duckdb/mongodb/redis).
       ...((active && supportsUserMgmt(active.engine as Engine)
         ? [
@@ -89,7 +81,7 @@ export function usePaletteCommands(options: UsePaletteCommandsOptions): Command[
               label: "Database User Management",
               group: "Commands",
               icon: <IconUsers />,
-              run: () => openView("users", "Users"),
+              run: () => void tabGuard.openView("users", "Users"),
             },
           ]
         : []) as Command[]),
@@ -98,7 +90,7 @@ export function usePaletteCommands(options: UsePaletteCommandsOptions): Command[
         label: "Metrics Board",
         group: "Commands",
         icon: <IconMetrics />,
-        run: () => openView("metrics", "Metrics Board"),
+        run: () => void tabGuard.openView("metrics", "Metrics Board"),
       },
       {
         id: "act:open-conn",
@@ -157,7 +149,7 @@ export function usePaletteCommands(options: UsePaletteCommandsOptions): Command[
         label: "MCP Activity",
         group: "Commands",
         icon: <IconChip />,
-        run: () => openView("mcp", "MCP Activity"),
+        run: () => void tabGuard.openView("mcp", "MCP Activity"),
       },
       {
         id: "act:customize-toolbar",
@@ -172,7 +164,7 @@ export function usePaletteCommands(options: UsePaletteCommandsOptions): Command[
         group: "Commands",
         icon: <IconPlus />,
         shortcut: "⌘T",
-        run: () => openQuery(),
+        run: () => void tabGuard.openQuery(),
       },
       {
         id: "act:table",
@@ -236,7 +228,7 @@ export function usePaletteCommands(options: UsePaletteCommandsOptions): Command[
           hint: o.kind,
           group: "Tables",
           icon: o.kind === "View" ? <IconView /> : <IconTable />,
-          run: () => openTable(s.name, o.name),
+          run: () => void tabGuard.openTable(s.name, o.name),
         });
       }
     }
@@ -260,7 +252,7 @@ export function usePaletteCommands(options: UsePaletteCommandsOptions): Command[
           label: q.name,
           group: "Queries",
           icon: <IconPlay />,
-          run: () => openQuery(q.sql, q.name),
+          run: () => void tabGuard.openQuery(q.sql, q.name),
         });
       }
     }
@@ -271,5 +263,5 @@ export function usePaletteCommands(options: UsePaletteCommandsOptions): Command[
     // Recomputing on every unrelated render (e.g. a keystroke) would churn the
     // palette unnecessarily.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [schema, openTable, openQuery, openErd, openView, dbItems, paletteSaved]);
+  }, [schema, dbItems, paletteSaved]);
 }

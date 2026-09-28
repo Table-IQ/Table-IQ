@@ -73,6 +73,12 @@ async fn check(d: &dyn SqlDriver, schema: &str, table: &str) {
     let by_offset = d.open_window_filtered(schema, table, 5, 5, &f, &[], None).await.unwrap();
     assert_eq!(ids(&next), ids(&by_offset));
     assert_eq!(ids(&next), ["6", "7", "8", "9", "10"]);
+
+    // A raw WHERE ANDs with the other filters, its own OR kept inside its parentheses.
+    let mut f = vec![ColumnFilter { column: "*".into(), op: FilterOp::Raw, value: Some("qty = 2000 OR qty = 3000".into()) }];
+    assert_eq!(page(d, schema, table, &f, 0).await, ["2", "3"]);
+    f.extend(search("item 3"));
+    assert_eq!(page(d, schema, table, &f, 0).await, ["3"]);
 }
 
 #[tokio::test]

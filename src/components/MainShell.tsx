@@ -1,7 +1,8 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { ConnectionRail } from "./ConnectionRail";
-import { Wordmark } from "./Brand";
-import { ThemeToggle } from "./ThemeToggle";
+import { NEXT_THEME, ThemeToggle } from "./ThemeToggle";
+import { useTheme } from "../theme/ThemeProvider";
+import { TitleBar, type TitleBarItem } from "./TitleBar";
 import { ObjectTree } from "./ObjectTree";
 import { SidebarLibrary } from "./SidebarLibrary";
 import { TableView } from "./TableView";
@@ -19,6 +20,7 @@ import { isFileEngine } from "./ConnectionManager";
 import { Onboarding } from "./Onboarding";
 import { WorkspaceOverview } from "./WorkspaceOverview";
 import { SqlLogPanel } from "./SqlLogPanel";
+import { Lobby } from "./Lobby";
 import { useSettingsUi } from "./Settings";
 import { Inspector } from "./Inspector";
 import { ContextMenu, type ContextMenuItem } from "./ui/ContextMenu";
@@ -26,30 +28,25 @@ import { ResizeHandle, clampWidth } from "./ui/ResizeHandle";
 import { logError } from "../lib/report";
 import { shouldSwitchDatabase } from "../lib/databasePicker";
 import { hydrateForConnection, persistForConnection } from "../lib/tabsPersist";
-import { ToolbarButton, Toolbar, ToolbarDivider, ToolbarSpacer } from "./ui/Toolbar";
 import { StatusBar, StatusDot } from "./ui/StatusBar";
-import { ColorDot } from "./ui/Chip";
-import { IconButton, IconGroup } from "./ui/IconButton";
+import { IconButton } from "./ui/IconButton";
 import {
   IconChevronLeft,
   IconChevronRight,
   IconClose,
   IconCommand,
-  IconDatabase,
-  IconDiff,
-  IconErd,
   IconHelp,
-  IconImport,
   IconMetrics,
   IconOverview,
-  IconPlay,
   IconPlus,
   IconRefresh,
   IconSidebar,
   IconSidebarRight,
+  IconSliders,
   IconSqlLog,
-  IconStructure,
+  IconStop,
 } from "./ui/Icon";
+import { engineLabel } from "./ui/EngineIcon";
 import {
   cancelConnecting,
   canLeaveSession,
@@ -60,6 +57,7 @@ import {
   useConnections,
 } from "../state/connectionStore";
 import { useTabs, viewGlyph, viewGlyphClass } from "../state/tabsStore";
+import { tabGuard } from "../state/tabGuard";
 import type { Tab } from "../state/tabsStore";
 import {
   cancelAll,
@@ -95,7 +93,10 @@ import {
   type ToolbarId,
 } from "../lib/toolbarItems";
 import { useShellKeymap } from "./shell/useShellKeymap";
+import { isMenuId, menuBlocked } from "../lib/menuEvents";
 import { usePaletteCommands } from "./shell/usePaletteCommands";
+import { supportsBackup, supportsRestore } from "../lib/backup";
+import { loadPins, savePins, livePins } from "../lib/pins";
 
 /** The schema a connection should open on. Every engine has a conventional
  *  "your stuff lives here" schema; alphabetical order picks `auth` over
@@ -127,6 +128,8 @@ export function MainShell() {
   } = useConnections();
   const [reconnecting, setReconnecting] = useState(false);
   const [refreshingSchema, setRefreshingSchema] = useState(false);
+  /** Bumped after each completed schema refresh; the lobby refetches its stats on it. */
+  const [schemaRefreshes, setSchemaRefreshes] = useState(0);
   // A dropped session (broken pipe, server shutdown, …) raises the reconnect
   // banner. commands.ts fires this from any live-session invoke that errors.
   // A background session's failure must not flag this one (the shell is keyed by
@@ -138,11 +141,10 @@ export function MainShell() {
     });
     return () => setConnectionLostHandler(null);
   }, [setDisconnected, activeId]);
-  // Header color chip resolves from the saved ConnConfig (ConnectedInfo doesn't carry color).
-  const activeColor = active ? saved.find((c) => c.id === active.id)?.color ?? null : null;
+  const { choice: themeChoice, setChoice: setThemeChoice } = useTheme();
   const tabsState = useTabs();
-  const { tabs, activeKey, openTable, openQuery, openErd, openView, close, setActive: setActiveTab } =
-    tabsState;
+  // Every tab change goes through `tabGuard` (staged edits live in the mounted tab only).
+  const { tabs, activeKey } = tabsState;
   const [showStructure, setShowStructure] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showBackup, setShowBackup] = useState(false);
@@ -263,8 +265,6 @@ export function MainShell() {
   // Sidebar-foot "+" → new-object menu (TablePlus parity, Slice 31).
   const [sidebarMenu, setSidebarMenu] = useState<{ x: number; y: number } | null>(null);
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; tab: Tab } | null>(null);
-  // Right-click on the title bar → "Customize Toolbar…" (Task 7).
-  const [headerMenu, setHeaderMenu] = useState<{ x: number; y: number } | null>(null);
   // Title-bar right icon group order/visibility (Task 7, Settings → Toolbar).
   // Re-read on `tiq:toolbar`, dispatched by Settings after a save (same
   // custom-event precedent as `tiq:sidebar` / `tiq:show-tour`).
@@ -274,6 +274,9 @@ export function MainShell() {
     window.addEventListener("tiq:toolbar", onToolbarEvent);
     return () => window.removeEventListener("tiq:toolbar", onToolbarEvent);
   }, []);
+  useEffect(() => {
+    if (active) setPinned(loadPins(active.id));
+  }, [active?.id]);
   // A failed export from the object context menu has nowhere else to land: the menu is gone
   // by the time the write fails, and the Table/Query status bars belong to a tab body that
   // may not even be open. One message, one strip — not a toast system.
@@ -281,9 +284,10 @@ export function MainShell() {
   /** A connection switch (or an in-place reconnect) that failed. Same reasoning
    *  as `exportMsg`: the picker is gone by the time the error lands. */
   const [connMsg, setConnMsg] = useState<string | null>(null);
-  /** ⌘. / "Cancel Running Queries" outcome — "Cancelled N queries" or "No running
-   *  queries". Neutral, not `connMsg`: it's not an error, so it must not read as one. */
-  const [cancelMsg, setCancelMsg] = useState<string | null>(null);
+  /** Neutral notices: the ⌘. / "Cancel Running Queries" outcome ("Cancelled N queries" or
+   *  "No running queries") and View-menu "Open a table first". Not `connMsg`: they're not
+   *  errors, so they must not read as one. */
+  const [noticeMsg, setNoticeMsg] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState<string | null>(null);
 
   // Keep the sidebar schema selection valid across connection/database switches.
@@ -351,7 +355,7 @@ export function MainShell() {
     if (!active) return;
     try {
       const n = await cancelAll(active.id);
-      setCancelMsg(n > 0 ? `Cancelled ${n} quer${n === 1 ? "y" : "ies"}` : "No running queries");
+      setNoticeMsg(n > 0 ? `Cancelled ${n} quer${n === 1 ? "y" : "ies"}` : "No running queries");
     } catch (e) {
       // A real failure (e.g. "Cancellation is not supported for this engine") — this one
       // does belong in the danger-styled strip.
@@ -399,8 +403,6 @@ export function MainShell() {
   // Binding table + guards live in `shortcutFor` (`lib/shellKeymap.ts`, unit-tested);
   // this just wires it to the shell's own state setters (Task 11b extraction).
   useShellKeymap({
-    openQuery,
-    close,
     activeKey,
     activeConnId: active?.id,
     openDbPicker,
@@ -413,6 +415,50 @@ export function MainShell() {
     setShowSqlLog,
   });
 
+  // Native View/Help menu (`tiq:menu`, src/lib/menuEvents.ts), with useShellKeymap's guards.
+  // Data/Structure/Filter Rows belong to the mounted TableView; with none mounted (no table
+  // tab, or "Table not found.") they explain themselves here. Appearance: ThemeProvider.
+  useEffect(() => {
+    const onMenu = (e: Event) => {
+      const id = (e as CustomEvent<unknown>).detail;
+      if (!isMenuId(id)) return;
+      if (menuBlocked(id, useSettingsUi.getState().open, !!document.querySelector(".tiq-overlay")))
+        return;
+      switch (id) {
+        case "view.sidebar":
+          setShowSidebar((v) => !v);
+          break;
+        case "view.inspector":
+          setShowInspector((v) => !v);
+          break;
+        case "view.palette":
+          setShowPalette((v) => !v);
+          break;
+        case "view.sqllog":
+          setShowSqlLog((v) => !v);
+          break;
+        case "view.overview":
+          setShowWorkspaceOverview(true);
+          break;
+        case "help.tour":
+          window.dispatchEvent(new CustomEvent("tiq:show-tour"));
+          break;
+        case "view.data":
+        case "view.structure":
+        case "view.filter": {
+          const { tabs, activeKey } = useTabs.getState();
+          const t = tabs.find((x) => x.key === activeKey);
+          const mounted =
+            t?.kind === "table" && !!t.schema && !!t.table && !!findObject(schema, t.schema, t.table);
+          if (!mounted) setNoticeMsg("Open a table first");
+          break;
+        }
+      }
+    };
+    window.addEventListener("tiq:menu", onMenu);
+    return () => window.removeEventListener("tiq:menu", onMenu);
+  }, [schema]);
+
   // Commands, then Tables/Databases/Queries groups (`commandGroups.ts`). Extracted
   // to `usePaletteCommands` (Task 11b) so PR-C can add Backup/Restore/MCP entries
   // without growing this file further.
@@ -421,10 +467,6 @@ export function MainShell() {
     schema,
     dbItems: dbList.items,
     paletteSaved,
-    openTable,
-    openQuery,
-    openErd,
-    openView,
     openDbPicker,
     pickDatabase,
     setShowConnPicker,
@@ -463,6 +505,7 @@ export function MainShell() {
     try {
       clearMetaCaches(id);
       updateSession(id, { schema: await listObjects(id) });
+      setSchemaRefreshes((n) => n + 1);
     } catch (e) {
       console.error("schema refresh failed", e);
     } finally {
@@ -516,7 +559,11 @@ export function MainShell() {
 
   const togglePin = (s: string, name: string) => {
     const key = `${s}.${name}`;
-    setPinned((p) => (p.includes(key) ? p.filter((x) => x !== key) : [...p, key]));
+    setPinned((p) => {
+      const next = p.includes(key) ? p.filter((x) => x !== key) : [...p, key];
+      if (active) savePins(active.id, next);
+      return next;
+    });
   };
 
   const engine = active.engine as Engine;
@@ -530,7 +577,7 @@ export function MainShell() {
       {
         id: "n-view",
         label: "New View…",
-        onSelect: () => openQuery(`CREATE VIEW ${q(s)}.${q("new_view")} AS\nSELECT 1;`),
+        onSelect: () => void tabGuard.openQuery(`CREATE VIEW ${q(s)}.${q("new_view")} AS\nSELECT 1;`),
       },
     ];
     if (engine === "postgres") {
@@ -539,13 +586,13 @@ export function MainShell() {
           id: "n-mview",
           label: "New Materialized View…",
           onSelect: () =>
-            openQuery(`CREATE MATERIALIZED VIEW ${q(s)}.${q("new_mview")} AS\nSELECT 1;`),
+            void tabGuard.openQuery(`CREATE MATERIALIZED VIEW ${q(s)}.${q("new_mview")} AS\nSELECT 1;`),
         },
         {
           id: "n-fn",
           label: "New Function…",
           onSelect: () =>
-            openQuery(
+            void tabGuard.openQuery(
               `CREATE FUNCTION ${q(s)}.${q("new_fn")}()\nRETURNS void AS $$\nBEGIN\n  -- …\nEND;\n$$ LANGUAGE plpgsql;`,
             ),
         },
@@ -553,7 +600,7 @@ export function MainShell() {
           id: "n-proc",
           label: "New Procedure…",
           onSelect: () =>
-            openQuery(
+            void tabGuard.openQuery(
               `CREATE PROCEDURE ${q(s)}.${q("new_proc")}()\nLANGUAGE plpgsql AS $$\nBEGIN\n  -- …\nEND;\n$$;`,
             ),
         },
@@ -566,12 +613,12 @@ export function MainShell() {
           id: "n-fn",
           label: "New Function…",
           onSelect: () =>
-            openQuery(`CREATE FUNCTION ${q("new_fn")}() RETURNS INT DETERMINISTIC\nRETURN 1;`),
+            void tabGuard.openQuery(`CREATE FUNCTION ${q("new_fn")}() RETURNS INT DETERMINISTIC\nRETURN 1;`),
         },
         {
           id: "n-proc",
           label: "New Procedure…",
-          onSelect: () => openQuery(`CREATE PROCEDURE ${q("new_proc")}()\nSELECT 1;`),
+          onSelect: () => void tabGuard.openQuery(`CREATE PROCEDURE ${q("new_proc")}()\nSELECT 1;`),
         },
       );
     } else if (engine === "sqlserver") {
@@ -580,7 +627,7 @@ export function MainShell() {
           id: "n-fn",
           label: "New Function…",
           onSelect: () =>
-            openQuery(
+            void tabGuard.openQuery(
               `CREATE FUNCTION ${q(s)}.${q("new_fn")}()\nRETURNS int\nAS\nBEGIN\n  RETURN 1\nEND`,
             ),
         },
@@ -588,7 +635,7 @@ export function MainShell() {
           id: "n-proc",
           label: "New Procedure…",
           onSelect: () =>
-            openQuery(`CREATE PROCEDURE ${q(s)}.${q("new_proc")}\nAS\nBEGIN\n  SELECT 1\nEND`),
+            void tabGuard.openQuery(`CREATE PROCEDURE ${q(s)}.${q("new_proc")}\nAS\nBEGIN\n  SELECT 1\nEND`),
         },
       );
     }
@@ -597,7 +644,7 @@ export function MainShell() {
         id: "n-schema",
         label: engine === "mysql" ? "New Database…" : "New Schema…",
         onSelect: () =>
-          openQuery(
+          void tabGuard.openQuery(
             engine === "mysql"
               ? `CREATE DATABASE ${q("new_database")};`
               : `CREATE SCHEMA ${q("new_schema")};`,
@@ -610,7 +657,7 @@ export function MainShell() {
         id: "n-group",
         label: "New Group / Role…",
         onSelect: () =>
-          openQuery(
+          void tabGuard.openQuery(
             engine === "mysql" ? `CREATE ROLE 'new_group';` : `CREATE ROLE ${q("new_group")};`,
           ),
       });
@@ -642,16 +689,24 @@ export function MainShell() {
           </div>
         ))}
       {!activeTab && (
-        <div className="flex h-full items-center justify-center">
-          <div className="max-w-md text-center">
-            <Wordmark className="mb-3 justify-center text-base" />
-            <div className="mb-1 text-sm font-medium text-text">Connected to {active.name}</div>
-            <div className="text-xs text-muted">
-              Pick a table from the sidebar, or press <span className="tiq-kbd">⌘K</span> for the
-              command palette, or <span className="tiq-kbd">⌘T</span> for a new query.
-            </div>
-          </div>
-        </div>
+        <ErrorBoundary label="lobby">
+          <Lobby
+            connId={active.id}
+            database={active.database}
+            schema={schema}
+            schemaName={activeSchema ?? defaultSchema(schema.schemas.map((s) => s.name)) ?? "public"}
+            cfg={saved.find((c) => c.id === active.id) ?? { name: active.name, engine, database: active.database }}
+            pins={livePins(pinned, schema)}
+            refreshKey={schemaRefreshes}
+            onOpenTable={(s, t) => void tabGuard.openTable(s, t)}
+            onRunSql={(sql, title) => void tabGuard.openQuery(sql, title)}
+            onOpenErd={() => void tabGuard.openErd()}
+            onImport={() => setShowImport(true)}
+            onPalette={() => setShowPalette(true)}
+            onNewTable={() => setShowStructure(true)}
+            onOpenSettingsAi={() => useSettingsUi.getState().show("ai")}
+          />
+        </ErrorBoundary>
       )}
       {activeTab?.kind === "erd" && (
         <ErrorBoundary key={activeTab.key} label={`erd tab ${activeTab.key}`}>
@@ -689,70 +744,14 @@ export function MainShell() {
     </>
   );
 
-  // Breadcrumb: TablePlus-style monospace strip — no border / bg, just dim · separators
-  // and a brighter active-table segment. Compact (h-5) so it fits the 32px titlebar.
-  // The database segment is a button that opens the ⌘D picker (TablePlus parity).
-  // TablePlus's signature centered connection capsule: a single rounded pill that
-  // carries the whole context — `conn | ENGINE : database ▾ : schema.table` — with
-  // `|`/`:` separators. The name opens ⌘O (swap connection); the database segment
-  // opens ⌘D (switch database). Replaces the old left chip + plain breadcrumb.
-  const sep = (s: string) => (
-    <span aria-hidden className="text-border-strong">
-      {s}
-    </span>
-  );
-  const connCapsule = (
-    <div
-      className="flex h-[22px] max-w-[60vw] items-center gap-1.5 overflow-hidden rounded-full border border-border bg-bg/70 px-2.5 font-mono text-[11px] text-muted shadow-[var(--shadow-soft)] backdrop-blur-sm"
-      data-testid="conn-capsule"
-    >
-      <button
-        onClick={() => setShowConnPicker(true)}
-        title="Open Connection · ⌘O"
-        className="inline-flex h-[18px] items-center gap-1.5 rounded-full px-1 text-text transition-colors hover:bg-surface-2"
-      >
-        {activeColor && <ColorDot color={activeColor} size={7} />}
-        <span className="font-medium">{active.name}</span>
-      </button>
-      {sep("|")}
-      <span className="uppercase tracking-wide">{active.engine}</span>
-      {sep(":")}
-      {fileEngine ? (
-        // A file engine has one database — the file — so there is nothing to switch to.
-        <span className="truncate px-1 text-text" data-testid="breadcrumb-db">
-          {active.database || "(none)"}
-        </span>
-      ) : (
-        <button
-          onClick={() => void openDbPicker()}
-          title="Switch database · ⌘D"
-          className="inline-flex h-[18px] items-center rounded-full px-1 text-text transition-colors hover:bg-surface-2"
-          data-testid="breadcrumb-db"
-        >
-          {active.database || "(none)"}
-          <span aria-hidden className="ml-1 text-muted-2">
-            ▾
-          </span>
-        </button>
-      )}
-      {activeTab?.kind === "table" && activeTab.schema && activeTab.table && (
-        <>
-          {sep(":")}
-          <span className="truncate text-text">
-            {activeTab.schema}.<span className="font-medium">{activeTab.table}</span>
-          </span>
-        </>
-      )}
-    </div>
-  );
-
-  // Data-driven right icon group (Task 7): `TOOLBAR_ITEMS` (shared with
+  // Data-driven titlebar capsule G4 (Task 7): `TOOLBAR_ITEMS` (shared with
   // Settings' Toolbar section) supplies the id + label; this map supplies the
   // per-id icon/onClick/`when` — that wiring is component-specific, so it
   // stays here rather than in the shared `lib/toolbarItems.ts`. `when: false`
-  // hides an item outright (e.g. a file engine has no database to switch),
-  // independent of the user's order/hidden prefs. `render` is an escape hatch
-  // for items that are already their own stateful component (ThemeToggle).
+  // hides an item outright, independent of the user's order/hidden prefs.
+  // `render` is an escape hatch for items that are already their own stateful
+  // component (ThemeToggle).
+  const G4_ICON = { size: 20, strokeWidth: 1.5 } as const;
   const titlebarActions: Record<
     ToolbarId,
     {
@@ -766,36 +765,31 @@ export function MainShell() {
     }
   > = {
     "refresh-schema": {
-      icon: <IconRefresh size={16} className={refreshingSchema ? "animate-spin" : undefined} />,
+      icon: <IconRefresh {...G4_ICON} className={refreshingSchema ? "animate-spin" : undefined} />,
       onClick: () => void onRefreshSchema(),
     },
-    "switch-database": {
-      icon: <IconDatabase size={16} />,
-      shortcut: "⌘D",
-      onClick: () => void openDbPicker(),
-      when: !fileEngine,
-    },
     "command-palette": {
-      icon: <IconCommand size={16} />,
+      icon: <IconCommand {...G4_ICON} />,
       shortcut: "⌘K",
       onClick: () => setShowPalette(true),
     },
-    "theme-toggle": { render: () => <ThemeToggle /> },
-    help: { icon: <IconHelp size={16} />, onClick: () => setShowHelp((v) => !v) },
+    // `onClick` is what the » overflow menu runs; the capsule renders the toggle itself.
+    "theme-toggle": { render: () => <ThemeToggle />, onClick: () => setThemeChoice(NEXT_THEME[themeChoice]) },
+    help: { icon: <IconHelp {...G4_ICON} />, onClick: () => setShowHelp((v) => !v) },
     "workspace-overview": {
-      icon: <IconOverview size={16} />,
+      icon: <IconOverview {...G4_ICON} />,
       shortcut: "⌘⇧\\",
       onClick: () => setShowWorkspaceOverview(true),
     },
     "sql-log": {
-      icon: <IconSqlLog size={16} />,
+      icon: <IconSqlLog {...G4_ICON} />,
       shortcut: "⌘⇧C",
       active: showSqlLog,
       onClick: () => setShowSqlLog((v) => !v),
     },
     metrics: {
-      icon: <IconMetrics size={16} />,
-      onClick: () => openView("metrics", "Metrics Board"),
+      icon: <IconMetrics {...G4_ICON} />,
+      onClick: () => void tabGuard.openView("metrics", "Metrics Board"),
     },
   };
   const visibleTitlebarIds = applyToolbar(
@@ -803,77 +797,58 @@ export function MainShell() {
     toolbarPref,
     DEFAULT_HIDDEN_TOOLBAR_IDS,
   );
+  // `visibleTitlebarIds` is `applyToolbar`'s output over `TOOLBAR_ITEMS`' own ids,
+  // so every id is a `ToolbarId` (`applyToolbar` stays `string[]` for stored prefs).
+  const titlebarItems: TitleBarItem[] = visibleTitlebarIds.flatMap((id) => {
+    const a = titlebarActions[id as ToolbarId];
+    if (a.when === false) return [];
+    return [{ id, label: TOOLBAR_ITEMS.find((i) => i.id === id)!.label, ...a }];
+  });
 
   return (
     <div className="flex h-full flex-col">
       {/* ── TITLE BAR ─────────────────────────────────────────────────────── */}
-      <header
-        className="tiq-titlebar-drag flex shrink-0 items-center gap-2 border-b border-border bg-surface pl-[78px] pr-2"
-        style={{ height: "var(--header-h)" }}
-        onContextMenu={(e) => {
-          e.preventDefault();
-          setHeaderMenu({ x: e.clientX, y: e.clientY });
-        }}
-      >
-        {/* Left icon group — TablePlus groups toolbar icons into a rounded
-            container/card rather than free-floating icons (Slice 33). Fixed —
-            not part of the customizable right icon group. */}
-        <IconGroup>
-          <IconButton
-            icon={<IconSidebar size={16} />}
-            label="Toggle sidebar"
-            shortcut="⌘["
-            active={showSidebar}
-            onClick={() => setShowSidebar((v) => !v)}
-          />
-        </IconGroup>
-
-        <Wordmark className="ml-1 text-[13px]" />
-
-        {/* Centered TablePlus connection capsule */}
-        <div className="mx-2 flex flex-1 items-center justify-center">{connCapsule}</div>
-
-        {/* Right icon group — data-driven (Task 7): order/visibility come from
-            `toolbarPref`, customizable via right-click → Customize Toolbar or
-            Settings → Toolbar. The inspector toggle + Disconnect stay fixed. */}
-        <IconGroup>
-          {visibleTitlebarIds.map((id) => {
-            const item = TOOLBAR_ITEMS.find((i) => i.id === id);
-            // `visibleTitlebarIds` is `applyToolbar`'s output over `TOOLBAR_ITEMS`'
-            // own ids (see below), so every `id` here is a `ToolbarId` — `applyToolbar`
-            // itself stays untyped `string[]` (shared with Settings' persisted prefs).
-            const action = titlebarActions[id as ToolbarId];
-            if (!item || !action || action.when === false) return null;
-            if (action.render) return <span key={id}>{action.render()}</span>;
-            return (
-              <IconButton
-                key={id}
-                icon={action.icon}
-                label={item.label}
-                shortcut={action.shortcut}
-                active={action.active}
-                onClick={action.onClick}
-              />
-            );
-          })}
-        </IconGroup>
-        <IconGroup>
-          <IconButton
-            icon={<IconSidebarRight size={16} />}
-            label="Toggle inspector"
-            shortcut="⌘]"
-            active={showInspector}
-            onClick={() => setShowInspector((v) => !v)}
-          />
-        </IconGroup>
-        <button
-          onClick={onDisconnect}
-          title="Disconnect"
-          className="ml-1 h-[28px] rounded-lg border border-border px-2.5 text-[11px] text-muted transition-colors hover:border-border-strong hover:text-text"
-        >
-          Disconnect
-        </button>
-      </header>
+      <TitleBar
+        cfg={
+          saved.find((c) => c.id === active.id) ?? {
+            name: active.name,
+            engine,
+            database: active.database,
+            sslmode: "prefer",
+            ssh: null,
+            env: null,
+            color: null,
+          }
+        }
+        activeObject={
+          activeTab?.kind === "table" && activeTab.schema && activeTab.table
+            ? `${activeTab.schema}.${activeTab.table}`
+            : null
+        }
+        fileEngine={fileEngine}
+        // Only this connection's own connect/switch: opening a different one (rail, ⌘O)
+        // is reported by the strip below, not as "Connecting to <this one>…".
+        connecting={connecting?.id === active.id}
+        showSidebar={showSidebar}
+        showInspector={showInspector}
+        items={titlebarItems}
+        canBackup={supportsBackup(engine)}
+        canRestore={supportsRestore(engine, active.database)}
+        onToggleSidebar={() => setShowSidebar((v) => !v)}
+        onToggleInspector={() => setShowInspector((v) => !v)}
+        onOpenConnection={() => setShowConnPicker(true)}
+        onOpenDatabase={() => void openDbPicker()}
+        onNewQuery={() => void tabGuard.openQuery()}
+        onOpenErd={() => void tabGuard.openErd()}
+        onNewTable={() => setShowStructure(true)}
+        onImport={() => setShowImport(true)}
+        onDiff={() => setShowDiff(true)}
+        onBackup={() => setShowBackup(true)}
+        onRestore={() => setShowRestore(true)}
+        onCancelQueries={() => void cancelAllQueries()}
+        onCustomizeToolbar={() => useSettingsUi.getState().show("toolbar")}
+        onDisconnect={() => void onDisconnect()}
+      />
 
       {/* ── CONNECTING STRIP ──────────────────────────────────────────────── */}
       {/* Opening another connection (rail/⌘O) or switching database (⌘D) can hit a
@@ -953,13 +928,13 @@ export function MainShell() {
 
       {/* Neutral, not danger — "Cancelled N queries" / "No running queries" are outcomes,
           not errors. A real cancel-all failure goes through `connMsg` above instead. */}
-      {cancelMsg && (
+      {noticeMsg && (
         <div className="flex h-7 shrink-0 items-center gap-2 border-b border-border bg-surface-2 px-3 text-[11px] text-muted">
-          <span className="min-w-0 flex-1 truncate" title={cancelMsg}>
-            {cancelMsg}
+          <span className="min-w-0 flex-1 truncate" title={noticeMsg}>
+            {noticeMsg}
           </span>
           <button
-            onClick={() => setCancelMsg(null)}
+            onClick={() => setNoticeMsg(null)}
             className="shrink-0 underline underline-offset-2 hover:opacity-80"
           >
             Dismiss
@@ -1017,9 +992,9 @@ export function MainShell() {
                 <ObjectTree
                   schema={schema}
                   activeKey={activeKey}
-                  pinned={pinned}
+                  pinned={livePins(pinned, schema)}
                   onlySchema={activeSchema}
-                  onOpen={(schemaName, obj) => openTable(schemaName, obj.name)}
+                  onOpen={(schemaName, obj) => void tabGuard.openTable(schemaName, obj.name)}
                   onContext={(e, schemaName, obj) => {
                     e.preventDefault();
                     setObjMenu({ x: e.clientX, y: e.clientY, schema: schemaName, obj });
@@ -1083,36 +1058,6 @@ export function MainShell() {
         )}
 
         <main className="flex min-w-0 flex-1 flex-col">
-          {/* Primary action toolbar */}
-          <Toolbar>
-            <ToolbarButton icon={<IconPlus />} label="Query" shortcut="⌘T" onClick={() => openQuery()} />
-            <ToolbarButton icon={<IconErd />} label="ERD" onClick={openErd} />
-            <ToolbarButton
-              icon={<IconStructure />}
-              label="Table"
-              onClick={() => setShowStructure(true)}
-            />
-            <ToolbarButton
-              icon={<IconImport />}
-              label="Import"
-              onClick={() => setShowImport(true)}
-            />
-            <ToolbarButton
-              icon={<IconDiff />}
-              label="Diff"
-              onClick={() => setShowDiff(true)}
-            />
-            <ToolbarDivider />
-            {activeTab?.kind === "query" && (
-              <span className="text-[11px] text-muted">
-                <IconPlay size={11} className="-mb-px inline" /> Run with{" "}
-                <span className="tiq-kbd">⌘↵</span>
-              </span>
-            )}
-            <ToolbarSpacer />
-            <ToolbarButton icon={<IconCommand />} label="Search" shortcut="⌘K" onClick={() => setShowPalette(true)} />
-          </Toolbar>
-
           {/* Tab strip — tabs only, no actions */}
           <div
             className="flex shrink-0 items-stretch gap-0 overflow-x-auto border-b border-border bg-bg"
@@ -1128,7 +1073,7 @@ export function MainShell() {
                 if (!activeKey) return;
                 const i = tabs.findIndex((t) => t.key === activeKey);
                 const prev = tabs[i - 1];
-                if (prev) setActiveTab(prev.key);
+                if (prev) void tabGuard.activate(prev.key);
               }}
             />
             <IconButton
@@ -1140,7 +1085,7 @@ export function MainShell() {
                 if (!activeKey) return;
                 const i = tabs.findIndex((t) => t.key === activeKey);
                 const next = tabs[i + 1];
-                if (next) setActiveTab(next.key);
+                if (next) void tabGuard.activate(next.key);
               }}
             />
             <span className="my-auto mx-1 inline-block h-4 w-px bg-border" />
@@ -1159,7 +1104,7 @@ export function MainShell() {
                       : "bg-surface text-muted hover:bg-surface-2 hover:text-text"
                   }`}
                 >
-                  <button onClick={() => setActiveTab(t.key)} className="font-mono">
+                  <button onClick={() => void tabGuard.activate(t.key)} className="font-mono">
                     {t.kind === "query" ? <span className="text-primary">◇ </span> : null}
                     {viewGlyph(t.kind) ? (
                       <span className={viewGlyphClass(t.kind)}>{viewGlyph(t.kind)} </span>
@@ -1167,7 +1112,7 @@ export function MainShell() {
                     {t.title}
                   </button>
                   <button
-                    onClick={() => close(t.key)}
+                    onClick={() => void tabGuard.close([t.key])}
                     className="inline-flex h-4 w-4 items-center justify-center rounded text-muted opacity-0 hover:bg-surface-2 hover:text-text group-hover:opacity-100"
                     aria-label={`Close ${t.title}`}
                   >
@@ -1203,12 +1148,42 @@ export function MainShell() {
               left={
                 <>
                   <StatusDot tone="ok" />
-                  <span>Connected · {active.engine}</span>
+                  <span>Connected · {engineLabel(active.engine as Engine)}</span>
                 </>
               }
-              center={tabs.length > 0 ? <span>{tabs.length} tab{tabs.length !== 1 ? "s" : ""}</span> : null}
+              center={
+                tabs.length > 0 ? (
+                  <span>
+                    {tabs.length} tab{tabs.length !== 1 ? "s" : ""}
+                  </span>
+                ) : (
+                  <span>No open tabs</span>
+                )
+              }
               right={
-                <span>⌘K palette · ⌘T new query · ⌘[ sidebar · ⌘] inspector</span>
+                <span className="flex items-center gap-2 overflow-hidden">
+                  <span className="inline-flex items-center gap-1">
+                    <IconCommand size={12} /> <kbd className="tiq-kbd">⌘K</kbd> palette
+                  </span>
+                  <span className="inline-flex items-center gap-1">
+                    <IconPlus size={12} /> <kbd className="tiq-kbd">⌘T</kbd> new query
+                  </span>
+                  <span className="hidden xl:inline-flex items-center gap-1">
+                    <IconSidebar size={12} /> <kbd className="tiq-kbd">⌘[</kbd> sidebar
+                  </span>
+                  <span className="hidden xl:inline-flex items-center gap-1">
+                    <IconSidebarRight size={12} /> <kbd className="tiq-kbd">⌘]</kbd> inspector
+                  </span>
+                  <span className="hidden 2xl:inline-flex items-center gap-1">
+                    <IconSqlLog size={12} /> <kbd className="tiq-kbd">⌘⇧C</kbd> SQL log
+                  </span>
+                  <span className="hidden 2xl:inline-flex items-center gap-1">
+                    <IconSliders size={12} /> <kbd className="tiq-kbd">⌘,</kbd> settings
+                  </span>
+                  <span className="hidden 2xl:inline-flex items-center gap-1">
+                    <IconStop size={12} /> <kbd className="tiq-kbd">⌘.</kbd> cancel
+                  </span>
+                </span>
               }
             />
           )}
@@ -1245,6 +1220,7 @@ export function MainShell() {
           engine={active.engine as Engine}
           schema={schema}
           onClose={() => setShowStructure(false)}
+          onSchemaChanged={() => setSchemaRefreshes((n) => n + 1)}
         />
       )}
       {showImport && (
@@ -1253,6 +1229,7 @@ export function MainShell() {
           engine={active.engine as Engine}
           schema={schema}
           onClose={() => setShowImport(false)}
+          onSchemaChanged={() => setSchemaRefreshes((n) => n + 1)}
         />
       )}
       {showBackup && (
@@ -1332,17 +1309,17 @@ export function MainShell() {
             }
           };
           const items: (ContextMenuItem | "separator")[] = [
-            { id: "open", label: "Open in new tab", onSelect: () => openTable(s, obj.name) },
+            { id: "open", label: "Open in new tab", onSelect: () => void tabGuard.openTable(s, obj.name) },
             {
               id: "open-structure",
               label: "Open structure",
-              onSelect: () => openTable(s, obj.name, "structure"),
+              onSelect: () => void tabGuard.openTable(s, obj.name, "structure"),
             },
             {
               id: "overview",
               label: "Item overview",
               onSelect: () => {
-                openTable(s, obj.name);
+                void tabGuard.openTable(s, obj.name);
                 setShowInspector(true);
               },
             },
@@ -1353,7 +1330,7 @@ export function MainShell() {
                 // The ERD keys its cards `schema.table`, so same-named tables in
                 // two schemas cannot be confused for one another.
                 setErdFocus(`${s}.${obj.name}`);
-                openErd();
+                void tabGuard.openErd();
               },
             },
             "separator",
@@ -1391,14 +1368,14 @@ export function MainShell() {
             {
               id: "new-query",
               label: "New query selecting from this",
-              onSelect: () => openQuery(selectStarter(s, obj.name, engine)),
+              onSelect: () => void tabGuard.openQuery(selectStarter(s, obj.name, engine)),
             },
             "separator",
             {
               id: "clone",
               label: "Clone (open as query)",
               onSelect: () =>
-                openQuery(
+                void tabGuard.openQuery(
                   engine === "postgres"
                     ? `CREATE TABLE ${q(s)}.${q(`${obj.name}_copy`)} (LIKE ${qualified} INCLUDING ALL);`
                     : engine === "sqlserver"
@@ -1411,13 +1388,13 @@ export function MainShell() {
               id: "truncate",
               label: "Truncate (open as query)",
               tone: "danger",
-              onSelect: () => openQuery(buildTableScript("truncate", s, obj.name, scriptCols, engine)),
+              onSelect: () => void tabGuard.openQuery(buildTableScript("truncate", s, obj.name, scriptCols, engine)),
             },
             {
               id: "drop",
               label: "Drop (open as query)",
               tone: "danger",
-              onSelect: () => openQuery(buildTableScript("drop", s, obj.name, scriptCols, engine)),
+              onSelect: () => void tabGuard.openQuery(buildTableScript("drop", s, obj.name, scriptCols, engine)),
             },
           ];
           return (
@@ -1442,13 +1419,13 @@ export function MainShell() {
       {tabMenu &&
         (() => {
           const items: (ContextMenuItem | "separator")[] = [
-            { id: "close", label: "Close", onSelect: () => close(tabMenu.tab.key) },
+            { id: "close", label: "Close", onSelect: () => void tabGuard.close([tabMenu.tab.key]) },
             {
               id: "close-others",
               label: "Close others",
               disabled: tabs.length <= 1,
               onSelect: () => {
-                for (const t of tabs) if (t.key !== tabMenu.tab.key) close(t.key);
+                void tabGuard.close(tabs.filter((t) => t.key !== tabMenu.tab.key).map((t) => t.key));
               },
             },
             {
@@ -1456,7 +1433,7 @@ export function MainShell() {
               label: "Close all",
               tone: "danger",
               onSelect: () => {
-                for (const t of tabs) close(t.key);
+                void tabGuard.close(tabs.map((t) => t.key));
               },
             },
             "separator",
@@ -1468,9 +1445,9 @@ export function MainShell() {
               disabled: tabMenu.tab.kind !== "table" && tabMenu.tab.kind !== "query",
               onSelect: () => {
                 if (tabMenu.tab.kind === "table" && tabMenu.tab.schema && tabMenu.tab.table) {
-                  openTable(tabMenu.tab.schema, tabMenu.tab.table);
+                  void tabGuard.openTable(tabMenu.tab.schema, tabMenu.tab.table);
                 } else if (tabMenu.tab.kind === "query") {
-                  openQuery(tabMenu.tab.sql);
+                  void tabGuard.openQuery(tabMenu.tab.sql);
                 }
               },
             },
@@ -1484,20 +1461,6 @@ export function MainShell() {
             />
           );
         })()}
-      {headerMenu && (
-        <ContextMenu
-          x={headerMenu.x}
-          y={headerMenu.y}
-          items={[
-            {
-              id: "customize-toolbar",
-              label: "Customize Toolbar…",
-              onSelect: () => useSettingsUi.getState().show("toolbar"),
-            },
-          ]}
-          onClose={() => setHeaderMenu(null)}
-        />
-      )}
       {showHelp && <HelpMenu onTour={() => { setShowHelp(false); /* tour re-trigger handled by Onboarding */ window.dispatchEvent(new CustomEvent("tiq:show-tour")); }} onClose={() => setShowHelp(false)} />}
       <Onboarding />
     </div>
@@ -1511,7 +1474,7 @@ function HelpMenu({ onTour, onClose }: { onTour: () => void; onClose: () => void
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
   return (
-    <div className="fixed right-4 top-12 z-50 w-72 rounded-lg border border-border bg-bg p-2 shadow-[var(--shadow-pop)]">
+    <div className="fixed right-4 top-[calc(var(--titlebar-h)+4px)] z-50 w-72 rounded-lg border border-border bg-bg p-2 shadow-[var(--shadow-pop)]">
       <button
         onClick={onTour}
         className="block w-full rounded-md px-3 py-2 text-left text-xs text-text hover:bg-surface-2"
@@ -1533,7 +1496,9 @@ function HelpMenu({ onTour, onClose }: { onTour: () => void; onClose: () => void
       <div className="px-3 pb-2 text-[11px] text-muted">
         <kbd className="tiq-kbd">⌘K</kbd> palette · <kbd className="tiq-kbd">⌘T</kbd> new query<br />
         <kbd className="tiq-kbd">⌘W</kbd> close tab · <kbd className="tiq-kbd">⌘↵</kbd> run query<br />
-        <kbd className="tiq-kbd">⌘[</kbd> sidebar · <kbd className="tiq-kbd">⌘]</kbd> inspector
+        <kbd className="tiq-kbd">⌘[</kbd> sidebar · <kbd className="tiq-kbd">⌘]</kbd> inspector<br />
+        <kbd className="tiq-kbd">⌥⌘1</kbd> data · <kbd className="tiq-kbd">⌥⌘2</kbd> structure<br />
+        <kbd className="tiq-kbd">⌘⇧\</kbd> workspace overview
       </div>
     </div>
   );

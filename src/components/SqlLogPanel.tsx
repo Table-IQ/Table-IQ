@@ -1,9 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { highlightCode } from "@lezer/highlight";
-import { StandardSQL } from "@codemirror/lang-sql";
 import { sqlLog, clearSqlLog, type SqlLogEntry } from "../lib/commands";
 import { formatLogTs, mergeEntries, shouldApply, SQL_LOG_CAP } from "../lib/sqlLog";
-import { sqlHighlight } from "../lib/sqlHighlight";
+import { highlightSql } from "../lib/sqlHighlightHtml";
 import { logError } from "../lib/report";
 import { ResizeHandle, clampWidth } from "./ui/ResizeHandle";
 import { IconButton } from "./ui/IconButton";
@@ -32,57 +30,6 @@ function writeLS(key: string, value: string): void {
   } catch {
     // quota / private mode — ignore, it's just a UI pref
   }
-}
-
-let highlightCssInjected = false;
-/**
- * `sqlHighlight` is a `HighlightStyle` built for a CodeMirror `EditorView`,
- * which injects its generated CSS into the document itself. We drive
- * `highlightCode` directly (no editor instance), so nothing does that for
- * us — mount the same CSS text once, by hand.
- */
-function ensureHighlightCss(): void {
-  if (highlightCssInjected || typeof document === "undefined") return;
-  const css = sqlHighlight.module?.getRules();
-  if (!css) return;
-  highlightCssInjected = true;
-  const style = document.createElement("style");
-  style.setAttribute("data-tiq", "sql-log-highlight");
-  style.textContent = css;
-  document.head.appendChild(style);
-}
-
-/** Exported for unit testing (SqlLogPanel.test.ts) — no component harness needed, it's a
- *  pure string transform. */
-export function escapeHtml(s: string): string {
-  return s.replace(/[&<>]/g, (c) => (c === "&" ? "&amp;" : c === "<" ? "&lt;" : "&gt;"));
-}
-
-/** Highlight one SQL statement to an HTML string using the editor's own
- * `sqlHighlight` classes/colours (dialect-agnostic `StandardSQL`, since a
- * log entry can come from any connected engine).
- *
- * Exported for unit testing: `ensureHighlightCss` no-ops when `document` is
- * undefined (no jsdom in this project), so this whole function — lezer
- * parse + highlight, no DOM required otherwise — is safe to call from a
- * plain Node test. */
-export function highlightSql(sqlText: string): string {
-  ensureHighlightCss();
-  const tree = StandardSQL.language.parser.parse(sqlText);
-  let html = "";
-  highlightCode(
-    sqlText,
-    tree,
-    sqlHighlight,
-    (text, classes) => {
-      const escaped = escapeHtml(text);
-      html += classes ? `<span class="${classes}">${escaped}</span>` : escaped;
-    },
-    () => {
-      html += "\n";
-    },
-  );
-  return html;
 }
 
 /**

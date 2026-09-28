@@ -74,6 +74,7 @@ Fonts:
 | `--tabbar-h` | 30 | 26 |
 | `--statusbar-h` | 24 | 22 |
 | `--header-h` | 38 | 32 |
+| `--titlebar-h` | — | 52 (connected workspace only; `--header-h` is unchanged) |
 | `--sidebar-w` | 232 | 220 |
 | `--inspector-w` | 260 | 240 |
 | `--gap-tight` | 6 | 4 |
@@ -133,21 +134,35 @@ saturated than our previous indigo-tinted dark.
 
 ## Iconography
 
-- All lucide-react icons in chrome render at `strokeWidth={1.5}` and `size={12}`
-  (toolbar) or `size={11}` (status bar).
+- Chrome icons render at `strokeWidth={1.5}`: `size={20}` in the titlebar capsules
+  (see "Titlebar — glass capsules" below), `size={12}` in in-pane action toolbars,
+  `size={11}` in the status bar.
 - Inline data UI icons (FK chevrons, sort markers) render at `strokeWidth={2}`
   and `size={10}`.
 
 ## Layout building blocks
 
-### Window chrome (32px)
-- macOS traffic-lights reserve (left ~80px)
-- `<Wordmark>` + active-connection dot + name (left)
-- Breadcrumb: `connection · database · schema · table` (center, font-mono)
-- Right icon strip: refresh schema, switch database, command palette, theme, help, Workspace
-  Overview (hidden by default), SQL Log, Metrics Board (hidden by default), inspector toggle,
-  disconnect. User-reorderable and hideable (Settings → Toolbar, or right-click the title bar)
-  except the fixed inspector-toggle/disconnect pair.
+### Titlebar — glass capsules (52px, `--titlebar-h`)
+TablePlus's toolbar idiom: 20px glyphs (`strokeWidth={1.5}`) in 36×32 hit areas, grouped
+into 36px full-radius glass capsules (`Capsule` / `CapsuleButton` / `CapsuleDivider`,
+`ui/Capsule.tsx`). The whole `<header>` is the drag region (`data-tauri-drag-region` +
+`.tiq-titlebar-drag`); capsules and the pill are `.tiq-no-drag`. Traffic lights sit at
+`trafficLightPosition { x: 18, y: 20 }` behind an 84px left reserve. There is no secondary
+toolbar under it.
+
+| Group | Contents |
+|---|---|
+| G1 | Toggle sidebar ⌘[ · Open connection ⌘O |
+| G2 | Discard · Review (popover, `StagedReview`) · Commit ⌘S with a `bg-text text-bg` count badge — driven only by the active table tab's staged edits (`useStaged`); disabled with "No staged changes" otherwise |
+| G3 | Open database ⌘D (pinned, not customizable; hidden for file engines) · `SQL` New query ⌘T · ERD · `+` More (New Table, Import, Diff, Backup / Restore where supported) |
+| Pill | `flex-1` status pill tinted by the connection env: `ENV \| Engine : SSL : SSH : connection : database : schema.table`. Object shrinks first, then database, then connection; the database is dropped when it equals the connection name; the `title` always carries the full text. While connecting: spinner + "Loading schema…" |
+| G4 | The user's customizable items (`TOOLBAR_ITEMS`, Settings → Toolbar, or right-click empty header space → Customize Toolbar…), then a fixed Cancel running queries ⌘. Below 1180px only the first two items show and the rest move under `»` (`.tiq-g4-extra` / `.tiq-g4-more`; the `@media` rule in `index.css` is the only source of the breakpoint) |
+| G5 | Settings ⌘, · Toggle inspector ⌘] · Disconnect |
+
+Tokens: `--glass-bg`, `--glass-border`, `--glass-shadow` (capsules and the pill border);
+`--env-<tone>` / `--env-<tone>-text` for the pill (`local`, `development`, `testing`,
+`staging`, `production`, and `none` = glass). No TLS version or traffic rate is shown:
+neither is measured.
 
 ### Tab strip (26px)
 - `<` `>` history navigation
@@ -222,9 +237,7 @@ State is never carried by motion alone; a tint, label or text always remains.
 | Panels (Alter, New table, …) | `.tiq-pop-in` scale .98→1 + fade; `.tiq-pop-out` on close |
 | Cell saving | amber tint breathes (1s period) while any cell is writing |
 | Cell saved | green holds 800ms, then fades out over 300ms (canvas rAF) |
-| Row deleted | red tint fades over 300ms, then the page refetches |
-| Row inserted | the new row flashes green if its PK was typed |
-| Saved n changes | status-bar text, `.tiq-flash`: fade in, hold, fade out over 2s |
+| Committed n changes | status-bar text, `.tiq-flash`: fade in, hold, fade out over 2s |
 
 ## Connection manager (welcome) — TablePlus parity
 
@@ -284,6 +297,28 @@ successful connect (from welcome and from `⌘O` swap in MainShell). `sortByRece
 floats recently-used connections to the top of the list without any UI grouping
 — we deliberately don't show a "Recent" header because TablePlus doesn't.
 
+### Connection sheet
+`ConnectionSheet.tsx`, a 460px right-hand slide-in over a `bg-black/30` scrim.
+- **Header:** EngineIcon (lg), the title (the only 600 weight: "New Connection" or
+  the name), then the engine label and, when editing, `● Unsaved changes` in
+  `text-warn`. A ⋯ menu (edit only) holds Copy as URL (never includes the
+  password), Duplicate and Delete. Then ×.
+- **Body:** a dashed paste-a-URL field that fills the form. In new mode, a row of
+  7 engine tiles. Name, then an Environment segmented control (tinted with
+  `--env-<tone>`) and the colour dots. Then Server (or File for SQLite/DuckDB),
+  with 32px inputs and validation errors under their field. Then Advanced: the
+  SSH tunnel switch.
+- **Footer:** pinned, `bg-surface`. A result line: spinner, `✓ Connected in N ms`,
+  or `✕` plus the first line with the full error in a mono box you can copy.
+  Then Test ⌘T on the left, and Discard (edit + dirty), Save ⌘S and **Connect ⌘↵**
+  on the right. Save and Connect are disabled while the form is invalid, with the
+  reason in their tooltip. After a Test, the whole form borders green or red.
+- **Closing:** ×, the scrim or Esc. If anything changed, it asks
+  "Discard unsaved changes?" first.
+- **Colour presets:** `#4f46e5` (default, light `--primary`), `#16a34a`,
+  `#ea580c`, `#dc2626`, `#0891b2`, `#71717a`. These six swatches are the only
+  literal colours in the sheet. A saved custom colour shows as a seventh dot.
+
 ## Surfaces redesigned in earlier slices
 
 | Surface | Change |
@@ -324,8 +359,11 @@ floats recently-used connections to the top of the list without any UI grouping
 | Search hit (cell matches the table search) | `#c7d2fe` | `#312e81` | `searchHitBg` — the accent, one step stronger than the selected-row band so a hit still reads on a selected row |
 | Selected row | `#e0e7ff` | `#1e2540` | `gridRowTints.selected` |
 | FK cell text | `#4f46e5` | `#6366f1` | `gridTheme().accentColor` |
+| Row staged for delete | `#fdd5d5` | `#4a1c21` | `editTints().deleted` — whole row, over any cell tint and over glide's row-selection fill; read-only until Undo delete / Discard |
+| Staged new row | `#ccf3d9` | `#173a24` | `editTints().inserted` — appended after the page's rows, read-only; omitted columns show a muted italic `DEFAULT` |
 
 A save-state tint (staged / saving / saved / error) wins over a search hit on the same cell.
+Staged deletes and inserts are static tints (no motion): they hold until Commit or Discard.
 
 ## Connection rail — TablePlus parity
 

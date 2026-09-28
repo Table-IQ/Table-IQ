@@ -42,6 +42,34 @@ export function listPending(map: PendingMap): PendingEdit[] {
   return [...map.values()];
 }
 
+/** The production commit prompt, pluralised. */
+export function productionCommitMessage(n: number, name: string): string {
+  return `Commit ${n === 1 ? "1 change" : `${n} changes`} to production (${name})?`;
+}
+
+/** Run `commit` only if `confirm` (when given) resolves true. Returns whether it ran. */
+export async function gatedCommit(
+  confirm: (() => Promise<boolean>) | undefined,
+  commit: () => void | Promise<void>,
+): Promise<boolean> {
+  if (confirm && !(await confirm())) return false;
+  await commit();
+  return true;
+}
+
+/** Run `run` unless one is already in flight on `flag` (then return false at once).
+ *  A repeated ⌘S during a commit must never send the batch a second time. */
+export async function exclusive(flag: { current: boolean }, run: () => Promise<unknown>): Promise<boolean> {
+  if (flag.current) return false;
+  flag.current = true;
+  try {
+    await run();
+    return true;
+  } finally {
+    flag.current = false;
+  }
+}
+
 /** Empty the staging set, returning every entry so the caller can revert the
  *  display to each cell's `before` value. */
 export function discardAll(map: PendingMap): PendingEdit[] {

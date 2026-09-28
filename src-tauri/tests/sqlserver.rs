@@ -9,9 +9,12 @@
 
 use arrow::array::{Array, StringArray};
 use tableiq_lib::drivers::{
-    sqlserver::SqlServerDriver, CancelToken, ColumnFilter, DriverError, EditSpec, FilterOp,
-    ObjectKind, SortKey, SqlDriver,
+    sqlserver::SqlServerDriver, CancelToken, Change, ChangesResult, ColumnFilter, DriverError,
+    EditSpec, FilterOp, ObjectKind, SortKey, SqlDriver,
 };
+
+#[allow(dead_code)]
+mod changes_common;
 
 /// `TIQ_MSSQL_URL` is an ADO connection string (that is what CI and the docs set), while the
 /// driver takes the parts — ADO has no escaping rule for a password containing `;`. Split it
@@ -923,4 +926,107 @@ async fn sqlserver_like_filter_on_datetime_and_varbinary() {
     assert_eq!(got[1].0.as_ref().unwrap(), &vec![one], "varbinary LIKE on the hex");
     assert_eq!(got[1].1.as_ref().unwrap().count, Some(1));
     assert!(got[2].0.as_ref().unwrap().is_empty(), "not the legacy `Sep 23 2026` rendering");
+}
+
+#[tokio::test]
+async fn sqlserver_apply_changes() {
+    let _serialised = serialised().await;
+    let Some(d) = connect().await else { return };
+    use changes_common::*;
+    commits_all_in_order(&d, "dbo").await;
+    same_value_update_is_not_a_conflict(&d, "dbo").await;
+    null_and_empty_inserts_stay_distinct(&d, "dbo").await;
+    conflict_rolls_back_everything(&d, "dbo").await;
+    delete_miss_and_db_error_roll_back(&d, "dbo").await;
+    d.run_script("DROP TABLE tiq_changes").await.ok();
+}
+
+/// `ExecuteResult::total()` sums every DONE/DONEINPROC token in the response, including the
+/// ones an AFTER trigger's own statements emit: on an audited table a 1-row DELETE reports
+/// `total() == 3`, not 1, and a 0-row UPDATE (a real optimistic-concurrency conflict) reports
+/// `total() == 1`, hiding the conflict and committing garbage. `apply_changes` must instead
+/// read `@@ROWCOUNT` back in the same batch, which SQL Server resets to the firing statement's
+/// own count once the trigger returns.
+#[tokio::test]
+async fn sqlserver_apply_changes_counts_ignore_trigger_rows() {
+    let _serialised = serialised().await;
+    let Some(d) = connect().await else { return };
+    let tok = CancelToken::new();
+    let v = |xs: &[&str]| -> Vec<String> { xs.iter().map(|s| s.to_string()).collect() };
+
+    // `run_script` sends its SQL through `execute` (sp_executesql), which SQL Server refuses
+    // for `CREATE TRIGGER` (it must be the only statement in a plain ad-hoc batch) — so setup
+    // and teardown go through `run_statements`, one statement per call, exactly like a query
+    // tab would send them.
+    let setup = d
+        .run_statements(
+            &v(&[
+                "IF OBJECT_ID('dbo.tiq_trig_trg','TR') IS NOT NULL DROP TRIGGER dbo.tiq_trig_trg",
+                "IF OBJECT_ID('dbo.tiq_trig_audit','U') IS NOT NULL DROP TABLE dbo.tiq_trig_audit",
+                "IF OBJECT_ID('dbo.tiq_trig','U') IS NOT NULL DROP TABLE dbo.tiq_trig",
+                "CREATE TABLE dbo.tiq_trig (id INT PRIMARY KEY, name VARCHAR(20))",
+                "CREATE TABLE dbo.tiq_trig_audit (id INT IDENTITY PRIMARY KEY, op VARCHAR(10))",
+                "INSERT INTO dbo.tiq_trig (id, name) VALUES (1, 'a'), (2, 'b')",
+                "CREATE TRIGGER dbo.tiq_trig_trg ON dbo.tiq_trig AFTER UPDATE, DELETE AS \
+                 BEGIN \
+                   SET NOCOUNT ON; \
+                   INSERT INTO dbo.tiq_trig_audit (op) SELECT 'upd' FROM inserted; \
+                   INSERT INTO dbo.tiq_trig_audit (op) SELECT 'del' FROM deleted \
+                     WHERE NOT EXISTS (SELECT 1 FROM inserted); \
+                 END",
+            ]),
+            10,
+            &tok,
+        )
+        .await
+        .expect("run setup statements");
+    assert!(setup.iter().all(|o| o.error.is_none()), "setup: {setup:?}");
+
+    // A matching 1-row update and a matching 1-row delete: a naive `total()` count would see
+    // the DML's own DONE plus the trigger's two INSERTs and fail this with "matched 3 rows".
+    let changes = vec![
+        Change::Update {
+            edit: EditSpec {
+                pk: vec![("id".into(), Some("1".into()))],
+                column: "name".into(),
+                new_value: Some("A".into()),
+                orig_value: Some("a".into()),
+            },
+        },
+        Change::Delete { pk: vec![("id".into(), Some("2".into()))] },
+    ];
+    let res =
+        d.apply_changes("dbo", "tiq_trig", &changes).await.expect("apply_changes on an audited table");
+    assert_eq!(res, ChangesResult { updated: 1, deleted: 1, inserted: 0 });
+
+    // A stale update matches 0 rows on the base table; the trigger still fires (with empty
+    // inserted/deleted sets), but @@ROWCOUNT must report the UPDATE's own 0, not the trigger's
+    // row count — so the conflict is not hidden and the batch rolls back.
+    let stale = vec![Change::Update {
+        edit: EditSpec {
+            pk: vec![("id".into(), Some("1".into()))],
+            column: "name".into(),
+            new_value: Some("Z".into()),
+            orig_value: Some("not-the-current-value".into()),
+        },
+    }];
+    let err =
+        d.apply_changes("dbo", "tiq_trig", &stale).await.expect_err("stale update must fail").to_string();
+    assert_eq!(err, "change 0: row changed since it was loaded");
+
+    // The failed batch must leave no open transaction on the shared pinned session.
+    let tc = d.run_query("SELECT @@TRANCOUNT", 1).await.expect("trancount");
+    assert_eq!(text_rows(&tc.batch), vec![vec![Some("0".to_string())]]);
+
+    d.run_statements(
+        &v(&[
+            "IF OBJECT_ID('dbo.tiq_trig_trg','TR') IS NOT NULL DROP TRIGGER dbo.tiq_trig_trg",
+            "IF OBJECT_ID('dbo.tiq_trig_audit','U') IS NOT NULL DROP TABLE dbo.tiq_trig_audit",
+            "IF OBJECT_ID('dbo.tiq_trig','U') IS NOT NULL DROP TABLE dbo.tiq_trig",
+        ]),
+        10,
+        &tok,
+    )
+    .await
+    .ok();
 }

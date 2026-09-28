@@ -9,6 +9,9 @@ pub mod drivers;
 pub mod ipc;
 pub mod library;
 pub mod mcp;
+// The native menu is macOS-only; the pure item table and its tests build everywhere.
+#[cfg(any(target_os = "macos", test))]
+mod menu;
 pub mod plugins;
 pub mod query;
 pub mod sql_log;
@@ -21,10 +24,10 @@ pub(crate) fn lk<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 use ipc::connect::{
-    ai_egress_preview, ai_explain_sql, ai_fix_sql, ai_generate_sql, ai_optimize_sql, apply_edit,
+    ai_egress_preview, ai_explain_sql, ai_fix_sql, ai_generate_sql, ai_optimize_sql, apply_changes, apply_edit,
     backup_database, backup_job, cancel_backup_job, detect_backup_tools, restore_database,
     cancel_all, cancel_query, connect, count_rows_exact, delete_connection, delete_row, describe_table,
-    estimate_rows,
+    estimate_rows, table_stats,
     disconnect, diff_results, diff_schemas, export_result, export_table, generate_ddl,
     get_ai_config, get_result_window, get_table_window,
     doc_collections, doc_find, explain_query, export_connections, foreign_keys, import_connections,
@@ -52,6 +55,7 @@ pub fn invoke_handler<R: tauri::Runtime>(
         list_objects,
         open_table,
         estimate_rows,
+        table_stats,
         count_rows_exact,
         get_table_window,
         run_query,
@@ -61,6 +65,7 @@ pub fn invoke_handler<R: tauri::Runtime>(
         primary_key,
         apply_edit,
         delete_row,
+        apply_changes,
         export_result,
         export_table,
         run_script,
@@ -122,11 +127,16 @@ pub fn invoke_handler<R: tauri::Runtime>(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     applog::init();
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(ConnState::new())
-        .invoke_handler(invoke_handler())
+        .invoke_handler(invoke_handler());
+    // Native View/Help menus (macOS only: `Builder::menu` becomes every window's menu, and
+    // Windows/Linux have no designed menu bar). Items emit `tiq:menu` (src/lib/menuEvents.ts).
+    #[cfg(target_os = "macos")]
+    let builder = builder.menu(menu::build).on_menu_event(menu::on_event);
+    builder
         // The MCP server starts with the app when enabled. The QA bridge doesn't run this;
         // Settings → MCP starts it there.
         .setup(|app| {

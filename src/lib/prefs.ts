@@ -41,3 +41,25 @@ export function saveEditorFontSize(n: number, storage?: StorageLike | null): voi
     // quota / private mode — ignore
   }
 }
+
+/** Whether the lobby runs its catalog queries (table sizes, FKs, pinned previews) on its own.
+ *  One global choice; with nothing saved it defaults to on, and to off for a connection
+ *  tagged `production`, where an unasked-for catalog scan is the wrong default. */
+export const LOBBY_AUTOLOAD_KEY = "tiq:lobby:autoload";
+
+export function loadLobbyAutoload(env: string | null | undefined, storage?: StorageLike | null): boolean {
+  const raw = (storage ?? defaultStorage())?.getItem(LOBBY_AUTOLOAD_KEY);
+  if (raw === "1") return true;
+  if (raw === "0") return false;
+  return env !== "production";
+}
+
+export function saveLobbyAutoload(on: boolean, storage?: StorageLike | null): void {
+  const s = storage ?? defaultStorage();
+  if (!s) return;
+  try {
+    s.setItem(LOBBY_AUTOLOAD_KEY, on ? "1" : "0");
+  } catch {
+    // quota / private mode — ignore
+  }
+}

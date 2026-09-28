@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { canLeaveSession, useConnections } from "../state/connectionStore";
 import { useTabs, viewGlyph, viewGlyphClass, type Tab } from "../state/tabsStore";
+import { tabGuard } from "../state/tabGuard";
 import { closeTabForConnection, focusTabForConnection, hydrateForConnection } from "../lib/tabsPersist";
 import { IconClose, IconTable } from "./ui/Icon";
 import { ColorDot } from "./ui/Chip";
@@ -73,7 +74,7 @@ export function WorkspaceOverview({ onClose }: { onClose: () => void }) {
 
   const focusCard = async (card: Card) => {
     if (card.connId === active?.id) {
-      useTabs.getState().setActive(card.tab.key);
+      await tabGuard.activate(card.tab.key);
     } else {
       // Mirrors ConnectionRail's switchTo guard: jumping away from the active
       // connection must not silently discard its staged grid edits.
@@ -86,7 +87,7 @@ export function WorkspaceOverview({ onClose }: { onClose: () => void }) {
 
   const closeCard = (card: Card) => {
     if (card.connId === active?.id) {
-      useTabs.getState().close(card.tab.key);
+      void tabGuard.close([card.tab.key]);
     } else {
       closeTabForConnection(card.connId, card.tab.key, null);
       setVersion((v) => v + 1);

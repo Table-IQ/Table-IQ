@@ -89,18 +89,29 @@ export function gridRowTints(
 }
 
 /**
- * Per-cell background tints for inline editing. `staged` marks an uncommitted
- * (pending) edit in the TablePlus-style batch model; `saving` while the UPDATE is
- * in flight at commit; `saved` on success; `error` on conflict/error. Kept soft so
- * text stays readable; adapted per theme.
+ * Per-cell background tints for inline editing. `staged` marks an uncommitted cell edit;
+ * `saving` while the commit is in flight; `saved` on success; `error` on conflict.
+ * `deleted` / `inserted` paint a whole staged row (red / green, TablePlus parity). Soft
+ * enough that the text stays readable; adapted per theme.
  */
-export function editTints(
-  mode: ResolvedTheme,
-): { staged: string; saving: string; saved: string; error: string } {
+export function editTints(mode: ResolvedTheme): {
+  staged: string;
+  saving: string;
+  saved: string;
+  error: string;
+  deleted: string;
+  inserted: string;
+} {
   if (mode === "dark") {
-    return { staged: "#10243a", saving: "#3a2f12", saved: "#13311f", error: "#3a1518" };
+    return {
+      staged: "#10243a", saving: "#3a2f12", saved: "#13311f", error: "#3a1518",
+      deleted: "#4a1c21", inserted: "#173a24",
+    };
   }
-  return { staged: "#dbeafe", saving: "#fef3c7", saved: "#dcfce7", error: "#fee2e2" };
+  return {
+    staged: "#dbeafe", saving: "#fef3c7", saved: "#dcfce7", error: "#fee2e2",
+    deleted: "#fdd5d5", inserted: "#ccf3d9",
+  };
 }
 
 /** Background of a cell matching the table search: the accent, one step

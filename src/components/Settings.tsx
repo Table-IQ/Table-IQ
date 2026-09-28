@@ -6,9 +6,11 @@ import { loadRailLabel, saveRailLabel, type RailLabel } from "./ConnectionRail";
 import {
   clampEditorFontSize,
   loadEditorFontSize,
+  loadLobbyAutoload,
   MAX_EDITOR_FONT_SIZE,
   MIN_EDITOR_FONT_SIZE,
   saveEditorFontSize,
+  saveLobbyAutoload,
 } from "../lib/prefs";
 import { useTheme } from "../theme/ThemeProvider";
 import type { ThemeChoice } from "../lib/theme";
@@ -135,6 +137,9 @@ function GeneralSection() {
   // only relevant once 2+ connections are open); Settings reads/writes the
   // same `tiq:rail:label` key via the extracted load/save, own local state.
   const [railLabel, setRailLabel] = useState<RailLabel>(loadRailLabel);
+  // Read with no env: what non-production connections do. The lobby re-reads the pref
+  // each time it mounts, so no live-update event is needed.
+  const [lobbyAutoload, setLobbyAutoload] = useState(() => loadLobbyAutoload(null));
   return (
     <div className="space-y-4 p-4">
       <Field label="Theme" group>
@@ -166,6 +171,22 @@ function GeneralSection() {
           ]}
         />
       </Field>
+      <div>
+        <Field label="Load database stats in the lobby">
+          <input
+            type="checkbox"
+            checked={lobbyAutoload}
+            onChange={(e) => {
+              saveLobbyAutoload(e.target.checked);
+              setLobbyAutoload(e.target.checked);
+            }}
+          />
+        </Field>
+        <p className="mt-1 text-xs text-muted">
+          Table sizes, foreign keys and pinned previews. Until you change this, production
+          connections wait for “Load stats”.
+        </p>
+      </div>
     </div>
   );
 }
@@ -258,6 +279,9 @@ function ToolbarSection() {
 
   return (
     <div className="space-y-3 p-4">
+      <p className="text-xs text-muted">
+        The first two items stay visible in narrow windows; the rest move under »
+      </p>
       <div className="space-y-0.5">
         {fullOrder.map((id, i) => {
           const item = TOOLBAR_ITEMS.find((t) => t.id === id);

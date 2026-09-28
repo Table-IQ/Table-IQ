@@ -11,11 +11,30 @@ use sqlx::postgres::{PgDatabaseError, PgErrorPosition, PgPoolOptions, PgQueryRes
 use sqlx::{Executor, Pool, Postgres, Row};
 
 use super::{
-    build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
+    build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken, Change,
+    ChangesResult, ColumnDetail,
     ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec, IndexInfo, ObjectInfo,
     ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver, StmtOutput,
-    TableStructure, TriggerInfo, EXACT_COUNT_MAX,
+    TableStat, TableStructure, TriggerInfo, EXACT_COUNT_MAX,
 };
+
+/// Above this, a `table_stats` catalog read gives up rather than block the lobby.
+const STATS_TIMEOUT_MS: u64 = 5_000;
+
+/// One leaf's estimated row count: `c` is the leaf's `pg_class` row, `s.bs` the block size.
+/// Never-ANALYZEd (`reltuples = -1`; before PG 14, `reltuples = 0` with `relpages = 0`) is
+/// estimated from its size: pages × tuples-per-page, a tuple being its fixed-width columns
+/// (32 bytes per variable-width one) plus 28 bytes of header and line pointer. Shared,
+/// byte-identical, between `estimate_rows` and `table_stats`.
+const PG_LEAF_ROW_ESTIMATE: &str = "CASE \
+    WHEN c.reltuples > 0 AND c.relpages > 0 \
+      THEN c.reltuples::float8 / c.relpages * floor(pg_relation_size(c.oid) / s.bs) \
+    WHEN c.reltuples > 0 OR (c.reltuples = 0 AND c.relpages > 0) THEN c.reltuples::float8 \
+    ELSE floor(pg_relation_size(c.oid) / s.bs) * floor(s.bs / (28 + ( \
+      SELECT COALESCE(SUM(CASE WHEN a.attlen > 0 THEN a.attlen ELSE 32 END), 0) \
+      FROM pg_attribute a \
+      WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped))) \
+    END";
 
 /// Postgres reports "canceling statement due to user request" as SQLSTATE 57014; that is a
 /// clean cancellation, not a query error.
@@ -81,6 +100,34 @@ fn build_delete_sql(schema: &str, table: &str, pk_cols: &[String]) -> String {
         quote_ident(table),
         wheres.join(" AND ")
     )
+}
+
+/// One staged change as `(sql, binds)`, built and bound exactly like `apply_edit` /
+/// `delete_row` / `insert_row` build and bind theirs.
+fn pg_change_sql(
+    schema: &str,
+    table: &str,
+    change: &Change,
+    udts: &HashMap<String, String>,
+) -> (String, Vec<Option<String>>) {
+    let udt = |c: &str| udts.get(c).cloned().unwrap_or_else(|| "text".into());
+    match change {
+        Change::Update { edit } => {
+            let pk: Vec<(String, String)> = edit.pk.iter().map(|(n, _)| (n.clone(), udt(n))).collect();
+            let sql = build_update_sql(schema, table, &edit.column, &udt(&edit.column), &pk);
+            let mut binds = vec![edit.new_value.clone()];
+            binds.extend(edit.pk.iter().map(|(_, v)| v.clone()));
+            binds.push(edit.orig_value.clone());
+            (sql, binds)
+        }
+        Change::Delete { pk } => {
+            let cols: Vec<String> = pk.iter().map(|(n, _)| n.clone()).collect();
+            (build_delete_sql(schema, table, &cols), pk.iter().map(|(_, v)| v.clone()).collect())
+        }
+        Change::Insert { values } => {
+            build_insert_sql(schema, table, values, &quote_ident, &pg_placeholder(udts), true)
+        }
+    }
 }
 
 /// Unwrap `sqlx::Error::Database` to the bare server message — sqlx otherwise prefixes it with
@@ -681,31 +728,61 @@ impl SqlDriver for PgDriver {
     /// tuples-per-page, a tuple being its fixed-width columns (32 bytes per variable-width
     /// one) plus 28 bytes of header and line pointer. Views: `None`.
     async fn estimate_rows(&self, schema: &str, table: &str) -> DResult<Option<i64>> {
-        sqlx::query_scalar(
+        let sql = format!(
             "WITH RECURSIVE rel AS ( \
                SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
                WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('r', 'p', 'm') \
                UNION ALL \
                SELECT i.inhrelid FROM pg_inherits i JOIN rel ON i.inhparent = rel.oid) \
-             SELECT COALESCE(SUM(CASE \
-               WHEN c.reltuples > 0 AND c.relpages > 0 \
-                 THEN c.reltuples::float8 / c.relpages * floor(pg_relation_size(c.oid) / s.bs) \
-               WHEN c.reltuples > 0 OR (c.reltuples = 0 AND c.relpages > 0) THEN c.reltuples::float8 \
-               ELSE floor(pg_relation_size(c.oid) / s.bs) * floor(s.bs / (28 + ( \
-                 SELECT COALESCE(SUM(CASE WHEN a.attlen > 0 THEN a.attlen ELSE 32 END), 0) \
-                 FROM pg_attribute a \
-                 WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped))) \
-               END), 0)::bigint \
+             SELECT COALESCE(SUM({est}), 0)::bigint \
              FROM rel JOIN pg_class c ON c.oid = rel.oid \
              CROSS JOIN (SELECT current_setting('block_size')::float8 AS bs) s \
              WHERE c.relkind IN ('r', 'm') \
              HAVING EXISTS (SELECT 1 FROM rel)",
-        )
-        .bind(schema)
-        .bind(table)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(db)
+            est = PG_LEAF_ROW_ESTIMATE
+        );
+        sqlx::query_scalar(&sql)
+            .bind(schema)
+            .bind(table)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db)
+    }
+
+    /// Every base table (and materialized view) in `schema`, top-level meaning "not a child
+    /// in `pg_inherits`" — a declarative partition or legacy-inheritance child is excluded
+    /// and instead summed into its top ancestor. Rows: [`PG_LEAF_ROW_ESTIMATE`] per leaf,
+    /// summed. Bytes: `pg_total_relation_size` (table + indexes + toast) per leaf, summed.
+    /// Bounded by [`STATS_TIMEOUT_MS`]; on a timeout the error is returned as-is.
+    async fn table_stats(&self, schema: &str) -> DResult<Vec<TableStat>> {
+        let sql = format!(
+            "WITH RECURSIVE tops AS ( \
+               SELECT c.oid AS top, c.relname FROM pg_class c \
+               JOIN pg_namespace n ON n.oid = c.relnamespace \
+               WHERE n.nspname = $1 AND c.relkind IN ('r', 'p', 'm') \
+                 AND NOT EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhrelid = c.oid)), \
+             tree AS ( \
+               SELECT top, top AS oid FROM tops \
+               UNION ALL SELECT t.top, i.inhrelid FROM tree t JOIN pg_inherits i ON i.inhparent = t.oid) \
+             SELECT tops.relname, \
+                    COALESCE(SUM(CASE WHEN c.relkind IN ('r', 'm') THEN {est} END), 0)::float8, \
+                    COALESCE(SUM(pg_total_relation_size(c.oid)), 0)::bigint \
+             FROM tree JOIN tops USING (top) JOIN pg_class c ON c.oid = tree.oid \
+             CROSS JOIN (SELECT current_setting('block_size')::float8 AS bs) s \
+             GROUP BY tops.relname ORDER BY 3 DESC",
+            est = PG_LEAF_ROW_ESTIMATE
+        );
+        let mut tx = self
+            .pool
+            .begin_with(format!("BEGIN; SET LOCAL statement_timeout = {STATS_TIMEOUT_MS}"))
+            .await
+            .map_err(db)?;
+        let rows: Vec<(String, f64, i64)> =
+            sqlx::query_as(&sql).bind(schema).fetch_all(&mut *tx).await.map_err(db)?;
+        Ok(rows
+            .into_iter()
+            .map(|(name, rows, bytes)| TableStat { name, rows: Some(rows as i64), bytes: Some(bytes) })
+            .collect())
     }
 
     async fn open_window_filtered(
@@ -813,6 +890,31 @@ impl SqlDriver for PgDriver {
             q = q.bind(v.clone());
         }
         Ok(q.execute(&self.pool).await.map_err(db)?.rows_affected())
+    }
+
+    async fn apply_changes(&self, schema: &str, table: &str, changes: &[Change]) -> DResult<ChangesResult> {
+        super::check_keys(changes)?;
+        let udts: HashMap<String, String> = self.column_udts(schema, table).await?.into_iter().collect();
+        let stmts: Vec<_> = changes.iter().map(|c| pg_change_sql(schema, table, c, &udts)).collect();
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let mut out = ChangesResult::default();
+        for i in super::change_order(changes) {
+            let (sql, binds) = &stmts[i];
+            let mut q = sqlx::query(sql);
+            for b in binds {
+                q = q.bind(b.clone());
+            }
+            let step = match q.execute(&mut *tx).await {
+                Ok(r) => super::tally(&mut out, i, &changes[i], r.rows_affected()),
+                Err(e) => Err(super::change_err(i, db(e))),
+            };
+            if let Err(e) = step {
+                let _ = tx.rollback().await;
+                return Err(e);
+            }
+        }
+        tx.commit().await.map_err(db)?;
+        Ok(out)
     }
 
     async fn run_script(&self, sql: &str) -> DResult<u64> {
@@ -1033,7 +1135,34 @@ fn text_rows_to_batch(cols: &[String], rows: &[PgRow]) -> DResult<RecordBatch> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_delete_sql, build_update_sql};
+    use super::{build_delete_sql, build_update_sql, pg_change_sql};
+    use crate::drivers::{Change, EditSpec};
+    use std::collections::HashMap;
+
+    #[test]
+    fn change_sql_reuses_the_edit_builders_and_bind_order() {
+        let udts: HashMap<String, String> =
+            [("id".to_string(), "int4".to_string()), ("name".to_string(), "text".to_string())].into();
+        let edit = EditSpec {
+            pk: vec![("id".into(), Some("7".into()))],
+            column: "name".into(),
+            new_value: Some("B".into()),
+            orig_value: Some("b".into()),
+        };
+        let (sql, binds) = pg_change_sql("public", "t", &Change::Update { edit }, &udts);
+        assert_eq!(sql, build_update_sql("public", "t", "name", "text", &[("id".into(), "int4".into())]));
+        assert_eq!(binds, vec![Some("B".into()), Some("7".into()), Some("b".into())]);
+
+        let (sql, binds) =
+            pg_change_sql("public", "t", &Change::Delete { pk: vec![("id".into(), Some("7".into()))] }, &udts);
+        assert_eq!(sql, build_delete_sql("public", "t", &["id".into()]));
+        assert_eq!(binds, vec![Some("7".into())]);
+
+        let values = vec![("id".into(), Some("9".into())), ("name".into(), None)];
+        let (sql, binds) = pg_change_sql("public", "t", &Change::Insert { values }, &udts);
+        assert_eq!(sql, "INSERT INTO \"public\".\"t\" (\"id\", \"name\") VALUES ($1::\"int4\", $2::\"text\")");
+        assert_eq!(binds, vec![Some("9".into()), None]);
+    }
 
     #[test]
     fn delete_sql_is_parameterized_and_quoted() {

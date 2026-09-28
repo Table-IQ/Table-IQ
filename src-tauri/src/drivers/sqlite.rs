@@ -13,10 +13,11 @@ use sqlx::{Pool, Row, Sqlite};
 use crate::sql_log::note;
 
 use super::{
-    build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken, ColumnDetail,
+    build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken, Change,
+    ChangesResult, ColumnDetail,
     ColumnFilter, ColumnInfo, DResult, DriverError, EditSpec, ForeignKey, IndexInfo,
     ObjectInfo, ObjectKind, QueryError, RowCount, SchemaInfo, SchemaModel, SortKey, SqlDriver,
-    StmtOutput, TableStructure, TriggerInfo,
+    StmtOutput, TableStat, TableStructure, TriggerInfo,
 };
 
 /// Unwrap `sqlx::Error::Database` to the bare server message — sqlx otherwise prefixes it with
@@ -59,10 +60,71 @@ fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
+/// Above this many bytes, a `dbstat` sweep (which reads every page of the file) is skipped
+/// rather than pay for a full-file scan on open.
+const SQLITE_DBSTAT_MAX_BYTES: i64 = 256 * 1024 * 1024;
+
+/// Whether a `dbstat` sweep of `page_count` pages of `page_size` bytes each is affordable.
+/// Allowed at exactly [`SQLITE_DBSTAT_MAX_BYTES`], refused one page past it.
+fn dbstat_allowed(page_count: i64, page_size: i64) -> bool {
+    page_count.saturating_mul(page_size) <= SQLITE_DBSTAT_MAX_BYTES
+}
+
 /// SQLite is dynamically typed and coerces a text bind on its own, so a placeholder is
 /// just its position.
 fn sqlite_placeholder(i: usize, _col: &str) -> String {
     format!("?{i}")
+}
+
+/// The optimistic-concurrency UPDATE for one cell edit, exactly as `apply_edit` sends it:
+/// `?1` is the new value, the pk `IS` clauses start at `?2`, and the original-value `CAST(…
+/// AS TEXT) IS` check comes last. SQLite is dynamically typed, so originals compare as text
+/// (matches the displayed CAST).
+fn update_sql(table: &str, edit: &EditSpec) -> (String, Vec<Option<String>>) {
+    let mut wheres = vec![];
+    let mut bind: usize = 2;
+    for (name, _) in &edit.pk {
+        wheres.push(format!("{} IS ?{}", quote_ident(name), bind));
+        bind += 1;
+    }
+    wheres.push(format!("CAST({} AS TEXT) IS ?{}", quote_ident(&edit.column), bind));
+    let sql = format!(
+        "UPDATE {} SET {} = ?1 WHERE {}",
+        quote_ident(table),
+        quote_ident(&edit.column),
+        wheres.join(" AND ")
+    );
+    let mut binds = vec![edit.new_value.clone()];
+    binds.extend(edit.pk.iter().map(|(_, v)| v.clone()));
+    binds.push(edit.orig_value.clone());
+    (sql, binds)
+}
+
+/// DELETE matching a row by its primary key, exactly as `delete_row` sends it: pk values
+/// compared as text (`CAST(… AS TEXT) IS ?n`) from `?1`.
+fn delete_sql(table: &str, pk: &[(String, Option<String>)]) -> (String, Vec<Option<String>>) {
+    let mut bind: usize = 1;
+    let wheres: Vec<String> = pk
+        .iter()
+        .map(|(name, _)| {
+            let w = format!("CAST({} AS TEXT) IS ?{}", quote_ident(name), bind);
+            bind += 1;
+            w
+        })
+        .collect();
+    let sql = format!("DELETE FROM {} WHERE {}", quote_ident(table), wheres.join(" AND "));
+    (sql, pk.iter().map(|(_, v)| v.clone()).collect())
+}
+
+/// One staged change as `(sql, binds)` — the same statements the single-row commands send.
+fn change_sql(schema: &str, table: &str, c: &Change) -> (String, Vec<Option<String>>) {
+    match c {
+        Change::Update { edit } => update_sql(table, edit),
+        Change::Delete { pk } => delete_sql(table, pk),
+        Change::Insert { values } => {
+            build_insert_sql(schema, table, values, &quote_ident, &sqlite_placeholder, false)
+        }
+    }
 }
 
 /// `BEFORE INSERT` &c. read back out of a trigger's own DDL. SQLite stores no timing or
@@ -305,6 +367,60 @@ impl SqlDriver for SqliteDriver {
         Ok(RowCount { count: Some(qy.fetch_one(&self.pool).await.map_err(db)?), exact: true })
     }
 
+    /// Every table in `schema` (SQLite's own schema is `main`; another name means an
+    /// attached database). `rows` is always `None` — SQLite keeps no catalog row estimate,
+    /// and `COUNT(*)` would scan. `bytes` sums `dbstat`'s per-page sizes onto their owning
+    /// table (an index's b-tree is attributed to its table by name) below
+    /// [`SQLITE_DBSTAT_MAX_BYTES`] — past that, or if `dbstat` isn't compiled in, every
+    /// table gets `bytes: None` rather than pay for a sweep of the whole file.
+    async fn table_stats(&self, schema: &str) -> DResult<Vec<TableStat>> {
+        let master = if schema == "main" {
+            "sqlite_master".to_string()
+        } else {
+            format!("{}.sqlite_master", quote_ident(schema))
+        };
+        let pragma = |name: &str| {
+            if schema == "main" {
+                format!("PRAGMA {name}")
+            } else {
+                format!("PRAGMA {}.{name}", quote_ident(schema))
+            }
+        };
+
+        let q = format!("SELECT name FROM {master} WHERE type='table' AND name NOT LIKE 'sqlite_%'");
+        note(&q);
+        let names: Vec<String> = sqlx::query_scalar(&q).fetch_all(&self.pool).await.map_err(db)?;
+
+        let pc_sql = pragma("page_count");
+        note(&pc_sql);
+        let page_count: i64 = sqlx::query_scalar(&pc_sql).fetch_one(&self.pool).await.map_err(db)?;
+        let ps_sql = pragma("page_size");
+        note(&ps_sql);
+        let page_size: i64 = sqlx::query_scalar(&ps_sql).fetch_one(&self.pool).await.map_err(db)?;
+
+        let mut bytes_by_table: HashMap<String, i64> = HashMap::new();
+        if dbstat_allowed(page_count, page_size) {
+            let q = format!(
+                "SELECT m.tbl_name, SUM(d.pgsize) FROM dbstat(?1) d JOIN {master} m ON m.name = d.name \
+                 GROUP BY m.tbl_name"
+            );
+            note(&q);
+            if let Ok(rows) =
+                sqlx::query_as::<_, (String, i64)>(&q).bind(schema).fetch_all(&self.pool).await
+            {
+                bytes_by_table = rows.into_iter().collect();
+            }
+        }
+
+        Ok(names
+            .into_iter()
+            .map(|name| {
+                let bytes = bytes_by_table.get(&name).copied();
+                TableStat { name, rows: None, bytes }
+            })
+            .collect())
+    }
+
     async fn open_window_filtered(
         &self,
         _schema: &str,
@@ -384,25 +500,11 @@ impl SqlDriver for SqliteDriver {
             return Err(DriverError::Db("cannot edit without a primary key".into()));
         }
         reject_null_pk(&edit.pk)?;
-        // SQLite is dynamically typed; compare originals as text (matches displayed CAST).
-        let mut wheres = vec![];
-        let mut bind: usize = 2;
-        for (name, _) in &edit.pk {
-            wheres.push(format!("{} IS ?{}", quote_ident(name), bind));
-            bind += 1;
+        let (sql, binds) = update_sql(table, edit);
+        let mut q = query(&sql);
+        for b in &binds {
+            q = q.bind(b.clone());
         }
-        wheres.push(format!("CAST({} AS TEXT) IS ?{}", quote_ident(&edit.column), bind));
-        let sql = format!(
-            "UPDATE {} SET {} = ?1 WHERE {}",
-            quote_ident(table),
-            quote_ident(&edit.column),
-            wheres.join(" AND ")
-        );
-        let mut q = query(&sql).bind(edit.new_value.clone());
-        for (_, v) in &edit.pk {
-            q = q.bind(v.clone());
-        }
-        q = q.bind(edit.orig_value.clone());
         Ok(q.execute(&self.pool).await.map_err(db)?.rows_affected())
     }
 
@@ -416,26 +518,44 @@ impl SqlDriver for SqliteDriver {
             return Err(DriverError::Db("cannot delete without a primary key".into()));
         }
         reject_null_pk(pk)?;
-        // SQLite is dynamically typed; match originals as text (matches displayed CAST).
-        let mut bind: usize = 1;
-        let wheres: Vec<String> = pk
-            .iter()
-            .map(|(name, _)| {
-                let w = format!("CAST({} AS TEXT) IS ?{}", quote_ident(name), bind);
-                bind += 1;
-                w
-            })
-            .collect();
-        let sql = format!(
-            "DELETE FROM {} WHERE {}",
-            quote_ident(table),
-            wheres.join(" AND ")
-        );
+        let (sql, binds) = delete_sql(table, pk);
         let mut q = query(&sql);
-        for (_, v) in pk {
-            q = q.bind(v.clone());
+        for b in &binds {
+            q = q.bind(b.clone());
         }
         Ok(q.execute(&self.pool).await.map_err(db)?.rows_affected())
+    }
+
+    async fn apply_changes(&self, schema: &str, table: &str, changes: &[Change]) -> DResult<ChangesResult> {
+        super::check_keys(changes)?;
+        for (i, c) in changes.iter().enumerate() {
+            match c {
+                Change::Update { edit } => reject_null_pk(&edit.pk),
+                Change::Delete { pk } => reject_null_pk(pk),
+                Change::Insert { .. } => Ok(()),
+            }
+            .map_err(|e| super::change_err(i, e))?;
+        }
+        let stmts: Vec<_> = changes.iter().map(|c| change_sql(schema, table, c)).collect();
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let mut out = ChangesResult::default();
+        for i in super::change_order(changes) {
+            let (sql, binds) = &stmts[i];
+            let mut q = query(sql);
+            for b in binds {
+                q = q.bind(b.clone());
+            }
+            let step = match q.execute(&mut *tx).await {
+                Ok(r) => super::tally(&mut out, i, &changes[i], r.rows_affected()),
+                Err(e) => Err(super::change_err(i, db(e))),
+            };
+            if let Err(e) = step {
+                let _ = tx.rollback().await;
+                return Err(e);
+            }
+        }
+        tx.commit().await.map_err(db)?;
+        Ok(out)
     }
 
     async fn run_script(&self, sql: &str) -> DResult<u64> {
@@ -629,5 +749,44 @@ mod tests {
         assert_eq!(fks[0].from_column, "parent_id");
         assert_eq!(fks[0].to_table, "parent");
         assert_eq!(fks[0].to_column, "id");
+    }
+
+    #[test]
+    fn update_and_delete_sql_match_the_edit_path() {
+        let edit = EditSpec {
+            pk: vec![("id".into(), Some("7".into()))],
+            column: "name".into(),
+            new_value: Some("B".into()),
+            orig_value: Some("b".into()),
+        };
+        let (sql, binds) = update_sql("t", &edit);
+        assert_eq!(sql, "UPDATE \"t\" SET \"name\" = ?1 WHERE \"id\" IS ?2 AND CAST(\"name\" AS TEXT) IS ?3");
+        assert_eq!(binds, vec![Some("B".into()), Some("7".into()), Some("b".into())]);
+        let (sql, binds) = delete_sql("t", &[("id".into(), Some("7".into()))]);
+        assert_eq!(sql, "DELETE FROM \"t\" WHERE CAST(\"id\" AS TEXT) IS ?1");
+        assert_eq!(binds, vec![Some("7".into())]);
+        let (sql, _) = change_sql("main", "t", &Change::Insert { values: vec![] });
+        assert_eq!(sql, "INSERT INTO \"t\" DEFAULT VALUES");
+    }
+
+    #[test]
+    fn dbstat_allowed_at_the_boundary() {
+        assert!(dbstat_allowed(SQLITE_DBSTAT_MAX_BYTES / 4096, 4096), "exactly the cap");
+        assert!(!dbstat_allowed(SQLITE_DBSTAT_MAX_BYTES / 4096 + 1, 4096), "one page past the cap");
+    }
+
+    /// Live FK-style check: `table_stats` on a tiny database gets non-`None` bytes (dbstat
+    /// is compiled into the bundled SQLite here, unlike the file's own `table_stats.rs`
+    /// integration test, which tolerates either).
+    #[tokio::test]
+    async fn table_stats_reports_bytes_on_a_tiny_db() {
+        let tmp = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
+        let drv = SqliteDriver::connect(tmp.path().to_str().unwrap()).await.expect("connect");
+        sqlx::query("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)").execute(&drv.pool).await.unwrap();
+        sqlx::query("INSERT INTO t (v) VALUES ('x')").execute(&drv.pool).await.unwrap();
+        let s = drv.table_stats("main").await.expect("table_stats");
+        let t = s.iter().find(|t| t.name == "t").expect("listed");
+        assert!(t.bytes.is_some(), "dbstat is compiled into the bundled SQLite");
+        assert!(t.rows.is_none(), "SQLite has no catalog row estimate");
     }
 }

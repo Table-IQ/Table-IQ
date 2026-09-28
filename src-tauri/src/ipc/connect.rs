@@ -16,9 +16,9 @@ use crate::connections::{self, ConnConfig, ConnStore};
 use crate::lk;
 use crate::drivers::{
     doc_mongo::MongoDriver, duckdb::DuckDriver, kv_redis::RedisDriver, logged::Logged, mysql::MySqlDriver,
-    postgres::PgDriver, sqlite::SqliteDriver, sqlserver::SqlServerDriver, CancelToken,
-    ColumnFilter, DocumentDriver, DriverError, EditSpec, KeyInfo, KvDriver, KvValue, SchemaModel,
-    SortKey, SqlDriver,
+    postgres::PgDriver, sqlite::SqliteDriver, sqlserver::SqlServerDriver, CancelToken, Change,
+    ChangesResult, ColumnFilter, DocumentDriver, DriverError, EditSpec, KeyInfo, KvDriver, KvValue, SchemaModel,
+    SortKey, SqlDriver, validate_filters,
 };
 use crate::sql_log::SqlLog;
 use crate::ssh::tunnel::{RemoteTarget, Tunnel};
@@ -714,6 +714,7 @@ pub async fn open_table(
 ) -> Result<OpenTableInfo, String> {
     let drv = state.session(&id)?;
     let f = filters.unwrap_or_default();
+    validate_filters(&f)?;
     let c = drv.count_rows(&schema, &table, &f, None).await.map_err(|e| e.to_string())?;
     Ok(OpenTableInfo { count: c.count, exact: c.exact })
 }
@@ -728,6 +729,17 @@ pub async fn estimate_rows(
 ) -> Result<Option<i64>, String> {
     let drv = state.session(&id)?;
     drv.estimate_rows(&schema, &table).await.map_err(|e| e.to_string())
+}
+
+/// Catalog stats for every base table in `schema` (the connection lobby). Never a scan.
+#[tauri::command]
+pub async fn table_stats(
+    state: State<'_, ConnState>,
+    id: String,
+    schema: String,
+) -> Result<Vec<crate::drivers::TableStat>, String> {
+    let drv = state.session(&id)?;
+    drv.table_stats(&schema).await.map_err(|e| e.to_string())
 }
 
 /// An exact, unbounded `COUNT(*)` — the "count exactly" the UI offers when `open_table`
@@ -763,6 +775,7 @@ pub async fn exact_count(
     filters: &[ColumnFilter],
     token_id: &str,
 ) -> Result<OpenTableInfo, String> {
+    validate_filters(filters)?;
     let token = CancelToken::new();
     lk(cancels).insert(token_id.to_string(), token.clone());
     let res = drv.count_rows(schema, table, filters, Some(&token)).await;
@@ -829,6 +842,7 @@ pub async fn table_window(
     after: Option<&[Option<String>]>,
     request_key: Option<&str>,
 ) -> Result<RecordBatch, String> {
+    validate_filters(filters)?;
     let token = CancelToken::new();
     if let Some(key) = request_key {
         let prev = lk(cancels).insert(key.to_string(), token.clone());
@@ -884,6 +898,21 @@ pub async fn delete_row(
     drv.delete_row(&schema, &table, &pk)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Apply a batch of staged changes to one table in ONE transaction (updates → deletes →
+/// inserts). Any failure rolls the batch back; the error names the 0-based change
+/// (`change {i}: {reason}`). Returns what was written.
+#[tauri::command]
+pub async fn apply_changes(
+    state: State<'_, ConnState>,
+    id: String,
+    schema: String,
+    table: String,
+    changes: Vec<Change>,
+) -> Result<ChangesResult, String> {
+    let drv = state.session(&id)?;
+    drv.apply_changes(&schema, &table, &changes).await.map_err(|e| e.to_string())
 }
 
 /// One result column of a statement, as sent to the UI.
@@ -1157,6 +1186,7 @@ pub async fn table_export(
     filters: &[ColumnFilter],
     order: &[SortKey],
 ) -> Result<String, String> {
+    validate_filters(filters)?;
     // Export up to the same cap as queries (bounded), through the same filtered+ordered
     // window the grid shows.
     let mut batch = drv
@@ -2242,6 +2272,7 @@ mod tests {
     #[tokio::test]
     async fn open_driver_refuses_an_unknown_engine() {
         let cfg = ConnConfig {
+            env: None,
             id: "x".into(),
             name: "x".into(),
             color: None,
@@ -2407,6 +2438,7 @@ mod tests {
 
     fn sqlite_cfg(id: &str, file: &std::path::Path) -> ConnConfig {
         ConnConfig {
+            env: None,
             id: id.into(),
             name: id.into(),
             color: None,
@@ -2649,6 +2681,7 @@ mod tests {
 
     fn mssql_state(fake: FakeMssql) -> (ConnState, Arc<FakeMssql>) {
         let cfg = ConnConfig {
+            env: None,
             id: "ms".into(),
             name: "ms".into(),
             color: None,
@@ -2716,6 +2749,7 @@ mod tests {
     #[test]
     fn switching_database_is_refused_for_file_engines() {
         let cfg = |engine: &str, database: &str| ConnConfig {
+            env: None,
             id: "x".into(),
             name: "x".into(),
             color: None,

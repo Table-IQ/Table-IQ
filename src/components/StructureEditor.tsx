@@ -20,11 +20,14 @@ export function StructureEditor({
   engine,
   schema,
   onClose,
+  onSchemaChanged,
 }: {
   connId: string;
   engine: Engine;
   schema: SchemaModel;
   onClose: () => void;
+  /** Called after a table is created, so callers (e.g. the lobby's stats) can refetch. */
+  onSchemaChanged?: () => void;
 }) {
   const { updateSession } = useConnections();
   const schemaNames = schema.schemas.map((s) => s.name);
@@ -58,6 +61,7 @@ export function StructureEditor({
     try {
       await runScript(connId, sql);
       updateSession(connId, { schema: await listObjects(connId).catch(() => schema) });
+      onSchemaChanged?.();
       setStatus({ kind: "ok", msg: "Table created" });
     } catch (e) {
       setStatus({ kind: "err", msg: String(e) });
