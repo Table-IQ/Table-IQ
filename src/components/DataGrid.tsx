@@ -1004,7 +1004,10 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
         const red = editTints(resolved).deleted;
         return { bgCell: red, accentLight: red };
       }
-      if (row >= source.totalRows) return { bgCell: editTints(resolved).inserted };
+      // Only real staged-insert rows: glide also asks for the blank filler rows past the data.
+      if (row >= source.totalRows) {
+        return row < source.totalRows + inserts.current.length ? { bgCell: editTints(resolved).inserted } : undefined;
+      }
       const t = gridRowTints(resolved);
       if (row === selRow) return { bgCell: t.selected };
       if (row === hoverRow) return { bgCell: t.hover };
