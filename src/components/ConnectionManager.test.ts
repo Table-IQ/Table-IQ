@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { isDirty, isFileEngine, sortByRecency } from "./ConnectionManager";
 import type { ConnConfig } from "../lib/commands";
+import { defaultSshConfig } from "../lib/ssh";
 
 function conn(id: string, name: string, engine: ConnConfig["engine"] = "postgres"): ConnConfig {
   return {
@@ -54,4 +55,14 @@ describe("isDirty", () => {
   it("is clean for an untouched form", () => expect(isDirty(cfg, { ...cfg }, none)).toBe(false));
   it("is dirty after a field change", () => expect(isDirty(cfg, { ...cfg, port: 5433 }, none)).toBe(true));
   it("is dirty when a secret was typed", () => expect(isDirty(cfg, cfg, { ...none, password: "p" })).toBe(true));
+  it("is clean after Save kept a typed secret, dirty once it changes again", () => {
+    const saved = { ...none, password: "p" };
+    expect(isDirty(cfg, cfg, { ...none, password: "p" }, saved)).toBe(false);
+    expect(isDirty(cfg, cfg, { ...none, password: "pq" }, saved)).toBe(true);
+  });
+  it("reads clean after SSH is toggled on and back off, and env is set back to None", () => {
+    const reverted = { ...cfg, ssh: { ...defaultSshConfig(), enabled: false }, env: null };
+    expect(isDirty(cfg, reverted, none)).toBe(false);
+    expect(isDirty(cfg, { ...reverted, ssh: { ...defaultSshConfig(), enabled: true } }, none)).toBe(true);
+  });
 });

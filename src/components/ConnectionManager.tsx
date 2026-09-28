@@ -72,16 +72,30 @@ export function sortByRecency(
   });
 }
 
+type Secrets = { password: string; sshPassword: string; sshKeyPass: string };
+const NO_SECRETS: Secrets = { password: "", sshPassword: "", sshKeyPass: "" };
+
+/** Compare-ready form: a missing, null or default-and-off SSH block are the same,
+ *  and so are a missing and a null env, so reverting a change reads clean. */
+function normalise(c: ConnConfig) {
+  const { ssh, env, ...rest } = c;
+  const noSsh = !ssh || JSON.stringify(ssh) === JSON.stringify(defaultSshConfig());
+  return { ...rest, ssh: noSsh ? null : ssh, env: env ?? null };
+}
+
 /** Unsaved changes: any field differs from what was loaded or last saved, or a
- *  secret was typed (secrets are never loaded back, so any text is new). */
+ *  secret differs from its value then (empty on load; secrets are never loaded back). */
 export function isDirty(
   initial: ConnConfig,
   form: ConnConfig,
-  secrets: { password: string; sshPassword: string; sshKeyPass: string },
+  secrets: Secrets,
+  savedSecrets: Secrets = NO_SECRETS,
 ): boolean {
   return (
-    JSON.stringify(form) !== JSON.stringify(initial) ||
-    !!(secrets.password || secrets.sshPassword || secrets.sshKeyPass)
+    JSON.stringify(normalise(form)) !== JSON.stringify(normalise(initial)) ||
+    secrets.password !== savedSecrets.password ||
+    secrets.sshPassword !== savedSecrets.sshPassword ||
+    secrets.sshKeyPass !== savedSecrets.sshKeyPass
   );
 }
 
@@ -129,6 +143,8 @@ export function ConnectionManager() {
   const [status, setStatus] = useState<SheetStatus>({ kind: "idle", msg: "" });
   // The form as last loaded or saved; the dirty guard compares against it.
   const [initial, setInitial] = useState<ConnConfig>(blankConfig);
+  // The secrets as last loaded (always empty) or saved; also part of the dirty check.
+  const [savedSecrets, setSavedSecrets] = useState<Secrets>(NO_SECRETS);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [search, setSearch] = useState("");
   // Inline 2-click delete confirmation. Tauri v2's webview disables window.confirm
@@ -207,7 +223,7 @@ export function ConnectionManager() {
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sheetOpen, connecting, status.kind, form, password, sshPassword, sshKeyPass, initial]);
+  }, [sheetOpen, connecting, status.kind, form, password, sshPassword, sshKeyPass, initial, savedSecrets]);
 
   const refresh = () =>
     listConnections()
@@ -225,6 +241,7 @@ export function ConnectionManager() {
   const loadInto = (c: ConnConfig) => {
     setForm(c);
     setInitial(c);
+    setSavedSecrets(NO_SECRETS);
     setPassword("");
     setSshPassword("");
     setSshKeyPass("");
@@ -245,7 +262,7 @@ export function ConnectionManager() {
     setSheetOpen(true);
   };
 
-  const dirty = isDirty(initial, form, { password, sshPassword, sshKeyPass });
+  const dirty = isDirty(initial, form, { password, sshPassword, sshKeyPass }, savedSecrets);
   // A duplicate has a fresh id, so it opens as "new".
   const mode = saved.some((s) => s.id === form.id) ? "edit" : "new";
   const requestClose = async () => {
@@ -284,11 +301,9 @@ export function ConnectionManager() {
     try {
       await saveConnection(form, password || undefined, effectiveSshSecret || undefined);
       await refresh();
-      // The keychain has the secrets now; clear them so the sheet reads clean.
+      // Keep the secrets typed: Test sends them and has no keychain fallback.
       setInitial(form);
-      setPassword("");
-      setSshPassword("");
-      setSshKeyPass("");
+      setSavedSecrets({ password, sshPassword, sshKeyPass });
       setStatus({ kind: "ok", msg: "Saved" });
     } catch (e) {
       setStatus({ kind: "err", msg: String(e) });
@@ -299,8 +314,12 @@ export function ConnectionManager() {
     if (connecting) return; // one connect at a time — ConnRow disables other rows too
     setStatus({ kind: "busy", msg: "Connecting…" });
     try {
-      if (pw !== undefined)
+      if (pw !== undefined) {
         await saveConnection(cfg, pw || undefined, effectiveSshSecret || undefined);
+        // Saved even if the connect below fails, so the sheet reads clean.
+        setInitial(cfg);
+        setSavedSecrets({ password: pw, sshPassword, sshKeyPass });
+      }
       const ok = await openConnection(cfg);
       if (!ok) setStatus({ kind: "idle", msg: "" }); // cancelled — no error to show
     } catch (e) {
@@ -588,7 +607,12 @@ export function ConnectionManager() {
             onConnect={() => void doConnect(form, password)}
             onDiscard={() => loadInto(initial)}
             onClose={() => void requestClose()}
-            onCopyUrl={() => void navigator.clipboard.writeText(toConnUrl(form))}
+            onCopyUrl={() =>
+              void navigator.clipboard
+                .writeText(toConnUrl(form))
+                .then(() => setStatus({ kind: "ok", msg: "Copied URL (password not included)" }))
+                .catch(() => {})
+            }
             onDuplicate={() => duplicate(form)}
             onDelete={async () => {
               if (
@@ -597,7 +621,12 @@ export function ConnectionManager() {
                   cancel: "Cancel",
                 })
               ) {
-                await deleteConnection(form.id);
+                try {
+                  await deleteConnection(form.id);
+                } catch (e) {
+                  setStatus({ kind: "err", msg: `Could not delete: ${e}` });
+                  return;
+                }
                 setSheetOpen(false);
                 await refresh();
               }

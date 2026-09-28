@@ -250,7 +250,8 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
               if (applyUrl(e.clipboardData.getData("text"))) e.preventDefault();
             }}
             onKeyDown={(e) => {
-              if (e.key === "Enter") {
+              // ⌘↵ / Ctrl+↵ is Connect (ConnectionManager), not apply-URL.
+              if (e.key === "Enter" && !e.metaKey && !e.ctrlKey) {
                 e.preventDefault();
                 applyUrl(urlText);
               }
