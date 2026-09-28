@@ -1031,10 +1031,27 @@ impl SqlDriver for SqlServerDriver {
         for i in super::change_order(changes) {
             let (sql, owned) = &stmts[i];
             let params: Vec<&dyn tiberius::ToSql> = owned.iter().map(|o| o as &dyn tiberius::ToSql).collect();
-            note(sql);
-            let step = match c.execute(sql.as_str(), &params).await {
-                Ok(r) => super::tally(&mut out, i, &changes[i], r.total()),
+            // `ExecuteResult::total()` sums every DONE/DONEINPROC token in the response,
+            // including the ones an AFTER trigger's own statements emit — a 1-row DELETE on
+            // an audited table reports `total() == 3`. `@@ROWCOUNT`, read back in the same
+            // batch, is reset to the firing statement's own count once the trigger returns
+            // (see the docs on `@@ROWCOUNT` and triggers), and is unaffected by a session-level
+            // `SET NOCOUNT ON` a query tab may have left on this shared connection.
+            let counted = format!("{sql}; SELECT @@ROWCOUNT");
+            note(&counted);
+            let step = match c.query(counted.as_str(), &params).await {
                 Err(e) => Err(super::change_err(i, db(e))),
+                Ok(stream) => match stream.into_row().await {
+                    Err(e) => Err(super::change_err(i, db(e))),
+                    Ok(row) => {
+                        let n = row
+                            .as_ref()
+                            .and_then(|r| r.try_get::<i32, _>(0).ok().flatten())
+                            .map(|n| n.max(0) as u64)
+                            .unwrap_or(0);
+                        super::tally(&mut out, i, &changes[i], n)
+                    }
+                },
             };
             if let Err(e) = step {
                 rollback_orphan_tx(&mut c).await;
