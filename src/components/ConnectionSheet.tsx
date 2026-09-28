@@ -2,7 +2,7 @@ import { useEffect, useId, useState, type ClipboardEvent, type ReactNode } from 
 import type { ConnConfig, Engine } from "../lib/commands";
 import { defaultSshConfig, type SshConfig } from "../lib/ssh";
 import { CONN_ENVS, envTone, type ConnEnv } from "../lib/connEnv";
-import { looksLikeConnUrl, parseConnUrl, validateConn, type ConnFieldErrors, type ParsedConnUrl } from "../lib/connUrl";
+import { isUnsupportedConnUrl, looksLikeConnUrl, parseConnUrl, validateConn, type ConnFieldErrors, type ParsedConnUrl } from "../lib/connUrl";
 import { EngineIcon, engineLabel } from "./ui/EngineIcon";
 import { ContextMenu } from "./ui/ContextMenu";
 import { IconClose, IconEye, IconKey, IconLink, IconRefresh } from "./ui/Icon";
@@ -12,6 +12,7 @@ export const COLOR_PRESETS: readonly string[] = ["#4f46e5", "#16a34a", "#ea580c"
 
 export type SheetStatus =
   | { kind: "idle" | "busy"; msg: string }
+  | { kind: "info"; msg: string } // neutral notice (e.g. Copy as URL): muted, no field tone
   | { kind: "ok"; msg: string; ms?: number }
   | { kind: "err"; msg: string };
 
@@ -65,6 +66,17 @@ const btnPrimary = `inline-flex h-[30px] items-center gap-1.5 rounded-[7px] bord
 const kbd = "font-sans text-[10.5px] font-normal opacity-70";
 const segBase = `flex-1 border-r border-border text-[11px] last:border-r-0 transition-colors ${focusRing} focus-visible:ring-inset`;
 
+const BAD_URL = "Not a connection URL we recognise";
+
+/** A pasted/typed URL → the fields to apply, or a note to show instead. `lockedEngine`
+ *  (edit mode) refuses a URL for another engine rather than switching engines. */
+export function readConnUrl(text: string, lockedEngine?: Engine): { parsed: ParsedConnUrl } | { note: string } {
+  const parsed = parseConnUrl(text);
+  if (!parsed) return { note: isUnsupportedConnUrl(text) ? `${BAD_URL} — mongodb+srv:// and rediss:// aren't supported yet` : BAD_URL };
+  if (lockedEngine && parsed.engine !== lockedEngine) return { note: `URL is for ${engineLabel(parsed.engine)}; engine unchanged` };
+  return { parsed };
+}
+
 /** Digits only; empty → 0 so the validator (and not a stray NaN) explains it. */
 const toPort = (s: string) => Number(s.replace(/\D/g, "") || 0);
 
@@ -95,7 +107,7 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [showPw, setShowPw] = useState(false);
   const [urlText, setUrlText] = useState("");
-  const [urlBad, setUrlBad] = useState(false);
+  const [urlNote, setUrlNote] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const uid = useId();
   const ids = (k: string, err?: string) => ({
@@ -139,24 +151,19 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
     }`;
 
   const applyUrl = (text: string) => {
-    if (!text.trim()) return false;
-    const parsed = parseConnUrl(text);
-    if (parsed) {
-      p.onApplyUrl(parsed);
-      setUrlText("");
-      setUrlBad(false);
-      return true;
-    }
-    setUrlBad(true);
-    return false;
+    if (!text.trim()) return;
+    const r = readConnUrl(text, mode === "edit" ? form.engine : undefined);
+    if ("note" in r) return setUrlNote(r.note);
+    p.onApplyUrl(r.parsed);
+    setUrlText("");
+    setUrlNote(null);
   };
+  // Anything URL-shaped never lands in Host as text: it may carry a password.
   const onHostPaste = (e: ClipboardEvent<HTMLInputElement>) => {
     const text = e.clipboardData.getData("text");
     if (!looksLikeConnUrl(text)) return;
-    const parsed = parseConnUrl(text);
-    if (!parsed) return;
     e.preventDefault();
-    p.onApplyUrl(parsed);
+    applyUrl(text);
   };
 
   const passwordField = (label: string) => (
@@ -243,11 +250,14 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
             value={urlText}
             onChange={(e) => {
               setUrlText(e.target.value);
-              // A failed paste still inserts natively; keep its "not a URL" note.
-              if ((e.nativeEvent as InputEvent).inputType !== "insertFromPaste") setUrlBad(false);
+              // Non-URL text pasted here still inserts natively; keep its note.
+              if ((e.nativeEvent as InputEvent).inputType !== "insertFromPaste") setUrlNote(null);
             }}
             onPaste={(e) => {
-              if (applyUrl(e.clipboardData.getData("text"))) e.preventDefault();
+              // A URL-shaped paste is never inserted as text, parsed or not: it may carry a password.
+              const text = e.clipboardData.getData("text");
+              if (looksLikeConnUrl(text)) e.preventDefault();
+              applyUrl(text);
             }}
             onKeyDown={(e) => {
               // ⌘↵ / Ctrl+↵ is Connect (ConnectionManager), not apply-URL.
@@ -259,7 +269,7 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
             placeholder="Paste a connection URL — postgres://user@host/db"
           />
         </label>
-        {urlBad && <div className="mt-1 text-[11px] text-danger">Not a connection URL we recognise</div>}
+        {urlNote && <div className="mt-1 text-[11px] text-danger">{urlNote}</div>}
 
         {mode === "new" && (
           <div className="mt-3 grid grid-cols-7 gap-[5px]">
@@ -520,6 +530,7 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
                 {status.msg}
               </span>
             )}
+            {status.kind === "info" && <span className="text-muted">{status.msg}</span>}
             {status.kind === "ok" && (
               <span className="text-ok">✓ {status.ms !== undefined ? `Connected in ${status.ms} ms` : status.msg}</span>
             )}

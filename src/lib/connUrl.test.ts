@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { looksLikeConnUrl, parseConnUrl, toConnUrl, validateConn } from "./connUrl";
+import { isUnsupportedConnUrl, looksLikeConnUrl, parseConnUrl, toConnUrl, validateConn } from "./connUrl";
 
 describe("parseConnUrl", () => {
   it("parses a Postgres URL with an encoded password and sslmode", () => {
@@ -13,15 +13,26 @@ describe("parseConnUrl", () => {
     expect(p.port).toBe(5432);
     expect(p.password).toBe("");
   });
-  it("maps mysql, mariadb, sqlserver, mssql, redis, rediss, mongodb and mongodb+srv", () => {
+  it("maps mysql, mariadb, sqlserver, mssql, redis and mongodb", () => {
     expect(parseConnUrl("mysql://root@h/app")!.engine).toBe("mysql");
     expect(parseConnUrl("mariadb://root@h/app")!.port).toBe(3306);
     expect(parseConnUrl("sqlserver://sa@h/app")!.engine).toBe("sqlserver");
     expect(parseConnUrl("mssql://sa@h:1444/app")!.port).toBe(1444);
     expect(parseConnUrl("redis://:secret@cache:6380/2")).toMatchObject({ engine: "redis", port: 6380, password: "secret", database: "2" });
-    expect(parseConnUrl("rediss://cache")!.engine).toBe("redis");
     expect(parseConnUrl("mongodb://u:p@m:27018/app")).toMatchObject({ engine: "mongodb", port: 27018, database: "app" });
-    expect(parseConnUrl("mongodb+srv://u@cluster.example.net/app")!.engine).toBe("mongodb");
+  });
+  it("rejects rediss:// and mongodb+srv:// (no TLS / SRV on the backend yet) but still spots them as URLs", () => {
+    expect(parseConnUrl("rediss://:secret@cache")).toBeNull();
+    expect(parseConnUrl("mongodb+srv://u:p@cluster.example.net/app")).toBeNull();
+    expect(looksLikeConnUrl("rediss://cache")).toBe(true);
+    expect(isUnsupportedConnUrl(" MongoDB+SRV://u@c/app")).toBe(true);
+    expect(isUnsupportedConnUrl("rediss://cache")).toBe(true);
+    expect(isUnsupportedConnUrl("redis://cache")).toBe(false);
+  });
+  it("never throws on a raw % — keeps the undecodable text as typed", () => {
+    expect(parseConnUrl("postgres://app:100%@db/shop")).toMatchObject({ host: "db", username: "app", password: "100%", database: "shop" });
+    expect(parseConnUrl("sqlite:///tmp/100%.db")).toMatchObject({ engine: "sqlite", database: "/tmp/100%.db" });
+    expect(parseConnUrl("mysql://root@h/50%off")!.database).toBe("50%off");
   });
   it("treats sqlite:// and duckdb:// as file paths", () => {
     expect(parseConnUrl("sqlite:///Users/me/shop.db")).toMatchObject({ engine: "sqlite", database: "/Users/me/shop.db", host: "", port: 0 });

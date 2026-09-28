@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ConnectionSheet, type ConnectionSheetProps } from "./ConnectionSheet";
+import { ConnectionSheet, readConnUrl, type ConnectionSheetProps } from "./ConnectionSheet";
 
 const noop = () => {};
 const base: ConnectionSheetProps = {
@@ -70,5 +70,30 @@ describe("ConnectionSheet", () => {
 
   it("keeps a custom (non-preset) colour visible and selected", () => {
     expect(html({ form: { ...base.form, color: "#123456" } })).toContain('aria-label="Color #123456"');
+  });
+
+  it("an info status (Copy as URL) reads muted and leaves the fields untinted; a passing test tints them", () => {
+    const h = html({ status: { kind: "info", msg: "Copied URL (password not included)" } });
+    expect(h).toMatch(/text-muted[^>]*>Copied URL \(password not included\)</);
+    expect(h).not.toContain("border-ok/60");
+    expect(html({ status: { kind: "ok", msg: "Connection OK", ms: 5 } })).toContain("border-ok/60");
+  });
+});
+
+describe("readConnUrl (URL paste into the URL field or Host)", () => {
+  it("returns the parsed fields for a good URL", () => {
+    expect(readConnUrl("postgres://app:p@db/shop")).toEqual({ parsed: expect.objectContaining({ host: "db", password: "p" }) });
+  });
+  it("a bad or undecodable URL yields only a note — never the text, so a password can't reach Host", () => {
+    expect(readConnUrl("postgres://app:s3cret@[bad/shop")).toEqual({ note: "Not a connection URL we recognise" });
+  });
+  it("adds a hint for rediss:// and mongodb+srv://", () => {
+    expect(readConnUrl("rediss://:pw@cache")).toEqual({
+      note: "Not a connection URL we recognise — mongodb+srv:// and rediss:// aren't supported yet",
+    });
+  });
+  it("in edit mode a URL for another engine leaves the engine alone and says so", () => {
+    expect(readConnUrl("mysql://root:pw@h/app", "postgres")).toEqual({ note: "URL is for MySQL / MariaDB; engine unchanged" });
+    expect(readConnUrl("postgres://app@db/shop", "postgres")).toHaveProperty("parsed");
   });
 });

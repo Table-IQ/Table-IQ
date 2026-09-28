@@ -19,20 +19,38 @@ export interface ParsedConnUrl {
   engine: Engine; host: string; port: number; username: string; password: string; database: string; sslmode?: string;
 }
 
-export function looksLikeConnUrl(s: string): boolean {
-  const m = /^\s*([a-z+]+):\/\//i.exec(s);
-  return !!m && m[1].toLowerCase() in SCHEME_ENGINE;
+// Recognised, but the backend has no SRV lookup / TLS for these yet.
+const UNSUPPORTED_SCHEMES = ["mongodb+srv", "rediss"];
+
+const scheme = (s: string) => /^\s*([a-z+]+):\/\//i.exec(s)?.[1].toLowerCase();
+
+/** `decodeURIComponent`, but a stray `%` (e.g. a `100%` password) keeps the raw text instead of throwing. */
+function safeDecode(s: string): string {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
 }
 
-/** A pasted connection URL → form fields; null when it isn't one we know. */
+export function looksLikeConnUrl(s: string): boolean {
+  const sc = scheme(s);
+  return !!sc && sc in SCHEME_ENGINE;
+}
+
+export function isUnsupportedConnUrl(s: string): boolean {
+  return UNSUPPORTED_SCHEMES.includes(scheme(s) ?? "");
+}
+
+/** A pasted connection URL → form fields; null when it isn't one we know (or support). Never throws. */
 export function parseConnUrl(input: string): ParsedConnUrl | null {
   const s = input.trim();
   const m = /^([a-z+]+):\/\/(.*)$/i.exec(s);
-  if (!m) return null;
+  if (!m || isUnsupportedConnUrl(s)) return null;
   const engine = SCHEME_ENGINE[m[1].toLowerCase()];
   if (!engine) return null;
   if (engine === "sqlite" || engine === "duckdb") {
-    return { engine, host: "", port: 0, username: "", password: "", database: decodeURIComponent(m[2]) };
+    return { engine, host: "", port: 0, username: "", password: "", database: safeDecode(m[2]) };
   }
   let u: URL;
   try {
@@ -46,9 +64,9 @@ export function parseConnUrl(input: string): ParsedConnUrl | null {
     engine,
     host: u.hostname,
     port: u.port ? Number(u.port) : DEFAULT_PORT[engine],
-    username: decodeURIComponent(u.username),
-    password: decodeURIComponent(u.password),
-    database: decodeURIComponent(u.pathname.replace(/^\//, "")),
+    username: safeDecode(u.username),
+    password: safeDecode(u.password),
+    database: safeDecode(u.pathname.replace(/^\//, "")),
     ...(sslmode ? { sslmode } : {}),
   };
 }

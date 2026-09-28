@@ -146,6 +146,8 @@ export function ConnectionManager() {
   // The secrets as last loaded (always empty) or saved; also part of the dirty check.
   const [savedSecrets, setSavedSecrets] = useState<Secrets>(NO_SECRETS);
   const [sheetOpen, setSheetOpen] = useState(false);
+  // Bumped on every open: keys <ConnectionSheet> so its local UI state starts fresh.
+  const [openSeq, setOpenSeq] = useState(0);
   const [search, setSearch] = useState("");
   // Inline 2-click delete confirmation. Tauri v2's webview disables window.confirm
   // (returns undefined), so we cannot rely on the native dialog. Arming holds the
@@ -202,7 +204,9 @@ export function ConnectionManager() {
       const key = e.key.toLowerCase();
       if (mod && key === "n") {
         e.preventDefault();
-        openSheetForNew();
+        void (async () => {
+          if (!sheetOpen || (await okToDiscard())) openSheetForNew();
+        })();
       } else if (sheetOpen && mod && (key === "t" || key === "s" || key === "enter")) {
         // ⌘T test · ⌘S save · ⌘↵ connect — gated like the footer buttons.
         e.preventDefault();
@@ -247,34 +251,27 @@ export function ConnectionManager() {
     setSshKeyPass("");
     setStatus({ kind: "idle", msg: "" });
   };
-
-  const openSheetForNew = () => {
-    loadInto(blankConfig());
-    setSheetOpen(true);
-  };
-  const openSheetForEdit = (c: ConnConfig) => {
+  const openWith = (c: ConnConfig) => {
     loadInto(c);
+    setOpenSeq((n) => n + 1);
     setSheetOpen(true);
   };
-  const duplicate = (c: ConnConfig) => {
-    const copy = { ...c, id: crypto.randomUUID(), name: `${c.name} copy` };
-    loadInto(copy);
-    setSheetOpen(true);
-  };
+
+  const openSheetForNew = () => openWith(blankConfig());
+  const openSheetForEdit = (c: ConnConfig) => openWith(c);
+  const duplicate = (c: ConnConfig) => openWith({ ...c, id: crypto.randomUUID(), name: `${c.name} copy` });
 
   const dirty = isDirty(initial, form, { password, sshPassword, sshKeyPass }, savedSecrets);
   // A duplicate has a fresh id, so it opens as "new".
   const mode = saved.some((s) => s.id === form.id) ? "edit" : "new";
+  const okToDiscard = async () =>
+    !dirty ||
+    (await confirmDialog("Discard unsaved changes?", "Unsaved changes", {
+      ok: "Discard",
+      cancel: "Keep editing",
+    }));
   const requestClose = async () => {
-    if (
-      dirty &&
-      !(await confirmDialog("Discard unsaved changes?", "Unsaved changes", {
-        ok: "Discard",
-        cancel: "Keep editing",
-      }))
-    )
-      return;
-    setSheetOpen(false);
+    if (await okToDiscard()) setSheetOpen(false);
   };
   const pickOrReport = async (pick: () => Promise<string | null>, use: (path: string) => void) => {
     try {
@@ -319,6 +316,7 @@ export function ConnectionManager() {
         // Saved even if the connect below fails, so the sheet reads clean.
         setInitial(cfg);
         setSavedSecrets({ password: pw, sshPassword, sshKeyPass });
+        await refresh(); // list + edit mode follow the save even if the connect fails
       }
       const ok = await openConnection(cfg);
       if (!ok) setStatus({ kind: "idle", msg: "" }); // cancelled — no error to show
@@ -559,6 +557,7 @@ export function ConnectionManager() {
           }`}
         >
           <ConnectionSheet
+            key={openSeq}
             mode={mode}
             form={form}
             dirty={dirty}
@@ -587,7 +586,7 @@ export function ConnectionManager() {
             onApplyUrl={(p) => {
               setForm((f) => ({
                 ...f,
-                engine: p.engine,
+                engine: mode === "edit" ? f.engine : p.engine, // editing never switches engine
                 host: p.host,
                 port: p.port,
                 username: p.username,
@@ -610,10 +609,13 @@ export function ConnectionManager() {
             onCopyUrl={() =>
               void navigator.clipboard
                 .writeText(toConnUrl(form))
-                .then(() => setStatus({ kind: "ok", msg: "Copied URL (password not included)" }))
+                .then(() => setStatus({ kind: "info", msg: "Copied URL (password not included)" }))
                 .catch(() => {})
             }
-            onDuplicate={() => duplicate(form)}
+            // Confirmed → duplicate the saved version; unsaved edits are neither copied nor silently lost.
+            onDuplicate={async () => {
+              if (await okToDiscard()) duplicate(initial);
+            }}
             onDelete={async () => {
               if (
                 await confirmDialog(`Delete connection "${form.name}"?`, "Delete connection", {
