@@ -223,7 +223,11 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
               setUrlBad(false);
             }}
             onPaste={(e) => {
-              if (applyUrl(e.clipboardData.getData("text"))) e.preventDefault();
+              // Take the paste over entirely: a native paste would fire onChange and
+              // wipe the "not a URL" note the moment it appeared.
+              e.preventDefault();
+              const text = e.clipboardData.getData("text");
+              if (!applyUrl(text)) setUrlText(text);
             }}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
