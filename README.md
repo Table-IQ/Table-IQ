@@ -5,13 +5,18 @@ built on Tauri v2, Rust, and React 19. Connection credentials go straight to the
 never to a config file, and the app talks to your databases directly (or through an SSH
 bastion, with host-key verification) — no required cloud dependency.
 
+See [`DESIGN.md`](DESIGN.md) for the visual/design system and [`CHANGELOG.md`](CHANGELOG.md)
+for release history.
+
 ## Supported engines
 
 PostgreSQL, MySQL/MariaDB, SQL Server, SQLite, and DuckDB (a `.duckdb` file or `:memory:`)
 get the full relational experience: connect, browse (a paged, sortable grid with a
 TablePlus-style ⌘F filter bar — stacked rules, any-column search, raw SQL WHERE — and a row total), run arbitrary SQL (including DDL,
 multi-statement scripts, and NULL-safe inline edits), Structure (real columns/indexes/
-triggers per engine), and an ERD with FK-accurate connectors.
+triggers per engine), and an ERD with FK-accurate connectors. Row edits, deletes and inserts
+stage in the grid (blue/red/green tints) until you review the exact SQL and commit them in a
+single transaction; production connections ask for confirmation before every commit.
 
 Several connections can stay open at once: ⌘O opens another alongside the current one, and
 once two or more are open a rail at the far left switches between them without reconnecting,
@@ -23,13 +28,26 @@ schema) under the title bar instead of freezing the window.
 MongoDB and Redis get a lighter document/key-value shell (`DocShell` / `KvShell`) rather
 than the SQL grid and ERD.
 
+New and existing connections use a slide-in sheet: paste a full connection URL to fill every
+field, or start from one of the engine tiles; tag the connection with an environment (local,
+development, testing, staging, production — production tints the titlebar pill and gates
+commits behind a confirmation), pick a colour, and optionally enable an SSH tunnel
+(password/agent or key-file auth). Test the connection before saving.
+
+Opening a connection with no tabs open shows a database lobby: row/byte stats per table,
+largest tables, pinned-table previews, recent queries and a mini ERD, plus New Query, Open
+Table, ERD and Import CSV shortcuts and an AI Ask bar. On production connections, stats wait
+for a manual "Load stats" instead of querying automatically.
+
 ⌘K opens a TablePlus-style command palette: search tables, databases and saved queries in one
 place, or jump straight to Open Connection (⌘O), Open Database (⌘D), Settings (⌘,), Cancel
 Running Queries (⌘.), Workspace Overview (⌘⇧\), Toggle SQL Log (⌘⇧C), Database User
 Management, Metrics Board, Backup / Restore Database, MCP Activity, or Customize Toolbar. The sidebar's Queries
 and History tabs list saved queries and past runs per connection. Settings (⌘,) holds theme,
 the connection-rail label, editor font size and your AI provider in one page; the title bar's
-right icon group is reorderable and hideable from Settings → Toolbar or a right-click.
+right icon group is reorderable and hideable from Settings → Toolbar or a right-click. On
+macOS, native View and Help menus mirror the same shortcuts (toggle sidebar/inspector, Data/
+Structure, Command Palette, SQL Log, Workspace Overview, appearance, Show Tour).
 
 AI features (NL→SQL, explain/optimize/fix) are opt-in and bring-your-own-key
 (Anthropic/OpenAI/Gemini), or local via Ollama — nothing is sent anywhere unless you
@@ -148,7 +166,9 @@ Commands can also be called directly: `curl -s -XPOST localhost:1430/invoke/list
 
 ## Known limitations
 
-See `pending.md` for the full list. The short version: no auto-updater or code signing yet
+See `pending.md` for the full prerequisites/status-board history and `TODOS.md` for items
+deferred from the current (filter bar / connected home / connection sheet / staged changes)
+release. The short version: no auto-updater or code signing yet
 (both need infrastructure this repo doesn't have), no LICENSE chosen yet, SQL Server queries
 can't be cancelled (tiberius has no cancel API), DuckDB's Stop button isn't implemented yet
 (it needs an arrow upgrade first), and a per-tab SQL session (an open transaction or `SET`
