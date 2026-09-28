@@ -40,7 +40,7 @@ export function StagedReview({
   }, [onClose]);
 
   const copy = () => {
-    navigator.clipboard.writeText(sql).catch(() => {});
+    void navigator.clipboard?.writeText(sql)?.catch(() => {});
     setCopied(true);
     window.clearTimeout(copiedTimer.current);
     copiedTimer.current = window.setTimeout(() => setCopied(false), 1500);
