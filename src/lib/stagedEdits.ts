@@ -57,6 +57,19 @@ export async function gatedCommit(
   return true;
 }
 
+/** Run `run` unless one is already in flight on `flag` (then return false at once).
+ *  A repeated ⌘S during a commit must never send the batch a second time. */
+export async function exclusive(flag: { current: boolean }, run: () => Promise<unknown>): Promise<boolean> {
+  if (flag.current) return false;
+  flag.current = true;
+  try {
+    await run();
+    return true;
+  } finally {
+    flag.current = false;
+  }
+}
+
 /** Empty the staging set, returning every entry so the caller can revert the
  *  display to each cell's `before` value. */
 export function discardAll(map: PendingMap): PendingEdit[] {

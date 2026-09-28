@@ -26,6 +26,7 @@ import { useTheme } from "../theme/ThemeProvider";
 import type { ForeignKey, SortKey } from "../lib/commands";
 import {
   discardAll,
+  exclusive,
   gatedCommit,
   isNullLeftEmpty,
   listPending,
@@ -261,6 +262,8 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   pkRef.current = pk;
   const confirmCommitRef = useRef(confirmCommit);
   confirmCommitRef.current = confirmCommit;
+  // A commit (its confirm included) is in flight: a second ⌘S is dropped, not re-sent.
+  const committingRef = useRef(false);
   // Monotonic per-cell edit token — a resolving write that's been superseded by
   // a newer edit on the same cell bails instead of clobbering it.
   const editSeq = useRef(new Map<string, number>());
@@ -899,11 +902,12 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   }, [onCommitChanges, snapshotNow, notifyPending, clearTintLater, onSave, onCommittingChange, animate, readRow]);
 
   /** {@link doCommit}, behind `confirmCommit` when one is set. Nothing staged means
-   *  nothing to confirm, so an empty ⌘S never prompts. */
+   *  nothing to confirm, so an empty ⌘S never prompts; one already in flight (confirm
+   *  open or `apply_changes` running) drops this call. */
   const commitPending = useCallback(async () => {
     if (!onCommitChanges) return;
     if (pending.current.size + deletes.current.size + inserts.current.length === 0) return;
-    await gatedCommit(confirmCommitRef.current, doCommit);
+    await exclusive(committingRef, () => gatedCommit(confirmCommitRef.current, doCommit));
   }, [onCommitChanges, doCommit]);
 
   /** Drop every staged change and revert the display to each cell's saved value. */

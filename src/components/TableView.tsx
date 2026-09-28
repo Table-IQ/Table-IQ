@@ -537,7 +537,10 @@ export function TableView({ connId, schema, object, view }: Props) {
    *  goes to `apply_changes` as ONE transaction. A failure leaves everything staged. */
   const commitChanges = useCallback(
     async (snap: StagedSnapshot): Promise<boolean> => {
-      if (!pk || pk.length === 0) return false;
+      if (!pk || pk.length === 0) {
+        setNotice("This table has no primary key — changes can't be committed.");
+        return false;
+      }
       const batch = buildBatch(snap, pk, firstRow);
       setNotice(null);
       try {
@@ -854,7 +857,7 @@ export function TableView({ connId, schema, object, view }: Props) {
         />
         <ToolbarButton label="Profile" onClick={() => setShowProfile(true)} />
         {object.kind === "Table" && (
-          <ToolbarButton label="Alter" onClick={() => setShowAlter(true)} />
+          <ToolbarButton label="Alter" onClick={() => !blockedByEdits() && setShowAlter(true)} />
         )}
         <ToolbarSpacer />
         {(["csv", "json"] as ExportFormat[]).map((fmt) => (
@@ -894,7 +897,7 @@ export function TableView({ connId, schema, object, view }: Props) {
                 }
                 onKeyDown={(e) => {
                   // Same rule as the Add button: an untouched draft inserts nothing.
-                  if (e.key === "Enter" && isDraftDirty(draft)) commitDraft();
+                  if (e.key === "Enter" && !e.repeat && isDraftDirty(draft)) commitDraft();
                   if (e.key === "Escape") cancelDraft();
                 }}
                 placeholder={c.name}
@@ -1215,7 +1218,10 @@ export function TableView({ connId, schema, object, view }: Props) {
           columns={object.columns}
           onClose={() => {
             setShowAlter(false);
-            refresh();
+            // Backstop to the guarded open: a re-read would wipe everything staged.
+            if (lockedRef.current) {
+              setNotice("Altered — commit or discard staged changes, then refresh to see it.");
+            } else refresh();
           }}
         />
       )}
