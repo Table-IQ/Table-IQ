@@ -134,8 +134,9 @@ saturated than our previous indigo-tinted dark.
 
 ## Iconography
 
-- All lucide-react icons in chrome render at `strokeWidth={1.5}` and `size={12}`
-  (toolbar) or `size={11}` (status bar).
+- Chrome icons render at `strokeWidth={1.5}`: `size={20}` in the titlebar capsules
+  (see "Titlebar — glass capsules" below), `size={12}` in in-pane action toolbars,
+  `size={11}` in the status bar.
 - Inline data UI icons (FK chevrons, sort markers) render at `strokeWidth={2}`
   and `size={10}`.
 

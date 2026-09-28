@@ -764,7 +764,9 @@ export function MainShell() {
             : null
         }
         fileEngine={fileEngine}
-        connecting={!!connecting}
+        // Only this connection's own connect/switch: opening a different one (rail, ⌘O)
+        // is reported by the strip below, not as "Connecting to <this one>…".
+        connecting={connecting?.id === active.id}
         showSidebar={showSidebar}
         showInspector={showInspector}
         items={titlebarItems}

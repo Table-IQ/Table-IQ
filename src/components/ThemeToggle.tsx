@@ -9,8 +9,7 @@ export const NEXT_THEME: Record<ThemeChoice, ThemeChoice> = { light: "auto", aut
 /** Compact tri-state theme button — light / auto / dark, cycles on click. */
 export function ThemeToggle() {
   const { choice, setChoice } = useTheme();
-  const next = NEXT_THEME;
   const icon = choice === "light" ? <IconSun /> : choice === "dark" ? <IconMoon /> : <IconAuto />;
-  const label = `Theme: ${choice} (click for ${next[choice]})`;
-  return <IconButton icon={icon} label={label} onClick={() => setChoice(next[choice])} />;
+  const label = `Theme: ${choice} (click for ${NEXT_THEME[choice]})`;
+  return <IconButton icon={icon} label={label} onClick={() => setChoice(NEXT_THEME[choice])} />;
 }

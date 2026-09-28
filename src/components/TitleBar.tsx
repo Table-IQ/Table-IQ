@@ -109,7 +109,7 @@ export function TitleBar(p: TitleBarProps) {
     if (r) setMenu({ x: r.left, y: r.bottom + 4, items });
   };
 
-  const reason = noStaged ? "No staged changes" : undefined;
+  const reason = committing ? "Committing…" : noStaged ? "No staged changes" : undefined;
 
   return (
     <header
@@ -118,8 +118,9 @@ export function TitleBar(p: TitleBarProps) {
       style={{ height: "var(--titlebar-h)" }}
       onContextMenu={(e) => {
         e.preventDefault();
-        // Only empty header space: a button's right-click is not "customize the toolbar".
-        if ((e.target as HTMLElement).closest("button")) return;
+        // Only empty header space. Capsules, the pill and the review popover are all
+        // `.tiq-no-drag` — which also covers a disabled button's tooltip wrapper span.
+        if ((e.target as HTMLElement).closest(".tiq-no-drag")) return;
         setMenu({
           x: e.clientX,
           y: e.clientY,
