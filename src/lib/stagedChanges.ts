@@ -52,9 +52,11 @@ export interface Batch {
   labels: string[];
 }
 
-/** The ordered batch: updates (stage order), deletes (row order), inserts (stage order).
- *  A row staged for delete drops its cell edits — the delete wins. Every WHERE value is
- *  last-known-server state (`originalRowGetter`), never a staged value. */
+/** The ordered batch: updates (stage order, but PK-column edits after all others),
+ *  deletes (row order), inserts (stage order). A row staged for delete drops its cell
+ *  edits — the delete wins. Every WHERE value is last-known-server state
+ *  (`originalRowGetter`), never a staged value — which is why a PK edit must run last:
+ *  once `id` 7→8 has run, a later `name` UPDATE … WHERE id=7 would match nothing. */
 export function buildBatch(snap: StagedSnapshot, pk: string[], rowOffset: number): Batch {
   const deleted = new Set(snap.deletes);
   const server = (row: number) => (c: string) => snap.serverValue(row, c) ?? null;
@@ -64,7 +66,9 @@ export function buildBatch(snap: StagedSnapshot, pk: string[], rowOffset: number
   };
   const changes: Change[] = [];
   const labels: string[] = [];
-  for (const e of snap.edits) {
+  const pkLast = (e: PendingEdit) => (pk.includes(e.col) ? 1 : 0);
+  // Array.prototype.sort is stable, so stage order holds within each group.
+  for (const e of [...snap.edits].sort((a, b) => pkLast(a) - pkLast(b))) {
     if (deleted.has(e.row)) continue;
     const edit = buildEdit(pk, originalRowGetter(e, (c) => snap.serverValue(e.row, c)), e.col, e.newValue);
     changes.push({ kind: "update", edit });
@@ -86,11 +90,12 @@ export const CHANGED_SINCE_LOADED = "row changed since it was loaded";
 
 /** A failed commit, for the status line. `change {i}: …` errors come from inside the
  *  rolled-back transaction, so they say nothing was committed; anything else (not
- *  connected, a failed COMMIT) makes no such claim. */
+ *  connected, a failed COMMIT, a dropped connection) may or may not have committed,
+ *  so it says the result is uncertain. */
 export function commitErrorMessage(err: unknown, labels: string[]): string {
   const msg = String((err as { message?: string })?.message ?? err);
   const m = /^change (\d+): ([\s\S]*)$/.exec(msg);
-  if (!m) return `Commit failed: ${msg}`;
+  if (!m) return `Commit failed: ${msg} — the result is uncertain; refresh to check before retrying`;
   const i = Number(m[1]);
   const who = labels[i] ?? `Change ${i + 1}`;
   return m[2] === CHANGED_SINCE_LOADED

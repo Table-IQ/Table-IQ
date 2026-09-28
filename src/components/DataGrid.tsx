@@ -102,8 +102,9 @@ export interface DataGridHandle {
   stageDeleteRows: (rows: number[]) => void;
   /** Unstage a staged delete (its staged cell edits come back into the batch). */
   undoDelete: (row: number) => void;
-  /** Append a staged new row after the page's rows. False when the grid isn't editable
-   *  right now (e.g. a page is loading), so the caller can keep the draft. */
+  /** Append a staged new row after the page's rows. False when the grid has no
+   *  `onCommitChanges` (read-only, or the parent withholds it while a page is in flight)
+   *  or a commit is in flight, so the caller can keep the draft. */
   stageInsert: (values: [string, string | null][]) => boolean;
   /** Remove a staged new row, by its grid row. */
   removeInsertedRow: (row: number) => void;
@@ -259,7 +260,9 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   pkRef.current = pk;
   const confirmCommitRef = useRef(confirmCommit);
   confirmCommitRef.current = confirmCommit;
-  // A commit (its confirm included) is in flight: a second ⌘S is dropped, not re-sent.
+  // A commit (its confirm included) is in flight: a second ⌘S is dropped, not re-sent,
+  // and staging is frozen — a successful commit clears everything staged, so anything
+  // staged or unstaged meanwhile would be lost silently.
   const committingRef = useRef(false);
   // Monotonic per-cell edit token — a resolving write that's been superseded by
   // a newer edit on the same cell bails instead of clobbering it.
@@ -651,7 +654,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
         // `data` is what the overlay editor opens with, so a NULL edits from empty.
         data: value ?? "",
         displayData: isNull ? "NULL" : (display ?? ""),
-        allowOverlay: editable && !deleted,
+        allowOverlay: editable && !deleted && !committingRef.current,
         readonly: !editable || deleted,
         contentAlign: numeric ? "right" : undefined,
         themeOverride,
@@ -736,7 +739,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
    *  commit still targets the DB value. */
   const applyCellEdit = useCallback(
     (row: number, name: string, newValue: string, pushUndo: boolean) => {
-      if (!onCommitChanges || deletes.current.has(row) || row >= source.totalRows) return;
+      if (!onCommitChanges || committingRef.current || deletes.current.has(row) || row >= source.totalRows) return;
       const key = pendingKey(row, name);
       const existing = pending.current.get(key);
       const priorOverlay = overlay.current.get(key);
@@ -774,7 +777,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   const stageDeleteRows = useCallback(
     (rows: number[]) => {
       const keyCols = pkRef.current ?? [];
-      if (!onCommitChanges || keyCols.length === 0) return;
+      if (!onCommitChanges || committingRef.current || keyCols.length === 0) return;
       const added = rows.filter(
         (r) =>
           r >= 0 &&
@@ -793,7 +796,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
 
   const undoDelete = useCallback(
     (row: number) => {
-      if (!deletes.current.delete(row)) return;
+      if (committingRef.current || !deletes.current.delete(row)) return;
       notifyPending();
       repaintRows([row]);
       setVersion((v) => v + 1);
@@ -803,7 +806,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
 
   const stageInsert = useCallback(
     (values: [string, string | null][]) => {
-      if (!onCommitChanges) return false;
+      if (!onCommitChanges || committingRef.current) return false;
       inserts.current = [...inserts.current, { values }];
       notifyPending();
       setVersion((v) => v + 1); // `rows` grows, so glide redraws
@@ -815,7 +818,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   const removeInsertedRow = useCallback(
     (row: number) => {
       const i = row - source.totalRows;
-      if (i < 0 || i >= inserts.current.length) return;
+      if (committingRef.current || i < 0 || i >= inserts.current.length) return;
       inserts.current = inserts.current.filter((_, j) => j !== i);
       notifyPending();
       setVersion((v) => v + 1);
@@ -935,6 +938,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
 
   /** ⌘Z — revert the most recent edit by re-applying its previous value. */
   const undoLastEdit = useCallback(() => {
+    if (committingRef.current) return; // before the pop, or the entry is lost
     const last = undoStack.current.pop();
     if (!last || last.prev === null) return; // null restore can't go through the string edit path
     applyCellEdit(last.row, last.col, last.prev, false);

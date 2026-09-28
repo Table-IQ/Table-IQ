@@ -1026,7 +1026,16 @@ impl SqlDriver for SqlServerDriver {
         let stmts: Vec<_> = changes.iter().map(|c| change_sql(schema, table, c)).collect();
         let mut c = self.lock().await?;
         note("BEGIN TRANSACTION");
-        c.simple_query("BEGIN TRANSACTION").await.map_err(db)?.into_results().await.map_err(db)?;
+        // Reading BEGIN's response can fail after the server has already opened the
+        // transaction; left open on this shared connection it would hold locks app-wide.
+        let begun = match c.simple_query("BEGIN TRANSACTION").await {
+            Ok(s) => s.into_results().await.map(|_| ()),
+            Err(e) => Err(e),
+        };
+        if let Err(e) = begun {
+            rollback_orphan_tx(&mut c).await;
+            return Err(db(e));
+        }
         let mut out = ChangesResult::default();
         for i in super::change_order(changes) {
             let (sql, owned) = &stmts[i];

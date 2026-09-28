@@ -627,7 +627,7 @@ export function TableView({ connId, schema, object, view }: Props) {
       setDraft(null);
       setNotice(null);
     } else {
-      setNotice("Wait for the page to finish loading, then add the row.");
+      setNotice("Wait for the page to load or the commit to finish, then add the row.");
     }
   }, [object, draft]);
 

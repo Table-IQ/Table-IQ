@@ -26,7 +26,7 @@ const snap = (p: Partial<StagedSnapshot>): StagedSnapshot => ({
 });
 
 describe("buildBatch", () => {
-  it("orders updates, then deletes, then inserts, with PKs from the server values", () => {
+  it("orders updates (PK edits last), then deletes, then inserts, with PKs from the server values", () => {
     const b = buildBatch(
       snap({
         inserts: [{ values: [["name", "new"]] }],
@@ -38,12 +38,12 @@ describe("buildBatch", () => {
       300,
     );
     expect(b.changes).toEqual([
-      { kind: "update", edit: { pk: [["id", "42"]], column: "id", new_value: "99", orig_value: "42" } },
       { kind: "update", edit: { pk: [["id", "41"]], column: "name", new_value: "A", orig_value: "a" } },
+      { kind: "update", edit: { pk: [["id", "42"]], column: "id", new_value: "99", orig_value: "42" } },
       { kind: "delete", pk: [["id", "43"]] },
       { kind: "insert", values: [["name", "new"]] },
     ]);
-    expect(b.labels).toEqual(["Row 302 (id=42)", "Row 301 (id=41)", "Row 303 (id=43)", "New row 1"]);
+    expect(b.labels).toEqual(["Row 301 (id=41)", "Row 302 (id=42)", "Row 303 (id=43)", "New row 1"]);
   });
 
   it("delete wins: a deleted row's cell edits leave the batch and the counts", () => {
@@ -58,6 +58,30 @@ describe("buildBatch", () => {
     const b = buildBatch(snap({ deletes: [2, 0] }), ["id", "note"], 0);
     expect(b.labels).toEqual(["Row 1 (id=41, note=NULL)", "Row 3 (id=43, note=y)"]);
     expect(b.changes[0]).toEqual({ kind: "delete", pk: [["id", "41"], ["note", null]] });
+  });
+
+  it("runs PK edits after every non-PK edit, so a later edit on the same row still matches its original PK", () => {
+    const b = buildBatch(
+      snap({
+        edits: [
+          { row: 1, col: "id", newValue: "8", before: "42" },
+          { row: 1, col: "name", newValue: "B", before: "b" },
+          { row: 0, col: "name", newValue: "A", before: "a" },
+        ],
+      }),
+      ["id"],
+      0,
+    );
+    expect(b.changes).toEqual([
+      { kind: "update", edit: { pk: [["id", "42"]], column: "name", new_value: "B", orig_value: "b" } },
+      { kind: "update", edit: { pk: [["id", "41"]], column: "name", new_value: "A", orig_value: "a" } },
+      { kind: "update", edit: { pk: [["id", "42"]], column: "id", new_value: "8", orig_value: "42" } },
+    ]);
+    expect(b.labels).toEqual(["Row 2 (id=42)", "Row 1 (id=41)", "Row 2 (id=42)"]);
+    // An error on the id UPDATE (index 2) still names the right row.
+    expect(commitErrorMessage("change 2: row changed since it was loaded", b.labels)).toBe(
+      "Row 2 (id=42) changed since it was loaded — nothing was committed",
+    );
   });
 });
 
@@ -112,7 +136,7 @@ describe("commitErrorMessage", () => {
   });
   it("never claims a rollback for an error without a change index", () => {
     expect(commitErrorMessage("not connected (or not a SQL connection)", labels)).toBe(
-      "Commit failed: not connected (or not a SQL connection)",
+      "Commit failed: not connected (or not a SQL connection) — the result is uncertain; refresh to check before retrying",
     );
     expect(commitErrorMessage("change 7: row no longer exists", labels)).toBe("Change 8: row no longer exists — nothing was committed");
   });
