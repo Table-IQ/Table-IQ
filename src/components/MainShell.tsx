@@ -93,6 +93,7 @@ import {
   type ToolbarId,
 } from "../lib/toolbarItems";
 import { useShellKeymap } from "./shell/useShellKeymap";
+import { isMenuId, menuBlocked } from "../lib/menuEvents";
 import { usePaletteCommands } from "./shell/usePaletteCommands";
 import { supportsBackup, supportsRestore } from "../lib/backup";
 import { loadPins, savePins, livePins } from "../lib/pins";
@@ -283,9 +284,10 @@ export function MainShell() {
   /** A connection switch (or an in-place reconnect) that failed. Same reasoning
    *  as `exportMsg`: the picker is gone by the time the error lands. */
   const [connMsg, setConnMsg] = useState<string | null>(null);
-  /** ⌘. / "Cancel Running Queries" outcome — "Cancelled N queries" or "No running
-   *  queries". Neutral, not `connMsg`: it's not an error, so it must not read as one. */
-  const [cancelMsg, setCancelMsg] = useState<string | null>(null);
+  /** Neutral notices: the ⌘. / "Cancel Running Queries" outcome ("Cancelled N queries" or
+   *  "No running queries") and View-menu "Open a table first". Not `connMsg`: they're not
+   *  errors, so they must not read as one. */
+  const [noticeMsg, setNoticeMsg] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState<string | null>(null);
 
   // Keep the sidebar schema selection valid across connection/database switches.
@@ -353,7 +355,7 @@ export function MainShell() {
     if (!active) return;
     try {
       const n = await cancelAll(active.id);
-      setCancelMsg(n > 0 ? `Cancelled ${n} quer${n === 1 ? "y" : "ies"}` : "No running queries");
+      setNoticeMsg(n > 0 ? `Cancelled ${n} quer${n === 1 ? "y" : "ies"}` : "No running queries");
     } catch (e) {
       // A real failure (e.g. "Cancellation is not supported for this engine") — this one
       // does belong in the danger-styled strip.
@@ -412,6 +414,48 @@ export function MainShell() {
     setShowWorkspaceOverview,
     setShowSqlLog,
   });
+
+  // Native View/Help menu (`tiq:menu`, src/lib/menuEvents.ts), with useShellKeymap's guards.
+  // Data/Structure/Filter Rows belong to the mounted TableView; with no table tab they
+  // explain themselves here. View → Appearance is handled by ThemeProvider.
+  useEffect(() => {
+    const onMenu = (e: Event) => {
+      const id = (e as CustomEvent<unknown>).detail;
+      if (!isMenuId(id)) return;
+      if (menuBlocked(id, useSettingsUi.getState().open, !!document.querySelector(".tiq-overlay")))
+        return;
+      switch (id) {
+        case "view.sidebar":
+          setShowSidebar((v) => !v);
+          break;
+        case "view.inspector":
+          setShowInspector((v) => !v);
+          break;
+        case "view.palette":
+          setShowPalette((v) => !v);
+          break;
+        case "view.sqllog":
+          setShowSqlLog((v) => !v);
+          break;
+        case "view.overview":
+          setShowWorkspaceOverview(true);
+          break;
+        case "help.tour":
+          window.dispatchEvent(new CustomEvent("tiq:show-tour"));
+          break;
+        case "view.data":
+        case "view.structure":
+        case "view.filter": {
+          const { tabs, activeKey } = useTabs.getState();
+          if (tabs.find((t) => t.key === activeKey)?.kind !== "table")
+            setNoticeMsg("Open a table first");
+          break;
+        }
+      }
+    };
+    window.addEventListener("tiq:menu", onMenu);
+    return () => window.removeEventListener("tiq:menu", onMenu);
+  }, []);
 
   // Commands, then Tables/Databases/Queries groups (`commandGroups.ts`). Extracted
   // to `usePaletteCommands` (Task 11b) so PR-C can add Backup/Restore/MCP entries
@@ -882,13 +926,13 @@ export function MainShell() {
 
       {/* Neutral, not danger — "Cancelled N queries" / "No running queries" are outcomes,
           not errors. A real cancel-all failure goes through `connMsg` above instead. */}
-      {cancelMsg && (
+      {noticeMsg && (
         <div className="flex h-7 shrink-0 items-center gap-2 border-b border-border bg-surface-2 px-3 text-[11px] text-muted">
-          <span className="min-w-0 flex-1 truncate" title={cancelMsg}>
-            {cancelMsg}
+          <span className="min-w-0 flex-1 truncate" title={noticeMsg}>
+            {noticeMsg}
           </span>
           <button
-            onClick={() => setCancelMsg(null)}
+            onClick={() => setNoticeMsg(null)}
             className="shrink-0 underline underline-offset-2 hover:opacity-80"
           >
             Dismiss
@@ -1448,7 +1492,9 @@ function HelpMenu({ onTour, onClose }: { onTour: () => void; onClose: () => void
       <div className="px-3 pb-2 text-[11px] text-muted">
         <kbd className="tiq-kbd">⌘K</kbd> palette · <kbd className="tiq-kbd">⌘T</kbd> new query<br />
         <kbd className="tiq-kbd">⌘W</kbd> close tab · <kbd className="tiq-kbd">⌘↵</kbd> run query<br />
-        <kbd className="tiq-kbd">⌘[</kbd> sidebar · <kbd className="tiq-kbd">⌘]</kbd> inspector
+        <kbd className="tiq-kbd">⌘[</kbd> sidebar · <kbd className="tiq-kbd">⌘]</kbd> inspector<br />
+        <kbd className="tiq-kbd">⌥⌘1</kbd> data · <kbd className="tiq-kbd">⌥⌘2</kbd> structure<br />
+        <kbd className="tiq-kbd">⌘⇧\</kbd> workspace overview
       </div>
     </div>
   );

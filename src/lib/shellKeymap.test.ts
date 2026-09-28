@@ -8,6 +8,7 @@ function keyEvent(overrides: Partial<KeymapEvent> & { key: string }): KeymapEven
     metaKey: true,
     ctrlKey: false,
     shiftKey: false,
+    altKey: false,
     code: "",
     defaultPrevented: false,
     ...overrides,
@@ -105,5 +106,50 @@ describe("shortcutFor", () => {
 
   it("key matching is case-insensitive (uppercase from Caps Lock etc.)", () => {
     expect(shortcutFor(keyEvent({ key: "K" }), false)).toBe("palette");
+  });
+
+  // ── ⌥⌘1 / ⌥⌘2 (Data / Structure) ───────────────────────────────────────
+  // On macOS ⌥1 turns `key` into "¡" (⌥2 → "™"), so these match on the physical `code`.
+  it("⌥⌘1 switches the table tab to Data", () => {
+    expect(shortcutFor(keyEvent({ key: "¡", code: "Digit1", altKey: true }), false)).toBe(
+      "view-data",
+    );
+  });
+
+  it("⌥⌘2 switches the table tab to Structure", () => {
+    expect(shortcutFor(keyEvent({ key: "™", code: "Digit2", altKey: true }), false)).toBe(
+      "view-structure",
+    );
+  });
+
+  it("plain ⌘1 (no option) is not Data", () => {
+    expect(shortcutFor(keyEvent({ key: "1", code: "Digit1" }), false)).toBeNull();
+  });
+
+  // ── native: the Tauri menu owns ⌘K, ⌥⌘1 and ⌥⌘2 (they arrive via tiq:menu) ──────
+  it("native: ⌥⌘1 is left to the native menu", () => {
+    expect(
+      shortcutFor(keyEvent({ key: "¡", code: "Digit1", altKey: true }), false, true),
+    ).toBeNull();
+  });
+
+  it("native: ⌥⌘2 is left to the native menu", () => {
+    expect(
+      shortcutFor(keyEvent({ key: "™", code: "Digit2", altKey: true }), false, true),
+    ).toBeNull();
+  });
+
+  it("native: plain ⌘K is left to the native menu", () => {
+    expect(shortcutFor(keyEvent({ key: "k" }), false, true)).toBeNull();
+  });
+
+  it("native: ⌘⇧K still opens a connection (no native accelerator)", () => {
+    expect(shortcutFor(keyEvent({ key: "k", shiftKey: true }), false, true)).toBe(
+      "open-connection",
+    );
+  });
+
+  it("native: keys without a native accelerator still map (⌘[)", () => {
+    expect(shortcutFor(keyEvent({ key: "[" }), false, true)).toBe("toggle-sidebar");
   });
 });

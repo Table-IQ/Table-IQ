@@ -3,6 +3,8 @@ import type { Dispatch, SetStateAction } from "react";
 import { useSettingsUi } from "../Settings";
 import { shortcutFor } from "../../lib/shellKeymap";
 import { tabGuard } from "../../state/tabGuard";
+import { hasNativeMenu } from "../../lib/commands";
+import { dispatchMenu } from "../../lib/menuEvents";
 
 export interface UseShellKeymapOptions {
   activeKey: string | null;
@@ -21,14 +23,15 @@ export interface UseShellKeymapOptions {
 
 /**
  * The shell's global keyboard shortcuts (⌘K, ⌘O, ⌘⇧K, ⌘D, ⌘T, ⌘W, ⌘[, ⌘],
- * ⌘., ⌘⇧\, ⌘⇧C). Extracted from `MainShell` (Task 11b) so new bindings don't
+ * ⌘., ⌘⇧\, ⌘⇧C, ⌥⌘1, ⌥⌘2). Extracted from `MainShell` (Task 11b) so new bindings don't
  * grow that file; `shortcutFor` (`lib/shellKeymap.ts`)
  * holds the pure binding table and is unit-tested there.
  */
 export function useShellKeymap(options: UseShellKeymapOptions): void {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const action = shortcutFor(e, useSettingsUi.getState().open);
+      // In the Tauri build the native menu owns ⌘K/⌥⌘1/⌥⌘2 (they arrive via `tiq:menu`).
+      const action = shortcutFor(e, useSettingsUi.getState().open, hasNativeMenu());
       if (!action) return;
       e.preventDefault();
       switch (action) {
@@ -61,6 +64,13 @@ export function useShellKeymap(options: UseShellKeymapOptions): void {
           break;
         case "sql-log":
           options.setShowSqlLog((v) => !v);
+          break;
+        // Same path as View → Data / Structure: TableView's `tiq:menu` listener (guarded).
+        case "view-data":
+          dispatchMenu("view.data");
+          break;
+        case "view-structure":
+          dispatchMenu("view.structure");
           break;
       }
     };

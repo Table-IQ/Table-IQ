@@ -9,6 +9,7 @@ pub mod drivers;
 pub mod ipc;
 pub mod library;
 pub mod mcp;
+mod menu;
 pub mod plugins;
 pub mod query;
 pub mod sql_log;
@@ -128,6 +129,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(ConnState::new())
         .invoke_handler(invoke_handler())
+        // Native View/Help menus; items emit `tiq:menu` for the webview (src/lib/menuEvents.ts).
+        .menu(menu::build)
+        .on_menu_event(menu::on_event)
         // The MCP server starts with the app when enabled. The QA bridge doesn't run this;
         // Settings → MCP starts it there.
         .setup(|app| {

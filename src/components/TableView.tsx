@@ -32,6 +32,8 @@ import { mergeTotal, staleTotal, type RowTotal } from "../lib/rowTotal";
 import { isFindShortcut, isMacPlatform } from "../lib/shortcut";
 import { cycleSort } from "../lib/tableSort";
 import { tabGuard } from "../state/tabGuard";
+import { isMenuId, menuBlocked } from "../lib/menuEvents";
+import { useSettingsUi } from "./Settings";
 import { useStaged } from "../state/stagedStore";
 import { normalizeEnv } from "../lib/connEnv";
 import { productionCommitMessage } from "../lib/stagedEdits";
@@ -454,6 +456,25 @@ export function TableView({ connId, schema, object, view }: Props) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [view, openBar]);
+  // Native View → Filter Rows… / Data / Structure (⌥⌘1/⌥⌘2 land here too, via
+  // useShellKeymap). Only the active table tab is mounted. Data/Structure take the same
+  // guarded path as the status-bar toggle: Structure unmounts the grid and its staged edits.
+  useEffect(() => {
+    const onMenu = (e: Event) => {
+      const id = (e as CustomEvent<unknown>).detail;
+      if (!isMenuId(id)) return;
+      if (menuBlocked(id, useSettingsUi.getState().open, !!document.querySelector(".tiq-overlay")))
+        return;
+      if (id === "view.filter") {
+        if (view === "data") openBar();
+      } else if (id === "view.data" || id === "view.structure") {
+        const v = id === "view.data" ? "data" : "structure";
+        if (v !== view && !blockedByEdits()) void tabGuard.openTable(schema, object.name, v);
+      }
+    };
+    window.addEventListener("tiq:menu", onMenu);
+    return () => window.removeEventListener("tiq:menu", onMenu);
+  }, [view, openBar, blockedByEdits, schema, object.name]);
 
   // Re-sync the grid when a cell is edited from the Inspector panel (Slice 33),
   // so the data grid reflects the committed value.

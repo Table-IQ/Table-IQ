@@ -6,6 +6,7 @@ import { DocShell } from "./components/DocShell";
 import { closeSettingsDeferred, Settings, useSettingsUi } from "./components/Settings";
 import { ThemeProvider } from "./theme/ThemeProvider";
 import { useConnections } from "./state/connectionStore";
+import { useMenuBridge } from "./lib/menuEvents";
 
 function Root() {
   const active = useConnections((s) => s.active);
@@ -24,6 +25,8 @@ function Root() {
 }
 
 export default function App() {
+  // Native View/Help menu → window `tiq:menu` events (Tauri build only; StrictMode-safe).
+  useMenuBridge();
   // ⌘, opens Settings from anywhere (ConnectionManager, MainShell, Kv/Doc
   // shells alike, since it's mounted once here at the root); Esc closes it
   // while it's open.
