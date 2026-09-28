@@ -66,7 +66,7 @@ export function StagedReview({
       </div>
       {/* highlightSql escapes every text run (see sqlHighlightHtml.test.ts). */}
       <pre
-        className="max-h-[360px] overflow-auto whitespace-pre px-3 py-2 font-mono text-[11.5px] leading-[1.5]"
+        className="max-h-[360px] overflow-auto whitespace-pre-wrap break-words px-3 py-2 font-mono text-[11.5px] leading-[1.5]"
         dangerouslySetInnerHTML={{ __html: highlightSql(sql) }}
       />
       <div className="border-t border-border px-3 py-1.5 text-[10.5px] text-muted">
