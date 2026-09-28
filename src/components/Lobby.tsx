@@ -15,7 +15,6 @@ import {
 } from "../lib/commands";
 import { clearMetaCaches, loadForeignKeys } from "../state/connectionStore";
 import { decodeWindow } from "../lib/arrowWindow";
-import { computeErdLayout, edgePath, selfLoopPath } from "../lib/erdLayout";
 import { formatRelative, oneLine } from "../lib/history";
 import { highlightSql } from "../lib/sqlHighlightHtml";
 import { envLabel, envTone } from "../lib/connEnv";
@@ -30,6 +29,7 @@ import {
   lobbyErrorHint,
   lobbyRows,
   lobbyShouldLoad,
+  miniErdGrid,
   shareOfTotal,
   totalBytes,
   type LobbyCell,
@@ -56,14 +56,15 @@ const PINNED_N = 3;
 const PREVIEW_ROWS = 3;
 const PREVIEW_COLS = 3;
 const ERD_TABLES = 4;
-const ERD_H = 150;
 // Layout units, not px: text and strokes scale with the cards (240×28), so a name always
 // fits its box whatever width the lobby column renders at.
-const ERD_FONT_UNITS = 18; // ~0.65 of the 28-unit card height
+const ERD_FONT_UNITS = 22; // ~0.6 of the 36-unit card height
 const MONO_CHAR_EM = 0.62; // monospace advance ÷ font size
 const ERD_STROKE_UNITS = 1.5;
 /** Room past the right-most card for a self-referencing FK's loop (erdLayout's LOOP_W + margin). */
 const ERD_LOOP_PAD = 64;
+/** Cap on screen px per layout unit, so a full-width card doesn't blow the labels up. */
+const ERD_MAX_SCALE = 0.75;
 const SQL_PREVIEW_CHARS = 90;
 const ASK_TITLE_CHARS = 40;
 
@@ -857,30 +858,39 @@ function RecentRow({ entry, onRun }: { entry: HistoryEntry; onRun: (sql: string)
 }
 
 function MiniErd({ tables, edges }: { tables: string[]; edges: ForeignKey[] }) {
-  // Name-only boxes: `columns: 0` gives the layout's smallest card.
-  const layout = computeErdLayout(
-    tables.map((name) => ({ name, columns: 0 })),
-    edges.map((e) => ({ from: e.from_table, to: e.to_table })),
-  );
+  const grid = miniErdGrid(tables, edges);
   const seen = new Set<string>();
   const paths: string[] = [];
   for (const e of edges) {
     const id = `${e.from_table}|${e.to_table}`;
     if (seen.has(id)) continue; // one line per table pair, not per column
     seen.add(id);
-    const a = layout.nodes.get(e.from_table);
-    const b = layout.nodes.get(e.to_table);
+    const a = grid.boxes.get(e.from_table);
+    const b = grid.boxes.get(e.to_table);
     if (!a || !b) continue;
-    const ay = a.y + a.h / 2;
-    const by = b.y + b.h / 2;
-    paths.push(e.from_table === e.to_table ? selfLoopPath(a, ay - a.h / 4, by + b.h / 4).d : edgePath(ay, by, a, b).d);
+    // Centre to centre, drawn under the opaque cards, so only the gap between them shows.
+    paths.push(
+      a === b
+        ? outwardLoop(a)
+        : `M ${a.x + a.w / 2} ${a.y + a.h / 2} L ${b.x + b.w / 2} ${b.y + b.h / 2}`,
+    );
+  }
+  // Self-references loop outward (left column to the left), so pad both sides when any exist.
+  const pad = edges.some((e) => e.from_table === e.to_table) ? ERD_LOOP_PAD : 0;
+  const vbW = grid.width + 2 * pad;
+  function outwardLoop(box: { x: number; y: number; w: number; h: number }): string {
+    const left = box.x === 0 && grid.width > box.w;
+    const x = left ? box.x : box.x + box.w;
+    const c = left ? x - ERD_LOOP_PAD * 0.8 : x + ERD_LOOP_PAD * 0.8;
+    const [y1, y2] = [box.y + box.h * 0.3, box.y + box.h * 0.7];
+    return `M ${x} ${y1} C ${c} ${y1 - box.h / 2} ${c} ${y2 + box.h / 2} ${x} ${y2}`;
   }
   return (
-    <div className="px-2 pt-2">
+    <div className="flex min-h-[150px] items-center justify-center px-3 py-3">
       <svg
-        viewBox={`0 0 ${layout.width + (edges.some((e) => e.from_table === e.to_table) ? ERD_LOOP_PAD : 0)} ${layout.height}`}
+        viewBox={`${-pad} ${-ERD_STROKE_UNITS} ${vbW} ${grid.height + 2 * ERD_STROKE_UNITS}`}
         width="100%"
-        height={ERD_H}
+        style={{ maxWidth: vbW * ERD_MAX_SCALE }}
         role="img"
         aria-label={`Foreign keys between ${tables.join(", ")}`}
         className="block"
@@ -888,7 +898,7 @@ function MiniErd({ tables, edges }: { tables: string[]; edges: ForeignKey[] }) {
         {paths.map((d, i) => (
           <path key={i} d={d} className="fill-none stroke-muted-2" strokeWidth={ERD_STROKE_UNITS} />
         ))}
-        {[...layout.nodes.entries()].map(([name, box]) => (
+        {[...grid.boxes.entries()].map(([name, box]) => (
           <g key={name}>
             <rect
               x={box.x}

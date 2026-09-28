@@ -1,4 +1,5 @@
 import type { ForeignKey, TableStat } from "./commands";
+import type { NodeBox } from "./erdLayout";
 
 /** Pure helpers for the database lobby (the no-tabs state, `components/Lobby.tsx`). */
 
@@ -83,6 +84,43 @@ export function shareOfTotal(stats: TableStat[]): number | null {
 
 /** The `maxTables` tables with the most FK edges, and the edges among them. With `schema`,
  *  only FKs inside that schema count, so `public.users` and `auth.users` never merge. */
+/** Mini-ERD card size and gaps, in the same layout units as `erdLayout` (cards are 240 wide). */
+export const MINI_CARD = { w: 240, h: 36, gapX: 96, gapY: 36 } as const;
+
+/** Lays the mini ERD's few tables on a two-column ring (top row left→right, then back along the
+ *  next row) in FK-walk order, so linked tables sit side by side. The full ERD's layered layout
+ *  puts a 4-table chain in one row, unreadable at half the lobby's width. */
+export function miniErdGrid(
+  tables: string[],
+  edges: Pick<ForeignKey, "from_table" | "to_table">[],
+): { boxes: Map<string, NodeBox>; width: number; height: number } {
+  const adj = new Map<string, string[]>(tables.map((t) => [t, []]));
+  for (const e of edges) {
+    if (e.from_table === e.to_table) continue;
+    adj.get(e.from_table)?.push(e.to_table);
+    adj.get(e.to_table)?.push(e.from_table);
+  }
+  // Start at an end of the chain (fewest links), then keep walking to an unplaced neighbour.
+  const order: string[] = [];
+  const left = [...tables].sort((a, b) => adj.get(a)!.length - adj.get(b)!.length);
+  while (left.length) {
+    const last = order[order.length - 1];
+    const next = (last && left.find((t) => adj.get(last)!.includes(t))) || left[0];
+    order.push(next);
+    left.splice(left.indexOf(next), 1);
+  }
+  const { w, h, gapX, gapY } = MINI_CARD;
+  const boxes = new Map<string, NodeBox>();
+  order.forEach((t, i) => {
+    const row = Math.floor(i / 2);
+    const col = row % 2 === 0 ? i % 2 : 1 - (i % 2);
+    boxes.set(t, { x: col * (w + gapX), y: row * (h + gapY), w, h });
+  });
+  const cols = Math.min(order.length, 2);
+  const rows = Math.ceil(order.length / 2);
+  return { boxes, width: cols * w + (cols - 1) * gapX, height: rows * h + (rows - 1) * gapY };
+}
+
 export function erdSubset(
   fks: ForeignKey[],
   maxTables: number,
