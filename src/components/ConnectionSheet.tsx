@@ -123,6 +123,15 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
   }, [copied]);
 
   const errs = validateConn(form);
+  // Empty-field errors wait until the field has been left once; a bad value (port 70000)
+  // shows at once. Save/Connect stay disabled with the reason in their title either way.
+  const [touched, setTouched] = useState<Partial<Record<keyof ConnFieldErrors, true>>>({});
+  const touch = (k: keyof ConnFieldErrors) => () => setTouched((t) => (t[k] ? t : { ...t, [k]: true }));
+  const shown: ConnFieldErrors = {
+    host: touched.host ? errs.host : undefined,
+    port: touched.port || form.port ? errs.port : undefined,
+    database: touched.database || form.database ? errs.database : undefined,
+  };
   const firstErr = (Object.keys(errs) as (keyof ConnFieldErrors)[])[0];
   const blockReason = firstErr ? `${ERR_LABEL[firstErr]}: ${errs[firstErr]}` : undefined;
   const busy = status.kind === "busy";
@@ -190,11 +199,11 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
   );
   const hostPort = (
     <div className="mb-[9px] grid grid-cols-[1fr_80px] gap-[9px]">
-      <Field id={`${uid}host`} label="Host" error={errs.host}>
-        <input {...ids("host", errs.host)} className={field(errs.host)} value={form.host} onChange={(e) => p.onField("host", e.target.value)} onPaste={onHostPaste} />
+      <Field id={`${uid}host`} label="Host" error={shown.host}>
+        <input {...ids("host", shown.host)} className={field(shown.host)} value={form.host} onChange={(e) => p.onField("host", e.target.value)} onBlur={touch("host")} onPaste={onHostPaste} />
       </Field>
-      <Field id={`${uid}port`} label="Port" error={errs.port}>
-        <input {...ids("port", errs.port)} className={field(errs.port)} inputMode="numeric" value={form.port || ""} onChange={(e) => p.onField("port", toPort(e.target.value))} />
+      <Field id={`${uid}port`} label="Port" error={shown.port}>
+        <input {...ids("port", shown.port)} className={field(shown.port)} inputMode="numeric" value={form.port || ""} onChange={(e) => p.onField("port", toPort(e.target.value))} onBlur={touch("port")} />
       </Field>
     </div>
   );
@@ -344,11 +353,12 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
         {isFile ? (
           <>
             <Section>File</Section>
-            <Field id={`${uid}file`} label="Database file" error={errs.database}>
+            <Field id={`${uid}file`} label="Database file" error={shown.database}>
               <span className="flex gap-2">
                 <input
-                  {...ids("file", errs.database)}
-                  className={field(errs.database)}
+                  {...ids("file", shown.database)}
+                  className={field(shown.database)}
+                  onBlur={touch("database")}
                   value={form.database}
                   onChange={(e) => p.onField("database", e.target.value)}
                   placeholder={form.engine === "duckdb" ? "/path/to/file.duckdb or :memory:" : "/path/to/database.db"}
