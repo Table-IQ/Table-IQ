@@ -1619,7 +1619,7 @@ function RowPager({
       <StatusBarButton onClick={onPrev} disabled={!hasPrev} title="Previous page">
         <IconChevronLeft size={10} />
       </StatusBarButton>
-      <span className={`tabular-nums transition-colors ${stale ? "text-muted" : "text-text"}`}>{label}</span>
+      <span className={`whitespace-nowrap tabular-nums transition-colors ${stale ? "text-muted" : "text-text"}`}>{label}</span>
       <StatusBarButton onClick={onNext} disabled={!hasNext} title="Next page">
         <IconChevronRight size={10} />
       </StatusBarButton>
