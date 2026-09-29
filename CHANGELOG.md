@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.1 — 2026-09-29
+
+AI agents connected to TableIQ's MCP server now get an accurate description of each tool.
+
+### Changed
+- **Clearer tool contracts for agents.**
+  - Every `connection_id`, `schema` and `table` parameter now says where its value comes from.
+  - `describe_table` lists the column fields it returns and what happens when a table doesn't exist.
+  - `run_query` explains when `truncated` is set, that a truncated result is partial, and the 30-second timeout. It also warns that on connections allowing writes, a statement that timed out may still take effect, so agents check before running it again.
+- The server instructions no longer script a fixed call order. They state the one real rule: every tool takes a `connection_id` from `list_connections`.
+
+### Fixed
+- A test now fails if the timeout in `run_query`'s description drifts from the server's actual timeout.
+
 ## 0.8.0 — 2026-09-28
 
 A TablePlus-style home. The titlebar is rebuilt as glass capsules with an environment pill. A database lobby opens when no tabs are open. The connection sheet is redesigned. Deletes and new rows are now staged just like cell edits, and everything commits together in one transaction.

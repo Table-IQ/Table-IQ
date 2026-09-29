@@ -22,6 +22,11 @@ Deferred from the Connected Home plan review (2026-09-27, `docs/superpowers/plan
   - Hide the UPDATE footnote in a delete-only Review.
   - Add a "Delete rows" menu item for multi-row selection.
   - Guard against repeated inserts when retrying a commit whose outcome was uncertain.
+- **MCP contract follow-ups** (2026-09-29, from the v0.8.1 adversarial review):
+  - After a Postgres/MySQL/SQLite timeout, `run_query` replies "The query was cancelled." before the cancel is even sent (`src-tauri/src/mcp/server.rs`, `on_timeout`). Say "TableIQ asked the database to cancel the query" instead, or wait for the cancel result.
+  - "Reads run inside a read-only transaction" is only literally true on Postgres and MySQL. SQLite, DuckDB and SQL Server use BEGIN…ROLLBACK, which undoes a write rather than refusing it.
+  - With writes allowed on SQL Server, "exactly one statement" isn't enforced (T-SQL doesn't need `;` between statements), and only the first result set comes back.
+  - A MySQL `CALL` that returns several result sets merges their rows, so `truncated: false` doesn't always mean the result is complete.
 
 ## Completed
 
