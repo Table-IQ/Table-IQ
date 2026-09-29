@@ -185,6 +185,7 @@ struct ConnArgs {
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct ListTablesArgs {
+    /// A connection id from `list_connections`.
     connection_id: String,
     /// Only this schema's tables (all schemas when omitted).
     schema: Option<String>,
@@ -192,13 +193,17 @@ struct ListTablesArgs {
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct DescribeArgs {
+    /// A connection id from `list_connections`.
     connection_id: String,
+    /// The table's schema, as `list_tables` reports it.
     schema: String,
+    /// The table or view name, as `list_tables` reports it.
     table: String,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct RunQueryArgs {
+    /// A connection id from `list_connections`.
     connection_id: String,
     /// Exactly one SQL statement.
     sql: String,
@@ -595,7 +600,12 @@ impl TiqMcp {
         self.call(&ext, "list_tables", Some(&id), None, work, |_| NOTHING_TO_STOP.into()).await
     }
 
-    #[tool(description = "Describe one table: columns, indexes and triggers.", annotations(read_only_hint = true))]
+    #[tool(
+        description = "Describe one table or view from list_tables: its columns (name, type, nullability, default, \
+                       primary key, comment), indexes and triggers. If no such table or view exists, the \
+                       call fails or returns an empty column list.",
+        annotations(read_only_hint = true)
+    )]
     async fn describe_table(&self, ext: Extensions, Parameters(a): Parameters<DescribeArgs>) -> Result<String, String> {
         let id = a.connection_id.clone();
         let work = describe_table_body(self.host.clone(), self.cfg.clone(), a);
@@ -605,7 +615,14 @@ impl TiqMcp {
     #[tool(description = "Run exactly one SQL statement on a shared connection and return its rows as JSON \
                           ({columns, rows, truncated}). Read-only unless the user allowed writes for that \
                           connection: reads run inside a read-only transaction, and writes, DDL and \
-                          transaction control are refused.")]
+                          transaction control are refused. Returns at most max_rows rows (never more than \
+                          the user's row cap); `truncated` is true when rows were cut to max_rows, the row cap \
+                          or the response size limit. The result is then partial: filter or aggregate in SQL, \
+                          or select fewer columns, rather than treating it as complete. A call that takes \
+                          longer than 30 seconds times out and the error says what TableIQ did about the \
+                          query. On a connection that allows writes, a timed-out statement may have taken \
+                          effect, or may still take effect (a DuckDB query keeps running until it finishes), \
+                          so confirm its outcome before running it again.")]
     async fn run_query(&self, ext: Extensions, Parameters(a): Parameters<RunQueryArgs>) -> Result<String, String> {
         let (id, sql) = (a.connection_id.clone(), a.sql.clone());
         let engine = allowed(self.host.as_ref(), &self.cfg, &id).map(|(c, _)| c.engine).unwrap_or_default();
@@ -663,8 +680,8 @@ impl ServerHandler for TiqMcp {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("tableiq", env!("CARGO_PKG_VERSION")))
             .with_instructions(
-                "TableIQ database connections the user chose to share. Call list_connections \
-                 first, then list_tables / describe_table, then run_query with one statement.",
+                "TableIQ database connections the user chose to share. Every other tool takes a \
+                 connection_id returned by list_connections.",
             )
     }
 }
@@ -751,6 +768,15 @@ mod tests {
         let mut ext = Extensions::new();
         ext.insert(parts);
         assert_eq!(client_name(&ext), "unknown");
+    }
+
+    /// `run_query`'s description spells the timeout out as text (a `#[tool]` description must
+    /// be a literal), so a change to TOOL_TIMEOUT has to fail here instead of misinforming agents.
+    #[test]
+    fn run_query_description_states_the_real_timeout() {
+        let tools = TiqMcp::tool_router().list_all();
+        let desc = tools.iter().find(|t| t.name == "run_query").and_then(|t| t.description.as_deref()).unwrap();
+        assert!(desc.contains(&format!("{} seconds", TOOL_TIMEOUT.as_secs())), "{desc}");
     }
 
     /// Bearer auth and the Origin refusal, over real HTTP on an ephemeral loopback port.
