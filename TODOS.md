@@ -31,3 +31,7 @@ Deferred from the Connected Home plan review (2026-09-27, `docs/superpowers/plan
 ## Completed
 
 - **Confirm `+ Row` inserts in production.** New rows are now staged and go through the production commit confirm. **Completed:** v0.8.0 (2026-09-28)
+- **MCP guard follow-ups** (2026-09-30, from the guard-suite autoplan review):
+  - **T1: warn about privilege when sharing.** When a connection is shared over MCP with writes allowed, check its role. Warn, or refuse, if it is a superuser or holds `pg_execute_server_program`/`pg_write_server_files` (Postgres), `FILE`/`SUPER` (MySQL), or `sysadmin`/`bulkadmin` (SQL Server). The guard only blocks literal escapes; the role is the real boundary. Idea: a one-click "create least-privilege agent role" helper. This is a launch differentiator, since dbx doesn't do it.
+  - **T2: check every volatile function in CI.** Enumerate `pg_proc WHERE provolatile = 'v'` (plus `sys.all_objects` `sp_%`/`xp_%` on SQL Server). Each must be on the denylist or on a reviewed `SAFE_VOLATILE` list, so new PG/SQL Server releases can't add an unreviewed side-effect function.
+  - **T3: public `mcp-guard-tests` repo.** Move `src-tauri/tests/guard_suite.rs` cases into a data file with effect oracles (file exists, stats changed, row count changed) and add a runner for other MCP servers (dbx, DBeaver, the official Postgres MCP). This is the GTM launch asset. Publish results only if we pass every case.
