@@ -30,7 +30,7 @@ Those gaps are closed. The ones left open:
 - Postgres `COPY t TO PROGRAM 'rm -rf ~'` / `COPY … TO '/file'` / `COPY … FROM '/etc/passwd'`, `LOAD 'lib'`
 - MySQL `SELECT … INTO OUTFILE|DUMPFILE`, `LOAD DATA [LOCAL] INFILE`, `INSTALL PLUGIN`
 - SQL Server `BULK INSERT … FROM 'C:\…'`, `BACKUP … TO DISK`, `RESTORE`, `sp_OACreate`, `sp_execute_external_script`
-- every engine: `KILL`, `SHUTDOWN` (other sessions, the server)
+- MySQL and SQL Server: `KILL`, `SHUTDOWN` (other sessions, the server; the other engines have no such statements)
 
 **Read-only path, effects that survive `ROLLBACK`:**
 - Postgres `pg_try_advisory_lock*` (the denylist has `PG_ADVISORY_*` but not the `try` form); `pg_stat_reset*`, `pg_stat_statements_reset`, `pg_wal_replay_*`, `pg_replication_origin_*`
@@ -45,10 +45,9 @@ autoload off, config locked), so no new DuckDB verbs are added.
 1. **One new refusal list, reusing the existing mechanism.** The SQLite `ATTACH`/`VACUUM` block in `guard()` is already
    "refused anywhere, writes or not". Generalize it into a per-engine `disk_words(engine)` list
    next to `engine_functions`, checked the same way (whole word, raw upper-cased text):
-   - all: `KILL`, `SHUTDOWN`
    - postgres: `COPY`, `LOAD`
-   - mysql: `OUTFILE`, `DUMPFILE`, `INFILE`, `INSTALL`
-   - sqlserver: `BULK`, `BACKUP`, `RESTORE`
+   - mysql: `OUTFILE`, `DUMPFILE`, `INFILE`, `INSTALL`, `CLONE`, `KILL`, `SHUTDOWN`, `RESTART`
+   - sqlserver: `BULK`, `BACKUP`, `RESTORE`, `KILL`, `SHUTDOWN`
    - sqlite: `ATTACH`, `VACUUM` (moved, unchanged)
 2. **Denylist additions** in `engine_functions`: postgres `PG_TRY_ADVISORY_*`, `PG_STAT_RESET*`,
    `PG_STAT_STATEMENTS_RESET`, `PG_WAL_REPLAY_*`, `PG_REPLICATION_ORIGIN_*`; sqlserver `SP_OA*`,
@@ -58,9 +57,9 @@ autoload off, config locked), so no new DuckDB verbs are added.
    rows grouped by attack class (multi-statement, CTE write, side-effect function, file/OS
    escape, session state, encoding), each run through the public `guard_sql` / `read_only_stmts`.
    It fails with a list of every wrong verdict, not just the first one. It includes allow-cases, so a fix
-   that over-refuses ordinary reads also fails. Encoding cases: Unicode escapes, NBSP/ZWSP around
-   `;`, fullwidth `；`, case mixing, dotless `ı`/long `ſ` (uppercase to ASCII), control chars,
-   lone `\r`.
+   that over-refuses ordinary reads also fails. Encoding cases: Unicode escapes, NBSP/ZWSP after
+   `;`, case mixing, control chars, lone `\r`. (Fullwidth `；` and `ı`/`ſ` case folding were
+   checked: no engine reads them as syntax, so they can't smuggle a statement.)
 5. **Live proof** (gated on `TIQ_PG_URL` / `TIQ_MYSQL_URL`, like `mcp_live.rs`): on real
    engines, the fixed escapes are refused by the guard, and the write-path `COPY … TO PROGRAM`
    case is shown to actually run on the unfixed path (so the test proves the bug was real).
