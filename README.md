@@ -184,6 +184,18 @@ can't be cancelled (tiberius has no cancel API), DuckDB's Stop button isn't impl
 (it needs an arrow upgrade first), and a per-tab SQL session (an open transaction or `SET`
 surviving between runs) isn't implemented.
 
+The MCP guard (`src-tauri/src/mcp/guard.rs`, adversarial suite in `src-tauri/tests/guard_suite.rs`)
+refuses the literal forms of anything that reaches beyond the database, even on a connection that
+allows writes: server files (`COPY … TO PROGRAM`, `INTO OUTFILE`, `BULK INSERT`), plugins, other
+sessions (`KILL`), and server configuration (`ALTER SYSTEM`, `SET GLOBAL`, `RECONFIGURE`). Those
+words are refused outside a string or quoted name, comments included, so a column named `load`
+or `restart` must be quoted (`"load"`, `` `restart` ``) on a writes-allowed connection. Dynamic
+SQL (`DO`/`EXEC('…')`) and superuser-only escapes (extensions, foreign-data wrappers, untrusted
+languages, CLR assemblies) are the database role's job: share a writes-allowed connection with a
+least-privilege role. Bulk import (`COPY FROM STDIN`, `LOAD DATA LOCAL`) goes through the app's
+Import, not MCP. Known residuals: a MySQL user variable (`SELECT @a := 1`) persists on the pooled
+session, and SQL Server `NEXT VALUE FOR` advances a sequence (a gap, not a data change).
+
 ## Recommended IDE Setup
 
 - [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)

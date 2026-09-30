@@ -3,10 +3,10 @@
 //!
 //! Fail-closed on purpose, like `metrics.ts`'s `isReadOnlyWidgetSql` it mirrors: the write
 //! keyword scan runs on the RAW upper-cased text (a keyword inside a literal rejects too —
-//! only SQL Server's own verbs are looked for in the code alone, once the scanner has read
-//! it), and the one-statement scanner refuses wherever it could disagree with the engine about
-//! where a literal or comment ends, instead of guessing — a guess that blanks a real `;`
-//! is how a second statement slips past it.
+//! only SQL Server's own verbs, and a writes-allowed connection's [`escape_words`], are looked
+//! for in the code alone, once the scanner has read it), and the one-statement scanner refuses
+//! wherever it could disagree with the engine about where a literal or comment ends, instead
+//! of guessing — a guess that blanks a real `;` is how a second statement slips past it.
 
 use crate::drivers::exec::first_keyword;
 
@@ -24,10 +24,12 @@ const WRITE_KEYWORDS: [&str; 27] = [
 /// T-SQL needs no `;` between statements, so `SELECT 1 USE master` is a batch of two:
 /// every control-flow and session verb is refused too (after `sqlserver::NOT_A_PLAIN_SELECT`,
 /// minus `END` and `FETCH`, which a plain `CASE … END` / `OFFSET … FETCH NEXT` needs).
-const TSQL_KEYWORDS: [&str; 20] = [
+const TSQL_KEYWORDS: [&str; 22] = [
     "USE", "DECLARE", "SAVE", "WAITFOR", "IF", "WHILE", "GOTO", "RETURN", "PRINT", "RAISERROR",
     "THROW", "OPEN", "CLOSE", "DEALLOCATE", "RECONFIGURE", "CHECKPOINT", "WRITETEXT", "UPDATETEXT",
     "ENABLE", "DISABLE",
+    // The session's identity: the one shared connection keeps it (`sqlserver::restore_database`).
+    "SETUSER", "REVERT",
 ];
 
 /// Functions that read files, reach other servers or act on other sessions — refused for
@@ -55,13 +57,26 @@ fn engine_functions(engine: &str) -> &'static [&'static str] {
             "PG_PROMOTE", "PG_ROTATE_LOGFILE", "PG_LOG_BACKEND_MEMORY_CONTEXTS", "*_REPLICATION_SLOT",
             "PG_REPLICATION_SLOT_*", "PG_LOGICAL_SLOT_*", "PG_CREATE_RESTORE_POINT", "PG_BACKUP_*",
             "BINARY_UPGRADE_*",
+            // Non-transactional: statistics resets survive the read-only wrapper's ROLLBACK.
+            "PG_STAT_RESET*", "PG_STAT_STATEMENTS_RESET",
+            // Defence in depth: the wrapper's connection is closed after BEGIN
+            // (`touches_session`), which drops a session lock; replay and origins are admin state.
+            "PG_TRY_ADVISORY_*", "PG_WAL_REPLAY_PAUSE", "PG_WAL_REPLAY_RESUME",
+            "PG_REPLICATION_ORIGIN_CREATE", "PG_REPLICATION_ORIGIN_DROP", "PG_REPLICATION_ORIGIN_ADVANCE",
+            "PG_REPLICATION_ORIGIN_SESSION_SETUP", "PG_REPLICATION_ORIGIN_SESSION_RESET",
+            "PG_REPLICATION_ORIGIN_XACT_SETUP", "PG_REPLICATION_ORIGIN_XACT_RESET",
         ],
         "mysql" => &["LOAD_FILE", "GET_LOCK"],
         "sqlserver" => &[
             "OPENROWSET", "OPENDATASOURCE", "OPENQUERY", "XP_*",
             // Server-side file readers: Extended Events, trace and audit files.
             "FN_XE_FILE_TARGET_READ_FILE", "FN_TRACE_GETTABLE", "FN_GET_AUDIT_FILE",
+            // OLE automation and external scripts run code on the server's OS.
+            "SP_OACREATE", "SP_OAMETHOD", "SP_OAGETPROPERTY", "SP_OASETPROPERTY", "SP_OADESTROY",
+            "SP_OASTOP", "SP_OAGETERRORINFO", "SP_EXECUTE_EXTERNAL_SCRIPT",
         ],
+        // Loads a shared library into the process, should the driver ever enable it.
+        "sqlite" => &["LOAD_EXTENSION"],
         _ => &[],
     }
 }
@@ -70,8 +85,49 @@ fn engine_functions(engine: &str) -> &'static [&'static str] {
 /// can); a Metrics widget — the user's own SQL on their own connection — may use them.
 const DUCKDB_FILE_FUNCTIONS: [&str; 5] = ["READ_*", "GLOB", "*_SCAN", "SNIFF_CSV", "PARQUET_*"];
 
+/// What a writes-allowed connection still refuses: statements that reach beyond the database —
+/// the disk, the OS, other servers, other sessions, the server's configuration, or the one
+/// session SQL Server shares with the app. Looked for in the scanned code (a string or quoted
+/// name is data, a comment counts). A read-only connection already refuses every one of them
+/// (first keyword, `WRITE_KEYWORDS`, one statement), so only the writes path checks these.
+/// DuckDB's are blocked by the engine (`mcp::server::harden_duckdb`). Dynamic SQL and
+/// privileged statements beyond these are the database role's job.
+fn escape_words(engine: &str) -> &'static [&'static str] {
+    match engine {
+        // `COPY … TO PROGRAM` runs a shell command; `COPY … TO/FROM '/file'` and `LOAD` touch the disk.
+        "postgres" => &["COPY", "LOAD"],
+        // Server files, plugins, other instances and sessions, and global settings
+        // (`SET GLOBAL general_log_file = '…'` writes any file).
+        "mysql" => &[
+            "OUTFILE", "DUMPFILE", "INFILE", "INSTALL", "CLONE", "KILL", "SHUTDOWN", "RESTART", "GLOBAL", "PERSIST",
+            "PERSIST_ONLY",
+        ],
+        // `SET IMPLICIT_TRANSACTIONS ON` on the shared connection would silently roll back the
+        // user's own later edits (`sqlserver::rollback_orphan_tx`).
+        "sqlserver" => &[
+            "BULK", "BACKUP", "RESTORE", "KILL", "SHUTDOWN", "DBCC", "RECONFIGURE", "SP_CONFIGURE", "SETUSER",
+            "IMPLICIT_TRANSACTIONS",
+        ],
+        _ => &[],
+    }
+}
+
+/// Two words that together reach beyond the database: `ALTER SYSTEM` rewrites the server's
+/// config file, `EXECUTE AS` changes the shared session's identity. Both are looked for
+/// anywhere in the code — a column named `system` must be quoted then.
+fn escape_pair(engine: &str, code: &str) -> Option<&'static str> {
+    match engine {
+        "postgres" if has_word(code, "ALTER") && has_word(code, "SYSTEM") => Some("ALTER SYSTEM"),
+        "sqlserver" if (has_word(code, "EXECUTE") || has_word(code, "EXEC")) && has_word(code, "AS") => {
+            Some("EXECUTE AS")
+        }
+        _ => None,
+    }
+}
+
 /// May `sql` run over MCP on an `engine` connection? `writes`: the connection allows writes,
-/// which lifts the keyword checks but never the one-statement rule or the function denylist.
+/// which lifts the keyword checks but never the one-statement rule, the function denylist or
+/// [`escape_words`].
 pub fn guard_sql(engine: &str, sql: &str, writes: bool) -> Result<(), String> {
     guard(engine, sql, writes, true)
 }
@@ -113,7 +169,16 @@ fn guard(engine: &str, sql: &str, writes: bool, mcp: bool) -> Result<(), String>
                     PIVOT — a file path to DuckDB) is not allowed on this connection."
             .into());
     }
+    let code = code.to_uppercase();
     if writes {
+        let word = escape_words(engine).iter().find(|k| has_word(&code, k)).copied();
+        if let Some(k) = word.or_else(|| escape_pair(engine, &code)) {
+            return Err(format!(
+                "`{k}` is not allowed on this connection, even with writes allowed: it reaches beyond \
+                 the database (the disk, the server, or other sessions). It is refused outside a string \
+                 or quoted name, comments included. If it is a column or table name, quote it."
+            ));
+        }
         return Ok(());
     }
     if let Some(k) = WRITE_KEYWORDS.iter().find(|k| has_word(&upper, k)) {
@@ -126,7 +191,6 @@ fn guard(engine: &str, sql: &str, writes: bool, mcp: bool) -> Result<(), String>
     // scanner refused anything it could read differently from SQL Server, so what it blanked
     // is a literal or a quoted name to the server too.
     if engine == "sqlserver" {
-        let code = code.to_uppercase();
         if let Some(k) = TSQL_KEYWORDS.iter().find(|k| has_word(&code, k)) {
             return Err(format!(
                 "Only read-only SQL is allowed here: `{k}` is not allowed outside a string or \

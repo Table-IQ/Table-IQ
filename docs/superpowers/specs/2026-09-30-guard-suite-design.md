@@ -18,7 +18,7 @@ The guard's own doc already states it; the suite turns it into assertions.
 | Connection | Must refuse |
 |---|---|
 | **Read-only** (default) | Any persistent change, including ones a `ROLLBACK` can't undo (session locks, stats resets, session identity). Any second statement. |
-| **Writes allowed** | Still: a second statement, and anything that reaches **the disk, the OS, other servers or other sessions**. "Sharing a database is not sharing the disk." Data and schema changes are allowed. |
+| **Writes allowed** | Still: a second statement, and the *literal forms* of anything that reaches **the disk, the OS, other servers, other sessions or server configuration** (matched on code: strings and quoted names are data, comments count). Dynamic SQL and privileged escapes are the database role's job — share with a least-privilege role. Data and schema changes are allowed. |
 
 ## What exploration found (v0.8.1)
 
@@ -88,3 +88,5 @@ a writes-allowed connection (use a non-superuser role).
 - Existing `mcp::guard` unit tests and `mcp_live.rs` still pass (no relaxation).
 - Live PG/MySQL tests pass against the repo's docker compose fixtures.
 - `pnpm exec tsc --noEmit` and the frontend tests pass; the UI shows "Apache-2.0".
+
+> **Superseded detail (autoplan review, see the plan's Review record):** the word list is `escape_words`, checked only on the writes path against the scanned code, plus `ALTER`+`SYSTEM` / `EXEC(UTE)`+`AS` pair checks; SQLite `ATTACH`/`VACUUM` stays as it was. Postgres/MySQL/SQLite already close the connection after the read-only wrapper, so session locks there were defence in depth, not a live gap; SQL Server shares one never-reset connection, so its session verbs are refused.
