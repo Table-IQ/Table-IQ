@@ -187,11 +187,14 @@ surviving between runs) isn't implemented.
 The MCP guard (`src-tauri/src/mcp/guard.rs`, adversarial suite in `src-tauri/tests/guard_suite.rs`)
 refuses the common literal forms of statements that reach beyond the database, even on a connection
 that allows writes: server files (`COPY … TO PROGRAM`, `INTO OUTFILE`, `BULK INSERT`), plugins, other
-sessions (`KILL`, `FLUSH TABLES WITH READ LOCK`), server configuration (`ALTER SYSTEM`, `SET GLOBAL`,
-`sp_configure`), and SQL Server session state (`USE`, `SET IMPLICIT_TRANSACTIONS`). Those
+sessions (`KILL`, `FLUSH TABLES WITH READ LOCK`, `XA`), server configuration (`ALTER SYSTEM`,
+`SET GLOBAL`, `sp_configure`), and anything that would outlive the batch on the one session SQL
+Server shares with the app (`USE`, `BEGIN TRAN`, every `SET` session option but `NOCOUNT`). Those
 words are refused outside a string or quoted name, comments included, so a column named `load`
-or `restart` must be quoted (`"load"`, `` `restart` ``) on a writes-allowed connection. Dynamic
-SQL (`DO`/`EXEC('…')`) and superuser-only escapes (extensions, foreign-data wrappers, untrusted
+or `restart` must be quoted (`"load"`, `` `restart` ``) on a writes-allowed connection (MariaDB's
+`ALTER SEQUENCE … RESTART` is refused there too). Dynamic SQL (`DO`/`EXEC('…')`), routine bodies
+(`CREATE FUNCTION … AS '…'` then calling it), indirect calls (a synonym, `EXEC @proc`) and
+superuser-only escapes (extensions, foreign-data wrappers, untrusted
 languages, CLR assemblies) are the database role's job: share a writes-allowed connection with a
 least-privilege role. Bulk import (`COPY FROM STDIN`, `LOAD DATA LOCAL`) goes through the app's
 Import, not MCP. Known residuals: a MySQL user variable (`SELECT @a := 1`) persists on the pooled

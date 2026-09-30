@@ -65,6 +65,24 @@ const REFUSE: &[(&str, &str, bool, &str)] = &[
     ("session-state", "sqlserver", ALWAYS, "EXEC AS LOGIN = 'sa'"),
     ("session-state", "sqlserver", ALWAYS, "EXEC dbo.q EXEC AS LOGIN = 'sa'"),
     ("session-state", "mysql", ALWAYS, "FLUSH TABLES WITH READ LOCK"),
+    ("session-state", "mysql", ALWAYS, "XA START 'x'"),
+    ("session-state", "sqlserver", ALWAYS, "UPDATE t SET a = 1 BEGIN TRAN"),
+    ("session-state", "sqlserver", ALWAYS, "UPDATE t SET a = 1 BEGIN TRANSACTION"),
+    ("session-state", "sqlserver", ALWAYS, "SET TEXTSIZE 10"),
+    ("session-state", "sqlserver", ALWAYS, "SET DATEFORMAT dmy"),
+    ("session-state", "sqlserver", ALWAYS, "SET LANGUAGE us_english"),
+    ("session-state", "sqlserver", ALWAYS, "SET ROWCOUNT 1"),
+    ("session-state", "sqlserver", ALWAYS, "SET NOEXEC ON"),
+    ("session-state", "sqlserver", ALWAYS, "SET FMTONLY ON"),
+    ("session-state", "sqlserver", ALWAYS, "SET SHOWPLAN_XML ON"),
+    ("session-state", "sqlserver", ALWAYS, "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED"),
+    ("session-state", "sqlserver", ALWAYS, "SET XACT_ABORT ON"),
+    ("session-state", "sqlserver", ALWAYS, "SET IDENTITY_INSERT t ON"),
+    ("session-state", "sqlserver", ALWAYS, "SET /* c */ DATEFORMAT dmy"),
+    ("session-state", "sqlserver", ALWAYS, "EXEC sp_set_session_context 'k', 1, @read_only = 1"),
+    ("session-state", "sqlserver", ALWAYS, "EXECUTE /* c */ AS USER = 'x'"),
+    ("session-state", "sqlserver", ALWAYS, "EXEC\n-- c\nAS LOGIN = 'sa'"),
+    ("other-sessions", "sqlserver", ALWAYS, "ALTER DATABASE db SET SINGLE_USER WITH ROLLBACK IMMEDIATE"),
     // --- functions with side effects outside the transaction ---
     ("side-effect-fn", "postgres", ALWAYS, "SELECT pg_stat_reset()"),
     ("side-effect-fn", "postgres", ALWAYS, "SELECT pg_stat_reset_shared('bgwriter')"),
@@ -86,7 +104,6 @@ const REFUSE: &[(&str, &str, bool, &str)] = &[
     ("file-os", "postgres", ALWAYS, "COPY (SELECT 1) TO '/tmp/x'"),
     ("file-os", "postgres", ALWAYS, "LOAD '/tmp/evil.so'"),
     ("file-os", "postgres", ALWAYS, "ALTER SYSTEM SET archive_command = 'x'"),
-    ("file-os", "postgres", ALWAYS, "UPDATE servers SET load = 1"),
     ("file-os", "postgres", ALWAYS, "SELECT pg_read_file('/etc/passwd')"),
     ("file-os", "mysql", ALWAYS, "SELECT * FROM t INTO OUTFILE '/tmp/x'"),
     ("file-os", "mysql", ALWAYS, "SELECT a INTO DUMPFILE '/tmp/x' FROM t"),
@@ -94,6 +111,14 @@ const REFUSE: &[(&str, &str, bool, &str)] = &[
     ("file-os", "mysql", ALWAYS, "LOAD DATA LOCAL INFILE '/Users/x/.ssh/id_rsa' INTO TABLE t"),
     ("file-os", "mysql", ALWAYS, "INSTALL PLUGIN x SONAME 'x.so'"),
     ("file-os", "mysql", ALWAYS, "UNINSTALL PLUGIN x"),
+    ("file-os", "mysql", ALWAYS, "RESET PERSIST"),
+    ("file-os", "mysql", ALWAYS, "PURGE BINARY LOGS TO 'b.000001'"),
+    ("file-os", "mysql", ALWAYS, "ALTER INSTANCE DISABLE INNODB REDO_LOG"),
+    ("file-os", "mysql", ALWAYS, "CREATE SERVER s FOREIGN DATA WRAPPER mysql OPTIONS (HOST 'h')"),
+    ("file-os", "mysql", ALWAYS, "CHANGE REPLICATION SOURCE TO SOURCE_HOST = 'h'"),
+    ("file-os", "mysql", ALWAYS, "CHANGE # c\nMASTER TO MASTER_HOST = 'h'"),
+    ("file-os", "postgres", ALWAYS, "CREATE SUBSCRIPTION s CONNECTION 'host=h' PUBLICATION p"),
+    ("file-os", "sqlserver", ALWAYS, "ALTER DATABASE db ADD FILE (NAME = x, FILENAME = 'C:\\x.ndf')"),
     ("file-os", "postgres", ALWAYS, "ALTER /* c */ SYSTEM SET archive_command = 'x'"),
     ("file-os", "postgres", ALWAYS, "ALTER -- c\nSYSTEM SET archive_command = 'x'"),
     ("file-os", "mysql", ALWAYS, "CLONE INSTANCE FROM 'u'@'h':3306 IDENTIFIED BY 'p'"),
@@ -134,6 +159,9 @@ const REFUSE: &[(&str, &str, bool, &str)] = &[
     ("other-sessions", "mysql", ALWAYS, "RESTART"),
     ("other-sessions", "sqlserver", ALWAYS, "KILL 52"),
     ("other-sessions", "sqlserver", ALWAYS, "SHUTDOWN WITH NOWAIT"),
+    // --- a bare escape word as a name: the fail-closed trade-off (quoting it works) ---
+    ("bare-escape-word", "postgres", ALWAYS, "UPDATE servers SET load = 1"),
+    ("bare-escape-word", "sqlserver", ALWAYS, "UPDATE users SET language = 'en'"),
     // --- encodings ---
     ("encoding", "*", RO_ONLY, "dElEtE FROM t"),
     ("encoding", "*", ALWAYS, "SELECT 1;\u{0}SELECT 2"),
@@ -182,6 +210,13 @@ const ALLOW_WRITES: &[(&str, &str)] = &[
     ("mysql", "SELECT `restart` FROM t"),
     ("sqlserver", "INSERT INTO notes VALUES ('bulk order, backup, restore, kill, shutdown, dbcc, execute as')"),
     ("sqlserver", "EXEC dbo.sp_oauth_refresh"),
+    ("sqlserver", "CREATE PROCEDURE p WITH EXECUTE AS OWNER AS SELECT 1"),
+    ("sqlserver", "CREATE PROCEDURE p WITH RECOMPILE, EXECUTE AS CALLER AS SELECT 1"),
+    ("sqlserver", "SELECT a FROM t OPTION (USE HINT ('DISABLE_OPTIMIZER_ROWGOAL'))"),
+    ("sqlserver", "SET NOCOUNT ON"),
+    ("sqlserver", "DECLARE @x int SET @x = 1 SELECT @x"),
+    ("sqlserver", "UPDATE users SET [language] = 'en'"),
+    ("sqlserver", "BEGIN TRY SELECT 1 END TRY BEGIN CATCH SELECT 2 END CATCH"),
     ("sqlserver", "CREATE PROCEDURE p AS EXEC dbo.q"),
     ("sqlserver", "CREATE TRIGGER trg ON t AFTER INSERT AS EXEC dbo.log_it"),
     ("postgres", "ALTER TABLE t RENAME COLUMN a TO system"),
@@ -257,4 +292,16 @@ fn a_refused_procedure_name_does_not_suggest_quoting() {
     let msg = guard_sql("sqlserver", "EXEC [sp_configure] 'x', 1", true).unwrap_err();
     assert!(msg.contains("`SP_CONFIGURE`") && msg.contains("not allowed on this connection"), "{msg}");
     assert!(!msg.contains("quote it") && !msg.contains("MCP"), "{msg}");
+}
+
+/// The guard runs synchronously inside the MCP call's task, so it must stay linear: a long
+/// comment line full of pair words once made the adjacency check quadratic.
+#[test]
+fn a_huge_comment_line_is_checked_in_linear_time() {
+    let sql = format!("SELECT 1 -- {}", "EXEC -- ALTER -- SET -- USE -- ".repeat(40_000));
+    let started = std::time::Instant::now();
+    for e in ["sqlserver", "postgres", "mysql"] {
+        let _ = guard_sql(e, &sql, true);
+    }
+    assert!(started.elapsed() < std::time::Duration::from_secs(2), "took {:?}", started.elapsed());
 }

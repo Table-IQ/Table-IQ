@@ -90,21 +90,24 @@ const DUCKDB_FILE_FUNCTIONS: [&str; 5] = ["READ_*", "GLOB", "*_SCAN", "SNIFF_CSV
 /// session SQL Server shares with the app. Looked for in the scanned code (a string or quoted
 /// name is data, a comment counts). A read-only connection already refuses every one of them
 /// (first keyword, `WRITE_KEYWORDS`, one statement), so only the writes path checks these.
-/// DuckDB's are blocked by the engine (`mcp::server::harden_duckdb`). Dynamic SQL and
-/// privileged statements beyond these are the database role's job.
+/// DuckDB's are blocked by the engine (`mcp::server::harden_duckdb`). Dynamic SQL, routine
+/// bodies, indirect calls and privileged statements beyond these are the database role's job.
 fn escape_words(engine: &str) -> &'static [&'static str] {
     match engine {
         // `COPY … TO PROGRAM` runs a shell command; `COPY … TO/FROM '/file'` and `LOAD` touch the disk.
         "postgres" => &["COPY", "LOAD"],
-        // Server files, plugins, other instances and sessions (`FLUSH TABLES WITH READ LOCK`
-        // holds a server-wide lock on a pooled connection that is never closed).
-        "mysql" => &["OUTFILE", "DUMPFILE", "INFILE", "INSTALL", "UNINSTALL", "CLONE", "KILL", "SHUTDOWN", "RESTART", "FLUSH"],
+        // Server files, plugins, binary logs, other instances and sessions. `FLUSH TABLES WITH
+        // READ LOCK` and `XA START` stay on a pooled connection that is never closed.
+        "mysql" => &[
+            "OUTFILE", "DUMPFILE", "INFILE", "INSTALL", "UNINSTALL", "CLONE", "KILL", "SHUTDOWN", "RESTART", "FLUSH",
+            "XA", "PURGE",
+        ],
         // `SET IMPLICIT_TRANSACTIONS ON` (or `ANSI_DEFAULTS ON`, which sets it) on the shared
         // connection would silently roll back the user's own later edits
-        // (`sqlserver::rollback_orphan_tx`); a `USE` mid-batch retargets the grid.
+        // (`sqlserver::rollback_orphan_tx`). `FILENAME` places database files on the server's disk.
         "sqlserver" => &[
             "BULK", "BACKUP", "RESTORE", "KILL", "SHUTDOWN", "DBCC", "RECONFIGURE", "SETUSER", "IMPLICIT_TRANSACTIONS",
-            "ANSI_DEFAULTS", "USE",
+            "ANSI_DEFAULTS", "FILENAME",
         ],
         _ => &[],
     }
@@ -114,43 +117,130 @@ fn escape_words(engine: &str) -> &'static [&'static str] {
 /// quoted name (`EXEC [sp_configure]`) still calls the procedure.
 fn escape_names(engine: &str) -> &'static [&'static str] {
     match engine {
-        // Server configuration, and an application role the shared session can't leave.
-        "sqlserver" => &["SP_CONFIGURE", "SP_SETAPPROLE"],
+        // Server configuration, and an application role or session context the shared
+        // session can't leave.
+        "sqlserver" => &["SP_CONFIGURE", "SP_SETAPPROLE", "SP_SET_SESSION_CONTEXT"],
         _ => &[],
     }
 }
 
-/// Words that reach beyond the database only together: `ALTER SYSTEM` rewrites the server's
-/// config file and `EXECUTE AS` changes the shared session's identity (each pair adjacent, past
-/// whitespace and comments); `SET GLOBAL`/`SET PERSIST` change every session, however the
-/// variable is spelled (`SET @@GLOBAL.x`, `SET SESSION a = 1, GLOBAL b = 2`).
+/// Every T-SQL `SET` session option but the output-only `NOCOUNT` and `STATISTICS`. On the
+/// one connection SQL Server shares with the app each outlives the batch: `DATEFORMAT` swaps
+/// month and day in the user's later edits, `ROWCOUNT` caps the grid, `NOEXEC` stops it running.
+const TSQL_SET_OPTIONS: [&str; 33] = [
+    "ANSI_NULL_DFLT_OFF", "ANSI_NULL_DFLT_ON", "ANSI_NULLS", "ANSI_PADDING", "ANSI_WARNINGS", "ARITHABORT",
+    "ARITHIGNORE", "CONCAT_NULL_YIELDS_NULL", "CONTEXT_INFO", "CURSOR_CLOSE_ON_COMMIT", "DATEFIRST", "DATEFORMAT",
+    "DEADLOCK_PRIORITY", "FIPS_FLAGGER", "FMTONLY", "FORCEPLAN", "IDENTITY_INSERT", "LANGUAGE", "LOCK_TIMEOUT",
+    "NOEXEC", "NUMERIC_ROUNDABORT", "OFFSETS", "PARSEONLY", "QUERY_GOVERNOR_COST_LIMIT", "QUOTED_IDENTIFIER",
+    "REMOTE_PROC_TRANSACTIONS", "ROWCOUNT", "SHOWPLAN_ALL", "SHOWPLAN_TEXT", "SHOWPLAN_XML", "TEXTSIZE",
+    "TRANSACTION", "XACT_ABORT",
+];
+
+/// Words that reach beyond the database only in sequence, adjacent past whitespace and
+/// comments: `ALTER SYSTEM` rewrites the server's config file, `EXECUTE AS` (outside a module's
+/// `WITH EXECUTE AS` clause), `SET <option>`, `BEGIN TRAN` and `USE` (but `USE HINT`/`USE PLAN`)
+/// outlive the batch on SQL Server's shared session. MySQL's `SET`/`RESET` with
+/// `GLOBAL`/`PERSIST` changes every session, however the variable is spelled.
 fn escape_pair(engine: &str, code: &str) -> Option<&'static str> {
-    let set_global = || has_word(code, "SET") && ["GLOBAL", "PERSIST", "PERSIST_ONLY"].iter().any(|w| has_word(code, w));
+    let flat = blank_comments(code, engine == "mysql");
+    let seq = |a: &str, b: &str| after_word(&flat, a).any(|(_, r)| starts_word(r, b));
     match engine {
-        "postgres" if adjacent(code, "ALTER", "SYSTEM") => Some("ALTER SYSTEM"),
-        "sqlserver" if adjacent(code, "EXECUTE", "AS") || adjacent(code, "EXEC", "AS") => Some("EXECUTE AS"),
-        "mysql" if set_global() => Some("SET GLOBAL"),
+        "postgres" if seq("ALTER", "SYSTEM") => Some("ALTER SYSTEM"),
+        "postgres" if seq("CREATE", "SUBSCRIPTION") => Some("CREATE SUBSCRIPTION"),
+        "sqlserver" => {
+            let session_as = ["EXECUTE", "EXEC"].iter().any(|e| {
+                after_word(&flat, e).any(|(i, r)| {
+                    let before = flat[..i].trim_end();
+                    let module = before.ends_with([',', '(']) || ends_word(before, "WITH");
+                    starts_word(r, "AS") && !module
+                })
+            });
+            let set_option = after_word(&flat, "SET").find_map(|(_, r)| TSQL_SET_OPTIONS.into_iter().find(|o| starts_word(r, o)));
+            let use_db = after_word(&flat, "USE").any(|(_, r)| !starts_word(r, "HINT") && !starts_word(r, "PLAN"));
+            let begin_tran = ["TRAN", "TRANSACTION", "DISTRIBUTED"].iter().any(|t| seq("BEGIN", t));
+            if session_as {
+                Some("EXECUTE AS")
+            } else if set_option.is_some() {
+                set_option
+            } else if begin_tran {
+                Some("BEGIN TRAN")
+            } else if use_db {
+                Some("USE")
+            } else if seq("ROLLBACK", "IMMEDIATE") {
+                Some("ROLLBACK IMMEDIATE")
+            } else {
+                None
+            }
+        }
+        "mysql" => {
+            let set = has_word(code, "SET") || has_word(code, "RESET");
+            if set && ["GLOBAL", "PERSIST", "PERSIST_ONLY"].iter().any(|w| has_word(code, w)) {
+                Some("SET GLOBAL")
+            } else if seq("ALTER", "INSTANCE") {
+                Some("ALTER INSTANCE")
+            } else if seq("CREATE", "SERVER") {
+                Some("CREATE SERVER")
+            } else if seq("CHANGE", "REPLICATION") || seq("CHANGE", "MASTER") {
+                Some("CHANGE REPLICATION")
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
 
-/// Whole word `a` followed by whole word `b` in `code`, with only whitespace and comments
-/// between them.
-fn adjacent(code: &str, a: &str, b: &str) -> bool {
-    let bytes = code.as_bytes();
-    let word_char = |c: char| c.is_ascii_alphanumeric() || c == '_';
-    code.match_indices(a).any(|(i, _)| {
-        let left = i == 0 || !(bytes[i - 1].is_ascii_uppercase() || bytes[i - 1] == b'_');
-        let after = &code[i + a.len()..];
-        let rest = skip_blank(after);
-        left && !after.starts_with(word_char)
-            && rest.strip_prefix(b).is_some_and(|r| !r.starts_with(word_char))
+fn word_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// Each whole-word `w` in `flat`: its index and the text after it, past whitespace. The left
+/// boundary is [`has_word`]'s (a digit before `w` does not join it).
+fn after_word<'a>(flat: &'a str, w: &'a str) -> impl Iterator<Item = (usize, &'a str)> + 'a {
+    let b = flat.as_bytes();
+    flat.match_indices(w).filter_map(move |(i, _)| {
+        let left = i == 0 || !(b[i - 1].is_ascii_uppercase() || b[i - 1] == b'_');
+        let after = &flat[i + w.len()..];
+        (left && !after.starts_with(word_char)).then(|| (i, after.trim_start()))
     })
+}
+
+/// `s` starts with whole word `w`.
+fn starts_word(s: &str, w: &str) -> bool {
+    s.strip_prefix(w).is_some_and(|r| !r.starts_with(word_char))
+}
+
+/// `s` ends with whole word `w`.
+fn ends_word(s: &str, w: &str) -> bool {
+    s.strip_suffix(w).is_some_and(|r| !r.ends_with(word_char))
+}
+
+/// `code` with its comments blanked to spaces (`#` ones too on MySQL), in one linear pass, so
+/// the words either side of a comment are adjacent. Literals are already blanked, so no `--` or
+/// `/*` here is inside one; the scanner refused nested and unterminated comments.
+fn blank_comments(code: &str, hash: bool) -> String {
+    let b = code.as_bytes();
+    let mut out = b.to_vec();
+    let mut i = 0;
+    while i < b.len() {
+        let end = if b[i..].starts_with(b"--") || (hash && b[i] == b'#') {
+            b[i..].iter().position(|&c| c == b'\n').map_or(b.len(), |p| i + p)
+        } else if b[i..].starts_with(b"/*") {
+            code[i + 2..].find("*/").map_or(b.len(), |p| i + 2 + p + 2)
+        } else {
+            i += 1;
+            continue;
+        };
+        out[i..end].fill(b' ');
+        i = end;
+    }
+    // Whole ASCII-delimited spans were blanked, so no UTF-8 sequence is split.
+    String::from_utf8(out).expect("whole spans blanked")
 }
 
 /// May `sql` run over MCP on an `engine` connection? `writes`: the connection allows writes,
 /// which lifts the keyword checks but never the one-statement rule, the function denylist or
-/// [`escape_words`].
+/// the escapes beyond the database ([`escape_words`], [`escape_names`], [`escape_pair`]).
 pub fn guard_sql(engine: &str, sql: &str, writes: bool) -> Result<(), String> {
     guard(engine, sql, writes, true)
 }

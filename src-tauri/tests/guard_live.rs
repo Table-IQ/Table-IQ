@@ -28,6 +28,7 @@ async fn pg_wrapped(drv: &dyn SqlDriver, sql: &str) -> Result<(), String> {
 #[tokio::test]
 async fn postgres_gaps_were_real_and_are_refused() {
     let Ok(url) = std::env::var("TIQ_PG_URL") else {
+        assert!(std::env::var("CI").is_err(), "CI must set TIQ_PG_URL: a skipped proof proves nothing");
         eprintln!("skipping: TIQ_PG_URL not set");
         return;
     };
@@ -65,6 +66,7 @@ async fn postgres_gaps_were_real_and_are_refused() {
 #[tokio::test]
 async fn mysql_outfile_was_real_and_is_refused() {
     let Ok(url) = std::env::var("TIQ_MYSQL_URL") else {
+        assert!(std::env::var("CI").is_err(), "CI must set TIQ_MYSQL_URL: a skipped proof proves nothing");
         eprintln!("skipping: TIQ_MYSQL_URL not set");
         return;
     };
