@@ -68,6 +68,16 @@ the database name and refuses a backup that would write to another database.
 you tick, over `http://127.0.0.1:7431/mcp` with a bearer token. It's local only and read-only by
 default, and every call shows in **MCP Activity** (⌘K).
 
+## License and what stays free
+
+TableIQ is open source under the [Apache License 2.0](LICENSE).
+
+**What stays free forever:** every database engine, the MCP server and its guard, BYO-key AI,
+staged edits, SSH tunnels, unlimited connections, and every feature in our first public release
+(v0.9.0). We will never gate engines or device count. If we ever build team features, they add
+governance on top (shared vaults, SSO, central agent policy, audit export) and never take away
+what is free.
+
 ## Development
 
 Prerequisites: Node 22, pnpm, Rust (stable), and the platform packages Tauri v2 needs to
@@ -169,7 +179,7 @@ Commands can also be called directly: `curl -s -XPOST localhost:1430/invoke/list
 See `pending.md` for the full prerequisites/status-board history and `TODOS.md` for items
 deferred from the current (filter bar / connected home / connection sheet / staged changes)
 release. The short version: no auto-updater or code signing yet
-(both need infrastructure this repo doesn't have), no LICENSE chosen yet, SQL Server queries
+(both need infrastructure this repo doesn't have), SQL Server queries
 can't be cancelled (tiberius has no cancel API), DuckDB's Stop button isn't implemented yet
 (it needs an arrow upgrade first), and a per-tab SQL session (an open transaction or `SET`
 surviving between runs) isn't implemented.
