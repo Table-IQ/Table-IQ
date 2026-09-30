@@ -78,6 +78,6 @@ async fn mysql_outfile_was_real_and_is_refused() {
     }
     let nanos = std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos();
     let sql = format!("SELECT 1 INTO OUTFILE '{dir}tiq_guard_{}_{nanos}.txt'", std::process::id());
-    rows_of(&my, &[sql.clone()], 10, &CancelToken::new()).await.unwrap();
+    rows_of(&my, std::slice::from_ref(&sql), 10, &CancelToken::new()).await.unwrap();
     assert!(guard_sql("mysql", &sql, true).is_err(), "refused even where writes are allowed");
 }
