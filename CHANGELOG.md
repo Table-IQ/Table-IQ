@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.8.2 — 2026-09-30
+
+TableIQ is now open source under Apache-2.0. The MCP guard also holds on connections where you let agents write: they can change your data, but not reach the server's disk, other sessions, or the app's own session.
+
+### Added
+- **Apache-2.0 licence**, with a README pledge: every engine, the MCP server and its guard, BYO-key AI and every feature in the first public release stay free.
+- **An adversarial guard suite** (`src-tauri/tests/guard_suite.rs`). Every attack class runs on all five SQL engines, for read-only and writes-allowed connections. Allow tables stop a fix from refusing ordinary SQL.
+- **Live proof on Postgres and MySQL** (`src-tauri/tests/guard_live.rs`) that each blocked escape really works on the engine, and that the guard now refuses it.
+
+### Changed
+- **Writes-allowed MCP connections refuse statements that reach beyond the database.**
+  - Server files: `COPY … TO PROGRAM`, `INTO OUTFILE`, `LOAD DATA INFILE`, `BULK INSERT`, `BACKUP`/`RESTORE`, `FILENAME`.
+  - Plugins and replication: `INSTALL`/`UNINSTALL`, `CLONE`, `CHANGE REPLICATION`, `CREATE SUBSCRIPTION`.
+  - Other sessions: `KILL`, `SHUTDOWN`, `FLUSH TABLES WITH READ LOCK`, `XA`, `ROLLBACK IMMEDIATE`.
+  - Server configuration: `ALTER SYSTEM`, `SET GLOBAL`/`PERSIST`, `sp_configure`, `DBCC`.
+  - On SQL Server, anything that would outlive the batch on the session the app shares: `USE`, `BEGIN TRAN`, `EXECUTE AS`, `SETUSER`, `sp_setapprole`, and every `SET` session option except `NOCOUNT`.
+  
+  Words inside a string or a quoted name don't count. Words in a comment do. If a bare column name is refused, quote it and the refusal message says so.
+- **Read-only connections also refuse statistics resets** (`pg_stat_reset*`, which survive a ROLLBACK) and SQL Server `SETUSER`/`REVERT`. More admin functions are now on the Postgres, SQL Server and SQLite denylists. Metrics widgets are unaffected.
+
+### Fixed
+- **Allowing writes for an agent no longer hands it the server.** Before this release, a writes-allowed connection skipped every keyword check. A `COPY … TO PROGRAM` or `SET DATEFORMAT` sent by an agent ran as written. The second one would have swapped month and day in your own later edits on SQL Server.
+
 ## 0.8.1 — 2026-09-29
 
 AI agents connected to TableIQ's MCP server now get an accurate description of each tool.
