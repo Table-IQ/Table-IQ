@@ -185,9 +185,10 @@ can't be cancelled (tiberius has no cancel API), DuckDB's Stop button isn't impl
 surviving between runs) isn't implemented.
 
 The MCP guard (`src-tauri/src/mcp/guard.rs`, adversarial suite in `src-tauri/tests/guard_suite.rs`)
-refuses the literal forms of anything that reaches beyond the database, even on a connection that
-allows writes: server files (`COPY … TO PROGRAM`, `INTO OUTFILE`, `BULK INSERT`), plugins, other
-sessions (`KILL`), and server configuration (`ALTER SYSTEM`, `SET GLOBAL`, `RECONFIGURE`). Those
+refuses the common literal forms of statements that reach beyond the database, even on a connection
+that allows writes: server files (`COPY … TO PROGRAM`, `INTO OUTFILE`, `BULK INSERT`), plugins, other
+sessions (`KILL`, `FLUSH TABLES WITH READ LOCK`), server configuration (`ALTER SYSTEM`, `SET GLOBAL`,
+`sp_configure`), and SQL Server session state (`USE`, `SET IMPLICIT_TRANSACTIONS`). Those
 words are refused outside a string or quoted name, comments included, so a column named `load`
 or `restart` must be quoted (`"load"`, `` `restart` ``) on a writes-allowed connection. Dynamic
 SQL (`DO`/`EXEC('…')`) and superuser-only escapes (extensions, foreign-data wrappers, untrusted

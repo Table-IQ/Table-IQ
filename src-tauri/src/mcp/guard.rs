@@ -96,33 +96,56 @@ fn escape_words(engine: &str) -> &'static [&'static str] {
     match engine {
         // `COPY … TO PROGRAM` runs a shell command; `COPY … TO/FROM '/file'` and `LOAD` touch the disk.
         "postgres" => &["COPY", "LOAD"],
-        // Server files, plugins, other instances and sessions, and global settings
-        // (`SET GLOBAL general_log_file = '…'` writes any file).
-        "mysql" => &[
-            "OUTFILE", "DUMPFILE", "INFILE", "INSTALL", "CLONE", "KILL", "SHUTDOWN", "RESTART", "GLOBAL", "PERSIST",
-            "PERSIST_ONLY",
-        ],
-        // `SET IMPLICIT_TRANSACTIONS ON` on the shared connection would silently roll back the
-        // user's own later edits (`sqlserver::rollback_orphan_tx`).
+        // Server files, plugins, other instances and sessions (`FLUSH TABLES WITH READ LOCK`
+        // holds a server-wide lock on a pooled connection that is never closed).
+        "mysql" => &["OUTFILE", "DUMPFILE", "INFILE", "INSTALL", "UNINSTALL", "CLONE", "KILL", "SHUTDOWN", "RESTART", "FLUSH"],
+        // `SET IMPLICIT_TRANSACTIONS ON` (or `ANSI_DEFAULTS ON`, which sets it) on the shared
+        // connection would silently roll back the user's own later edits
+        // (`sqlserver::rollback_orphan_tx`); a `USE` mid-batch retargets the grid.
         "sqlserver" => &[
-            "BULK", "BACKUP", "RESTORE", "KILL", "SHUTDOWN", "DBCC", "RECONFIGURE", "SP_CONFIGURE", "SETUSER",
-            "IMPLICIT_TRANSACTIONS",
+            "BULK", "BACKUP", "RESTORE", "KILL", "SHUTDOWN", "DBCC", "RECONFIGURE", "SETUSER", "IMPLICIT_TRANSACTIONS",
+            "ANSI_DEFAULTS", "USE",
         ],
         _ => &[],
     }
 }
 
-/// Two words that together reach beyond the database: `ALTER SYSTEM` rewrites the server's
-/// config file, `EXECUTE AS` changes the shared session's identity. Both are looked for
-/// anywhere in the code — a column named `system` must be quoted then.
-fn escape_pair(engine: &str, code: &str) -> Option<&'static str> {
+/// Procedures a writes-allowed connection refuses by name. Looked for in the raw text: a
+/// quoted name (`EXEC [sp_configure]`) still calls the procedure.
+fn escape_names(engine: &str) -> &'static [&'static str] {
     match engine {
-        "postgres" if has_word(code, "ALTER") && has_word(code, "SYSTEM") => Some("ALTER SYSTEM"),
-        "sqlserver" if (has_word(code, "EXECUTE") || has_word(code, "EXEC")) && has_word(code, "AS") => {
-            Some("EXECUTE AS")
-        }
+        // Server configuration, and an application role the shared session can't leave.
+        "sqlserver" => &["SP_CONFIGURE", "SP_SETAPPROLE"],
+        _ => &[],
+    }
+}
+
+/// Words that reach beyond the database only together: `ALTER SYSTEM` rewrites the server's
+/// config file and `EXECUTE AS` changes the shared session's identity (each pair adjacent, past
+/// whitespace and comments); `SET GLOBAL`/`SET PERSIST` change every session, however the
+/// variable is spelled (`SET @@GLOBAL.x`, `SET SESSION a = 1, GLOBAL b = 2`).
+fn escape_pair(engine: &str, code: &str) -> Option<&'static str> {
+    let set_global = || has_word(code, "SET") && ["GLOBAL", "PERSIST", "PERSIST_ONLY"].iter().any(|w| has_word(code, w));
+    match engine {
+        "postgres" if adjacent(code, "ALTER", "SYSTEM") => Some("ALTER SYSTEM"),
+        "sqlserver" if adjacent(code, "EXECUTE", "AS") || adjacent(code, "EXEC", "AS") => Some("EXECUTE AS"),
+        "mysql" if set_global() => Some("SET GLOBAL"),
         _ => None,
     }
+}
+
+/// Whole word `a` followed by whole word `b` in `code`, with only whitespace and comments
+/// between them.
+fn adjacent(code: &str, a: &str, b: &str) -> bool {
+    let bytes = code.as_bytes();
+    let word_char = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    code.match_indices(a).any(|(i, _)| {
+        let left = i == 0 || !(bytes[i - 1].is_ascii_uppercase() || bytes[i - 1] == b'_');
+        let after = &code[i + a.len()..];
+        let rest = skip_blank(after);
+        left && !after.starts_with(word_char)
+            && rest.strip_prefix(b).is_some_and(|r| !r.starts_with(word_char))
+    })
 }
 
 /// May `sql` run over MCP on an `engine` connection? `writes`: the connection allows writes,
@@ -171,8 +194,9 @@ fn guard(engine: &str, sql: &str, writes: bool, mcp: bool) -> Result<(), String>
     }
     let code = code.to_uppercase();
     if writes {
-        let word = escape_words(engine).iter().find(|k| has_word(&code, k)).copied();
-        if let Some(k) = word.or_else(|| escape_pair(engine, &code)) {
+        let word = escape_words(engine).iter().find(|k| has_word(&code, k));
+        let name = escape_names(engine).iter().find(|k| has_word(&upper, k));
+        if let Some(k) = word.or(name).copied().or_else(|| escape_pair(engine, &code)) {
             return Err(format!(
                 "`{k}` is not allowed on this connection, even with writes allowed: it reaches beyond \
                  the database (the disk, the server, or other sessions). It is refused outside a string \
