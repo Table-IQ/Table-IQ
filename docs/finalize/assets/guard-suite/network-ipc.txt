@@ -1,0 +1,5 @@
+POST http://127.0.0.1:1420/__ipc/read_onboarding_state → 200 (6ms, 19B)
+POST http://127.0.0.1:1420/__ipc/list_connections → 200 (6ms, 2B)
+POST http://127.0.0.1:1420/__ipc/read_onboarding_state → 200 (4ms, 19B)
+POST http://127.0.0.1:1420/__ipc/list_connections → 200 (5ms, 2B)
+POST http://127.0.0.1:1420/__ipc/write_onboarding_state → 200 (?ms, 4B)

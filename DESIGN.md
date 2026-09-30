@@ -252,7 +252,7 @@ project" we replaced in Slice 23.
 - Top region (~56px) is `tiq-titlebar-drag` so the user can grab anywhere in
   the strip to move the window; traffic-light reserve is implicit
 - Stack: `<BrandMark size={120}>` → `TableIQ` wordmark (36px semibold) → version
-  line (12px muted) → tagline (11px muted-2, "Local-first · zero telemetry / Open source · MIT")
+  line (12px muted) → tagline (11px muted-2, "Local-first · zero telemetry / Open source · Apache-2.0")
 - Bottom stack (three buttons, identical width, 32px tall): Export Bundle,
   Import Bundle, **Create Connection** (primary)
 - Tiny footer row under buttons: `⌘N new · ⌘F filter` + ThemeToggle (icon-only)

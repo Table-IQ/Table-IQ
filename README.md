@@ -68,6 +68,16 @@ the database name and refuses a backup that would write to another database.
 you tick, over `http://127.0.0.1:7431/mcp` with a bearer token. It's local only and read-only by
 default, and every call shows in **MCP Activity** (⌘K).
 
+## License and what stays free
+
+TableIQ is open source under the [Apache License 2.0](LICENSE).
+
+**What stays free forever:** every database engine, the MCP server and its guard, BYO-key AI,
+staged edits, SSH tunnels, unlimited connections, and every feature in our first public release
+(v0.9.0). We will never gate engines or device count. If we ever build team features, they add
+governance on top (shared vaults, SSO, central agent policy, audit export) and never take away
+what is free.
+
 ## Development
 
 Prerequisites: Node 22, pnpm, Rust (stable), and the platform packages Tauri v2 needs to
@@ -169,10 +179,26 @@ Commands can also be called directly: `curl -s -XPOST localhost:1430/invoke/list
 See `pending.md` for the full prerequisites/status-board history and `TODOS.md` for items
 deferred from the current (filter bar / connected home / connection sheet / staged changes)
 release. The short version: no auto-updater or code signing yet
-(both need infrastructure this repo doesn't have), no LICENSE chosen yet, SQL Server queries
+(both need infrastructure this repo doesn't have), SQL Server queries
 can't be cancelled (tiberius has no cancel API), DuckDB's Stop button isn't implemented yet
 (it needs an arrow upgrade first), and a per-tab SQL session (an open transaction or `SET`
 surviving between runs) isn't implemented.
+
+The MCP guard (`src-tauri/src/mcp/guard.rs`, adversarial suite in `src-tauri/tests/guard_suite.rs`)
+refuses the common literal forms of statements that reach beyond the database, even on a connection
+that allows writes: server files (`COPY … TO PROGRAM`, `INTO OUTFILE`, `BULK INSERT`), plugins, other
+sessions (`KILL`, `FLUSH TABLES WITH READ LOCK`, `XA`), server configuration (`ALTER SYSTEM`,
+`SET GLOBAL`, `sp_configure`), and anything that would outlive the batch on the one session SQL
+Server shares with the app (`USE`, `BEGIN TRAN`, every `SET` session option but `NOCOUNT`). Those
+words are refused outside a string or quoted name, comments included, so a column named `load`
+or `restart` must be quoted (`"load"`, `` `restart` ``) on a writes-allowed connection (MariaDB's
+`ALTER SEQUENCE … RESTART` is refused there too). Dynamic SQL (`DO`/`EXEC('…')`), routine bodies
+(`CREATE FUNCTION … AS '…'` then calling it), indirect calls (a synonym, `EXEC @proc`) and
+superuser-only escapes (extensions, foreign-data wrappers, untrusted
+languages, CLR assemblies) are the database role's job: share a writes-allowed connection with a
+least-privilege role. Bulk import (`COPY FROM STDIN`, `LOAD DATA LOCAL`) goes through the app's
+Import, not MCP. Known residuals: a MySQL user variable (`SELECT @a := 1`) persists on the pooled
+session, and SQL Server `NEXT VALUE FOR` advances a sequence (a gap, not a data change).
 
 ## Recommended IDE Setup
 

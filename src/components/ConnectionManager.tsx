@@ -360,7 +360,7 @@ export function ConnectionManager() {
           <div className="mt-1 text-[11px] leading-relaxed text-muted-2">
             Local-first · zero telemetry
             <br />
-            Open source · MIT
+            Open source · Apache-2.0
           </div>
         </div>
 

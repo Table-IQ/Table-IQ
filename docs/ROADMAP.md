@@ -1,17 +1,17 @@
 # TableIQ Roadmap
 
-_Last updated 2026-09-30 · current version v0.8.1 · companion doc: [GTM.md](GTM.md)_
+_Last updated 2026-09-30 · current version v0.8.2 · companion doc: [GTM.md](GTM.md)_
 
 We are aiming for engine parity with [dbx](https://github.com/t8y2/dbx) (100+ database profiles, 22k★ in five months) while keeping the product TablePlus-grade and agent-safe. Each phase ships as one `/rudys-workflow` slice and one PR, and each merged phase gets its own release announcement (see GTM.md).
 
-## Where we are (v0.8.1)
+## Where we are (v0.8.2)
 
 | Area | Status |
 |---|---|
 | Full SQL engines | PostgreSQL, MySQL/MariaDB, SQL Server, SQLite, DuckDB |
 | Non-SQL shells (read-only, thin) | MongoDB (`DocShell`), Redis (`KvShell`) |
-| Built | Keyset paging to 1T rows, staged edits in one transaction, SQL log, user management, metrics board, backup/restore, ERD, schema/result diff, ⌘K, BYO-key AI (Anthropic/OpenAI/Gemini/Ollama), MCP server with a fail-closed guard, WASM plugins, SSH tunnels, keychain secrets |
-| Missing before launch | LICENSE, a public repo (private today), signing/notarization, auto-updater, any published release, the guard test suite |
+| Built | Keyset paging to 1T rows, staged edits in one transaction, SQL log, user management, metrics board, backup/restore, ERD, schema/result diff, ⌘K, BYO-key AI (Anthropic/OpenAI/Gemini/Ollama), MCP server with a fail-closed guard and an in-repo adversarial guard suite, WASM plugins, SSH tunnels, keychain secrets, Apache-2.0 LICENSE |
+| Missing before launch | A public repo (private today), signing/notarization, auto-updater, any published release, the public cross-vendor guard test suite |
 
 ## How dbx gets 100+ databases into ~25 MB (and what we copy)
 
@@ -33,11 +33,13 @@ Only the Windows NSIS installer is actually 25 MB. The macOS dmg is 36 MB, the L
 ## P0 · Launch-ready (the GTM gate)
 
 - [ ] **LICENSE: Apache-2.0** (patent grant; same as dbx; no CLA needed for a later commercial `ee/` tree, see GTM §5).
-  - Set `license` in `package.json` and `src-tauri/Cargo.toml`.
-  - Make the "Open source · MIT" string at `src/components/ConnectionManager.tsx:363` match.
-  - Add the "what stays free forever" pledge to the README.
+  - Done in v0.8.2: `LICENSE` + `NOTICE` added; `license` set in `package.json` and `src-tauri/Cargo.toml`.
+  - Done in v0.8.2: the `src/components/ConnectionManager.tsx` string now reads "Open source · Apache-2.0".
+  - Done in v0.8.2: the "what stays free forever" pledge is in the README.
   - **Make the repo public.** Scrub history for secrets first (`gitleaks detect`).
 - [ ] **Guard test suite:** a public `mcp-guard-tests` repo of injection, multi-statement, CTE-write, function-call and encoding cases, with a runner for our MCP, dbx, the DBeaver MCP and the official Postgres MCP. Runs in our CI. Every failing case is fixed before launch; the comparison table is published only if we pass all of them.
+  - Done in v0.8.2: the in-repo adversarial suite for our own MCP (`src-tauri/tests/guard_suite.rs`, plus env-gated live proofs in `guard_live.rs`), run by `cargo test` in CI.
+  - Still open: the public `mcp-guard-tests` repo with effect oracles and the cross-vendor runner (TODOS.md T3).
 - [ ] **Signing and updates:** Apple notarization plus Windows signing (the secrets are already wired in `.github/workflows/release.yml`), and the Tauri updater plugin.
 - [ ] **Size baseline:**
   - Run `tauri build` on all three OSes and record the sizes.

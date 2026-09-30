@@ -1,0 +1,16 @@
+     Running tests/guard_live.rs (/Users/rudy/conductor/workspaces/Table-IQ/richmond-palette/src-tauri/target/debug/deps/guard_live-b95ea46e18b7ee13)
+test mysql_outfile_was_real_and_is_refused ... ok
+test postgres_gaps_were_real_and_are_refused ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+     Running tests/guard_suite.rs (/Users/rudy/conductor/workspaces/Table-IQ/richmond-palette/src-tauri/target/debug/deps/guard_suite-5dbefedca0180da6)
+test a_writes_path_refusal_names_the_word_and_the_quoting_fix ... ok
+test every_attack_class_is_refused_and_plain_sql_is_not ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/mcp_live.rs (/Users/rudy/conductor/workspaces/Table-IQ/richmond-palette/src-tauri/target/debug/deps/mcp_live-c468fc9d00ca62fc)
+test sqlserver_over_http_reads_and_refuses ... ok
+test sqlite_over_http_initialize_list_query_refuse ... ok
+test duckdb_over_http_cannot_read_files ... ok
+test postgres_over_http_refuses_sql_executing_builtins ... ok
+test mysql_read_only_transaction_refuses_dml_and_ddl_escapes_it ... ok
+test postgres_read_only_transaction_refuses_writes ... ok
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s

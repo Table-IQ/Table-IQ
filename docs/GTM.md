@@ -80,7 +80,7 @@ We still need engine breadth, as table stakes: roadmap P1 (+22 profiles) and P3 
 ## 4. Launch plan
 
 ### Gate: roadmap P0
-The repo is private today with no LICENSE. We launch only once all of these are true:
+The repo is private today; the Apache-2.0 LICENSE landed in v0.8.2. We launch only once all of these are true:
 
 - LICENSE (Apache-2.0) is in place and the UI string matches;
 - the repo is **public**, with the "what stays free forever" pledge in the README (§5);
@@ -207,4 +207,4 @@ Opt-in only, never default: a "send anonymous usage" toggle, if we ever need ret
 | We claim "safer than dbx" and someone finds a bypass on HN | No comparative safety claim until the guard suite is public and we pass every case. Fix before publish |
 | DataGrip and DBeaver PRO make "agent + DB client" feel solved | We don't sell the feature, we sell free + provable safety. Comparison table shows their MCP as "paid only" |
 | Open-core suspicion ("they'll paywall it later") | The "what stays free forever" pledge in the README from day one; Team tier gates only team-governance features |
-| License confusion (the UI says MIT today, the repo is private with no LICENSE) | Fix both in P0 before any public post |
+| License confusion (resolved in v0.8.2: `LICENSE`, `NOTICE`, both manifests and the UI string all say Apache-2.0) | Keep them in sync; the repo still has to go public in P0 |
