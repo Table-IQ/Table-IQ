@@ -194,9 +194,14 @@ fn guard(engine: &str, sql: &str, writes: bool, mcp: bool) -> Result<(), String>
     }
     let code = code.to_uppercase();
     if writes {
-        let word = escape_words(engine).iter().find(|k| has_word(&code, k));
-        let name = escape_names(engine).iter().find(|k| has_word(&upper, k));
-        if let Some(k) = word.or(name).copied().or_else(|| escape_pair(engine, &code)) {
+        if let Some(k) = escape_names(engine).iter().find(|k| has_word(&upper, k)) {
+            return Err(format!(
+                "`{k}` is not allowed on this connection, even with writes allowed: it changes the \
+                 server's configuration or the shared session's identity."
+            ));
+        }
+        let word = escape_words(engine).iter().find(|k| has_word(&code, k)).copied();
+        if let Some(k) = word.or_else(|| escape_pair(engine, &code)) {
             return Err(format!(
                 "`{k}` is not allowed on this connection, even with writes allowed: it reaches beyond \
                  the database (the disk, the server, or other sessions). It is refused outside a string \

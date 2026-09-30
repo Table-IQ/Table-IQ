@@ -250,3 +250,11 @@ fn a_writes_path_refusal_names_the_word_and_the_quoting_fix() {
     assert!(msg.contains("quote it") && msg.contains("comment"), "{msg}");
     assert!(!msg.contains("MCP"), "{msg}");
 }
+
+/// A refused procedure is refused however it is quoted, so its message must not suggest quoting.
+#[test]
+fn a_refused_procedure_name_does_not_suggest_quoting() {
+    let msg = guard_sql("sqlserver", "EXEC [sp_configure] 'x', 1", true).unwrap_err();
+    assert!(msg.contains("`SP_CONFIGURE`") && msg.contains("not allowed on this connection"), "{msg}");
+    assert!(!msg.contains("quote it") && !msg.contains("MCP"), "{msg}");
+}
