@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.3 — unreleased
+
+### Changed
+- MySQL connections now apply the saved SSL mode. A connection saved with `require` or a `verify-` mode that used to connect without TLS will now fail until the mode is changed or the server has a valid certificate.
+
 ## 0.8.2 — 2026-09-30
 
 TableIQ is now open source under Apache-2.0. The MCP guard also holds on connections where you let agents write: they can change your data, but not reach the server's disk, other sessions, or the app's own session.

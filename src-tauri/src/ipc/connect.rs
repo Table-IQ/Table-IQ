@@ -133,6 +133,16 @@ async fn maybe_open_tunnel(
     Ok((rewritten, Some(tunnel)))
 }
 
+/// A TLS-looking connect failure under a mode that now demands TLS: the saved mode used to be
+/// ignored for MySQL, so a connection that worked before can fail here.
+fn mysql_tls_hint(sslmode: &str, err: &str) -> Option<String> {
+    let strict = !matches!(connections::mysql_ssl_mode(sslmode), "DISABLED" | "PREFERRED");
+    let e = err.to_lowercase();
+    (strict && ["tls", "ssl", "certificate"].iter().any(|k| e.contains(k))).then(|| {
+        format!(" SSL mode '{sslmode}' is now applied to MySQL connections; change it in the connection sheet if this server has no valid certificate.")
+    })
+}
+
 /// Build the right driver for an engine. `pw` is unused for the file engines.
 async fn open_driver(cfg: &ConnConfig, pw: &str) -> Result<Arc<dyn SqlDriver>, String> {
     // SQL Server takes the parts, not a URL: tiberius' ADO string has no escaping rule for a
@@ -148,7 +158,13 @@ async fn open_driver(cfg: &ConnConfig, pw: &str) -> Result<Arc<dyn SqlDriver>, S
     let drv: Arc<dyn SqlDriver> = match cfg.engine.as_str() {
         "sqlite" => Arc::new(SqliteDriver::connect(&url).await.map_err(|e| e.to_string())?),
         "duckdb" => Arc::new(DuckDriver::connect(&url).await.map_err(|e| e.to_string())?),
-        "mysql" => Arc::new(MySqlDriver::connect(&url).await.map_err(|e| e.to_string())?),
+        "mysql" => Arc::new(MySqlDriver::connect(&url).await.map_err(|e| {
+            let e = e.to_string();
+            match mysql_tls_hint(&cfg.sslmode, &e) {
+                Some(h) => format!("{e}{h}"),
+                None => e,
+            }
+        })?),
         "postgres" => Arc::new(PgDriver::connect(&url).await.map_err(|e| e.to_string())?),
         other => return Err(format!("unsupported engine {other}")),
     };
@@ -2266,6 +2282,13 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    #[test]
+    fn tls_hint() {
+        assert!(mysql_tls_hint("verify-full", "TLS handshake failed: invalid certificate").is_some());
+        assert!(mysql_tls_hint("prefer", "TLS handshake failed: invalid certificate").is_none());
+        assert!(mysql_tls_hint("require", "Access denied for user").is_none());
     }
 
     /// An engine this build doesn't know must not silently become a Postgres connection.

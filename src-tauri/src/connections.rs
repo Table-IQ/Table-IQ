@@ -81,12 +81,13 @@ impl ConnConfig {
                 format!("mongodb://{auth}{}:{}", urlencode_host(&self.host), self.port)
             }
             "mysql" => format!(
-                "mysql://{}:{}@{}:{}/{}",
+                "mysql://{}:{}@{}:{}/{}?ssl-mode={}",
                 urlencode(&self.username),
                 urlencode(password),
                 urlencode_host(&self.host),
                 self.port,
                 urlencode(&self.database),
+                mysql_ssl_mode(&self.sslmode),
             ),
             _ => {
                 // psql / TablePlus behavior: an empty database connects to the
@@ -109,6 +110,17 @@ impl ConnConfig {
                 )
             }
         }
+    }
+}
+
+/// The sqlx `ssl-mode` for a saved SSL mode (libpq or MySQL spelling). Unknown fails closed.
+pub(crate) fn mysql_ssl_mode(saved: &str) -> &'static str {
+    match saved.to_ascii_lowercase().as_str() {
+        "disable" | "disabled" => "DISABLED",
+        "prefer" | "preferred" | "allow" => "PREFERRED",
+        "verify-ca" | "verify_ca" => "VERIFY_CA",
+        "verify-full" | "verify_identity" => "VERIFY_IDENTITY",
+        _ => "REQUIRED",
     }
 }
 
@@ -269,8 +281,33 @@ pub fn delete_password(conn_id: &str) -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    pub(crate) fn cfg(engine: &str) -> ConnConfig {
+        ConnConfig {
+            env: None, id: "x".into(), name: "x".into(), color: None,
+            engine: engine.into(), host: "h".into(), port: 3306, database: "d".into(),
+            username: "u".into(), sslmode: "prefer".into(), ssh: None,
+        }
+    }
+
+    /// The saved SSL mode never reached the MySQL driver. An unknown value fails closed.
+    #[test]
+    fn mysql_url_carries_the_ssl_mode() {
+        let mut c = cfg("mysql");
+        for (saved, sent) in [
+            ("disable", "DISABLED"), ("DISABLED", "DISABLED"),
+            ("prefer", "PREFERRED"), ("allow", "PREFERRED"), ("Preferred", "PREFERRED"),
+            ("require", "REQUIRED"), ("REQUIRED", "REQUIRED"),
+            ("verify-ca", "VERIFY_CA"), ("VERIFY_CA", "VERIFY_CA"),
+            ("verify-full", "VERIFY_IDENTITY"), ("verify_identity", "VERIFY_IDENTITY"),
+            ("nonsense&x=1", "REQUIRED"),
+        ] {
+            c.sslmode = saved.into();
+            assert!(c.url_with_password("pw").ends_with(&format!("/d?ssl-mode={sent}")), "{saved}");
+        }
+    }
 
     #[test]
     fn config_roundtrips_through_json() {
