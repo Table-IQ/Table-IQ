@@ -1,3 +1,5 @@
+<!-- /autoplan restore point: "/Users/rudy/.gstack/projects/RudreshNarwal-Table-IQ/RudreshNarwal-pending-items-select-autoplan-restore-20261001-155715.md" -->
+## Implementation plan
 # Engine Profiles Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -1147,3 +1149,369 @@ git commit -m "docs(profiles): compatibility matrix, tested flags, roadmap and R
 - Spec coverage: profile field and table (Task 1), MySQL SSL (Tasks 1, 4, 5), driver quirks and live tests for three engines in CI (Task 2), backend gates incl. MCP read-only (Task 3), URL schemes and host detection incl. RDS/Azure (Task 4), picker, icons and UI gates, DESIGN.md (Task 5), local matrix and Beta tagging (Task 6). Cloud SQL is skipped as the spec says.
 - The spec's `capsOf` list names `QueryView` and `TableView`; both are in Task 5.
 - Type names used across tasks: `profiles::of`, `with_native`, `profileOf`, `profilesFor`, `profileForUrl`, `capsOf`, `EngineCaps`, `onProfile` — consistent in every task.
+
+<!-- autoplan-accepted:ceo -->
+- Server detection replaces the saved-profile-only design in Task 2. `PgDriver::connect` runs `SELECT version()` and `MySqlDriver::connect` runs `SELECT VERSION()` and `SELECT @@version_comment` on the probe connection, inside the existing `CONNECT_TIMEOUT` bound. `profiles.json` gains a `detect` string list per profile (case-sensitive substrings of the version text). `profiles::detect(base, version_text) -> Option<&'static str>` checks the profiles of that base in a fixed order (longest marker first, ties by id) and returns the first whose marker occurs. Verification: unit tests with real version strings, and a test that no two profiles of one base share a marker.
+- Marker sources: TiDB, CockroachDB and MariaDB markers are confirmed against the running containers. Other profiles list a marker only when the vendor's documentation or a live run in Task 6 shows the exact text; otherwise their `detect` list is empty and they are reached through the saved profile only.
+- Each driver stores `product: Option<String>` and `native: bool`. The effective product is the detected id when a marker matched, otherwise the saved profile passed by `open_driver` through `with_saved_profile(Option<String>)`, which replaces `with_native`. `native` is true only when the detection query succeeded and the effective product is absent or has `real: true`. A failed or timed-out detection query means `native = false`.
+- Known limit, recorded in `pending.md`: a compatible server that reports a plain MySQL or PostgreSQL version and is saved through a base tile is treated as native. Detection helps only when the server identifies itself.
+- `SqlDriver` gains `fn product(&self) -> Option<String> { None }` and `fn native(&self) -> bool { true }`. Both are forwarded in `drivers/logged.rs`. Verification: a unit test that a `Logged` wrapper reports its inner driver's values.
+- `ConnectedInfo.profile` is the session's `product()`. The backend never rewrites the saved connection. The frontend store does: after a successful connect, when the saved config has no profile and `ConnectedInfo.profile` is set, it calls `saveConnection` with that profile and updates its own list, so the list icon is right at once. A saved profile is never overwritten. Verification: a store unit test for the three cases (saved none and detected some: saved; saved some: unchanged; detected none: unchanged).
+- Backend gates read the session: `apply_changes` and backup/restore look up `profiles::lookup(drv.product())`.
+- MCP write rule, replacing "any profile is read-only". In `run_query_body` the static check stays before the session: `guard_sql(engine, sql, writes_requested)` runs first, so refused SQL never opens a connection. After `session()`, the statement runs bare only when the user enabled writes, the session is `native()`, and the saved profile is absent or a known id; otherwise it runs through `read_only_stmts`. Verification: unit tests for a non-native session with writes enabled (read-only path), a native session with a `real` profile (bare), and an unknown saved profile id (read-only path).
+- `tests/profile_live.rs` connects with plain `connect(url)`, the path the app uses, and asserts `product()` is `tidb`, `cockroachdb` and `mariadb` on the three CI engines. `any_profile_smoke` prints the detected product.
+- The smoke test gains a soft check `mcp_read_only`: it runs `mcp::guard::read_only_wrap(base, "INSERT INTO tiq_smoke (id, name) VALUES (99, 'x')")` through `run_statements`, then counts the rows. It prints `enforced` when the insert was refused or rolled back (3 rows) and `SOFT FAIL` when the row is there or the wrapper itself was rejected. Engines that fail are listed in `pending.md` as "MCP reads unavailable".
+- `estimate_rows` and `table_stats` write one `applog::log("warn", …)` line with schema, table and error when they degrade.
+- `open_driver` writes one `applog::log("info", …)` line per connect: connection name, engine, detected product, native flag.
+- `save_connection` normalises an empty `profile` string to `None` before validating. Verification: unit test.
+- `profileForUrl` takes the scheme's base engine and only returns a host match on the same base. Verification: `parseConnUrl("postgres://u@x.psdb.cloud/db")` has no profile and port 5432.
+- `docker/profiles/docker-compose.yml` pins each image by digest. The CI wait loop exits 1 with a message when the engines are not ready after its last attempt.
+- The MySQL `ssl-mode` change is its own commit with its own `CHANGELOG.md` line.
+- `TODOS.md` gains two entries: verify Neon, Supabase, CockroachDB Cloud and TiDB Cloud with free-tier accounts; probe transaction support at connect instead of the static flag.
+- Before the build starts, Tasks 2, 3 and the Global Constraints line about MCP are rewritten to match these requirements, so no task body still describes `with_native` or "any profile is read-only".
+<!-- /autoplan-accepted:ceo -->
+## Review record
+
+### Phase 1: CEO review (SELECTIVE EXPANSION)
+
+Voices: Claude subagent completed (13 findings, INPUT hash matched). Codex: unavailable (`not_authed`). Tag: `[subagent-only]`.
+
+Methodology read: `autoplan-ceo-methodology-ytX0Zt/methodology.md` lines 1-600, 601-1200, 1201-1800, 1801-2266 of 2266.
+
+Landscape: no new web search (Aside not installed). The dbx teardown in `docs/GTM.md` and `docs/ROADMAP.md` is one day old and is the landscape source.
+
+#### System audit
+
+- Base branch `main`, v0.8.2. Branch diff is this plan only. No stashes, no open PRs.
+- No `TODO`/`FIXME` markers in `src/` or `src-tauri/src/`.
+- Hot files in the last 30 days: `connect.rs`, `commands.ts`, `MainShell.tsx`, `ConnectionManager.tsx`. All four are touched by this plan.
+- `TODOS.md` items this plan touches: T1 (privilege warning when sharing over MCP) and the MCP contract follow-ups. None are blocked or closed by it.
+- Prior learning applied: `tableiq-mock-hid-total-failure` (QA through the bridge) and `gh-pr-merge-auto-merges-immediately` (merge only after checks).
+- Taste references: `tests/changes_common/mod.rs` (one scenario body, many engines) and `mcp/guard.rs` `scan()` (refuse instead of guess). Anti-pattern to avoid: engine literals compared in 30 places with a Postgres fallthrough.
+
+#### 0A. Premise challenge
+
+| # | Premise | Verdict |
+|---|---|---|
+| 1 | `engine` stays the base driver; the product is a separate `profile` field | Valid. About 30 frontend sites and a dozen Rust sites branch on engine literals. |
+| 2 | Behaviour (degrade rules, gates) follows the profile the user picked | Weak. A TiDB server saved through the MySQL tile, or any connection saved before this release, gets none of it. Replaced by server detection (decision 2). |
+| 3 | Any profile is read-only over MCP | Weak. It blocks Neon and Supabase, which are real Postgres, yet a CockroachDB server saved as plain Postgres keeps writes. Replaced (decision 3). |
+| 4 | 23 profiles ship, untested ones tagged Beta | User decision D1. Not open. |
+| 5 | P1 is built before the P0 launch items | User decision on 2026-10-01. Not open. |
+| 6 | One JSON table shared by Rust and TypeScript | Valid. It removes the drift risk two tables would have. |
+
+No premise is queued as a User Challenge. Decisions 2 and 3 are taste decisions and go to the gate.
+
+#### 0B. Existing code leverage
+
+| Sub-problem | Existing code | Reused |
+|---|---|---|
+| A product on top of a base engine | MariaDB saved as `engine: "mysql"` | Yes, generalised |
+| Look up a saved config by id inside a command | `widget_stmts` in `ipc/connect.rs` | Yes |
+| One test body across engines | `tests/changes_common/mod.rs` | Yes |
+| Tell the user why a grid is read-only | `TableView.tsx` read-only hint | Yes |
+| Refuse instead of guess | `mcp/guard.rs` | Yes, for the MCP rule |
+| Forward every driver method through the log wrapper | `drivers/logged.rs` | Yes, two new methods |
+
+Nothing is rebuilt.
+
+#### 0C. Dream state
+
+```
+CURRENT                         THIS PLAN                          12-MONTH IDEAL
+5 SQL engines.                  23 named profiles.                 Every profile verified nightly
+"MySQL / MariaDB" is one        Behaviour follows what the         with a version stamp.
+label. A CockroachDB server     server says it is. 3 engines       MCP writes audited per engine.
+opened as Postgres fails        verified in CI, others local.      Long tail through sidecar agents.
+on the first table.
+```
+
+#### 0C-bis. Implementation alternatives
+
+```
+APPROACH A: Saved profile only (the plan as written)
+  Effort: M   Risk: Med
+  Pros: smallest diff; no extra query at connect
+  Cons: existing connections get nothing; gates are bypassed by picking the base tile
+  Reuses: MariaDB precedent
+
+APPROACH B: Saved profile + server detection at connect (chosen)
+  Effort: M (+ about 60 lines)   Risk: Low
+  Pros: behaviour follows the server; fixes existing connections; MCP rule cannot be bypassed
+  Cons: a marker table to maintain; one query on the probe connection
+  Reuses: the same profile table (a "detect" marker list per profile)
+
+APPROACH C: Degrade-only, no profile concept
+  Effort: S   Risk: Low
+  Pros: tables open on compatible servers with almost no UI work
+  Cons: no names, icons, ports or URL schemes; misses the roadmap goal
+```
+
+RECOMMENDATION: B. It is the complete version of A for about 60 more lines, and it removes A's two real defects.
+
+#### 0F. Mode
+
+SELECTIVE EXPANSION (autoplan override).
+
+#### 0D. Scope analysis
+
+- Complexity: the plan touches about 25 files. That is above the 8-file smell line, but 15 of them are one-line call-site changes that pass a `profile` argument.
+- Minimum change for the goal: Tasks 1 to 5. Task 6 (local matrix) could be deferred, but it is what sets the `tested` flags honestly, so it stays.
+- Expansion candidates:
+
+| # | Candidate | Effort | Decision |
+|---|---|---|---|
+| E1 | Detect the product from the server at connect | S | Accepted (decision 2) |
+| E2 | Save the detected profile onto a connection that has none, so the list icon is right next time | S | Accepted |
+| E3 | One app-log line at connect naming the detected product | S | Accepted |
+| E4 | MCP read wrapper as a soft check in the smoke test | S | Accepted |
+| E5 | Verify Neon, Supabase, CockroachDB Cloud and TiDB Cloud on free tiers | M | Deferred to TODOS.md: needs accounts only the user can create |
+| E6 | Probe transaction support at connect instead of a static flag | M | Deferred to TODOS.md |
+| E7 | Searchable picker instead of a native select | M | Skipped: the native select has type-ahead |
+
+#### 0E. Temporal interrogation
+
+```
+HOUR 1  Where does detection run? On the probe connection, before the pool exists.
+HOUR 2  Which strings identify each product? Confirm TiDB, CockroachDB and MariaDB against the
+        running containers. For the rest use vendor docs; a profile with no confirmed marker has none.
+HOUR 3  MCP decides read-only before it has a session. Move that decision after `session()`.
+HOUR 4  `Logged` must forward the two new trait methods, or every session reports "native".
+HOUR 5  What does the UI show when the saved profile and the detected product differ? The detected one.
+HOUR 6  Image digests and a CI wait loop that fails loudly.
+```
+
+Human-team scale: about 2 days. With CC: about 2 to 3 hours including image pulls.
+
+#### CEO dual voices
+
+CLAUDE SUBAGENT (CEO, strategic independence): 3 critical, 6 high, 4 medium.
+
+| Finding | Summary | Disposition |
+|---|---|---|
+| F1 | Behaviour is keyed on a dropdown, not the server | Accepted (decision 2) |
+| F2 | P1 before P0 | Rejected: user decision |
+| F3 | MCP path never exercised by the smoke test | Accepted (E4) |
+| F4 | Show only verified profiles | Rejected: user decision D1 |
+| F5 | Verify cloud engines first | Deferred (E5) |
+| F6 | `tested` is a one-off flag; the smoke test forces `native=false` | Accepted: the test uses the app's own detection; digests pinned |
+| F7 | Read-only rule regresses Neon, Supabase and MariaDB users | Accepted (decision 3) |
+| F8 | Static capability flags go stale | Deferred (E6) |
+| F9 | Host matching ignores the URL's base engine | Accepted |
+| F10 | Unpinned images; CI wait loop never fails | Accepted |
+| F11 | MySQL SSL change buried in a feature PR | Accepted: own commit and changelog line |
+| F12 | Alternatives not analysed | Accepted: 0C-bis above |
+| F13 | Drop China-centric engines | Rejected: the roadmap's P1 list names them |
+
+```
+CEO DUAL VOICES — CONSENSUS TABLE:
+  Dimension                             Claude   Codex   Consensus
+  1. Premises valid?                    2 weak   —       N/A
+  2. Right problem to solve?            partly   —       N/A
+  3. Scope calibration correct?         no       —       N/A
+  4. Alternatives explored?             no       —       N/A
+  5. Competitive/market risks covered?  partly   —       N/A
+  6. 6-month trajectory sound?          at risk  —       N/A
+Outside voice unavailable: all six consensus cells are N/A.
+```
+
+#### Section 1: Architecture
+
+```
+src/lib/profiles.json ──include_str!──▶ profiles.rs ──▶ open_driver, gates, mcp
+        │                                    ▲
+        └──import──▶ profiles.ts ──▶ connUrl, EngineIcon, ConnectionSheet, capsOf
+
+saved ConnConfig.profile (hint) ──┐
+server version at connect ────────┴──▶ driver.product(), driver.native()
+                                              │
+              ┌───────────────────────────────┼──────────────────────────┐
+              ▼                               ▼                          ▼
+   ctid paging, estimate degrade     apply_changes / backup gates   MCP writes allowed?
+```
+
+- Coupling added: the backend now reads a file under `src/`. Justified: it is the single source for both sides, and `include_str!` makes a missing file a compile error.
+- Data flow shadow paths for `profile`: nil means base engine; empty string is normalised to nil on save; an unknown id behaves as the base engine but is read-only over MCP; a detection query that fails marks the session not native.
+- Single point of failure: none new. Rollback is a git revert; the extra serde field is ignored by older builds.
+- Scaling: one extra query per connect, on the probe connection only.
+
+Finding 1.1 (accepted): detection replaces the test-only `with_native(false)` switch, so the test and the app run the same path.
+
+#### Section 2: Error and rescue map
+
+| Codepath | What can go wrong | Rescued | User sees |
+|---|---|---|---|
+| `profiles.rs` table load | JSON does not parse | No (panic on first use) | Caught by the unit test before release; cannot happen with a committed file |
+| Detection query at connect | Server rejects `version()` | Yes: session is not native, product falls back to the saved profile | Nothing; one app-log line |
+| `save_connection` | Unknown profile or wrong base | Yes: `Err` | The message in the sheet's status line |
+| `apply_changes` | Product has no transactions | Yes: `Err` before any SQL | Grid notice naming the product |
+| `backup_database`, `restore_inner` | Product has no supported dump tool | Yes: `Err` | "Backup is not supported for X" |
+| `estimate_rows`, `table_stats` | Catalog function missing on a compatible server | Yes: unknown / empty | "Unknown" row estimate; app-log line (finding 2.1) |
+| CI engine start | Container never becomes ready | No in the plan (finding 2.2) | A confusing test failure later |
+
+Finding 2.1 (accepted): the degrade must write one app-log line with the table and the error. Swallowing it silently hides a real outage.
+Finding 2.2 (accepted): the CI wait loop must exit non-zero when it times out.
+
+#### Section 3: Security
+
+- New input: the `profile` string from saved JSON or an imported bundle. It is only ever a table key. It is never interpolated into SQL or a URL. Schemes and ports come from the static table.
+- Host-suffix matching: `evilneon.tech` must not match `.neon.tech` (test in Task 4). Finding 3.1 (accepted): a host match must also agree with the URL scheme's base engine, otherwise a `postgres://` URL on a MySQL-only suffix becomes a MySQL connection.
+- MCP: decision 3 makes the write gate depend on what the server reports, which a saved field cannot bypass. Unknown profile ids stay read-only.
+- MySQL `ssl-mode` comes from a fixed match, so a stored `sslmode` cannot inject URL options (test in Task 1).
+- No new secrets, endpoints or dependencies.
+
+#### Section 4: Data flow and interaction edge cases
+
+```
+pasted URL ─▶ scheme/host lookup ─▶ form {engine, profile, port, ssl} ─▶ save ─▶ connect ─▶ detect
+   │              │                        │                              │          │
+ not a URL     unknown scheme           profile on other base          refused    differs from saved:
+ → note        → base engine            → cannot happen in the UI      with text  detected wins for the session
+```
+
+| Interaction | Edge case | Handled |
+|---|---|---|
+| Pick a profile, then click a tile | Profile cleared | Yes (Task 5) |
+| Pick a profile after typing a port | Port replaced by the profile default | Yes, same as tiles today |
+| Paste a URL in edit mode for another base | Note shown, engine unchanged | Yes |
+| Saved profile says TiDB, server is MySQL | Detected nothing: saved profile still applies | Yes: saved hint is kept when detection finds no marker |
+| Saved profile and detected product differ | The session uses the detected one; the saved value is left alone | Yes |
+| Connect fails after detection | No session, nothing saved | Yes: the store saves a profile only after a successful connect |
+
+No async ordering risk: detection runs once inside `connect`, before the session is published.
+
+#### Section 5: Code quality
+
+- Fits existing patterns. `profile_allows` is the only new helper in `connect.rs` and has three callers.
+- Finding 5.1 (accepted): `Some("")` must be normalised to `None` in `save_connection`, or an empty profile would read as "unknown, so read-only over MCP".
+- No new abstraction beyond one data table and two small modules.
+
+#### Section 6: Tests
+
+```
+NEW UX FLOWS:        compatible-database select; Beta note; read-only hint for no-transaction products
+NEW DATA FLOWS:      profile through save/load/bundle; URL to profile; server version to product
+NEW CODEPATHS:       native flag in two drivers; three backend gates; MCP write gate after session
+NEW INTEGRATIONS:    TiDB, CockroachDB, MariaDB containers
+NEW ERROR PATHS:     see the error and rescue map
+```
+
+Gaps found and accepted: unit tests for detection using real version strings; the base-aware host test; `Some("")`; a live assertion that each CI engine is detected as its own product.
+
+The 2am test: the live smoke on three engines in CI. The hostile test: a CockroachDB server saved through the Postgres tile with MCP writes allowed must be refused.
+
+#### Section 7: Performance
+
+One extra round trip per connect. No new per-page or per-row work. No issues.
+
+#### Section 8: Observability
+
+Finding 8.1 (accepted, E3): one app-log line per connect with engine, detected product and native flag. Without it a "why is my count unknown" report cannot be diagnosed.
+
+#### Section 9: Deployment
+
+Additive serde field; no migration. An older build that opens the file ignores `profile` and drops it on its next save, which is acceptable. Finding 9.1 (accepted): the MySQL SSL change ships as its own commit and its own changelog line, because it changes connect behaviour for saved MySQL connections whose mode is not `prefer`.
+
+#### Section 10: Long-term trajectory
+
+Reversibility 4/5. Debt: a marker table that needs upkeep as vendors change version strings. P3 (HTTP engines) and P4 (agents) can reuse the same table shape.
+
+#### Section 11: Design
+
+Information order in the sheet: paste URL, seven tiles, compatible-database select, then the form. The plan is specific and follows `DESIGN.md`. With E2 an existing connection gets its icon after the next connect, which answers "edit mode cannot set a profile". Full design review follows in Phase 2.
+
+#### Spec review loop (CEO plan archive)
+
+One reviewer pass: 6/10, 9 issues, all 9 folded into the accepted requirements below (deterministic marker order, marker sources, saved-vs-detected rule, detection timeout, profile save moved to the frontend store, a write attempt in the MCP soft check, static guard before the session, task bodies rewritten before build). No second pass: Phase 3 reviews the amended plan in full.
+
+#### NOT in scope
+
+- Cloud verification with free-tier accounts (E5): needs the user's accounts.
+- Runtime transaction probing (E6).
+- MCP writes on compatible engines: needs a per-engine guard audit.
+- A searchable picker (E7).
+- Cloud SQL host detection: no hostname pattern.
+
+#### Dream state delta
+
+After this plan behaviour follows the server and three engines are proven in CI. Still missing for the 12-month ideal: nightly verification with version stamps, cloud-engine verification, and a per-engine write audit.
+
+#### Failure modes registry
+
+| Codepath | Failure | Rescued | Test | User sees | Logged |
+|---|---|---|---|---|---|
+| Detection | Query rejected | Yes | Unit | Nothing | Yes |
+| Estimate degrade | Catalog function missing | Yes | Live smoke | "Unknown" count | Yes |
+| No-transaction commit | Forged IPC call | Yes | Unit | Refusal text | No (user error) |
+| MCP write on a compatible server | Agent sends a write | Yes | Unit | Refusal text in Activity | Yes (Activity) |
+| CI engines not ready | Timeout | Yes after 2.2 | CI itself | Step fails | Yes |
+
+No critical gaps.
+
+#### Completion summary
+
+```
+Mode selected         SELECTIVE EXPANSION
+System Audit          plan-only diff; hot files overlap; no markers
+Step 0                Approach B (saved profile + server detection)
+Section 1  (Arch)     1 issue
+Section 2  (Errors)   7 paths mapped, 2 gaps
+Section 3  (Security) 1 issue, 0 high
+Section 4  (Data/UX)  5 edge cases mapped, 0 unhandled
+Section 5  (Quality)  1 issue
+Section 6  (Tests)    diagram produced, 4 gaps
+Section 7  (Perf)     0 issues
+Section 8  (Observ)   1 gap
+Section 9  (Deploy)   1 risk
+Section 10 (Future)   Reversibility 4/5, 1 debt item
+Section 11 (Design)   0 issues, deferred to Phase 2
+NOT in scope          5 items
+Error/rescue registry 7 paths, 0 critical gaps
+Failure modes         5, 0 critical gaps
+TODOS.md updates      2 proposed (E5, E6)
+Scope proposals       7 proposed, 4 accepted
+Outside voice         codex unavailable; Claude subagent completed
+Lake Score            4/4
+Diagrams              3 (architecture, dream state, data flow)
+Unresolved decisions  0 (2 taste decisions go to the gate)
+```
+
+<!-- autoplan-accepted:ceo -->
+- Server detection replaces the saved-profile-only design in Task 2. `PgDriver::connect` runs `SELECT version()` and `MySqlDriver::connect` runs `SELECT VERSION()` and `SELECT @@version_comment` on the probe connection, inside the existing `CONNECT_TIMEOUT` bound. `profiles.json` gains a `detect` string list per profile (case-sensitive substrings of the version text). `profiles::detect(base, version_text) -> Option<&'static str>` checks the profiles of that base in a fixed order (longest marker first, ties by id) and returns the first whose marker occurs. Verification: unit tests with real version strings, and a test that no two profiles of one base share a marker.
+- Marker sources: TiDB, CockroachDB and MariaDB markers are confirmed against the running containers. Other profiles list a marker only when the vendor's documentation or a live run in Task 6 shows the exact text; otherwise their `detect` list is empty and they are reached through the saved profile only.
+- Each driver stores `product: Option<String>` and `native: bool`. The effective product is the detected id when a marker matched, otherwise the saved profile passed by `open_driver` through `with_saved_profile(Option<String>)`, which replaces `with_native`. `native` is true only when the detection query succeeded and the effective product is absent or has `real: true`. A failed or timed-out detection query means `native = false`.
+- Known limit, recorded in `pending.md`: a compatible server that reports a plain MySQL or PostgreSQL version and is saved through a base tile is treated as native. Detection helps only when the server identifies itself.
+- `SqlDriver` gains `fn product(&self) -> Option<String> { None }` and `fn native(&self) -> bool { true }`. Both are forwarded in `drivers/logged.rs`. Verification: a unit test that a `Logged` wrapper reports its inner driver's values.
+- `ConnectedInfo.profile` is the session's `product()`. The backend never rewrites the saved connection. The frontend store does: after a successful connect, when the saved config has no profile and `ConnectedInfo.profile` is set, it calls `saveConnection` with that profile and updates its own list, so the list icon is right at once. A saved profile is never overwritten. Verification: a store unit test for the three cases (saved none and detected some: saved; saved some: unchanged; detected none: unchanged).
+- Backend gates read the session: `apply_changes` and backup/restore look up `profiles::lookup(drv.product())`.
+- MCP write rule, replacing "any profile is read-only". In `run_query_body` the static check stays before the session: `guard_sql(engine, sql, writes_requested)` runs first, so refused SQL never opens a connection. After `session()`, the statement runs bare only when the user enabled writes, the session is `native()`, and the saved profile is absent or a known id; otherwise it runs through `read_only_stmts`. Verification: unit tests for a non-native session with writes enabled (read-only path), a native session with a `real` profile (bare), and an unknown saved profile id (read-only path).
+- `tests/profile_live.rs` connects with plain `connect(url)`, the path the app uses, and asserts `product()` is `tidb`, `cockroachdb` and `mariadb` on the three CI engines. `any_profile_smoke` prints the detected product.
+- The smoke test gains a soft check `mcp_read_only`: it runs `mcp::guard::read_only_wrap(base, "INSERT INTO tiq_smoke (id, name) VALUES (99, 'x')")` through `run_statements`, then counts the rows. It prints `enforced` when the insert was refused or rolled back (3 rows) and `SOFT FAIL` when the row is there or the wrapper itself was rejected. Engines that fail are listed in `pending.md` as "MCP reads unavailable".
+- `estimate_rows` and `table_stats` write one `applog::log("warn", …)` line with schema, table and error when they degrade.
+- `open_driver` writes one `applog::log("info", …)` line per connect: connection name, engine, detected product, native flag.
+- `save_connection` normalises an empty `profile` string to `None` before validating. Verification: unit test.
+- `profileForUrl` takes the scheme's base engine and only returns a host match on the same base. Verification: `parseConnUrl("postgres://u@x.psdb.cloud/db")` has no profile and port 5432.
+- `docker/profiles/docker-compose.yml` pins each image by digest. The CI wait loop exits 1 with a message when the engines are not ready after its last attempt.
+- The MySQL `ssl-mode` change is its own commit with its own `CHANGELOG.md` line.
+- `TODOS.md` gains two entries: verify Neon, Supabase, CockroachDB Cloud and TiDB Cloud with free-tier accounts; probe transaction support at connect instead of the static flag.
+- Before the build starts, Tasks 2, 3 and the Global Constraints line about MCP are rewritten to match these requirements, so no task body still describes `with_native` or "any profile is read-only".
+<!-- /autoplan-accepted:ceo -->
+
+## Decision Audit Trail
+
+| # | Phase | Decision | Classification | Principle | Rationale | Rejected |
+|---|---|---|---|---|---|---|
+| 1 | CEO | Mode: SELECTIVE EXPANSION | Mechanical | autoplan override | Iteration on an existing system | Other modes |
+| 2 | CEO | Detect the product from the server; saved profile is a hint | Taste | P1 completeness | Fixes existing connections and closes the base-tile bypass for about 60 lines | Saved profile only; degrade-only |
+| 3 | CEO | MCP writes follow the detected server, not "any profile is read-only" | Taste | P1, P5 | The approved rule blocked real Postgres and missed mislabelled servers | Keep the approved wording |
+| 4 | CEO | Keep all 23 profiles with Beta tags | Mechanical | user decision D1 | Not open for review | Show only verified |
+| 5 | CEO | Keep P1 before P0 | Mechanical | user decision | Not open for review | Reorder |
+| 6 | CEO | Defer cloud free-tier verification | Mechanical | P3 | Needs accounts only the user can create | Do it now |
+| 7 | CEO | Base-aware host matching | Mechanical | P1 | A real bug in the plan's lookup | Leave as is |
+| 8 | CEO | Smoke test uses the app's detection path; pin digests; CI loop fails | Mechanical | P1 | The test must certify the path the app runs | `with_native(false)` |
+| 9 | CEO | MySQL SSL change as its own commit and changelog line | Mechanical | P5 | It changes connect behaviour for saved connections | Bundle it |
+| 10 | CEO | MCP read wrapper as a soft smoke check | Mechanical | P1 | Shows which engines support the read-only wrapper | Skip |
+| 11 | CEO | Save the detected profile onto a profile-less connection | Mechanical | P2 | In blast radius, a few lines, fixes list icons | Skip |
+| 12 | CEO | Keep the China-centric engines | Mechanical | roadmap | The P1 list names them | Defer to zh launch |
+| 13 | CEO | Defer runtime transaction probing | Mechanical | P3 | The matrix sets the flags for now | Build now |
+| 14 | CEO | App-log lines for connect and degrade | Mechanical | P1 | Needed to diagnose reports | Skip |
