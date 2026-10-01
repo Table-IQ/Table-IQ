@@ -1214,6 +1214,29 @@ git commit -m "docs(profiles): compatibility matrix, tested flags, roadmap and R
 - `CHANGELOG.md` has a "Changed" entry that lists each behaviour change for existing connections: a recognised compatible server loses MCP writes, backup and user management where its profile lacks them; MySQL connections now apply the saved SSL mode.
 - `pending.md` records two known limits: the MCP checkbox can read "allowed" before the first connect to a server that is then recognised as compatible, and capability gates cannot be overridden per connection.
 <!-- /autoplan-accepted:dx -->
+
+<!-- autoplan-accepted:eng -->
+- The plan is rewritten as one coherent document before the build: superseded task bodies are removed, every file a task touches is listed, and each bullet in the four accepted blocks is ticked against the task that implements it. This replaces the grep check as the gate.
+- Saved versus detected, replacing the DX requirement "a positive detection is the truth" and its four store cases: detection fills an empty saved profile only. The frontend store saves `ConnectedInfo.profile` onto the connection only when the saved profile is empty. When both exist and differ, the saved profile stays, the session's label is the saved one, one `applog::log("warn", …)` line records the mismatch, and capabilities are the more restrictive of the two. Store test cases: saved none and detected X saves X; saved X and detected Y leaves X; saved X and nothing detected leaves X; saved none and nothing detected leaves none.
+- Capabilities are computed once, in the backend: `profiles::effective_caps(saved, detected) -> Caps { transactions, backup, user_mgmt }` is the field-wise AND of both profiles' flags, with an absent or unknown profile contributing all-true. `ConnectedInfo` gains `caps`. Session surfaces in the frontend read `active.caps` and do not recompute. Verification: unit tests for none/none, one side restrictive, both restrictive, and an unknown id.
+- No single `native` flag. Each driver stores the detection result (`ok`, `product`) and the saved profile, and exposes: `fn product(&self) -> Option<String>` (session profile: saved if known, else detected; default `None`), `fn caps(&self) -> Caps` (default all-true), and `fn agent_access(&self) -> Result<(), String>` with no default body, so every driver, `Logged` and every test fake must state it. Postgres and MySQL return `Err(reason)` when detection failed, or when either the saved or the detected profile is a known profile with `real: false`, or when the saved profile is an unknown id. SQLite, DuckDB and SQL Server return `Ok(())`. Driver-internal choices (ctid paging, tolerant `SET`s, estimate degrade) use a private `compat()` helper with the same inputs.
+- MCP access, replacing the CEO write rule and the design checkbox rule: a compatible product is not reachable over MCP at all in this release, for reads or writes. `mcp::server::allowed()` refuses a connection whose saved profile is a known `real: false` profile or an unknown id before any connect; after `session()` every tool calls `drv.agent_access()?`. `list_connections` omits those connections. Refusal text: "{label} cannot be shared over MCP yet: TableIQ's agent guard has been reviewed for PostgreSQL, MySQL and MariaDB only. Ask the user to run this in a TableIQ query tab." Detection failure and unknown-id texts stay as accepted earlier, with "cannot be shared over MCP" in place of "is read-only over MCP".
+- `McpSettings.tsx`: for such a connection the share checkbox itself is unchecked and disabled, there is no writes checkbox, and the row shows "Not available over MCP yet: TableIQ's agent guard has been reviewed for PostgreSQL, MySQL and MariaDB only." `capsOf(engine, profile)` exposes this as `agents: boolean` and no longer has `mcpWrites`.
+- One case table, `src/lib/agentAccessCases.json` (saved profile, expected boolean, reason), is asserted by `profiles.test.ts` through `capsOf().agents` and by a Rust unit test through the pre-connect check in `allowed()`.
+- `guard_live.rs` runs its MySQL cases against `TIQ_MARIADB_URL` as well when set, and CI sets it. `docs/ENGINES.md` states that vendor extensions on Neon, Supabase and AlloyDB are outside the reviewed function list.
+- Live test in `tests/mcp_live.rs`, gated on `TIQ_TIDB_URL`: a TiDB connection with sharing and writes enabled answers `list_tables` and `run_query` with the refusal text, and the row count of a probe table is unchanged.
+- Detection uses the simple query protocol (`sqlx::raw_sql`). `PgDriver::connect_as(url, saved_profile)` and `MySqlDriver::connect_as(url, saved_profile)` replace `with_saved_profile`; `connect(url)` calls `connect_as(url, None)`.
+- Postgres pool setup on a compatible session runs the four `SET` statements one at a time and logs, without failing, any the server rejects. A genuine PostgreSQL session keeps the single strict batch. Verification: the CockroachDB live smoke connects and pages.
+- Every profile with `transactions: false` has a `detect` marker confirmed by a Task 6 run or vendor documentation. A profile for which none can be confirmed is listed in `pending.md` under "staged commits are not atomic if saved through a base tile".
+- MySQL SSL mapping: case-insensitive; accepts `disable`/`DISABLED`, `prefer`/`allow`/`PREFERRED`, `require`/`REQUIRED`, `verify-ca`/`VERIFY_CA`, `verify-full`/`VERIFY_IDENTITY`; any other value maps to `REQUIRED`. The unit test's last row becomes `("nonsense&x=1", "REQUIRED")`. The frontend URL parser normalises both vocabularies to the lowercase Postgres-style values under either `sslmode` or `ssl-mode`.
+- Live test gated on `TIQ_MYSQL_URL`: connecting with `ssl-mode=REQUIRED` reports a non-empty `Ssl_cipher` from `SHOW STATUS LIKE 'Ssl_cipher'`, and with `ssl-mode=DISABLED` an empty one.
+- `open_driver` appends to a failed MySQL connect whose saved SSL mode is `require`, `verify-ca` or `verify-full` and whose error mentions TLS, SSL or a certificate: " SSL mode '{mode}' is now applied to MySQL connections; change it in the connection sheet if this server has no valid certificate." Verification: a unit test on the helper that builds the message.
+- `tests/profile_live.rs` holds an expected soft-failure list per CI engine and fails when the observed set differs in either direction. A Rust unit test asserts `tidb`, `cockroachdb` and `mariadb` are `tested: true`.
+- Compose images are pinned by multi-architecture index digest (`docker buildx imagetools inspect`). A service whose image has no client for a `healthcheck` is waited on from the host with a loop that exits 1 on timeout.
+- `onProfile` ignores an id that is not in the table.
+- `docs/ENGINES.md` records, per locally verified engine, the image reference and the date of the run.
+- `TODOS.md` gains: review the agent guard for TiDB and CockroachDB so they can be shared over MCP; `TIQ_REQUIRE_LIVE` for the existing live tests; a readable error for Metrics widgets on engines without read-only transactions. `pending.md` records that `verify-full` through an SSH tunnel fails host verification because the driver connects to `127.0.0.1`.
+<!-- /autoplan-accepted:eng -->
 ## Review record
 
 ### Phase 1: CEO review (SELECTIVE EXPANSION)
@@ -1769,6 +1792,175 @@ NOT in scope (DX): per-connection capability overrides; a JSON Schema for the ta
 - `pending.md` records two known limits: the MCP checkbox can read "allowed" before the first connect to a server that is then recognised as compatible, and capability gates cannot be overridden per connection.
 <!-- /autoplan-accepted:dx -->
 
+### Phase 3: Engineering review
+
+Voices: Claude subagent completed (1 critical, 5 high, 13 medium or low; INPUT hash matched). Codex: unavailable (`not_authed`). Tag: `[subagent-only]`.
+
+Methodology read: `autoplan-eng-methodology-03cp2o/methodology.md` lines 1-600, 601-1200, 1201-1800 of 1800.
+
+#### Step 0: Scope challenge
+
+- Existing code reused: the MariaDB-as-MySQL precedent, `widget_stmts` config lookup, `changes_common`, the grid's read-only hint, `mcp_live.rs` harness, `guard_live.rs`.
+- Minimum change: profile table, detection, gates, picker. Nothing in the plan is deferrable without losing the goal.
+- Complexity: about 25 files, above the 8-file line. Scope is not reduced (autoplan override); 15 of the files are one-line call-site changes.
+- Search check: no web search (Aside not installed). The one framework question, whether sqlx-mysql honours `ssl-mode`, gets a live test instead of a citation.
+- Distribution: no new artifact.
+
+```
+ENG DUAL VOICES — CONSENSUS TABLE:
+  Dimension                         Claude        Codex   Consensus
+  1. Architecture sound?            yes, base+profile; flag overloaded   —   N/A
+  2. Test coverage sufficient?      no            —       N/A
+  3. Performance risks addressed?   yes           —       N/A
+  4. Security threats covered?      no            —       N/A
+  5. Error paths handled?           partly        —       N/A
+  6. Deployment risk manageable?    yes with changelog   —   N/A
+```
+
+#### Section 1: Architecture
+
+```
+            profiles.json (base, real, transactions, backup, userMgmt, detect[], tested)
+               │                                   │
+        profiles.rs                           profiles.ts
+   lookup · detect · effective_caps      profileOf · capsOf · applyPreset
+               │
+ connect ─▶ probe: version text ─▶ detected product ─┐
+ saved profile (hint) ───────────────────────────────┼─▶ session { profile, caps, compat, agent_ok }
+                                                     │
+        ┌────────────────────┬───────────────────────┼───────────────────────┐
+        ▼                    ▼                       ▼                       ▼
+ driver internals      apply_changes,          mcp::allowed            ConnectedInfo
+ (ctid, tolerant       backup, restore         (refuse when            { profile, caps }
+  SETs, estimates)     (caps)                   not agent_ok)           → UI gates
+```
+
+Findings (confidence in brackets):
+
+1. [P1] (9/10) One `native` flag decided ctid paging, error tolerance and agent access. A performance change could move a security boundary. Fix accepted: the driver keeps the facts (detection result, saved profile) and each decision has its own named function.
+2. [P1] (8/10) "Detected overwrites saved" downgrades PlanetScale to Vitess and can raise privileges. Fix accepted: detection fills an empty profile only; when both exist the session uses the more restrictive of the two.
+3. [P1] (8/10) The read-only guard has never been reviewed for compatible engines; `SHOW` is allowed and CockroachDB's `SHOW BACKUP … IN '<url>'` reaches the network (from vendor docs, not run here). Fix accepted: no MCP access at all on a compatible product until its guard is reviewed (decision 34).
+4. [P2] (8/10) A trait default of "audited" fails open for any wrapper that forgets to forward. Fix accepted: the method has no default.
+5. [P2] (7/10) Postgres `after_connect` runs four `SET`s in one batch; a compatible server that rejects one cannot connect. Fix accepted: tolerant per-statement `SET`s on compatible sessions.
+
+#### Section 2: Code quality
+
+6. [P1] (9/10) Task bodies describe the superseded model and omit files (`drivers/mod.rs`, `drivers/logged.rs`, the store, `docs/ENGINES.md`). Fix accepted: the plan is rewritten as one coherent document before the build, checked requirement by requirement.
+7. [P2] (8/10) The agent rule existed in Rust and TypeScript with different inputs. Fix accepted: one JSON case table asserted by both test suites.
+8. [P2] (8/10) Unknown MySQL SSL values mapped to `PREFERRED`, a silent downgrade. Fix accepted: case-insensitive, both vocabularies, unknown means `REQUIRED`.
+9. [P3] (7/10) `onProfile` dereferenced an unknown id. Fix accepted.
+
+#### Section 3: Tests
+
+```
+CODE PATHS                                              USER FLOWS
+[+] profiles.rs                                         [+] Add a compatible connection
+  ├── lookup / of           [★★★ plan] unit               ├── [★★ plan] paste URL → profile, port (vitest)
+  ├── detect (order, none)  [★★★ plan] unit, real strings  ├── [GAP→QA] pick from select, save, connect (bridge QA)
+  └── effective_caps        [GAP → added] unit            └── [★★ plan] edit mode: clear to plain (static markup)
+[+] drivers (pg, mysql)                                 [+] Browse on a compatible server
+  ├── probe + detect        [★★★ plan] live ×3            ├── [★★★ plan] live smoke ×3 [→E2E]
+  ├── tolerant SETs         [GAP → added] live (CRDB)      └── [GAP→QA] "—" for unknown sizes (bridge QA)
+  ├── ctid off when compat  [★★ plan] live smoke         [+] Edit on a no-transaction product
+  └── estimate degrade+log  [★★ plan] live smoke           ├── [★★★ plan] precedence helper unit
+[+] connections.rs                                         └── [★★ plan] backend refusal unit
+  ├── profile serde         [★★★ plan] unit              [+] Agent access
+  └── mysql ssl-mode        [★★ plan] unit                 ├── [GAP → added] live: TiDB shared → refused [→E2E]
+       └── honoured by sqlx [GAP → added] live             ├── [GAP → added] shared case table, both suites
+[+] ipc/connect.rs                                         └── [★★ plan] settings row states (static markup)
+  ├── save validation       [★★★ plan] unit              [+] Upgrade
+  ├── apply_changes gate    [★★★ plan] unit                └── [GAP → added] MySQL TLS failure shows the hint (unit)
+  ├── backup/restore gate   [★★ plan] unit
+  └── TLS hint              [GAP → added] unit
+[+] mcp/server.rs
+  ├── allowed(): compat     [★★★ plan] unit + live
+  └── list omits compat     [GAP → added] unit
+[+] frontend libs           [★★★ plan] vitest (profiles, connUrl, connEnv, backup, userMgmt, applyPreset)
+
+COVERAGE after additions: 27/29 paths (2 covered by bridge QA only)   GAPS closed: 8
+```
+
+Regression rule: the MySQL SSL change alters behaviour for existing connections, so its live test (`REQUIRED` versus `DISABLED`, asserted on `Ssl_cipher`) is mandatory.
+
+Test plan artifact: `~/.gstack/projects/RudreshNarwal-Table-IQ/rudy-RudreshNarwal-pending-items-select-eng-review-test-plan-20261001.md`.
+
+#### Section 4: Performance
+
+One or two extra round trips per connect, on the probe connection. The profile table is 23 rows held in a `LazyLock`. No per-page cost. No issues.
+
+#### Failure modes
+
+| Codepath | Realistic failure | Test | Handling | User sees |
+|---|---|---|---|---|
+| Detection | Version query rejected or times out | Unit | Session is compatible, agent access off | Reason text in MCP; app-log line |
+| Tolerant `SET`s | Server rejects `extra_float_digits` | Live (CRDB) | Statement skipped, logged | Nothing |
+| Staged commit on an unrecognised Doris | `BEGIN` is a no-op, partial write | None | Marker per no-transaction profile; residual risk recorded | Wrong "rolled back" claim (residual) |
+| MySQL TLS on upgrade | `verify-full` now enforced, self-signed cert | Unit | Hint appended to the error | Error naming the SSL mode |
+| Agent call on TiDB | Tool call | Live | Refused before any SQL | Reason text in Activity |
+| CI images | amd64 runner cannot pull an arm64 digest | CI itself | Index digests | Step fails with the service name |
+
+Critical gaps: 0. One residual risk (third row) is recorded in `pending.md`.
+
+#### Worktree parallelization
+
+| Step | Modules | Depends on |
+|---|---|---|
+| T1 table + config | `src/lib`, `src-tauri/src` | — |
+| T2 drivers + rig | `src-tauri/src/drivers`, `docker`, CI | T1 |
+| T3 gates + MCP | `src-tauri/src/ipc`, `src-tauri/src/mcp` | T2 |
+| T4 frontend libs | `src/lib`, `src/state` | T1 |
+| T5 frontend UI | `src/components` | T4, T3 (`ConnectedInfo.caps`) |
+| T6 matrix + docs | `docs`, `src/lib/profiles.json` | T2 |
+
+Lane A: T1 → T2 → T3. Lane B: T4 after T1. Then T5, then T6. Lanes A and B both edit `src/lib/profiles.json` (flags), so they run one after the other in a single worktree.
+
+#### NOT in scope (engineering)
+
+- Guard review for TiDB and CockroachDB so agents can read them: its own slice.
+- `TIQ_REQUIRE_LIVE` for the existing Postgres and MySQL live tests: about 15 files outside this change.
+- Probing transaction support at connect.
+- A readable error for Metrics widgets on engines without read-only transactions.
+- A backend gate for user management: the feature is frontend-built SQL sent through `run_script`, so the backend has no call to gate.
+
+#### Completion summary (engineering)
+
+- Step 0: scope accepted as is
+- Architecture: 5 issues
+- Code quality: 4 issues
+- Tests: diagram produced, 8 gaps, all added
+- Performance: 0 issues
+- NOT in scope: written
+- What already exists: written (Step 0)
+- TODOS.md updates: 6 collected across phases
+- Failure modes: 0 critical gaps, 1 residual risk
+- Outside voice: codex unavailable; Claude subagent ran
+- Parallelization: 2 lanes, run sequentially in one worktree
+- Lake Score: 9/9
+- Unresolved decisions: 0
+
+<!-- autoplan-accepted:eng -->
+- The plan is rewritten as one coherent document before the build: superseded task bodies are removed, every file a task touches is listed, and each bullet in the four accepted blocks is ticked against the task that implements it. This replaces the grep check as the gate.
+- Saved versus detected, replacing the DX requirement "a positive detection is the truth" and its four store cases: detection fills an empty saved profile only. The frontend store saves `ConnectedInfo.profile` onto the connection only when the saved profile is empty. When both exist and differ, the saved profile stays, the session's label is the saved one, one `applog::log("warn", …)` line records the mismatch, and capabilities are the more restrictive of the two. Store test cases: saved none and detected X saves X; saved X and detected Y leaves X; saved X and nothing detected leaves X; saved none and nothing detected leaves none.
+- Capabilities are computed once, in the backend: `profiles::effective_caps(saved, detected) -> Caps { transactions, backup, user_mgmt }` is the field-wise AND of both profiles' flags, with an absent or unknown profile contributing all-true. `ConnectedInfo` gains `caps`. Session surfaces in the frontend read `active.caps` and do not recompute. Verification: unit tests for none/none, one side restrictive, both restrictive, and an unknown id.
+- No single `native` flag. Each driver stores the detection result (`ok`, `product`) and the saved profile, and exposes: `fn product(&self) -> Option<String>` (session profile: saved if known, else detected; default `None`), `fn caps(&self) -> Caps` (default all-true), and `fn agent_access(&self) -> Result<(), String>` with no default body, so every driver, `Logged` and every test fake must state it. Postgres and MySQL return `Err(reason)` when detection failed, or when either the saved or the detected profile is a known profile with `real: false`, or when the saved profile is an unknown id. SQLite, DuckDB and SQL Server return `Ok(())`. Driver-internal choices (ctid paging, tolerant `SET`s, estimate degrade) use a private `compat()` helper with the same inputs.
+- MCP access, replacing the CEO write rule and the design checkbox rule: a compatible product is not reachable over MCP at all in this release, for reads or writes. `mcp::server::allowed()` refuses a connection whose saved profile is a known `real: false` profile or an unknown id before any connect; after `session()` every tool calls `drv.agent_access()?`. `list_connections` omits those connections. Refusal text: "{label} cannot be shared over MCP yet: TableIQ's agent guard has been reviewed for PostgreSQL, MySQL and MariaDB only. Ask the user to run this in a TableIQ query tab." Detection failure and unknown-id texts stay as accepted earlier, with "cannot be shared over MCP" in place of "is read-only over MCP".
+- `McpSettings.tsx`: for such a connection the share checkbox itself is unchecked and disabled, there is no writes checkbox, and the row shows "Not available over MCP yet: TableIQ's agent guard has been reviewed for PostgreSQL, MySQL and MariaDB only." `capsOf(engine, profile)` exposes this as `agents: boolean` and no longer has `mcpWrites`.
+- One case table, `src/lib/agentAccessCases.json` (saved profile, expected boolean, reason), is asserted by `profiles.test.ts` through `capsOf().agents` and by a Rust unit test through the pre-connect check in `allowed()`.
+- `guard_live.rs` runs its MySQL cases against `TIQ_MARIADB_URL` as well when set, and CI sets it. `docs/ENGINES.md` states that vendor extensions on Neon, Supabase and AlloyDB are outside the reviewed function list.
+- Live test in `tests/mcp_live.rs`, gated on `TIQ_TIDB_URL`: a TiDB connection with sharing and writes enabled answers `list_tables` and `run_query` with the refusal text, and the row count of a probe table is unchanged.
+- Detection uses the simple query protocol (`sqlx::raw_sql`). `PgDriver::connect_as(url, saved_profile)` and `MySqlDriver::connect_as(url, saved_profile)` replace `with_saved_profile`; `connect(url)` calls `connect_as(url, None)`.
+- Postgres pool setup on a compatible session runs the four `SET` statements one at a time and logs, without failing, any the server rejects. A genuine PostgreSQL session keeps the single strict batch. Verification: the CockroachDB live smoke connects and pages.
+- Every profile with `transactions: false` has a `detect` marker confirmed by a Task 6 run or vendor documentation. A profile for which none can be confirmed is listed in `pending.md` under "staged commits are not atomic if saved through a base tile".
+- MySQL SSL mapping: case-insensitive; accepts `disable`/`DISABLED`, `prefer`/`allow`/`PREFERRED`, `require`/`REQUIRED`, `verify-ca`/`VERIFY_CA`, `verify-full`/`VERIFY_IDENTITY`; any other value maps to `REQUIRED`. The unit test's last row becomes `("nonsense&x=1", "REQUIRED")`. The frontend URL parser normalises both vocabularies to the lowercase Postgres-style values under either `sslmode` or `ssl-mode`.
+- Live test gated on `TIQ_MYSQL_URL`: connecting with `ssl-mode=REQUIRED` reports a non-empty `Ssl_cipher` from `SHOW STATUS LIKE 'Ssl_cipher'`, and with `ssl-mode=DISABLED` an empty one.
+- `open_driver` appends to a failed MySQL connect whose saved SSL mode is `require`, `verify-ca` or `verify-full` and whose error mentions TLS, SSL or a certificate: " SSL mode '{mode}' is now applied to MySQL connections; change it in the connection sheet if this server has no valid certificate." Verification: a unit test on the helper that builds the message.
+- `tests/profile_live.rs` holds an expected soft-failure list per CI engine and fails when the observed set differs in either direction. A Rust unit test asserts `tidb`, `cockroachdb` and `mariadb` are `tested: true`.
+- Compose images are pinned by multi-architecture index digest (`docker buildx imagetools inspect`). A service whose image has no client for a `healthcheck` is waited on from the host with a loop that exits 1 on timeout.
+- `onProfile` ignores an id that is not in the table.
+- `docs/ENGINES.md` records, per locally verified engine, the image reference and the date of the run.
+- `TODOS.md` gains: review the agent guard for TiDB and CockroachDB so they can be shared over MCP; `TIQ_REQUIRE_LIVE` for the existing live tests; a readable error for Metrics widgets on engines without read-only transactions. `pending.md` records that `verify-full` through an SSH tunnel fails host verification because the driver connects to `127.0.0.1`.
+<!-- /autoplan-accepted:eng -->
+
 ## Decision Audit Trail
 
 | # | Phase | Decision | Classification | Principle | Rationale | Rejected |
@@ -1806,3 +1998,13 @@ NOT in scope (DX): per-connection capability overrides; a JSON Schema for the ta
 | 31 | DX | Stable `docs/ENGINES.md` with matrix and add-a-profile steps | Mechanical | P1 | The matrix lived in a dated report | Finalize report only |
 | 32 | DX | Keep "(Beta)" on untested same-engine profiles | Mechanical | user decision D1 | Not open | Third state |
 | 33 | DX | Defer capability overrides and generated matrix | Mechanical | P3 | No evidence of need yet | Build now |
+| 34 | Eng | No MCP access at all on compatible products until their guard is reviewed | Taste (security) | fail closed | The read-only guard was never reviewed for them; replaces "read-only over MCP" in the approved plan | Read-only access; writes on real profiles only |
+| 35 | Eng | Detection fills an empty profile only; restrictive capabilities when they differ (reverses 27) | Mechanical | P1, P5 | Overwriting downgraded PlanetScale and could raise privileges | Detected overwrites saved |
+| 36 | Eng | Named decisions instead of one `native` flag; `agent_access` has no default | Mechanical | P5 | One flag moved a security boundary with a performance change | Single flag |
+| 37 | Eng | Capabilities computed in the backend and sent in `ConnectedInfo` | Mechanical | P4 | One rule, no second copy in TypeScript | Recompute in the frontend |
+| 38 | Eng | Tolerant `SET`s on compatible Postgres sessions | Mechanical | P1 | A rejected `SET` blocked connecting | Strict batch for all |
+| 39 | Eng | Unknown MySQL SSL value maps to `REQUIRED` | Mechanical | fail closed | `PREFERRED` was a silent downgrade | `PREFERRED` |
+| 40 | Eng | Live tests for the SSL change and the MCP refusal; expected soft-failure lists | Mechanical | P1 | The riskiest rules had only unit tests | Unit only |
+| 41 | Eng | Rewrite the plan as one document before the build | Mechanical | P5 | Task bodies contradicted the accepted requirements | Addendum only |
+| 42 | Eng | Keep version 0.8.3 | Mechanical | user constraint | 0.9.0 is reserved | Minor bump |
+| 43 | Eng | Defer widget error text, `TIQ_REQUIRE_LIVE` for old tests, transaction probing | Mechanical | P3 | Outside this change's files | Build now |
