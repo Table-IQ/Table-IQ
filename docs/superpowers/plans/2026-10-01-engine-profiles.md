@@ -1170,6 +1170,28 @@ git commit -m "docs(profiles): compatibility matrix, tested flags, roadmap and R
 - `TODOS.md` gains two entries: verify Neon, Supabase, CockroachDB Cloud and TiDB Cloud with free-tier accounts; probe transaction support at connect instead of the static flag.
 - Before the build starts, Tasks 2, 3 and the Global Constraints line about MCP are rewritten to match these requirements, so no task body still describes `with_native` or "any profile is read-only".
 <!-- /autoplan-accepted:ceo -->
+
+<!-- autoplan-accepted:design -->
+- Tasks 4 and 5 are rewritten before the build to match the session-based model, together with Tasks 2 and 3.
+- One MCP write rule in the frontend, the same as the backend's: `capsOf(engine, profile).mcpWrites` is true when the saved profile is absent or is a known profile with `real: true`, and false for a known profile with `real: false` or an unknown id. The Task 4 test changes: Neon is `true`, TiDB is `false`, `from-the-future` is `false`.
+- `McpSettings.tsx`: when `mcpWrites` is false the row is never amber, the checkbox is unchecked and disabled whatever the stored `writes` value is, and the row shows this text: "Read-only over MCP. TableIQ's write checks cover PostgreSQL, MySQL and MariaDB, not {label}." For an unknown id `{label}` is the raw id.
+- When writes are enabled but the session is not native, a refused MCP statement returns: "This connection is read-only over MCP: TableIQ's write checks cover PostgreSQL, MySQL and MariaDB, not {label}." Verification: a unit test on the message.
+- The compatible-database select is also shown in edit mode, limited to profiles of the connection's base, with a first option "Plain PostgreSQL" or "Plain MySQL" that clears the profile. In new mode the first option is the disabled placeholder "Or a compatible database…". A saved profile this build does not know appears as its own option, "{id} (unknown to this version)".
+- `save_connection` refuses a known profile on the wrong base and saves an unknown id unchanged, so a connection from a newer build can still be renamed or edited. This replaces "refuses an unknown profile" in Task 1.
+- Options are ordered tested first, then by label, inside each group.
+- When a profile is set the select carries the tile's selected style (`border-primary` and the primary ring).
+- A capability line sits under the select when the chosen profile lacks something: "Not available for {label}: " followed by the missing items from "grid editing", "backup and restore", "user management", "agent writes". For an untested profile the line ends with "Beta: not yet verified against a live server."
+- The sheet header shows "{label} · Beta" for an untested profile in both modes.
+- Picking a profile or a tile fills only fields that are empty or still hold the previous selection's default (port, user, database, SSL mode), and resets those same fields when the selection changes. The logic is a pure function `applyPreset(form, previousDefaults, nextDefaults)` in `src/lib/profiles.ts`. Verification: unit tests for CockroachDB then Neon then the PostgreSQL tile (no `root`, `defaultdb` or `require` left behind) and for a typed user name surviving a profile change.
+- `toConnUrl` always writes the base scheme (`postgres://`, `mysql://`). Profile schemes are accepted on paste only. The Task 4 assertion becomes `mysql://u@h:4000/db` for a TiDB connection.
+- Grid on a product without transactions: the gate is part of `editable` in `TableView.tsx`. Precedence is view, then no transactions, then no primary key. The status chip reads `read-only · no transactions`. The hint reads "Read-only: {label} has no multi-statement transactions. Run INSERT or UPDATE from a query tab." "+ Row", delete, paste and cell edit are all off. Verification: a unit test on the precedence helper.
+- Session surfaces (titlebar pill, grid, backup and restore, palette, query toolbar) read `active.profile`. List surfaces (welcome list, connection rail, connection picker, MCP settings) read the saved `profile`.
+- Lobby sizes and row estimates that the server cannot provide render as "—" and never as 0. Checked in QA on CockroachDB.
+- Palette test in `profiles.test.ts`: no two fills among the 7 engines and all profiles are equal; white text on every fill has contrast of at least 4.5:1; every fill has contrast of at least 2:1 against the dark surface `#15171c`. Profile colours are adjusted until it passes.
+- `EngineIcon` in list rows, the rail and the picker gets `title` set to the product label, so it has an accessible name. The row keeps no visible engine label.
+- The MySQL tile keeps the short label "MySQL" and its tooltip reads "MySQL / MariaDB".
+- `TODOS.md` gains one entry: per-feature "not available on {label} yet" states for Structure, ERD and Explain, driven by the Task 6 matrix.
+<!-- /autoplan-accepted:design -->
 ## Review record
 
 ### Phase 1: CEO review (SELECTIVE EXPANSION)
@@ -1497,6 +1519,142 @@ Unresolved decisions  0 (2 taste decisions go to the gate)
 - Before the build starts, Tasks 2, 3 and the Global Constraints line about MCP are rewritten to match these requirements, so no task body still describes `with_native` or "any profile is read-only".
 <!-- /autoplan-accepted:ceo -->
 
+### Phase 2: Design review
+
+Voices: Claude subagent completed (2 critical, 8 high, 7 medium; INPUT hash matched). Codex: unavailable (`not_authed`). Tag: `[subagent-only]`.
+
+Methodology read: `autoplan-design-methodology-1Avwc7/methodology.md` lines 1-600, 601-1200, 1201-1800, 1801-1919 of 1919.
+
+Mockups: not generated. The UI change is one native select and three text states inside the existing connection sheet, whose look `DESIGN.md` already fixes, and the comparison-board flow waits on the user, which an autonomous run cannot do. `/design-review` runs on the built UI in QA.
+
+#### Step 0
+
+- Initial rating: 5/10. The picker markup is concrete, but the plan designed for the saved-profile model and the CEO phase moved behaviour to the live session. Six user-visible states had no design.
+- `DESIGN.md` exists; every decision below is calibrated against it.
+- Existing patterns reused: engine tiles and `EngineIcon`, the grid's read-only hint and status chip, the MCP settings row, the titlebar pill.
+- Classifier: OPERATE (app UI).
+
+```
+DESIGN OUTSIDE VOICES — LITMUS SCORECARD:
+  Check                                   Claude   Codex   Consensus
+  1. Brand unmistakable in first screen?  n/a      —       N/A
+  2. One strong visual anchor?            yes      —       N/A
+  3. Scannable by headlines only?         yes      —       N/A
+  4. Each section has one job?            yes      —       N/A
+  5. Cards actually necessary?            none     —       N/A
+  6. Motion improves hierarchy?           none     —       N/A
+  7. Premium without decorative shadows?  yes      —       N/A
+  Hard rejections triggered:              0        —       N/A
+```
+
+#### Pass 1: Information architecture (7 → 9)
+
+```
+Connection sheet, new mode            Connection sheet, edit mode
+  paste a URL                           header: icon · name · "TiDB · Beta"
+  7 engine tiles                        compatible-database select (same base, "Plain MySQL" first)
+  compatible-database select            capability line
+  capability line / Beta note           Name, Environment, Server …
+  Name, Environment, Server …
+```
+
+Issues: a chosen profile had weaker emphasis than a tile; Beta entries sorted first alphabetically; edit mode had no profile control. All three fixed in the accepted requirements.
+
+#### Pass 2: Interaction states (4 → 8)
+
+| Feature | Loading | Empty | Error | Success | Partial |
+|---|---|---|---|---|---|
+| Compatible-database select | n/a | "Or a compatible database…" | n/a | Primary ring, header label | Unknown saved id shown as its own option |
+| Connect | Existing spinner | n/a | Existing error line | Pill shows the detected product | Saved and detected differ: pill follows the session |
+| Grid on a no-transaction product | n/a | n/a | Backend refusal text | n/a | Read-only chip and hint; all staging controls off |
+| MCP settings row | n/a | n/a | n/a | Enabled checkbox | Disabled checkbox with the reason |
+| Lobby sizes, row estimate | Existing | "—", never 0 | n/a | Value | "—" when the catalog cannot say |
+
+Deferred: a per-feature "not available on X yet" state for Structure, ERD and Explain. Which features fail on which engine is only known after Task 6, so it goes to TODOS.md.
+
+#### Pass 3: User journey (5 → 8)
+
+| Step | User does | User feels | Plan specifies |
+|---|---|---|---|
+| 1 | Pastes a CockroachDB URL | "It knows what this is" | Scheme lookup, icon and port |
+| 2 | Picks Apache Doris from the select | Wants to know the limits before saving | Capability line under the select |
+| 3 | Connects a TiDB server saved as MySQL | Should see it recognised | Pill shows TiDB; list icon updates |
+| 4 | Opens a table on Doris | Must not lose staged work | Read-only before any edit, with the next step |
+| 5 | Checks MCP settings | Must trust the write switch | The checkbox matches what the backend will do |
+| 6 | Realises the profile is wrong | Needs a way back | Select in edit mode with a plain option |
+
+#### Pass 4: AI slop risk (9 → 9)
+
+No hard rejection applies. The addition is a native control inside an existing sheet; no cards, gradients or decorative elements are introduced.
+
+#### Pass 5: Design system alignment (6 → 9)
+
+`DESIGN.md` says the coloured circle alone identifies the engine. With 30 products that fails: StarRocks duplicated DuckDB's colour, PlanetScale's near-black vanished on the dark surface, and white text failed contrast on 11 fills. Fixed by a palette test and by giving the icon an accessible name. The row keeps no visible engine label, as `DESIGN.md` requires (taste decision 17).
+
+#### Pass 6: Responsive and accessibility (6 → 8)
+
+Desktop app, minimum window 960px; the sheet is a fixed 460px, so no viewport variants apply. Native select gives keyboard and screen-reader support. Gaps fixed: icon accessible names, and the disabled MCP checkbox carries its reason as text, not only as a tooltip.
+
+#### Pass 7: Decisions
+
+| Decision | Resolution |
+|---|---|
+| Source of truth for a profile in the UI | Session surfaces (pill, grid, backup, palette) use the session; list surfaces (welcome list, rail, picker, MCP settings) use the saved value |
+| MCP checkbox rule | Same rule as the backend, computed from the saved profile |
+| Scheme written by Copy as URL | Always the base scheme |
+| Read-only precedence in the grid | View, then no transactions, then no primary key |
+| Is the profile editable | Yes, within the same base |
+| Field defaults when picking a profile | Fill only untouched fields |
+| Notice when saved and detected differ | Deferred: the pill is the cue |
+| Per-feature unavailable states on Beta engines | Deferred to TODOS.md |
+
+#### NOT in scope (design)
+
+- Per-feature unavailable states for Structure, ERD and Explain on Beta engines.
+- A mismatch notice when the saved profile and the detected product differ.
+- MySQL-style names in the SSL select: one vocabulary is kept (taste decision 18).
+- Showing gated menu items disabled instead of hidden: hiding matches how Redis and MongoDB are handled today (taste decision 16).
+
+#### Completion summary (design)
+
+```
+System Audit         DESIGN.md present; UI scope: sheet, grid hint, MCP row, icons
+Step 0               5/10
+Pass 1 (Info Arch)   7/10 → 9/10
+Pass 2 (States)      4/10 → 8/10
+Pass 3 (Journey)     5/10 → 8/10
+Pass 4 (AI Slop)     9/10 → 9/10
+Pass 5 (Design Sys)  6/10 → 9/10
+Pass 6 (Responsive)  6/10 → 8/10
+Pass 7 (Decisions)   6 resolved, 2 deferred
+TODOS.md updates     1 proposed
+Approved mockups     0 generated
+Decisions made       14 added to the plan
+Overall score        4/10 → 8/10
+```
+
+<!-- autoplan-accepted:design -->
+- Tasks 4 and 5 are rewritten before the build to match the session-based model, together with Tasks 2 and 3.
+- One MCP write rule in the frontend, the same as the backend's: `capsOf(engine, profile).mcpWrites` is true when the saved profile is absent or is a known profile with `real: true`, and false for a known profile with `real: false` or an unknown id. The Task 4 test changes: Neon is `true`, TiDB is `false`, `from-the-future` is `false`.
+- `McpSettings.tsx`: when `mcpWrites` is false the row is never amber, the checkbox is unchecked and disabled whatever the stored `writes` value is, and the row shows this text: "Read-only over MCP. TableIQ's write checks cover PostgreSQL, MySQL and MariaDB, not {label}." For an unknown id `{label}` is the raw id.
+- When writes are enabled but the session is not native, a refused MCP statement returns: "This connection is read-only over MCP: TableIQ's write checks cover PostgreSQL, MySQL and MariaDB, not {label}." Verification: a unit test on the message.
+- The compatible-database select is also shown in edit mode, limited to profiles of the connection's base, with a first option "Plain PostgreSQL" or "Plain MySQL" that clears the profile. In new mode the first option is the disabled placeholder "Or a compatible database…". A saved profile this build does not know appears as its own option, "{id} (unknown to this version)".
+- `save_connection` refuses a known profile on the wrong base and saves an unknown id unchanged, so a connection from a newer build can still be renamed or edited. This replaces "refuses an unknown profile" in Task 1.
+- Options are ordered tested first, then by label, inside each group.
+- When a profile is set the select carries the tile's selected style (`border-primary` and the primary ring).
+- A capability line sits under the select when the chosen profile lacks something: "Not available for {label}: " followed by the missing items from "grid editing", "backup and restore", "user management", "agent writes". For an untested profile the line ends with "Beta: not yet verified against a live server."
+- The sheet header shows "{label} · Beta" for an untested profile in both modes.
+- Picking a profile or a tile fills only fields that are empty or still hold the previous selection's default (port, user, database, SSL mode), and resets those same fields when the selection changes. The logic is a pure function `applyPreset(form, previousDefaults, nextDefaults)` in `src/lib/profiles.ts`. Verification: unit tests for CockroachDB then Neon then the PostgreSQL tile (no `root`, `defaultdb` or `require` left behind) and for a typed user name surviving a profile change.
+- `toConnUrl` always writes the base scheme (`postgres://`, `mysql://`). Profile schemes are accepted on paste only. The Task 4 assertion becomes `mysql://u@h:4000/db` for a TiDB connection.
+- Grid on a product without transactions: the gate is part of `editable` in `TableView.tsx`. Precedence is view, then no transactions, then no primary key. The status chip reads `read-only · no transactions`. The hint reads "Read-only: {label} has no multi-statement transactions. Run INSERT or UPDATE from a query tab." "+ Row", delete, paste and cell edit are all off. Verification: a unit test on the precedence helper.
+- Session surfaces (titlebar pill, grid, backup and restore, palette, query toolbar) read `active.profile`. List surfaces (welcome list, connection rail, connection picker, MCP settings) read the saved `profile`.
+- Lobby sizes and row estimates that the server cannot provide render as "—" and never as 0. Checked in QA on CockroachDB.
+- Palette test in `profiles.test.ts`: no two fills among the 7 engines and all profiles are equal; white text on every fill has contrast of at least 4.5:1; every fill has contrast of at least 2:1 against the dark surface `#15171c`. Profile colours are adjusted until it passes.
+- `EngineIcon` in list rows, the rail and the picker gets `title` set to the product label, so it has an accessible name. The row keeps no visible engine label.
+- The MySQL tile keeps the short label "MySQL" and its tooltip reads "MySQL / MariaDB".
+- `TODOS.md` gains one entry: per-feature "not available on {label} yet" states for Structure, ERD and Explain, driven by the Task 6 matrix.
+<!-- /autoplan-accepted:design -->
+
 ## Decision Audit Trail
 
 | # | Phase | Decision | Classification | Principle | Rationale | Rejected |
@@ -1515,3 +1673,15 @@ Unresolved decisions  0 (2 taste decisions go to the gate)
 | 12 | CEO | Keep the China-centric engines | Mechanical | roadmap | The P1 list names them | Defer to zh launch |
 | 13 | CEO | Defer runtime transaction probing | Mechanical | P3 | The matrix sets the flags for now | Build now |
 | 14 | CEO | App-log lines for connect and degrade | Mechanical | P1 | Needed to diagnose reports | Skip |
+| 15 | Design | Frontend MCP rule mirrors the backend; disabled state with reason | Mechanical | P5 | The UI misstated a safety control | Leave `!profile` |
+| 16 | Design | Gated menu items stay hidden, with a capability line in the sheet | Taste | P3, P4 | Matches how Redis and MongoDB are handled; reviewer wanted disabled items with tooltips | Disabled items |
+| 17 | Design | No visible engine label in list rows; tooltip and accessible name only | Taste | DESIGN.md | The design system forbids the suffix; reviewer wanted the label in the second line | Visible label |
+| 18 | Design | One SSL vocabulary for PostgreSQL and MySQL | Taste | P5 | The saved value is one field; reviewer wanted MySQL names | Per-engine labels |
+| 19 | Design | Select shown in edit mode; unknown ids save unchanged | Mechanical | P1 | A wrong profile had no way back | New mode only |
+| 20 | Design | Copy as URL writes the base scheme | Mechanical | P5 | `tidb://` works nowhere else | Profile scheme |
+| 21 | Design | Presets fill only untouched fields | Mechanical | P1 | Typed values were overwritten | Always overwrite |
+| 22 | Design | Read-only precedence and chip for no-transaction products | Mechanical | P1 | Refusing at commit loses staged work | Refuse at commit |
+| 23 | Design | Palette test for duplicates and contrast | Mechanical | P1 | Two icons were identical; one vanished in dark mode | Leave colours |
+| 24 | Design | Keep "(Beta)" on untested real-Postgres profiles | Mechanical | user decision D1 | The tag means "not verified here" | Different wording |
+| 25 | Design | Defer per-feature unavailable states | Mechanical | P3 | Depends on the Task 6 matrix | Build now |
+| 26 | Design | No mockups generated | Mechanical | P6 | One native control in a designed sheet; the board flow needs the user | Generate variants |
