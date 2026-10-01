@@ -1192,6 +1192,28 @@ git commit -m "docs(profiles): compatibility matrix, tested flags, roadmap and R
 - The MySQL tile keeps the short label "MySQL" and its tooltip reads "MySQL / MariaDB".
 - `TODOS.md` gains one entry: per-feature "not available on {label} yet" states for Structure, ERD and Explain, driven by the Task 6 matrix.
 <!-- /autoplan-accepted:design -->
+
+<!-- autoplan-accepted:dx -->
+- The task rewrite is a gating first step of the build. It is complete only when `grep -n "with_native\|profile.is_none()\|mcpWrites: !profile\|tidb://u@h:4000" docs/superpowers/plans/2026-10-01-engine-profiles.md` matches nothing outside the review record and the accepted-requirement blocks.
+- Saved versus detected, replacing the CEO requirement "A saved profile is never overwritten" and the three-case store test: a positive detection is the truth. `ConnectedInfo.profile` is the detected id when a marker matched, otherwise the saved profile when it is a known id on the right base, otherwise none. After a successful connect the frontend store saves `ConnectedInfo.profile` onto the connection whenever it is set and differs from the saved value. Store test cases: saved none and detected X saves X; saved X and detected Y saves Y; saved X and nothing detected leaves X; saved none and nothing detected leaves none.
+- In edit mode a line under the select reads "TableIQ checks the server on connect and updates this if it identifies itself."
+- Every command in the plan that pipes into `tail` starts with `set -o pipefail;`. Cargo filters are written as `cargo test --lib -- profiles connections` (one or more filters after `--`).
+- Live tests in `tests/profile_live.rs` panic instead of skipping when `TIQ_REQUIRE_LIVE=1` and their URL variable is unset. CI sets `TIQ_REQUIRE_LIVE=1`.
+- `docker/profiles/docker-compose.yml` has a `healthcheck` per service. Local and CI start-up is `docker compose -f docker/profiles/docker-compose.yml up -d --wait`, which exits non-zero and names the service when one is unhealthy. This replaces the hand-written wait loop.
+- `any_profile_smoke` takes `TIQ_PROFILE` (a profile id), `TIQ_PROFILE_URL` and `TIQ_PROFILE_SCHEMA`; base engine and transaction support come from `profiles.json`. An unknown id panics with "unknown profile id". With `TIQ_PROFILE_TABLE` set, the test browses that existing table instead of creating its fixture (introspect finds it, first page loads, count and a query succeed) and skips the staged-commit scenarios.
+- The Task 6 table gives, per engine, the full `docker run` line with correct host:container ports, the command that creates the database or table when the fixture DDL is not accepted, and literal values for every cell.
+- Error texts, each with problem, cause and fix:
+  - Backup and restore: "Backup is not supported for {label}: TableIQ backs up with pg_dump or mysqldump, which {label} does not fully support. Use {label}'s own backup tool." (and the same for "Restore").
+  - Wrong base on save: "{label} is a {base label}-compatible profile. Set the engine to {base label} or remove the profile."
+  - MCP refusal on a recognised product: "This connection is read-only over MCP: TableIQ's write checks cover PostgreSQL, MySQL and MariaDB, not {label}. Ask the user to run this statement in a TableIQ query tab."
+  - MCP refusal when detection failed: "TableIQ could not identify this server (its version query failed), so agent writes are off. Ask the user to reconnect, or to run this statement in a TableIQ query tab."
+  - Unknown saved profile id in MCP settings: "Read-only over MCP: this connection's profile ({id}) was saved by a newer TableIQ. Update TableIQ to manage it."
+- The `run_query` tool description in `src-tauri/src/mcp/server.rs` states that writes also require a server TableIQ recognises as PostgreSQL, MySQL or MariaDB. The existing test that pins the description is updated.
+- New `docs/ENGINES.md`: the compatibility matrix, the capability table per profile, how detection works and its known limits (a server that reports a plain version, and Copy as URL writing the base scheme), and a "Add a profile" section listing every step. The finalize report links to it instead of holding the matrix. README links to it.
+- `profiles.test.ts` asserts every entry has every required key with the right type. `profiles.rs` starts with a three-line glossary: profile (saved hint), product (what the server reports), real (the base engine itself under a vendor name).
+- `CHANGELOG.md` has a "Changed" entry that lists each behaviour change for existing connections: a recognised compatible server loses MCP writes, backup and user management where its profile lacks them; MySQL connections now apply the saved SSL mode.
+- `pending.md` records two known limits: the MCP checkbox can read "allowed" before the first connect to a server that is then recognised as compatible, and capability gates cannot be overridden per connection.
+<!-- /autoplan-accepted:dx -->
 ## Review record
 
 ### Phase 1: CEO review (SELECTIVE EXPANSION)
@@ -1655,6 +1677,98 @@ Overall score        4/10 → 8/10
 - `TODOS.md` gains one entry: per-feature "not available on {label} yet" states for Structure, ERD and Explain, driven by the Task 6 matrix.
 <!-- /autoplan-accepted:design -->
 
+### Phase 2.5: DX review (DX POLISH)
+
+Voices: Claude subagent completed (2 critical, 6 high, 11 medium; INPUT hash matched). Codex: unavailable (`not_authed`). Tag: `[subagent-only]`.
+
+Methodology read: `autoplan-dx-methodology-N2rPIj/methodology.md` lines 1-600, 601-1200, 1201-1800, 1801-2113 of 2113.
+
+Product type: a desktop app with two developer-facing surfaces: the MCP server (an AI agent is the caller) and the contributor test rig. Benchmark source: the dbx and TablePlus teardown in `docs/GTM.md` (no new web search; Aside is not installed).
+
+```
+TARGET DEVELOPER PERSONA
+Who:       A backend developer who lives in a database client and has a DATABASE_URL in an env file.
+Context:   Their team moved a service to TiDB, CockroachDB or Neon; they want the same client to open it.
+Tolerance: About two minutes. If the first table does not open, they go back to the vendor's console.
+Expects:   Paste the URL, connect, see tables. No driver downloads, no list of 100 engines to scroll.
+```
+
+Developer perspective: "I paste `postgres://root@crdb.internal:26257/defaultdb` into the URL field. The form fills in and I click Connect. In 0.8.2 the sidebar loads but the first table I click shows an error about `pg_relation_size`, and I close the app. With this plan the pill says CockroachDB, the table opens with an unknown row estimate, and my edits commit. I open Settings → MCP to let my agent write, and the checkbox is disabled with one line telling me why. I am not happy about it, but I know where I stand. Next time the connection list shows the Cr icon without my having picked anything."
+
+```
+COMPETITIVE DX BENCHMARK
+Tool        | Time to first table | Notable choice                         | Source
+TablePlus   | about 30 s          | Import from URL, no engine list to pick | docs/GTM.md
+dbx         | 1 to 2 min          | Pick from 100+ connection types         | docs/GTM.md
+DBeaver     | 2 to 5 min          | Driver download on first connect        | common knowledge, not re-measured
+TableIQ now | fails on compatible servers | Paste a URL                    | current code
+This plan   | under 1 min         | Paste a URL; the server names itself    | this plan
+```
+
+Magical moment: connect, and the app names the engine. Delivery vehicle: the app itself, no playground needed.
+
+| Stage | Developer does | Friction | Status |
+|---|---|---|---|
+| 1. Discover | Reads the README engine list | Verified and Beta were mixed | Fixed: verified count first |
+| 2. Install | Downloads the app | None in this plan | ok |
+| 3. Hello world | Pastes a URL, connects | Table failed on compatible servers | Fixed: detection and degrade |
+| 4. Real usage | Edits rows, runs backups | Features vanish without a reason | Fixed: capability line; reasons in errors |
+| 5. Agent use | Shares the connection over MCP | Refusals lacked a next step | Fixed: refusal names the fix |
+| 6. Debug | Reads an error | Five of six new errors had no cause or fix | Fixed |
+| 7. Contribute | Runs the live rig | Manual waits; tests pass when skipped | Fixed: `--wait`, `TIQ_REQUIRE_LIVE` |
+| 8. Add an engine | Edits `profiles.json` | Steps scattered over six tasks | Fixed: `docs/ENGINES.md` |
+| 9. Upgrade | Installs 0.8.3 | Behaviour changes with one changelog line | Fixed: a Changed entry per gate |
+
+```
+DX DUAL VOICES — CONSENSUS TABLE:
+  Dimension                           Claude   Codex   Consensus
+  1. Getting started < 5 min?         yes      —       N/A
+  2. API/CLI naming guessable?        partly   —       N/A
+  3. Error messages actionable?       no       —       N/A
+  4. Docs findable & complete?        no       —       N/A
+  5. Upgrade path safe?               no       —       N/A
+  6. Dev environment friction-free?   no       —       N/A
+```
+
+```
+DX SCORECARD (before → after accepted fixes)
+Getting Started   6 → 8      Dev Environment  6 → 8
+API/CLI/SDK       5 → 7      Community        5 → 5 (repo is private)
+Error Messages    4 → 8      DX Measurement   3 → 4 (no telemetry by design; the matrix is the measure)
+Documentation     4 → 7      Upgrade Path     5 → 8
+TTHW              end user under 1 min (Champion); contributor rig 5 to 10 min → under 5 min
+Magical Moment    designed, delivered by the app at connect
+Mode              DX POLISH        Overall DX   5 → 7
+```
+
+DX implementation checklist: time to first table under 2 minutes (met); every new error has problem, cause and fix (accepted); upgrade notes in the changelog (accepted); works in CI without special setup (accepted: compose healthchecks); a stable docs page (accepted). Not applicable: SDK types, free tier, docs search.
+
+Finding dispositions: C1 accepted (rewrite is a gating step with a grep check). C2 accepted in a simpler form: no "plain" marker; a positive detection is the truth and is saved, and clearing a profile only sticks on servers that do not identify themselves (taste decision 27). H1, H2, H4, H5 accepted. H3 accepted in part: the tool description and refusal text are fixed; the checkbox can still differ from the backend before the first connect. H6 accepted except the TLS-failure hint. M1, M2, M3 (guide, no JSON Schema), M4, M5 (glossary only), M6, M7, M11 accepted. M8 rejected (user decision D1). M9 and M10 deferred.
+
+NOT in scope (DX): per-connection capability overrides; a JSON Schema for the table; generated matrix output; a TLS-failure hint for MySQL.
+
+<!-- autoplan-accepted:dx -->
+- The task rewrite is a gating first step of the build. It is complete only when `grep -n "with_native\|profile.is_none()\|mcpWrites: !profile\|tidb://u@h:4000" docs/superpowers/plans/2026-10-01-engine-profiles.md` matches nothing outside the review record and the accepted-requirement blocks.
+- Saved versus detected, replacing the CEO requirement "A saved profile is never overwritten" and the three-case store test: a positive detection is the truth. `ConnectedInfo.profile` is the detected id when a marker matched, otherwise the saved profile when it is a known id on the right base, otherwise none. After a successful connect the frontend store saves `ConnectedInfo.profile` onto the connection whenever it is set and differs from the saved value. Store test cases: saved none and detected X saves X; saved X and detected Y saves Y; saved X and nothing detected leaves X; saved none and nothing detected leaves none.
+- In edit mode a line under the select reads "TableIQ checks the server on connect and updates this if it identifies itself."
+- Every command in the plan that pipes into `tail` starts with `set -o pipefail;`. Cargo filters are written as `cargo test --lib -- profiles connections` (one or more filters after `--`).
+- Live tests in `tests/profile_live.rs` panic instead of skipping when `TIQ_REQUIRE_LIVE=1` and their URL variable is unset. CI sets `TIQ_REQUIRE_LIVE=1`.
+- `docker/profiles/docker-compose.yml` has a `healthcheck` per service. Local and CI start-up is `docker compose -f docker/profiles/docker-compose.yml up -d --wait`, which exits non-zero and names the service when one is unhealthy. This replaces the hand-written wait loop.
+- `any_profile_smoke` takes `TIQ_PROFILE` (a profile id), `TIQ_PROFILE_URL` and `TIQ_PROFILE_SCHEMA`; base engine and transaction support come from `profiles.json`. An unknown id panics with "unknown profile id". With `TIQ_PROFILE_TABLE` set, the test browses that existing table instead of creating its fixture (introspect finds it, first page loads, count and a query succeed) and skips the staged-commit scenarios.
+- The Task 6 table gives, per engine, the full `docker run` line with correct host:container ports, the command that creates the database or table when the fixture DDL is not accepted, and literal values for every cell.
+- Error texts, each with problem, cause and fix:
+  - Backup and restore: "Backup is not supported for {label}: TableIQ backs up with pg_dump or mysqldump, which {label} does not fully support. Use {label}'s own backup tool." (and the same for "Restore").
+  - Wrong base on save: "{label} is a {base label}-compatible profile. Set the engine to {base label} or remove the profile."
+  - MCP refusal on a recognised product: "This connection is read-only over MCP: TableIQ's write checks cover PostgreSQL, MySQL and MariaDB, not {label}. Ask the user to run this statement in a TableIQ query tab."
+  - MCP refusal when detection failed: "TableIQ could not identify this server (its version query failed), so agent writes are off. Ask the user to reconnect, or to run this statement in a TableIQ query tab."
+  - Unknown saved profile id in MCP settings: "Read-only over MCP: this connection's profile ({id}) was saved by a newer TableIQ. Update TableIQ to manage it."
+- The `run_query` tool description in `src-tauri/src/mcp/server.rs` states that writes also require a server TableIQ recognises as PostgreSQL, MySQL or MariaDB. The existing test that pins the description is updated.
+- New `docs/ENGINES.md`: the compatibility matrix, the capability table per profile, how detection works and its known limits (a server that reports a plain version, and Copy as URL writing the base scheme), and a "Add a profile" section listing every step. The finalize report links to it instead of holding the matrix. README links to it.
+- `profiles.test.ts` asserts every entry has every required key with the right type. `profiles.rs` starts with a three-line glossary: profile (saved hint), product (what the server reports), real (the base engine itself under a vendor name).
+- `CHANGELOG.md` has a "Changed" entry that lists each behaviour change for existing connections: a recognised compatible server loses MCP writes, backup and user management where its profile lacks them; MySQL connections now apply the saved SSL mode.
+- `pending.md` records two known limits: the MCP checkbox can read "allowed" before the first connect to a server that is then recognised as compatible, and capability gates cannot be overridden per connection.
+<!-- /autoplan-accepted:dx -->
+
 ## Decision Audit Trail
 
 | # | Phase | Decision | Classification | Principle | Rationale | Rejected |
@@ -1685,3 +1799,10 @@ Overall score        4/10 → 8/10
 | 24 | Design | Keep "(Beta)" on untested real-Postgres profiles | Mechanical | user decision D1 | The tag means "not verified here" | Different wording |
 | 25 | Design | Defer per-feature unavailable states | Mechanical | P3 | Depends on the Task 6 matrix | Build now |
 | 26 | Design | No mockups generated | Mechanical | P6 | One native control in a designed sheet; the board flow needs the user | Generate variants |
+| 27 | DX | Positive detection is saved over the user's choice; no "plain" marker | Taste | P5 | One rule, no second field; reviewer wanted a user-set value to beat detection | profileSource field |
+| 28 | DX | Live tests panic when required and unset; pipefail in commands | Mechanical | P1 | A skipped test read as a pass | Leave as is |
+| 29 | DX | Compose healthchecks and `--wait` replace the wait loop | Mechanical | P5 | One mechanism locally and in CI | Hand-written loop |
+| 30 | DX | Errors carry cause and fix; tool description updated | Mechanical | P1 | Five of six new errors stopped at the problem | Leave texts |
+| 31 | DX | Stable `docs/ENGINES.md` with matrix and add-a-profile steps | Mechanical | P1 | The matrix lived in a dated report | Finalize report only |
+| 32 | DX | Keep "(Beta)" on untested same-engine profiles | Mechanical | user decision D1 | Not open | Third state |
+| 33 | DX | Defer capability overrides and generated matrix | Mechanical | P3 | No evidence of need yet | Build now |
