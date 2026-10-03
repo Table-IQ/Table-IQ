@@ -664,9 +664,10 @@ impl SqlDriver for MySqlDriver {
     }
 
     /// The data dictionary's `TABLE_ROWS` (InnoDB's sampled estimate). A view has none.
+    /// CAST as in `table_stats`: TiDB's column is a signed BIGINT, which fails to decode.
     async fn estimate_rows(&self, schema: &str, table: &str) -> DResult<Option<i64>> {
         let est = sqlx::query_scalar::<_, Option<u64>>(
-            "SELECT TABLE_ROWS AS table_rows FROM information_schema.tables \
+            "SELECT CAST(TABLE_ROWS AS UNSIGNED) AS table_rows FROM information_schema.tables \
              WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND TABLE_TYPE = 'BASE TABLE'",
         )
         .bind(schema)
