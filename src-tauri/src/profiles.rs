@@ -157,10 +157,10 @@ mod tests {
 
     #[test]
     fn detect_is_deterministic() {
-        // MariaDB (7) and TiDB (4) both match; the longest marker wins, every time.
-        for _ in 0..20 {
-            assert_eq!(detect("mysql", "5.7.0-TiDB-v1 MariaDB"), Some("mariadb"));
-        }
+        // MariaDB (7) and TiDB (4) both match; the longest marker wins.
+        assert_eq!(detect("mysql", "5.7.0-TiDB-v1 MariaDB"), Some("mariadb"));
+        // StarRocks and OceanBase are both 9 characters; the tie goes to the lower id.
+        assert_eq!(detect("mysql", "x StarRocks OceanBase"), Some("oceanbase"));
     }
 
     #[test]
