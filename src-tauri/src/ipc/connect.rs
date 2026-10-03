@@ -159,16 +159,28 @@ async fn open_driver(cfg: &ConnConfig, pw: &str) -> Result<Arc<dyn SqlDriver>, S
     let drv: Arc<dyn SqlDriver> = match cfg.engine.as_str() {
         "sqlite" => Arc::new(SqliteDriver::connect(&url).await.map_err(|e| e.to_string())?),
         "duckdb" => Arc::new(DuckDriver::connect(&url).await.map_err(|e| e.to_string())?),
-        "mysql" => Arc::new(MySqlDriver::connect(&url).await.map_err(|e| {
+        "mysql" => Arc::new(MySqlDriver::connect_as(&url, cfg.profile.as_deref()).await.map_err(|e| {
             let e = e.to_string();
             match mysql_tls_hint(&cfg.sslmode, &e) {
                 Some(h) => format!("{e}{h}"),
                 None => e,
             }
         })?),
-        "postgres" => Arc::new(PgDriver::connect(&url).await.map_err(|e| e.to_string())?),
+        "postgres" => {
+            Arc::new(PgDriver::connect_as(&url, cfg.profile.as_deref()).await.map_err(|e| e.to_string())?)
+        }
         other => return Err(format!("unsupported engine {other}")),
     };
+    crate::applog::log(
+        "info",
+        &format!(
+            "connected {} ({}): product {:?}, agents {}",
+            cfg.name,
+            cfg.engine,
+            drv.product(),
+            drv.agent_access().is_ok()
+        ),
+    );
     Ok(drv)
 }
 
@@ -295,6 +307,10 @@ pub struct ConnectedInfo {
     pub name: String,
     pub database: String,
     pub engine: String,
+    /// The session's profile ([`SqlDriver::product`]); `None` for a plain engine.
+    pub profile: Option<String>,
+    /// What the session supports ([`SqlDriver::caps`]).
+    pub caps: crate::profiles::Caps,
 }
 
 /// What the grid needs to size its scrollbar. `count: null` means the engine could not
@@ -443,6 +459,8 @@ pub(crate) async fn connect_session(
     // `eff` is the connection config with host/port rewritten to 127.0.0.1:<ephemeral> when tunneled.
     let (eff, tunnel) = maybe_open_tunnel(&cfg, &id).await?;
 
+    // Redis and MongoDB sessions have no profile: none, and every capability.
+    let mut session = (None, crate::profiles::effective_caps(None, None));
     let result: Result<(), String> = async {
         if eff.engine == "redis" {
             let drv = RedisDriver::connect(&eff.url_with_password(&password))
@@ -456,6 +474,7 @@ pub(crate) async fn connect_session(
             lk(&state.doc_sessions).insert(id.clone(), Arc::new(drv));
         } else {
             let drv = open_driver(&eff, &password).await?;
+            session = (drv.product(), drv.caps());
             let drv = Arc::new(Logged { inner: drv, log: state.sql_log_for(&id) });
             // Checked again under the sessions lock: a restore that began while this was
             // opening takes the session out after marking the connection, so it never finds
@@ -482,6 +501,8 @@ pub(crate) async fn connect_session(
         name: cfg.name,
         database: cfg.database,
         engine: cfg.engine,
+        profile: session.0,
+        caps: session.1,
     })
 }
 
@@ -655,6 +676,8 @@ pub(crate) async fn switch_inner(state: &ConnState, id: String, database: String
         Doc(Arc<dyn DocumentDriver>),
         Sql(Arc<dyn SqlDriver>),
     }
+    // Redis and MongoDB sessions have no profile: none, and every capability.
+    let mut profile = (None, crate::profiles::effective_caps(None, None));
     let session = if eff.engine == "redis" {
         NewSession::Kv(Arc::new(
             RedisDriver::connect(&eff.url_with_password(&password))
@@ -669,6 +692,7 @@ pub(crate) async fn switch_inner(state: &ConnState, id: String, database: String
         ))
     } else {
         let drv = open_driver(&eff, &password).await?;
+        profile = (drv.product(), drv.caps());
         NewSession::Sql(Arc::new(Logged { inner: drv, log: state.sql_log_for(&id) }))
     };
 
@@ -695,6 +719,8 @@ pub(crate) async fn switch_inner(state: &ConnState, id: String, database: String
         name: new_cfg.name,
         database: new_cfg.database,
         engine: new_cfg.engine,
+        profile: profile.0,
+        caps: profile.1,
     })
 }
 
@@ -2694,6 +2720,9 @@ mod tests {
 
     #[async_trait::async_trait]
     impl SqlDriver for FakeMssql {
+        fn agent_access(&self) -> Result<(), String> {
+            Ok(())
+        }
         async fn introspect(&self) -> crate::drivers::DResult<crate::drivers::SchemaModel> {
             unimplemented!()
         }

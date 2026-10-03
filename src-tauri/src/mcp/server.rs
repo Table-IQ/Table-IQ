@@ -1124,6 +1124,9 @@ mod tests {
 
     #[async_trait::async_trait]
     impl SqlDriver for Abandons {
+        fn agent_access(&self) -> Result<(), String> {
+            Ok(())
+        }
         async fn introspect(&self) -> crate::drivers::DResult<crate::drivers::SchemaModel> {
             unimplemented!()
         }

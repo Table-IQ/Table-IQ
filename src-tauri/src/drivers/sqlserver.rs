@@ -648,6 +648,10 @@ fn to_batch(columns: &[std::string::String], data: &[Vec<Option<std::string::Str
 
 #[async_trait]
 impl SqlDriver for SqlServerDriver {
+    fn agent_access(&self) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Fail every queued and later call at once, then close the TCP connection (dropping
     /// the client) as soon as the lock is free — which ends and rolls back the server-side
     /// session. The caller's task holding the lock mid-query must be aborted for that.

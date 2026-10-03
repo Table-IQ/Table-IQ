@@ -223,6 +223,22 @@ pub struct PgDriver {
     meta: super::MetaCache<std::sync::Arc<PgMeta>>,
     /// [`super::WINDOW_TIMEOUT_MS`]; only tests shorten it.
     window_timeout_ms: u64,
+    /// The probe's `SELECT version()` answered.
+    detect_ok: bool,
+    /// The profile id the version text names (`profiles::detect`), if any.
+    detected: Option<String>,
+    /// `ConnConfig.profile`, as saved.
+    saved: Option<String>,
+}
+
+/// The session GUCs every pooled connection pins (see `connect_as`).
+const SESSION_SETS: &str = "SET TimeZone = 'UTC'; SET DateStyle = 'ISO, MDY'; \
+                            SET extra_float_digits = 3; \
+                            SET standard_conforming_strings = on;";
+
+/// [`SESSION_SETS`] one statement at a time, as a compat session sends them.
+fn session_sets() -> impl Iterator<Item = &'static str> {
+    SESSION_SETS.split(';').map(str::trim).filter(|s| !s.is_empty())
 }
 
 /// A failed cancellable page: 57014 is a cancel when the token says so or the server says
@@ -242,24 +258,41 @@ fn window_err(e: sqlx::Error, token: &CancelToken, timeout_ms: u64) -> DriverErr
 
 impl PgDriver {
     pub async fn connect(url: &str) -> DResult<Self> {
+        Self::connect_as(url, None).await
+    }
+
+    /// [`PgDriver::connect`] for a saved connection: `saved_profile` is its
+    /// `ConnConfig.profile`.
+    pub async fn connect_as(url: &str, saved_profile: Option<&str>) -> DResult<Self> {
         // Validate with a single direct connection FIRST so the real Postgres
         // error (connection refused / auth failed / database does not exist)
         // surfaces immediately. `PgPoolOptions::connect` would instead retry in
         // the pool until `acquire_timeout` (default 30s) and return the opaque
         // "pool timed out while waiting for an open connection", hiding the cause.
-        {
+        let version = {
             use sqlx::Connection;
-            let probe = tokio::time::timeout(
-                super::CONNECT_TIMEOUT,
-                sqlx::postgres::PgConnection::connect(url),
-            )
-            .await
-            .map_err(|_| {
-                DriverError::Db(format!("timed out connecting to {}", super::url_host_port(url)))
-            })?
-            .map_err(|e| DriverError::Db(e.to_string()))?;
+            let deadline = tokio::time::Instant::now() + super::CONNECT_TIMEOUT;
+            let mut probe = tokio::time::timeout_at(deadline, sqlx::postgres::PgConnection::connect(url))
+                .await
+                .map_err(|_| {
+                    DriverError::Db(format!("timed out connecting to {}", super::url_host_port(url)))
+                })?
+                .map_err(|e| DriverError::Db(e.to_string()))?;
+            // The version text names the product, inside the same bound. Simple protocol: a
+            // wire-compatible server need not support prepared statements.
+            let row = tokio::time::timeout_at(deadline, probe.fetch_one(sqlx::raw_sql("SELECT version()"))).await;
             let _ = probe.close().await;
+            row.ok().and_then(Result::ok).and_then(|r| pg_cell(&r, 0).ok().flatten())
+        };
+        let detect_ok = version.is_some();
+        let detected = version.and_then(|v| crate::profiles::detect("postgres", &v)).map(str::to_string);
+        let saved = saved_profile.map(str::to_string);
+        if let (Some(s), Some(d)) = (saved.as_deref().filter(|s| crate::profiles::lookup(s).is_some()), &detected) {
+            if s != d {
+                crate::applog::log("warn", &format!("saved profile {s}, but the server reports {d}"));
+            }
         }
+        let compat = super::compat_session(detect_ok, saved.as_deref(), detected.as_deref());
         // Pin the session GUCs that affect `col::text` rendering on EVERY pooled
         // connection. The display query and the optimistic-concurrency edit
         // (`col::text IS NOT DISTINCT FROM $n::text`) must agree byte-for-byte, but
@@ -271,18 +304,26 @@ impl PgDriver {
         // `standard_conforming_strings` is pinned for a different reason: it makes a
         // backslash an ordinary character in a literal, which is what the import path's
         // `sql_literal` assumes when it escapes only the quote.
+        // A compat session sends them one at a time and keeps going past the ones the
+        // server rejects: a product without `DateStyle` still connects.
         let pool = PgPoolOptions::new()
             .max_connections(4)
             .acquire_timeout(std::time::Duration::from_secs(10))
-            .after_connect(|conn, _meta| {
+            .after_connect(move |conn, _meta| {
                 Box::pin(async move {
-                    conn.execute(
-                        "SET TimeZone = 'UTC'; SET DateStyle = 'ISO, MDY'; \
-                         SET extra_float_digits = 3; \
-                         SET standard_conforming_strings = on;",
-                    )
-                    .await
-                    .map(|_| ())
+                    if !compat {
+                        return conn.execute(SESSION_SETS).await.map(|_| ());
+                    }
+                    for set in session_sets() {
+                        match conn.execute(set).await {
+                            Ok(_) => {}
+                            Err(sqlx::Error::Database(e)) => {
+                                crate::applog::log("warn", &format!("{set} rejected: {}", e.message()));
+                            }
+                            Err(e) => return Err(e),
+                        }
+                    }
+                    Ok(())
                 })
             })
             .connect(url)
@@ -297,7 +338,15 @@ impl PgDriver {
             cancel_pool,
             meta: Default::default(),
             window_timeout_ms: super::WINDOW_TIMEOUT_MS,
+            detect_ok,
+            detected,
+            saved,
         })
+    }
+
+    /// See [`super::compat_session`].
+    fn compat(&self) -> bool {
+        super::compat_session(self.detect_ok, self.saved.as_deref(), self.detected.as_deref())
     }
 
     /// Shorten the page timeouts, so a test can reach them quickly.
@@ -353,17 +402,20 @@ impl PgDriver {
             return Err(DriverError::Db(format!("no such table {schema}.{table}")));
         }
         let pk = self.primary_key(schema, table).await?;
-        let ctid_ok: bool = sqlx::query_scalar(
-            "SELECT c.relkind IN ('r', 'm') AND NOT c.relhassubclass \
-               AND current_setting('server_version_num')::int >= 140000 FROM pg_class c \
-             JOIN pg_namespace n ON n.oid = c.relnamespace \
-             WHERE n.nspname = $1 AND c.relname = $2",
-        )
-        .bind(schema)
-        .bind(table)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(db)?;
+        // A compat session never pages by ctid: the column may not exist there, or not
+        // mean a heap position.
+        let ctid_ok: bool = !self.compat()
+            && sqlx::query_scalar(
+                "SELECT c.relkind IN ('r', 'm') AND NOT c.relhassubclass \
+                   AND current_setting('server_version_num')::int >= 140000 FROM pg_class c \
+                 JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE n.nspname = $1 AND c.relname = $2",
+            )
+            .bind(schema)
+            .bind(table)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(db)?;
         let m = std::sync::Arc::new(PgMeta { udts, pk, ctid_ok });
         self.meta.put(schema, table, m.clone());
         Ok(m)
@@ -530,6 +582,17 @@ impl PgDriver {
 
 #[async_trait]
 impl SqlDriver for PgDriver {
+    fn product(&self) -> Option<String> {
+        crate::profiles::session_profile("postgres", self.saved.as_deref(), self.detected.as_deref())
+    }
+    fn caps(&self) -> crate::profiles::Caps {
+        crate::profiles::effective_caps(self.saved.as_deref(), self.detected.as_deref())
+    }
+    fn agent_access(&self) -> Result<(), String> {
+        crate::profiles::agent_block("postgres", self.saved.as_deref(), self.detected.as_deref(), self.detect_ok)
+            .map_or(Ok(()), Err)
+    }
+
     async fn run_statements(
         &self,
         stmts: &[String],
@@ -743,12 +806,13 @@ impl SqlDriver for PgDriver {
              HAVING EXISTS (SELECT 1 FROM rel)",
             est = PG_LEAF_ROW_ESTIMATE
         );
-        sqlx::query_scalar(&sql)
+        let res = sqlx::query_scalar(&sql)
             .bind(schema)
             .bind(table)
             .fetch_optional(&self.pool)
             .await
-            .map_err(db)
+            .map_err(db);
+        super::degrade(self.compat(), res, schema, table)
     }
 
     /// Every base table (and materialized view) in `schema`, top-level meaning "not a child
@@ -774,17 +838,21 @@ impl SqlDriver for PgDriver {
              GROUP BY tops.relname ORDER BY 3 DESC",
             est = PG_LEAF_ROW_ESTIMATE
         );
-        let mut tx = self
-            .pool
-            .begin_with(format!("BEGIN; SET LOCAL statement_timeout = {STATS_TIMEOUT_MS}"))
-            .await
-            .map_err(db)?;
-        let rows: Vec<(String, f64, i64)> =
-            sqlx::query_as(&sql).bind(schema).fetch_all(&mut *tx).await.map_err(db)?;
-        Ok(rows
-            .into_iter()
-            .map(|(name, rows, bytes)| TableStat { name, rows: Some(rows as i64), bytes: Some(bytes) })
-            .collect())
+        let res = async {
+            let mut tx = self
+                .pool
+                .begin_with(format!("BEGIN; SET LOCAL statement_timeout = {STATS_TIMEOUT_MS}"))
+                .await
+                .map_err(db)?;
+            let rows: Vec<(String, f64, i64)> =
+                sqlx::query_as(&sql).bind(schema).fetch_all(&mut *tx).await.map_err(db)?;
+            Ok(rows
+                .into_iter()
+                .map(|(name, rows, bytes)| TableStat { name, rows: Some(rows as i64), bytes: Some(bytes) })
+                .collect())
+        }
+        .await;
+        super::degrade(self.compat(), res, schema, "*")
     }
 
     async fn open_window_filtered(
@@ -1137,9 +1205,22 @@ fn text_rows_to_batch(cols: &[String], rows: &[PgRow]) -> DResult<RecordBatch> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_delete_sql, build_update_sql, pg_change_sql};
+    use super::{build_delete_sql, build_update_sql, pg_change_sql, session_sets};
     use crate::drivers::{Change, EditSpec};
     use std::collections::HashMap;
+
+    #[test]
+    fn a_compat_session_sends_each_set_on_its_own() {
+        assert_eq!(
+            session_sets().collect::<Vec<_>>(),
+            [
+                "SET TimeZone = 'UTC'",
+                "SET DateStyle = 'ISO, MDY'",
+                "SET extra_float_digits = 3",
+                "SET standard_conforming_strings = on",
+            ]
+        );
+    }
 
     #[test]
     fn change_sql_reuses_the_edit_builders_and_bind_order() {

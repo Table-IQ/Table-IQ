@@ -148,6 +148,24 @@ partitioned table whose planner stats are faked to ~1T, plus a 2M-row table with
 checking paging, estimates and search at size. Load it with
 `docker exec -i tableiq-pg psql -U postgres -d tableiq < docker/postgres/big.sql`.
 
+The wire-compatible engines the profile smoke test (`tests/profile_live.rs`) runs against
+share one compose file, each image pinned by digest:
+
+```sh
+docker compose -f docker/profiles/docker-compose.yml up -d --wait
+```
+
+This brings up `tableiq-tidb` on `54000`, `tableiq-crdb` on `56257` and `tableiq-mariadb` on
+`53307`. The TiDB image ships no client and so has no healthcheck; give it a few seconds
+after `up` returns. The test reads:
+
+```sh
+TIQ_TIDB_URL=mysql://root@127.0.0.1:54000/test \
+TIQ_CRDB_URL='postgres://root@127.0.0.1:56257/defaultdb?sslmode=disable' \
+TIQ_MARIADB_URL=mysql://root:tableiq@127.0.0.1:53307/tableiq \
+  cargo test --test profile_live -- --nocapture
+```
+
 DuckDB needs no container: `duckdb /tmp/tiq-qa.duckdb < docker/duckdb/qa.sql` builds a
 seeded file (or open that path in TableIQ and run the file from a query tab).
 

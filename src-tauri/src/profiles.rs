@@ -112,7 +112,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Task 2 flips the tested flags"]
     fn ci_engines_are_tested() {
         for id in ["tidb", "cockroachdb", "mariadb"] {
             assert!(lookup(id).unwrap().tested, "{id}");

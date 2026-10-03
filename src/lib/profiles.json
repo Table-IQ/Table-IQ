@@ -16,7 +16,7 @@
     "detect": [
       "MariaDB"
     ],
-    "tested": false
+    "tested": true
   },
   "tidb": {
     "base": "mysql",
@@ -38,7 +38,7 @@
     "detect": [
       "TiDB"
     ],
-    "tested": false
+    "tested": true
   },
   "oceanbase": {
     "base": "mysql",
@@ -254,7 +254,7 @@
     "detect": [
       "CockroachDB"
     ],
-    "tested": false
+    "tested": true
   },
   "redshift": {
     "base": "postgres",

@@ -146,6 +146,15 @@ impl SqlDriver for Logged {
     async fn close(&self) {
         CURRENT.scope(self.log.clone(), self.inner.close()).await
     }
+    fn product(&self) -> Option<String> {
+        self.inner.product()
+    }
+    fn caps(&self) -> crate::profiles::Caps {
+        self.inner.caps()
+    }
+    fn agent_access(&self) -> Result<(), String> {
+        self.inner.agent_access()
+    }
 }
 
 #[cfg(test)]
@@ -157,6 +166,7 @@ mod tests {
 
     use super::*;
     use crate::drivers::{DriverError, SchemaInfo};
+    use crate::profiles::Caps;
 
     /// A one-column batch named `tag`: tells apart which method produced it.
     fn batch(tag: &str) -> RecordBatch {
@@ -296,6 +306,15 @@ mod tests {
         async fn close(&self) {
             rec("close");
         }
+        fn product(&self) -> Option<String> {
+            Some("tidb".into())
+        }
+        fn caps(&self) -> Caps {
+            Caps { transactions: false, backup: false, user_mgmt: false }
+        }
+        fn agent_access(&self) -> Result<(), String> {
+            Err("no".into())
+        }
     }
 
     fn tag(b: &RecordBatch) -> String {
@@ -352,5 +371,15 @@ mod tests {
             ],
             "every call ran inside the log's scope"
         );
+    }
+
+    /// The session's profile answers are the inner driver's: a wrapper answering with the
+    /// trait defaults would report an unrestricted, unnamed session.
+    #[test]
+    fn profile_answers_are_the_inner_drivers() {
+        let d = Logged { inner: Arc::new(Recorder::default()), log: Arc::new(SqlLog::default()) };
+        assert_eq!(d.product().as_deref(), Some("tidb"));
+        assert_eq!(d.caps(), Caps { transactions: false, backup: false, user_mgmt: false });
+        assert_eq!(d.agent_access(), Err("no".to_string()));
     }
 }

@@ -7,7 +7,7 @@ use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use sqlx::mysql::{MySqlDatabaseError, MySqlPoolOptions, MySqlQueryResult, MySqlRow};
-use sqlx::{MySql, Pool, Row};
+use sqlx::{Executor, MySql, Pool, Row};
 
 use super::{
     build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken, Change,
@@ -215,24 +215,63 @@ pub struct MySqlDriver {
     /// [`super::WINDOW_TIMEOUT_MS`]; only tests shorten it.
     window_timeout_ms: u64,
     meta: super::MetaCache<Arc<MyMeta>>,
+    /// The probe's `SELECT VERSION()` answered.
+    detect_ok: bool,
+    /// The profile id the version text names (`profiles::detect`), if any.
+    detected: Option<String>,
+    /// `ConnConfig.profile`, as saved.
+    saved: Option<String>,
+}
+
+/// One text cell from the connect probe; `None` when the query fails or outlives `deadline`.
+/// Simple protocol: a wire-compatible server need not support prepared statements.
+async fn probe_text(
+    conn: &mut sqlx::MySqlConnection,
+    sql: &str,
+    deadline: tokio::time::Instant,
+) -> Option<String> {
+    let row = tokio::time::timeout_at(deadline, conn.fetch_one(sqlx::raw_sql(sql))).await.ok()?.ok()?;
+    mysql_cell(&row, 0).ok().flatten()
 }
 
 impl MySqlDriver {
     pub async fn connect(url: &str) -> DResult<Self> {
+        Self::connect_as(url, None).await
+    }
+
+    /// [`MySqlDriver::connect`] for a saved connection: `saved_profile` is its
+    /// `ConnConfig.profile`.
+    pub async fn connect_as(url: &str, saved_profile: Option<&str>) -> DResult<Self> {
         // Probe with a direct connection first so the real error surfaces instead
         // of the pool's opaque "pool timed out" after a 30s retry (see PgDriver).
-        {
+        let version = {
             use sqlx::Connection;
-            let probe = tokio::time::timeout(
-                super::CONNECT_TIMEOUT,
-                sqlx::mysql::MySqlConnection::connect(url),
-            )
-            .await
-            .map_err(|_| {
-                DriverError::Db(format!("timed out connecting to {}", super::url_host_port(url)))
-            })?
-            .map_err(db)?;
+            let deadline = tokio::time::Instant::now() + super::CONNECT_TIMEOUT;
+            let mut probe = tokio::time::timeout_at(deadline, sqlx::mysql::MySqlConnection::connect(url))
+                .await
+                .map_err(|_| {
+                    DriverError::Db(format!("timed out connecting to {}", super::url_host_port(url)))
+                })?
+                .map_err(db)?;
+            // The version text names the product, inside the same bound. The comment is
+            // where some products put their name; a server without the variable still
+            // has a version.
+            let mut version = probe_text(&mut probe, "SELECT VERSION()", deadline).await;
+            if let Some(v) = &mut version {
+                if let Some(c) = probe_text(&mut probe, "SELECT @@version_comment", deadline).await {
+                    *v = format!("{v} {c}");
+                }
+            }
             let _ = probe.close().await;
+            version
+        };
+        let detect_ok = version.is_some();
+        let detected = version.and_then(|v| crate::profiles::detect("mysql", &v)).map(str::to_string);
+        let saved = saved_profile.map(str::to_string);
+        if let (Some(s), Some(d)) = (saved.as_deref().filter(|s| crate::profiles::lookup(s).is_some()), &detected) {
+            if s != d {
+                crate::applog::log("warn", &format!("saved profile {s}, but the server reports {d}"));
+            }
         }
         let pool = MySqlPoolOptions::new()
             .max_connections(4)
@@ -249,7 +288,15 @@ impl MySqlDriver {
             cancel_pool,
             meta: Default::default(),
             window_timeout_ms: super::WINDOW_TIMEOUT_MS,
+            detect_ok,
+            detected,
+            saved,
         })
+    }
+
+    /// See [`super::compat_session`].
+    fn compat(&self) -> bool {
+        super::compat_session(self.detect_ok, self.saved.as_deref(), self.detected.as_deref())
     }
 
     /// Shorten the page timeouts, so a test can reach them quickly.
@@ -452,6 +499,17 @@ fn text_rows_to_batch(cols: &[String], rows: &[MySqlRow]) -> DResult<RecordBatch
 
 #[async_trait]
 impl SqlDriver for MySqlDriver {
+    fn product(&self) -> Option<String> {
+        crate::profiles::session_profile("mysql", self.saved.as_deref(), self.detected.as_deref())
+    }
+    fn caps(&self) -> crate::profiles::Caps {
+        crate::profiles::effective_caps(self.saved.as_deref(), self.detected.as_deref())
+    }
+    fn agent_access(&self) -> Result<(), String> {
+        crate::profiles::agent_block("mysql", self.saved.as_deref(), self.detected.as_deref(), self.detect_ok)
+            .map_or(Ok(()), Err)
+    }
+
     async fn run_statements(
         &self,
         stmts: &[String],
@@ -607,7 +665,7 @@ impl SqlDriver for MySqlDriver {
 
     /// The data dictionary's `TABLE_ROWS` (InnoDB's sampled estimate). A view has none.
     async fn estimate_rows(&self, schema: &str, table: &str) -> DResult<Option<i64>> {
-        let est: Option<u64> = sqlx::query_scalar(
+        let est = sqlx::query_scalar::<_, Option<u64>>(
             "SELECT TABLE_ROWS AS table_rows FROM information_schema.tables \
              WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND TABLE_TYPE = 'BASE TABLE'",
         )
@@ -615,16 +673,16 @@ impl SqlDriver for MySqlDriver {
         .bind(table)
         .fetch_optional(&self.pool)
         .await
-        .map_err(db)?
-        .flatten();
-        Ok(est.map(|n| n as i64))
+        .map(|est| est.flatten().map(|n| n as i64))
+        .map_err(db);
+        super::degrade(self.compat(), est, schema, table)
     }
 
     /// The data dictionary's per-table size: `TABLE_ROWS` (InnoDB's sampled estimate) and
     /// `DATA_LENGTH + INDEX_LENGTH`. Cached for `information_schema_stats_expiry` (24h by
     /// default), so both are estimates — the lobby shows them with a "≈" prefix.
     async fn table_stats(&self, schema: &str) -> DResult<Vec<TableStat>> {
-        let rows: Vec<(String, Option<u64>, Option<u64>)> = sqlx::query_as(
+        let rows: DResult<Vec<(String, Option<u64>, Option<u64>)>> = sqlx::query_as(
             "SELECT CAST(TABLE_NAME AS CHAR) AS name, CAST(TABLE_ROWS AS UNSIGNED) AS table_rows, \
                     CAST(DATA_LENGTH + INDEX_LENGTH AS UNSIGNED) AS bytes \
              FROM information_schema.tables WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE'",
@@ -632,8 +690,8 @@ impl SqlDriver for MySqlDriver {
         .bind(schema)
         .fetch_all(&self.pool)
         .await
-        .map_err(db)?;
-        Ok(rows
+        .map_err(db);
+        Ok(super::degrade(self.compat(), rows, schema, "*")?
             .into_iter()
             .map(|(name, r, b)| TableStat { name, rows: r.map(|n| n as i64), bytes: b.map(|n| n as i64) })
             .collect())
