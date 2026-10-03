@@ -3,7 +3,7 @@
     "base": "mysql",
     "label": "MariaDB",
     "monogram": "Ma",
-    "color": "#003545",
+    "color": "#00546d",
     "port": 3306,
     "schemes": [
       "mariadb"
@@ -44,7 +44,7 @@
     "base": "mysql",
     "label": "OceanBase",
     "monogram": "Ob",
-    "color": "#0181fd",
+    "color": "#0173e2",
     "port": 2881,
     "user": "root",
     "schemes": [
@@ -84,7 +84,7 @@
     "base": "mysql",
     "label": "StarRocks",
     "monogram": "Sr",
-    "color": "#b8860b",
+    "color": "#976e09",
     "port": 9030,
     "user": "root",
     "schemes": [
@@ -126,7 +126,7 @@
     "base": "mysql",
     "label": "PolarDB-X",
     "monogram": "Px",
-    "color": "#d95f00",
+    "color": "#c15400",
     "port": 3306,
     "schemes": [
       "polardbx"
@@ -162,7 +162,7 @@
     "base": "mysql",
     "label": "Dolt",
     "monogram": "Dt",
-    "color": "#0f8f7a",
+    "color": "#0e8471",
     "port": 3306,
     "user": "root",
     "schemes": [
@@ -180,7 +180,7 @@
     "base": "mysql",
     "label": "Manticore Search",
     "monogram": "Mc",
-    "color": "#0e4d5c",
+    "color": "#0f5464",
     "port": 9306,
     "schemes": [
       "manticore"
@@ -217,7 +217,7 @@
     "base": "mysql",
     "label": "Vitess",
     "monogram": "Vt",
-    "color": "#d9541e",
+    "color": "#c84d1c",
     "port": 15306,
     "schemes": [
       "vitess"
@@ -260,7 +260,7 @@
     "base": "postgres",
     "label": "Amazon Redshift",
     "monogram": "Rs",
-    "color": "#8c4fff",
+    "color": "#8a4cff",
     "port": 5439,
     "database": "dev",
     "ssl": "require",
@@ -284,7 +284,7 @@
     "base": "postgres",
     "label": "YugabyteDB",
     "monogram": "Yb",
-    "color": "#e0531a",
+    "color": "#cb4b18",
     "port": 5433,
     "user": "yugabyte",
     "database": "yugabyte",
@@ -308,7 +308,7 @@
     "base": "postgres",
     "label": "Neon",
     "monogram": "Ne",
-    "color": "#00996b",
+    "color": "#00855d",
     "port": 5432,
     "ssl": "require",
     "schemes": [
@@ -328,7 +328,7 @@
     "base": "postgres",
     "label": "Supabase",
     "monogram": "Sb",
-    "color": "#249361",
+    "color": "#218558",
     "port": 5432,
     "user": "postgres",
     "database": "postgres",
@@ -351,7 +351,7 @@
     "base": "postgres",
     "label": "TimescaleDB",
     "monogram": "Ts",
-    "color": "#a67c00",
+    "color": "#956f00",
     "port": 5432,
     "schemes": [
       "timescaledb",
@@ -371,7 +371,7 @@
     "base": "postgres",
     "label": "AlloyDB",
     "monogram": "Al",
-    "color": "#4285f4",
+    "color": "#1d6df2",
     "port": 5432,
     "schemes": [
       "alloydb"

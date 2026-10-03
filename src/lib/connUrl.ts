@@ -1,12 +1,10 @@
 import type { ConnConfig, Engine } from "./commands";
+import { DEFAULT_PORT, PROFILES, profileForUrl } from "./profiles";
 
-/** Default port per engine (0 = file engine, no port). */
-export const DEFAULT_PORT: Record<Engine, number> = {
-  postgres: 5432, mysql: 3306, sqlite: 0, duckdb: 0, redis: 6379, mongodb: 27017, sqlserver: 1433,
-};
+export { DEFAULT_PORT };
 
 const SCHEME_ENGINE: Record<string, Engine> = {
-  postgres: "postgres", postgresql: "postgres", mysql: "mysql", mariadb: "mysql",
+  postgres: "postgres", postgresql: "postgres", mysql: "mysql",
   sqlserver: "sqlserver", mssql: "sqlserver", redis: "redis", rediss: "redis",
   mongodb: "mongodb", "mongodb+srv": "mongodb", sqlite: "sqlite", duckdb: "duckdb",
 };
@@ -17,7 +15,18 @@ const ENGINE_SCHEME: Record<Engine, string> = {
 
 export interface ParsedConnUrl {
   engine: Engine; host: string; port: number; username: string; password: string; database: string; sslmode?: string;
+  /** The product the scheme or host names (CockroachDB, Neon, …); absent for a plain engine. */
+  profile?: string;
 }
+
+/** SSL spellings (Postgres `sslmode`, MySQL `ssl-mode`) → the form's five modes. */
+const SSL_MODES: Record<string, string> = {
+  disable: "disable", disabled: "disable", prefer: "prefer", preferred: "prefer", require: "require", required: "require",
+  "verify-ca": "verify-ca", verify_ca: "verify-ca", "verify-full": "verify-full", verify_full: "verify-full", verify_identity: "verify-full",
+};
+const MYSQL_SSL: Record<string, string> = { disable: "DISABLED", require: "REQUIRED", "verify-ca": "VERIFY_CA", "verify-full": "VERIFY_IDENTITY" };
+// Managed clouds that refuse a plaintext connection.
+const TLS_HOSTS = [".rds.amazonaws.com", ".database.azure.com"];
 
 // Recognised, but the backend has no SRV lookup / TLS for these yet.
 const UNSUPPORTED_SCHEMES = ["mongodb+srv", "rediss"];
@@ -35,7 +44,7 @@ function safeDecode(s: string): string {
 
 export function looksLikeConnUrl(s: string): boolean {
   const sc = scheme(s);
-  return !!sc && sc in SCHEME_ENGINE;
+  return !!sc && (sc in SCHEME_ENGINE || profileForUrl(sc, "", null) !== null);
 }
 
 export function isUnsupportedConnUrl(s: string): boolean {
@@ -47,7 +56,8 @@ export function parseConnUrl(input: string): ParsedConnUrl | null {
   const s = input.trim();
   const m = /^([a-z+]+):\/\/(.*)$/i.exec(s);
   if (!m || isUnsupportedConnUrl(s)) return null;
-  const engine = SCHEME_ENGINE[m[1].toLowerCase()];
+  const sc = m[1].toLowerCase();
+  const engine = SCHEME_ENGINE[sc] ?? PROFILES[profileForUrl(sc, "", null) ?? ""]?.base;
   if (!engine) return null;
   if (engine === "sqlite" || engine === "duckdb") {
     return { engine, host: "", port: 0, username: "", password: "", database: safeDecode(m[2]) };
@@ -59,24 +69,33 @@ export function parseConnUrl(input: string): ParsedConnUrl | null {
   } catch {
     return null;
   }
-  const sslmode = u.searchParams.get("sslmode") ?? undefined;
+  const profile = profileForUrl(sc, u.hostname, engine) ?? undefined;
+  const sslmode =
+    SSL_MODES[(u.searchParams.get("sslmode") ?? u.searchParams.get("ssl-mode") ?? "").toLowerCase()] ??
+    (profile && PROFILES[profile].ssl) ??
+    (TLS_HOSTS.some((s) => u.hostname.endsWith(s)) ? "require" : undefined);
   return {
     engine,
     host: u.hostname,
-    port: u.port ? Number(u.port) : DEFAULT_PORT[engine],
+    port: u.port ? Number(u.port) : profile ? PROFILES[profile].port : DEFAULT_PORT[engine],
     username: safeDecode(u.username),
     password: safeDecode(u.password),
     database: safeDecode(u.pathname.replace(/^\//, "")),
     ...(sslmode ? { sslmode } : {}),
+    ...(profile ? { profile } : {}),
   };
 }
 
-/** The connection as a URL, for "Copy as URL". Never includes the password. */
-export function toConnUrl(cfg: Pick<ConnConfig, "engine" | "host" | "port" | "username" | "database" | "sslmode">): string {
+/** The connection as a URL, for "Copy as URL". Never includes the password. Always the base
+ *  engine's scheme: a profile scheme is ours, other tools would not know it. */
+export function toConnUrl(cfg: Pick<ConnConfig, "engine" | "profile" | "host" | "port" | "username" | "database" | "sslmode">): string {
   const scheme = ENGINE_SCHEME[cfg.engine];
   if (cfg.engine === "sqlite" || cfg.engine === "duckdb") return `${scheme}://${cfg.database}`;
   const user = cfg.username ? `${encodeURIComponent(cfg.username)}@` : "";
-  const q = cfg.engine === "postgres" && cfg.sslmode && cfg.sslmode !== "prefer" ? `?sslmode=${cfg.sslmode}` : "";
+  const q =
+    cfg.engine === "postgres" && cfg.sslmode && cfg.sslmode !== "prefer" ? `?sslmode=${cfg.sslmode}`
+    : cfg.engine === "mysql" && MYSQL_SSL[cfg.sslmode] ? `?ssl-mode=${MYSQL_SSL[cfg.sslmode]}`
+    : "";
   return `${scheme}://${user}${cfg.host}:${cfg.port}/${encodeURIComponent(cfg.database)}${q}`;
 }
 

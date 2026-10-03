@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { ConnectedInfo, SchemaModel } from "../lib/commands";
-import { canLeaveSession, clearMetaCaches, useConnections } from "./connectionStore";
+import { canLeaveSession, clearMetaCaches, profileToSave, useConnections } from "./connectionStore";
 import { useTabs } from "./tabsStore";
 
 const info = (id: string): ConnectedInfo => ({ id, name: id, database: `${id}_db`, engine: "postgres" });
@@ -299,5 +299,15 @@ describe("canLeaveSession", () => {
     useConnections.getState().setEditsPending(true);
     await expect(canLeaveSession()).resolves.toBe(false);
     useConnections.getState().setEditsPending(false);
+  });
+});
+
+describe("profileToSave", () => {
+  it("saves a profile only when the connection has none and the session found one", () => {
+    expect(profileToSave(null, "tidb")).toBe("tidb");
+    expect(profileToSave(undefined, "tidb")).toBe("tidb");
+    expect(profileToSave("planetscale", "vitess")).toBeNull();
+    expect(profileToSave("tidb", null)).toBeNull();
+    expect(profileToSave(null, null)).toBeNull();
   });
 });

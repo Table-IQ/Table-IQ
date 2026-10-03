@@ -3,14 +3,15 @@
  * the Settings → Backup tools dir pref. The file types here must stay inside the Rust
  * allowlist (`BACKUP_EXTS` in `connect.rs`).
  */
-import type { Engine } from "./commands";
+import type { Engine, SessionCaps } from "./commands";
 
 export type BackupFormat = "custom" | "plain";
 
 export const BACKUP_TOOL_DIR_KEY = "tiq:backup:toolDir";
 
-export function supportsBackup(engine: Engine): boolean {
-  return engine !== "redis" && engine !== "mongodb";
+/** `caps` is the live session's: a product whose dump tool does not fit (TiDB) turns it off. */
+export function supportsBackup(engine: Engine, caps?: SessionCaps): boolean {
+  return engine !== "redis" && engine !== "mongodb" && (caps?.backup ?? true);
 }
 
 /** Only `pg_dump` / `mysqldump` run as a child process that Cancel can kill; the SQL-only
@@ -37,8 +38,8 @@ export function backupExtensions(engine: Engine, format: BackupFormat): string[]
 
 /** Restore (Task 13) takes what backup writes. An in-memory file database has no file to
  *  restore into. */
-export function supportsRestore(engine: Engine, database: string): boolean {
-  return supportsBackup(engine) && !(isFile(engine) && (database === ":memory:" || database === ""));
+export function supportsRestore(engine: Engine, database: string, caps?: SessionCaps): boolean {
+  return supportsBackup(engine, caps) && !(isFile(engine) && (database === ":memory:" || database === ""));
 }
 
 /** What the user types to confirm a restore: a file database's file name (the whole path

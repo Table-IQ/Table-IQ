@@ -12,8 +12,14 @@ describe("connEnv", () => {
   });
 
   it("marks SSL only for engines that honour sslmode", () => {
-    expect(pillSegments({ ...base, engine: "mysql" as const, sslmode: "require" }, null).ssl).toBe(false);
+    expect(pillSegments({ ...base, engine: "mysql" as const, sslmode: "require" }, null).ssl).toBe(true);
     expect(pillSegments({ ...base, engine: "sqlserver" as const, sslmode: "require" }, null).ssl).toBe(true);
+    expect(pillSegments({ ...base, engine: "redis" as const, sslmode: "require" }, null).ssl).toBe(false);
+  });
+
+  it("names the profile in the engine segment", () => {
+    expect(pillSegments({ engine: "mysql", profile: "tidb", sslmode: "require", ssh: null, database: "d", name: "n" }, null)).toMatchObject({ ssl: true, engine: "TiDB" });
+    expect(pillSegments({ ...base, profile: "from-the-future" }, null).engine).toBe("PostgreSQL");
   });
 
   it("normalizes unknown env values to null (no ghost tint)", () => {

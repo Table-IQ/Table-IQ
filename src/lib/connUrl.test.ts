@@ -29,6 +29,26 @@ describe("parseConnUrl", () => {
     expect(isUnsupportedConnUrl("rediss://cache")).toBe(true);
     expect(isUnsupportedConnUrl("redis://cache")).toBe(false);
   });
+  it("reads a profile from the scheme or the host, with the profile's default port", () => {
+    expect(parseConnUrl("cockroachdb://root@h/defaultdb")).toMatchObject({ engine: "postgres", profile: "cockroachdb", port: 26257 });
+    expect(parseConnUrl("tidb://root@h/test")).toMatchObject({ engine: "mysql", profile: "tidb", port: 4000 });
+    expect(parseConnUrl("mariadb://root@h/app")).toMatchObject({ engine: "mysql", profile: "mariadb", port: 3306 });
+    expect(parseConnUrl("postgres://u@ep-x.neon.tech/db")).toMatchObject({ engine: "postgres", profile: "neon", port: 5432, sslmode: "require" });
+    expect(parseConnUrl("postgres://u@x.psdb.cloud/db")).toMatchObject({ engine: "postgres", port: 5432 });
+    expect(parseConnUrl("postgres://u@x.psdb.cloud/db")?.profile).toBeUndefined();
+    expect(parseConnUrl("postgres://u@db.abc.eu-west-1.rds.amazonaws.com/db")).toMatchObject({ sslmode: "require" });
+    expect(parseConnUrl("postgres://u@db.abc.eu-west-1.rds.amazonaws.com/db?sslmode=verify-full")?.sslmode).toBe("verify-full");
+    expect(parseConnUrl("postgres://u@localhost/db")?.profile).toBeUndefined();
+  });
+  it("spots a profile scheme as a URL", () => {
+    expect(looksLikeConnUrl("cockroachdb://root@h/defaultdb")).toBe(true);
+  });
+  it("normalises MySQL SSL names and always writes the base scheme", () => {
+    expect(parseConnUrl("mysql://u@h/db?ssl-mode=REQUIRED")?.sslmode).toBe("require");
+    expect(parseConnUrl("mysql://u@h/db?sslmode=VERIFY_IDENTITY")?.sslmode).toBe("verify-full");
+    expect(toConnUrl({ engine: "mysql", host: "h", port: 3306, username: "u", database: "db", sslmode: "require" })).toBe("mysql://u@h:3306/db?ssl-mode=REQUIRED");
+    expect(toConnUrl({ engine: "mysql", profile: "tidb", host: "h", port: 4000, username: "u", database: "db", sslmode: "prefer" })).toBe("mysql://u@h:4000/db");
+  });
   it("never throws on a raw % — keeps the undecodable text as typed", () => {
     expect(parseConnUrl("postgres://app:100%@db/shop")).toMatchObject({ host: "db", username: "app", password: "100%", database: "shop" });
     expect(parseConnUrl("sqlite:///tmp/100%.db")).toMatchObject({ engine: "sqlite", database: "/tmp/100%.db" });

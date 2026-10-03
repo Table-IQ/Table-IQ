@@ -3,9 +3,11 @@ import {
   connect,
   disconnect,
   foreignKeys,
+  listConnections,
   listObjects,
   openTable,
   primaryKey,
+  saveConnection,
   switchDatabase,
   type ConnConfig,
   type ConnectedInfo,
@@ -283,6 +285,12 @@ function discardIfStale(id: string): void {
   disconnect(id).catch((e) => logError("discard stale connection", e));
 }
 
+/** The profile to remember after a connect: the one the session detected, only when the
+ *  connection has none yet — a profile the user chose is never overwritten. */
+export function profileToSave(saved: string | null | undefined, session: string | null | undefined): string | null {
+  return !saved && session ? session : null;
+}
+
 /** Connect to `cfg` and load its schema, tracking `connecting` throughout.
  *  Resolves `true` on success, `false` when cancelled/superseded — including
  *  when the stale attempt's own connect/schema call later fails, which is
@@ -298,6 +306,14 @@ export async function openConnection(cfg: ConnConfig): Promise<boolean> {
     if (my !== gen) {
       discardIfStale(cfg.id);
       return false;
+    }
+    const profile = profileToSave(cfg.profile, info.profile);
+    if (profile) {
+      // Remember the detected product; failing to save must not fail the connect.
+      saveConnection({ ...cfg, profile })
+        .then(() => listConnections())
+        .then((saved) => useConnections.getState().setSaved(saved))
+        .catch((e) => logError("save detected profile", e));
     }
     useConnections.setState({ connecting: { id: cfg.id, name: cfg.name, stage: "schema", since } });
     const schema =

@@ -74,6 +74,13 @@ describe("openConnection", () => {
     expect(s.connecting).toBeNull();
   });
 
+  it("saves the product the session detected and refreshes the saved list", async () => {
+    connect.mockResolvedValue({ ...info("a"), profile: "tidb" });
+    listObjects.mockResolvedValue(schema("a"));
+    expect(await openConnection(cfg("a"))).toBe(true);
+    await vi.waitFor(() => expect(useConnections.getState().saved.find((c) => c.id === "a")?.profile).toBe("tidb"));
+  });
+
   it("cancel mid-connect leaves active unchanged and disconnects the late result exactly once", async () => {
     const p = pending<ConnectedInfo>();
     connect.mockReturnValueOnce(p.promise);

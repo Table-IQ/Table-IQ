@@ -22,6 +22,14 @@ describe("supportsUserMgmt", () => {
   });
 });
 
+describe("supportsUserMgmt with session capabilities", () => {
+  it("a session that cannot manage users turns it off; no caps changes nothing", () => {
+    expect(supportsUserMgmt("postgres", { transactions: true, backup: true, user_mgmt: false })).toBe(false);
+    expect(supportsUserMgmt("postgres", { transactions: true, backup: true, user_mgmt: true })).toBe(true);
+    expect(supportsUserMgmt("mysql")).toBe(true);
+  });
+});
+
 describe("listUsersSql", () => {
   it("postgres reads pg_roles, excluding pg_* system roles", () => {
     expect(listUsersSql("postgres")).toBe(

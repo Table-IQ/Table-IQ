@@ -56,6 +56,17 @@ describe("backup engine rules", () => {
   });
 });
 
+describe("profile capabilities", () => {
+  const noBackup = { transactions: true, backup: false, user_mgmt: false };
+  it("a session that cannot back up turns backup and restore off; no caps changes nothing", () => {
+    expect(supportsBackup("mysql", noBackup)).toBe(false);
+    expect(supportsBackup("mysql")).toBe(true);
+    expect(supportsRestore("postgres", "db", noBackup)).toBe(false);
+    expect(supportsRestore("postgres", "db")).toBe(true);
+    expect(supportsBackup("redis", { ...noBackup, backup: true })).toBe(false);
+  });
+});
+
 describe("restore engine rules", () => {
   it("restores what backup writes, except an in-memory file database", () => {
     expect(supportsRestore("postgres", "shop")).toBe(true);

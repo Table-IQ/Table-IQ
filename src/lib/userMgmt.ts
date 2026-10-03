@@ -7,7 +7,7 @@
  * Supported engines only: postgres, mysql, sqlserver (`supportsUserMgmt`). MariaDB has no
  * separate `Engine` id in this build, so it isn't listed.
  */
-import type { Engine } from "./commands";
+import type { Engine, SessionCaps } from "./commands";
 import { quoteIdent, quoteLiteral } from "./tableScript";
 
 export type GrantPreset = "read" | "readwrite" | "all";
@@ -34,8 +34,8 @@ function unsupported(engine: Engine): never {
   throw new Error(`Database user management is not supported for ${engine}`);
 }
 
-export function supportsUserMgmt(engine: Engine): boolean {
-  return engine === "postgres" || engine === "mysql" || engine === "sqlserver";
+export function supportsUserMgmt(engine: Engine, caps?: SessionCaps): boolean {
+  return (engine === "postgres" || engine === "mysql" || engine === "sqlserver") && (caps?.user_mgmt ?? true);
 }
 
 export function listUsersSql(engine: Engine): string {

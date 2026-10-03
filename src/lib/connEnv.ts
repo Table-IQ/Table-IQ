@@ -1,5 +1,6 @@
 import type { ConnConfig } from "./commands";
 import { engineLabel } from "../components/ui/EngineIcon";
+import { profileOf } from "./profiles";
 
 /** TablePlus-style connection environment; tints the titlebar status pill. */
 export type ConnEnv = "local" | "development" | "testing" | "staging" | "production";
@@ -30,19 +31,19 @@ export interface PillSegments {
 }
 
 const FILE_ENGINES = new Set(["sqlite", "duckdb"]);
-const SSL_ENGINES = new Set(["postgres", "sqlserver"]);
+const SSL_ENGINES = new Set(["postgres", "mysql", "sqlserver"]);
 
 /** The status pill's pieces. SSL/SSH reflect the saved config — the only thing we know;
  *  no TLS version or traffic is measured, so none is shown. */
 export function pillSegments(
-  cfg: Pick<ConnConfig, "engine" | "sslmode" | "ssh" | "database" | "name"> & { env?: ConnEnv | null },
+  cfg: Pick<ConnConfig, "engine" | "profile" | "sslmode" | "ssh" | "database" | "name"> & { env?: ConnEnv | null },
   activeObject: string | null,
 ): PillSegments {
   const file = FILE_ENGINES.has(cfg.engine);
   return {
     env: envLabel(cfg.env),
-    engine: engineLabel(cfg.engine),
-    // Only Postgres and SQL Server read sslmode; showing "SSL" elsewhere would be a lie.
+    engine: profileOf(cfg.engine, cfg.profile)?.label ?? engineLabel(cfg.engine),
+    // Only Postgres, MySQL and SQL Server read sslmode; showing "SSL" elsewhere would be a lie.
     ssl: SSL_ENGINES.has(cfg.engine) && /^(require|verify)/.test(cfg.sslmode ?? ""),
     ssh: !!cfg.ssh?.enabled,
     connection: cfg.name,
