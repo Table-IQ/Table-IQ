@@ -15,6 +15,7 @@ TableIQ now names the product behind a PostgreSQL or MySQL connection. 23 engine
 - **A server recognised as a compatible product can no longer be shared over MCP**, for reads or writes. This covers TiDB, CockroachDB and the other profiles that are not the base engine, a server whose version query failed, and a profile saved by a newer build. MariaDB, Neon, Supabase, TimescaleDB and AlloyDB keep MCP access.
 - **A recognised product loses backup and restore and user management where its profile lacks them.** Backup and restore are refused by the backend; user management is hidden.
 - **Products without transactions open read-only in the grid** (`read-only · no transactions`), and the backend refuses a staged commit on them.
+- **A MySQL connection saved with a compatible-product profile falls back to a plain session setup** if the server rejects the standard one. On such a session the time zone is the server's and the charset is the server default. A server saved through the plain MySQL tile gets no fallback.
 - MySQL connections now apply the saved SSL mode. A connection saved with `require` or a `verify-` mode that used to connect without TLS will now fail until the mode is changed or the server has a valid certificate.
 
 ## 0.8.2 — 2026-09-30

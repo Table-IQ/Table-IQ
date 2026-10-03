@@ -392,9 +392,7 @@
     "transactions": true,
     "backup": false,
     "userMgmt": false,
-    "detect": [
-      "openGauss"
-    ],
+    "detect": [],
     "tested": false
   },
   "questdb": {

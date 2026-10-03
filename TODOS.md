@@ -38,7 +38,7 @@ Deferred from the Connected Home plan review (2026-09-27, `docs/superpowers/plan
 - **Engine profiles follow-ups** (2026-10-03, from 0.8.3; matrix in `docs/ENGINES.md`):
   - **Review the agent guard for TiDB and CockroachDB so they can be shared over MCP.**
     - What: review the guard's function denylist and read-only wrapper against each engine, add live guard cases, then mark the profiles `real` for agent access.
-    - Why: both are verified engines and are blocked from MCP in 0.8.3. TiDB's `START TRANSACTION READ ONLY` is a no-op, so its read-only wrapper does not stop a write.
+    - Why: both are verified engines and are blocked from MCP in 0.8.3. TiDB rejects `START TRANSACTION READ ONLY` by default (it is a no-op only if `tidb_enable_noop_functions` is enabled), so the read-only wrapper cannot be relied on there and the agent guard is unreviewed for it.
     - Context: `src-tauri/src/profiles.rs` `agent_block`, `mcp_read_only` in `src-tauri/tests/profile_live.rs`, `guard_live.rs`.
   - **Verify Neon, Supabase, CockroachDB Cloud and TiDB Cloud on free tiers.**
     - What: run `any_profile_smoke` against each; flip `tested` for Neon and Supabase if every hard check passes.
@@ -50,7 +50,7 @@ Deferred from the Connected Home plan review (2026-09-27, `docs/superpowers/plan
     - Context: `pending.md` 2i; `Caps` in `src-tauri/src/profiles.rs`.
   - **Per-feature "not available on {label} yet" states for Structure, ERD and Explain.**
     - What: replace the raw catalog error with a named, per-feature message.
-    - Why: `explain_json` fails on five verified engines, and QuestDB and Materialize fail catalog queries; the user sees a driver error.
+    - Why: `explain_json` fails on five verified engines, QuestDB fails its catalog query and Materialize fails the grid's page query (`set_config`); the user sees a driver error.
     - Context: `docs/ENGINES.md` soft-check table.
   - **`TIQ_REQUIRE_LIVE` for the existing live tests.**
     - What: make the Postgres, MySQL and SQL Server live tests fail instead of skip when the flag is set and their URL is not.
@@ -58,7 +58,7 @@ Deferred from the Connected Home plan review (2026-09-27, `docs/superpowers/plan
     - Context: `.github/workflows/ci.yml`.
   - **A readable error for Metrics widgets on engines without read-only transactions.**
     - What: say that the engine has no read-only transactions, instead of passing on the driver text.
-    - Why: widgets run inside `START TRANSACTION READ ONLY` (§2g), which TiDB accepts as a no-op and other engines may reject.
+    - Why: widgets run inside `START TRANSACTION READ ONLY` (§2g), which TiDB rejects by default (`tidb_enable_noop_functions` turns it into a no-op) and other engines may reject.
     - Context: `query_rows` with `read_only: true`.
 
 ## Completed

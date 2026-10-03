@@ -24,7 +24,8 @@ A hard check that fails stops the run. A profile is `"tested": true` only if eve
 here is `ok`.
 
 - **Connect:** a plain connect, with the product named by the server's version text or the
-  saved profile.
+  saved profile. On MySQL, a connection whose saved profile is a compatible product falls back to
+  a plain session setup if the server rejects the standard one (see "Session setup" below).
 - **Browse:** schema introspection, the first page, and the grid's own cancellable page.
 - **Count:** the row count, and on the fixture table also the exact count.
 - **Query:** `SELECT 1`.
@@ -37,12 +38,12 @@ here is `ok`.
 | TiDB | CI | ok | ok | ok | ok | ok |
 | OceanBase | not run (no image probed) | not run | not run | not run | not run | not run |
 | Apache Doris | not run (image too large for this machine: 3.7 GB compressed) | not run | not run | not run | not run | not run |
-| StarRocks | local 2026-10-03 | FAIL: Getting analyzing error. Detail message: Set statement only support constant expr.. | not reached | not reached | not reached | n/a (no transactions) |
+| StarRocks | local 2026-10-03, before the session-setup fallback; not re-run | FAIL (before the fallback): Getting analyzing error. Detail message: Set statement only support constant expr.. | not reached | not reached | not reached | n/a (no transactions) |
 | SelectDB | not run (no local image) | not run | not run | not run | not run | not run |
 | PolarDB-X | not run (no image probed) | not run | not run | not run | not run | not run |
 | GreatSQL | local 2026-10-03 | ok | ok | ok | ok | ok |
 | Dolt | local 2026-10-03 | ok | ok | ok | ok | ok |
-| Manticore Search | local 2026-10-03 | FAIL: P01: syntax error, unexpected '(' near '(SELECT CONCAT(@@sql_mode, ',PIPES_AS_CONCAT,NO_ENGINE_SUBSTITUTION')),time_zone='+00:00',NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;' | not reached | not reached | not reached | n/a (no transactions) |
+| Manticore Search | local 2026-10-03; first run failed at connect, re-run after the session-setup fallback | ok (via the fallback) | FAIL: introspect finds Manticore.tiq_probe (no rows from information_schema.tables) | not reached | not reached | n/a (no transactions) |
 | PlanetScale | not run (no local image) | not run | not run | not run | not run | not run |
 | Vitess | not run (no image probed) | not run | not run | not run | not run | not run |
 | CockroachDB | CI | ok | ok | ok | ok | ok |
@@ -55,7 +56,7 @@ here is `ok`.
 | openGauss | not run (image does not start: libopenblas.so.0 missing) | not run | not run | not run | not run | not run |
 | QuestDB | local 2026-10-03 | ok | FAIL: introspect: unknown function name: ANY(INT) | not reached | not reached | n/a (no transactions) |
 | Materialize | local 2026-10-03 | ok | FAIL: first cancellable page: function "set_config" does not exist | not reached | not reached | n/a (no transactions) |
-| RisingWave | not run (image too large for this machine: 2.5 GB compressed) | not run | not run | not run | not run | not run |
+| RisingWave | not run (about 2.5 GB compressed, skipped to protect disk space) | not run | not run | not run | not run | not run |
 
 ### Soft checks
 
@@ -117,9 +118,9 @@ CI images (TiDB 8.5.7, CockroachDB 26.3.2, MariaDB 11) are pinned by digest in
 Not run, and why:
 
 - **Apache Doris** (`apache/doris:doris-all-in-one-2.1.0`): 3.7 GB compressed, too large for the
-  machine that ran this.
-- **RisingWave** (`risingwavelabs/risingwave`): 2.5 GB compressed, over the size limit for that
-  machine.
+  machine that ran this. It may also need the session-setup fallback (unverified).
+- **RisingWave** (`risingwavelabs/risingwave`): about 2.5 GB compressed, skipped to protect disk
+  space on the machine that ran this.
 - **openGauss** (`opengauss/opengauss`): the container exits at start on arm64 and on
   `linux/amd64` with `gaussdb: error while loading shared libraries: libopenblas.so.0`.
 - **OceanBase, PolarDB-X, Vitess:** no image was probed.
@@ -132,8 +133,16 @@ Notes on the runs that were made:
   `-e DOLT_ROOT_HOST='%'`, a documented variable of the image, then connected without a password.
 - **QuestDB and Materialize** take one statement per call, so the fixture table was created
   with two calls (`CREATE TABLE`, then `INSERT`).
-- **Manticore and StarRocks** fail while connecting: the driver's session setup sends a
-  `SET` with a sub-select that neither server parses.
+- **Manticore and StarRocks** rejected the standard MySQL session setup, a
+  `SET sql_mode=(SELECT …),time_zone='+00:00',NAMES …` that neither server parses. Both runs
+  were on 2026-10-03. The first Manticore run failed at connect (`P01: syntax error, unexpected
+  '('`) and StarRocks failed at connect (`Set statement only support constant expr..`). A driver
+  change then added a fallback to a plain session setup (below). After it, Manticore connects and
+  is detected as `manticore`, and fails at Browse: `information_schema.tables` is answered by
+  Manticore's Buddy helper, which returns no rows (with Buddy down, the query fails with a
+  syntax error at `CAST(… AS CHAR)`), so `introspect finds Manticore.tiq_probe` fails.
+  **StarRocks was not re-run after the fallback**; its row keeps the pre-fallback result and
+  does not claim that it connects now.
 - **QuestDB** connects, then its catalog query fails on `ANY(INT)`. **Materialize** connects and
   introspects, then the grid's page query fails on `set_config`.
 - **TimescaleDB** is PostgreSQL with an extension, so the run shows that the profile's
@@ -193,8 +202,15 @@ profile id. The first match names the product.
 - If the version query fails or times out, the session is treated as compatible and a warning
   is logged.
 - Markers are substrings of text a server really returns. Where a product's version text
-  carries no name (TimescaleDB, Manticore, StarRocks 4.1.6, SelectDB), the profile has no
-  marker and is only recognised when saved.
+  carries no name (TimescaleDB, Manticore, StarRocks 4.1.6) or no name was found in vendor
+  documentation (SelectDB, Doris, Vitess, openGauss), the profile has no marker and is only
+  recognised when saved.
+- **Session setup.** The standard MySQL session setup sets `sql_mode`, the time zone and the
+  character set in one `SET`. If the server rejects it and the connection's saved profile is a
+  compatible product (`real: false`), TableIQ reconnects with a plain setup and logs it. On such
+  a session the time zone is the server's and the charset is the server default. A compatible
+  server saved through the plain MySQL tile (no profile) gets no fallback and still fails to
+  connect.
 - A server that reports a plain MySQL or PostgreSQL version and is saved through a base tile is
   treated as the base engine. Detection cannot see a product that does not say what it is.
 - **Copy as URL** writes the base scheme (`postgres://`, `mysql://`). A profile with no host
@@ -211,23 +227,23 @@ Markers in `profiles.json`, and where the text came from:
 | MariaDB | `MariaDB` | observed: `11.8.9-MariaDB-ubu2404 mariadb.org binary distribution (CI)` |
 | TiDB | `TiDB` | observed: `8.0.11-TiDB-v8.5.7 (CI)` |
 | OceanBase | `OceanBase` | documented, not observed: OceanBase docs: `5.7.25-OceanBase-v4.1.0.0` |
-| Apache Doris | none | n/a |
+| Apache Doris | none | no name found in vendor docs (not run) |
 | StarRocks | none | observed: `8.0.33 4.1.6-6862092 (no product name)` |
-| SelectDB | none | n/a |
+| SelectDB | none | no name found in vendor docs (not run) |
 | PolarDB-X | none | n/a |
 | GreatSQL | `GreatSQL` | observed: `8.4.4-5 GreatSQL, Release 5, Revision 39b389cdf3b` |
 | Dolt | `Dolt` | observed: `8.0.31 Dolt` |
-| Manticore Search | none | observed: `29.9.0 58e88d5ab@26091108 (columnar 14.2.1 ...) git branch HEAD (no branch) (no product name)` |
+| Manticore Search | none | observed: `29.9.0 58e88d5ab@26091108 (columnar 14.2.1 ...) git branch HEAD (no branch)` (no product name) |
 | PlanetScale | none | n/a |
-| Vitess | none | n/a |
-| CockroachDB | `CockroachDB` | observed: `not captured; the CI test asserts the product is `cockroachdb`` |
+| Vitess | none | no name found in vendor docs (not run) |
+| CockroachDB | `CockroachDB` | not captured (CI asserts the product is `cockroachdb`) |
 | Amazon Redshift | `Redshift` | documented, not observed: AWS docs: `PostgreSQL 8.0.2 on i686-pc-linux-gnu, compiled by GCC gcc (GCC) 3.4.2 20041017 (Red Hat 3.4.2-6.fc3), Redshift 1.0.12103` |
 | YugabyteDB | `-YB-` | observed: `PostgreSQL 15.12-YB-2026.1.2.0-b0 on aarch64-unknown-linux-gnu, compiled by clang version 21.1.1` |
 | Neon | none | n/a |
 | Supabase | none | n/a |
 | TimescaleDB | none | observed: `PostgreSQL 16.15 on aarch64-unknown-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit (no Timescale text)` |
 | AlloyDB | none | n/a |
-| openGauss | `openGauss` | documented, not observed: openGauss: `openGauss 5.0.3 build 89d144c2 compiled at ...` |
+| openGauss | none | none found in openGauss vendor docs; community pages show `openGauss 5.0.3 build ...`, which is not vendor documentation, so the marker is empty |
 | QuestDB | `QuestDB` | observed: `PostgreSQL 12.3, compiled by Visual C++ build 1914, 64-bit, QuestDB` |
 | Materialize | `Materialize` | observed: `PostgreSQL 9.5 on aarch64-unknown-linux-gnu (Materialize 26.44.1)` |
 | RisingWave | `RisingWave` | documented, not observed: RisingWave docs and blog: `13.14.0-RisingWave-2.8.0` |
@@ -247,13 +263,12 @@ Markers in `profiles.json`, and where the text came from:
 4. **Run the smoke test** against the product:
 
    ```sh
-   cd src-tauri && TIQ_PROFILE=<id> TIQ_PROFILE_URL='<url>' TIQ_PROFILE_SCHEMA=<schema> \
-     [TIQ_PROFILE_TABLE=<existing table>] \
-     cargo test --test profile_live any_profile_smoke -- --nocapture
+   set -o pipefail; cd src-tauri && TIQ_PROFILE=<id> TIQ_PROFILE_URL='<url>' TIQ_PROFILE_SCHEMA=<schema> \
+     cargo test --test profile_live any_profile_smoke -- --nocapture 2>&1 | tail -40
    ```
 
-   `TIQ_PROFILE_TABLE` names a table that already exists, for a server where the fixture cannot
-   be created.
+   Add `TIQ_PROFILE_TABLE=<existing table>` to the variables for a server where the fixture
+   table cannot be created; the run then uses that table and skips the staged-commit check.
 5. **Flip `tested`** to `true` only if every hard check passed in that run. A profile with no
    run of its own stays `false`, whatever its base engine does.
 6. **Add the matrix row** to this page: hard result, each soft check, the image and the date.
