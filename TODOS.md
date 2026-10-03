@@ -35,6 +35,32 @@ Deferred from the Connected Home plan review (2026-09-27, `docs/superpowers/plan
   - **T4: live SQL Server guard test.** CI has no SQL Server, so the T-SQL escapes are proven by the suite only. Add a gated `TIQ_MSSQL_URL` guard_live case, and check whether width-insensitive collations resolve full-width spellings (`ｓｐ_configure`) to system procedures — `to_uppercase()` does not fold them to ASCII (raised by the /ship adversarial review, unverified).
   - **T5: give MCP its own SQL Server connection.** The guard refuses the literal session-changing statements, but the real fix for the shared, never-reset connection (`sqlserver::restore_database`) is a separate session for agent queries.
 
+- **Engine profiles follow-ups** (2026-10-03, from 0.8.3; matrix in `docs/ENGINES.md`):
+  - **Review the agent guard for TiDB and CockroachDB so they can be shared over MCP.**
+    - What: review the guard's function denylist and read-only wrapper against each engine, add live guard cases, then mark the profiles `real` for agent access.
+    - Why: both are verified engines and are blocked from MCP in 0.8.3. TiDB's `START TRANSACTION READ ONLY` is a no-op, so its read-only wrapper does not stop a write.
+    - Context: `src-tauri/src/profiles.rs` `agent_block`, `mcp_read_only` in `src-tauri/tests/profile_live.rs`, `guard_live.rs`.
+  - **Verify Neon, Supabase, CockroachDB Cloud and TiDB Cloud on free tiers.**
+    - What: run `any_profile_smoke` against each; flip `tested` for Neon and Supabase if every hard check passes.
+    - Why: they are cloud-only, so no local image exists, and Neon and Supabase are Beta.
+    - Context: TLS settings and host suffixes in `profiles.json`; the matrix rows say `not run (no local image)`.
+  - **Probe transaction support at connect instead of the static flag.**
+    - What: try a `BEGIN`/`ROLLBACK` on the probe connection and use the answer over `transactions` in the profile.
+    - Why: Doris, StarRocks, SelectDB and Manticore have no detection marker, so a server saved through a base tile still gets staged commits that are not atomic.
+    - Context: `pending.md` 2i; `Caps` in `src-tauri/src/profiles.rs`.
+  - **Per-feature "not available on {label} yet" states for Structure, ERD and Explain.**
+    - What: replace the raw catalog error with a named, per-feature message.
+    - Why: `explain_json` fails on five verified engines, and QuestDB and Materialize fail catalog queries; the user sees a driver error.
+    - Context: `docs/ENGINES.md` soft-check table.
+  - **`TIQ_REQUIRE_LIVE` for the existing live tests.**
+    - What: make the Postgres, MySQL and SQL Server live tests fail instead of skip when the flag is set and their URL is not.
+    - Why: only `profile_live` and `mysql_ssl_live` do so; a CI service that does not start leaves the others skipped and green.
+    - Context: `.github/workflows/ci.yml`.
+  - **A readable error for Metrics widgets on engines without read-only transactions.**
+    - What: say that the engine has no read-only transactions, instead of passing on the driver text.
+    - Why: widgets run inside `START TRANSACTION READ ONLY` (§2g), which TiDB accepts as a no-op and other engines may reject.
+    - Context: `query_rows` with `read_only: true`.
+
 ## Completed
 
 - **Confirm `+ Row` inserts in production.** New rows are now staged and go through the production commit confirm. **Completed:** v0.8.0 (2026-09-28)

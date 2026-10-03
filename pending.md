@@ -155,6 +155,25 @@ Backup/Restore, MCP Server and MCP Activity. Minors from the PR-C final triage, 
 | **MySQL fully-qualified cross-db writes on restore** | `mysql --one-database` filters by the selected database, but `other_db.table` in the dump (and `ALTER DATABASE`) still run. |
 | **Split `connect.rs` backup/restore; move `MyScan` out of `backup.rs`** | Backup/restore commands belong in `ipc/backup.rs`; `connect.rs` is past 2,700 lines. `backup.rs` also carries the MySQL dump scanner (`MyScan`). |
 
+### 2i. Deferred from engine profiles (0.8.3)
+
+The compatibility matrix is `docs/ENGINES.md`. Failures below are from runs on 2026-10-03 unless marked CI.
+
+| Item | Why |
+|---|---|
+| **Soft failures on the CI engines** | TiDB: `explain_json` (`not implemented`), `mcp_read_only`. CockroachDB: `table_stats` (`tiq_smoke is not among 0 tables`), `estimate_rows` (`no estimate`), `explain_json` (`at or near "json": syntax error`), `cancel` (`unknown function: pg_cancel_backend()`, so Stop errors). MariaDB: `explain_json` (`not implemented`). Recorded in `EXPECTED_SOFT_FAILS` (`src-tauri/tests/profile_live.rs`); a change there is a change in what the product can do. |
+| **Soft failures on the other verified engines** | Dolt and GreatSQL: `explain_json` (`not implemented`). YugabyteDB and TimescaleDB: none. These are not in `EXPECTED_SOFT_FAILS` because they do not run in CI. |
+| **Engines where `mcp_read_only` failed** | TiDB: `START TRANSACTION READ ONLY` is accepted as a no-op (`function READ ONLY has only noop implementation in tidb now, use tidb_enable_noop_functions to enable these functions`), so the read-only wrapper does not stop a write there. TiDB is not shared over MCP in this release. |
+| **QuestDB: Beta, fails Browse** | Connects and is detected; introspection fails with `unknown function name: ANY(INT)`. The catalog query uses a function QuestDB does not have. No driver change was made. |
+| **Materialize: Beta, fails Browse** | Connects and introspects; the grid's cancellable page fails with `function "set_config" does not exist`. |
+| **Manticore Search: Beta, fails Connect** | The session setup `SET` with a sub-select (`(SELECT CONCAT(@@sql_mode, ',PIPES_AS_CONCAT,NO_ENGINE_SUBSTITUTION'))`) is a syntax error on Manticore (`P01: syntax error, unexpected '('`). The tolerant `SET`s do not cover this statement. |
+| **StarRocks: Beta, fails Connect** | The same session setup fails with `Getting analyzing error. Detail message: Set statement only support constant expr..` (StarRocks 4.1.6). Apache Doris was not run and may fail the same way. |
+| **Beta engines never run** | Apache Doris and RisingWave (images over the size limit for the machine), openGauss (image exits at start: `libopenblas.so.0` missing, arm64 and amd64), OceanBase, PolarDB-X and Vitess (no image probed), SelectDB, PlanetScale, Amazon Redshift, Neon, Supabase and AlloyDB (cloud only). |
+| **Staged commits are not atomic if saved through a base tile** | These profiles have `transactions: false` and no detection marker, so a server saved as plain MySQL or PostgreSQL is not recognised and the grid allows staged commits: Apache Doris, StarRocks, SelectDB (no vendor documentation shows a product name in its version text; VeloDB's docs, the SelectDB successor, give a fixed `5.7.99`), Manticore Search (`29.9.0 ... git branch HEAD (no branch)`). Fix: probe transaction support at connect (TODOS.md). |
+| **`verify-full` through an SSH tunnel fails host verification** | The driver connects to `127.0.0.1` at the tunnel's local port, so the certificate's host name does not match. |
+| **MCP settings row can read "shareable" before first connect** | The row is computed from the saved profile. A server that is then recognised as compatible at connect becomes blocked, and the row corrects itself only after that connect. |
+| **Capability gates cannot be overridden per connection** | A product the table marks as lacking transactions, backup or user management stays that way, even where a particular server version supports it. |
+
 ---
 
 ## 3. Other pending work (pre-existing, not touched by this branch)

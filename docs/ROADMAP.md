@@ -61,6 +61,16 @@ A **profile** is a base driver plus default port and URL scheme, dialect quirks,
 
 **Done** = each profile connects, browses, runs a query and (where allowed) stages an edit, with live tests running against the docker image for TiDB, CockroachDB and one more.
 
+**Status, v0.8.3** (the full matrix is `docs/ENGINES.md`):
+
+- [x] The profile table (`src/lib/profiles.json`), 23 profiles, no new crates.
+- [x] Detection on connect, the compatible-database picker, per-product capabilities, and read-only grids on products without transactions.
+- [x] Live tests in CI against TiDB, CockroachDB and MariaDB (`src-tauri/tests/profile_live.rs`).
+- [x] A by-hand smoke run against each profile with a local image. 7 profiles are verified, meaning every hard check passed: MariaDB, TiDB, CockroachDB, GreatSQL, Dolt, YugabyteDB and TimescaleDB.
+- [ ] The other 16 ship as Beta. QuestDB, Materialize, Manticore and StarRocks failed a hard check; Apache Doris, RisingWave and openGauss could not be run on the test machine; the rest have no local image (cloud services, or not probed). Each Beta profile moves to verified when its row in `docs/ENGINES.md` has every hard check `ok`.
+- [ ] Agent access for compatible engines. They cannot be shared over MCP in this release; it opens per engine after the agent guard is reviewed for it (TODOS.md).
+- [ ] Cloud URL presets beyond the host suffixes and schemes in the table (RDS/Aurora, Azure SQL, Cloud SQL).
+
 ## P2 · Full Mongo and Redis browsers
 
 - **MongoDB:**

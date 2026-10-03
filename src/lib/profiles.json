@@ -75,9 +75,7 @@
     "transactions": false,
     "backup": false,
     "userMgmt": false,
-    "detect": [
-      "Doris version"
-    ],
+    "detect": [],
     "tested": false
   },
   "starrocks": {
@@ -95,9 +93,7 @@
     "transactions": false,
     "backup": false,
     "userMgmt": false,
-    "detect": [
-      "StarRocks"
-    ],
+    "detect": [],
     "tested": false
   },
   "selectdb": {
@@ -117,9 +113,7 @@
     "transactions": false,
     "backup": false,
     "userMgmt": false,
-    "detect": [
-      "SelectDB"
-    ],
+    "detect": [],
     "tested": false
   },
   "polardbx": {
@@ -156,7 +150,7 @@
     "detect": [
       "GreatSQL"
     ],
-    "tested": false
+    "tested": true
   },
   "dolt": {
     "base": "mysql",
@@ -173,8 +167,10 @@
     "transactions": true,
     "backup": false,
     "userMgmt": false,
-    "detect": [],
-    "tested": false
+    "detect": [
+      "Dolt"
+    ],
+    "tested": true
   },
   "manticore": {
     "base": "mysql",
@@ -227,9 +223,7 @@
     "transactions": true,
     "backup": false,
     "userMgmt": false,
-    "detect": [
-      "Vitess"
-    ],
+    "detect": [],
     "tested": false
   },
   "cockroachdb": {
@@ -302,7 +296,7 @@
     "detect": [
       "-YB-"
     ],
-    "tested": false
+    "tested": true
   },
   "neon": {
     "base": "postgres",
@@ -365,7 +359,7 @@
     "backup": true,
     "userMgmt": true,
     "detect": [],
-    "tested": false
+    "tested": true
   },
   "alloydb": {
     "base": "postgres",
@@ -442,7 +436,9 @@
     "transactions": false,
     "backup": false,
     "userMgmt": false,
-    "detect": [],
+    "detect": [
+      "Materialize"
+    ],
     "tested": false
   },
   "risingwave": {

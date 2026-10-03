@@ -2,7 +2,19 @@
 
 ## 0.8.3 — unreleased
 
+TableIQ now names the product behind a PostgreSQL or MySQL connection. 23 engine profiles ship, seven of them verified against the real product: MariaDB, TiDB, CockroachDB, GreatSQL, Dolt, YugabyteDB and TimescaleDB. The other sixteen are Beta.
+
+### Added
+- **23 engine profiles** on the existing PostgreSQL and MySQL drivers: TiDB, CockroachDB, MariaDB, YugabyteDB, TimescaleDB, Dolt, GreatSQL, Neon, Supabase, AlloyDB, PlanetScale, Vitess, Amazon Redshift, OceanBase, Apache Doris, StarRocks, SelectDB, PolarDB-X, Manticore Search, openGauss, QuestDB, Materialize and RisingWave. No new crates. The table is `src/lib/profiles.json`.
+- **Product detection on connect.** The driver reads the server's version text and names the product when it matches a profile's marker. A saved profile stays; where it differs from what was detected, the more restrictive capabilities apply.
+- **A compatible-database picker** in the connection sheet, in new and edit mode, with a product icon and label, and a line saying what the product lacks. Profiles not yet verified read "Beta". A `tidb://` or `cockroachdb://` URL, or a cloud host such as `*.tidbcloud.com`, selects the profile when pasted.
+- **`docs/ENGINES.md`:** the compatibility matrix with what was run and what was not, the capability table, how detection works, and how to add a profile.
+- **A live smoke test per profile** (`src-tauri/tests/profile_live.rs`). TiDB, CockroachDB and MariaDB run in CI from `docker/profiles/docker-compose.yml`; any other profile runs by hand with `TIQ_PROFILE`.
+
 ### Changed
+- **A server recognised as a compatible product can no longer be shared over MCP**, for reads or writes. This covers TiDB, CockroachDB and the other profiles that are not the base engine, a server whose version query failed, and a profile saved by a newer build. MariaDB, Neon, Supabase, TimescaleDB and AlloyDB keep MCP access.
+- **A recognised product loses backup and restore and user management where its profile lacks them.** Backup and restore are refused by the backend; user management is hidden.
+- **Products without transactions open read-only in the grid** (`read-only · no transactions`), and the backend refuses a staged commit on them.
 - MySQL connections now apply the saved SSL mode. A connection saved with `require` or a `verify-` mode that used to connect without TLS will now fail until the mode is changed or the server has a valid certificate.
 
 ## 0.8.2 — 2026-09-30

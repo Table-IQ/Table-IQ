@@ -28,6 +28,17 @@ schema) under the title bar instead of freezing the window.
 MongoDB and Redis get a lighter document/key-value shell (`DocShell` / `KvShell`) rather
 than the SQL grid and ERD.
 
+Products that speak the PostgreSQL or MySQL wire protocol run on the same drivers, as engine
+profiles. **Verified** (every hard check of the live smoke test passed against the real
+product): MariaDB, TiDB, CockroachDB, GreatSQL, Dolt, YugabyteDB and TimescaleDB. **Beta**
+(in the picker, marked "(Beta)", not verified): Neon, Supabase, AlloyDB, PlanetScale, Vitess,
+Amazon Redshift, OceanBase, Apache Doris, StarRocks, SelectDB, PolarDB-X, Manticore Search,
+openGauss, QuestDB, Materialize and RisingWave. Products without transactions open read-only
+in the grid, and a compatible product cannot be shared over MCP yet (MariaDB, Neon, Supabase,
+TimescaleDB and AlloyDB can: they are the base engine under another name).
+[`docs/ENGINES.md`](docs/ENGINES.md) has the compatibility matrix, what was run and what was
+not, and how to add a profile.
+
 New and existing connections use a slide-in sheet: paste a full connection URL to fill every
 field, or start from one of the engine tiles; tag the connection with an environment (local,
 development, testing, staging, production — production tints the titlebar pill and gates
