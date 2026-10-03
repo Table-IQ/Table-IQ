@@ -236,12 +236,13 @@ async fn probe_text(
     mysql_cell(&row, 0).ok().flatten()
 }
 
-/// A saved compatible product (`real: false`) is connected without sqlx's
-/// session-setup `SET sql_mode=(SELECT CONCAT(@@sql_mode, …)),time_zone=…,NAMES …`: Manticore
-/// and StarRocks reject it, so they never got as far as detection. No profile, an unknown id
-/// and a real MySQL-family engine (MariaDB) keep sqlx's default setup.
-fn plain_session_setup(saved: Option<&str>) -> bool {
-    saved.and_then(crate::profiles::lookup).is_some_and(|p| !p.real)
+/// Whether a refused first connect is retried with a plain session setup: the database
+/// itself refused (not I/O, TLS or a timeout) and the saved profile is a known compatible
+/// product (`real: false`). Manticore and StarRocks reject sqlx's session-setup
+/// `SET sql_mode=(SELECT CONCAT(@@sql_mode, …)),time_zone=…,NAMES …`, so they never got as far
+/// as detection. No profile, an unknown id and a real MySQL-family engine (MariaDB) never retry.
+fn retry_plain(saved: Option<&str>, first_error_is_database: bool) -> bool {
+    first_error_is_database && saved.and_then(crate::profiles::lookup).is_some_and(|p| !p.real)
 }
 
 impl MySqlDriver {
@@ -253,27 +254,43 @@ impl MySqlDriver {
     /// `ConnConfig.profile`.
     pub async fn connect_as(url: &str, saved_profile: Option<&str>) -> DResult<Self> {
         let mut opts: sqlx::mysql::MySqlConnectOptions = url.parse().map_err(db)?;
-        if plain_session_setup(saved_profile) {
-            // ponytail: no session `SET` at all (Manticore also rejects the combined
-            // `SET time_zone=…,NAMES …`). The ceiling: the session time zone is the server's,
-            // so TIMESTAMP values may display in server-local time on these Beta engines.
-            opts = opts
-                .pipes_as_concat(false)
-                .no_engine_substitution(false)
-                .timezone(None)
-                .set_names(false);
-        }
         // Probe with a direct connection first so the real error surfaces instead
         // of the pool's opaque "pool timed out" after a 30s retry (see PgDriver).
         let version = {
             use sqlx::Connection;
             let deadline = tokio::time::Instant::now() + super::CONNECT_TIMEOUT;
-            let mut probe = tokio::time::timeout_at(deadline, sqlx::mysql::MySqlConnection::connect_with(&opts))
+            let timed_out =
+                || DriverError::Db(format!("timed out connecting to {}", super::url_host_port(url)));
+            let first = tokio::time::timeout_at(deadline, sqlx::mysql::MySqlConnection::connect_with(&opts))
                 .await
-                .map_err(|_| {
-                    DriverError::Db(format!("timed out connecting to {}", super::url_host_port(url)))
-                })?
-                .map_err(db)?;
+                .map_err(|_| timed_out())?;
+            let mut probe = match first {
+                Ok(c) => c,
+                Err(e) if retry_plain(saved_profile, matches!(e, sqlx::Error::Database(_))) => {
+                    crate::applog::log(
+                        "info",
+                        &format!(
+                            "{} refused the standard session setup; reconnecting with a plain one",
+                            super::url_host_port(url)
+                        ),
+                    );
+                    // ponytail: no session `SET` at all (Manticore also rejects the combined
+                    // `SET time_zone=…,NAMES …`). The ceiling, for servers that rejected the
+                    // standard setup only: the session time zone and charset are the server's,
+                    // so TIMESTAMP values may display in server-local time. If the retry fails
+                    // too, its error is the one returned. One deadline covers both attempts.
+                    opts = opts
+                        .pipes_as_concat(false)
+                        .no_engine_substitution(false)
+                        .timezone(None)
+                        .set_names(false);
+                    tokio::time::timeout_at(deadline, sqlx::mysql::MySqlConnection::connect_with(&opts))
+                        .await
+                        .map_err(|_| timed_out())?
+                        .map_err(db)?
+                }
+                Err(e) => return Err(db(e)),
+            };
             // The version text names the product, inside the same bound. The comment is
             // where some products put their name; a server without the variable still
             // has a version.
@@ -1036,7 +1053,7 @@ impl SqlDriver for MySqlDriver {
 
 #[cfg(test)]
 mod tests {
-    use super::{change_sql, delete_sql, insert_sql, kill_query_sql, plain_session_setup, update_sql};
+    use super::{change_sql, delete_sql, insert_sql, kill_query_sql, retry_plain, update_sql};
     use crate::drivers::{Change, EditSpec};
 
     /// MySQL has no `DEFAULT VALUES`; an all-blank draft is `() VALUES ()`.
@@ -1089,15 +1106,17 @@ mod tests {
         assert!(q.contains("referenced_table_name IS NOT NULL"));
     }
 
-    /// Only a saved compatible product skips sqlx's `SET sql_mode=(SELECT …)`; no profile, an
-    /// unknown id and a real MySQL-family engine keep it.
+    /// The plain session setup is a retry, for a saved compatible product whose first connect
+    /// was refused by the database: no profile, an unknown id, a real MySQL-family engine and a
+    /// non-database failure (I/O, TLS, timeout) never retry.
     #[test]
-    fn plain_session_setup_is_for_compatible_profiles_only() {
+    fn retry_plain_is_for_refused_compatible_profiles_only() {
         for id in ["manticore", "starrocks", "tidb"] {
-            assert!(plain_session_setup(Some(id)), "{id}");
+            assert!(retry_plain(Some(id), true), "{id}");
         }
+        assert!(!retry_plain(Some("tidb"), false));
         for id in [None, Some("mariadb"), Some("from-the-future")] {
-            assert!(!plain_session_setup(id), "{id:?}");
+            assert!(!retry_plain(id, true), "{id:?}");
         }
     }
 }
