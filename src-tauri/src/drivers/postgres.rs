@@ -319,8 +319,9 @@ impl PgDriver {
         timeout_ms: Option<u64>,
         tid_scan: bool,
     ) -> DResult<()> {
-        let pid: i32 = sqlx::query_scalar(
-            "SELECT pg_backend_pid() FROM \
+        // `::int8`: CockroachDB's pg_backend_pid() is an INT8, which does not decode as i32.
+        let pid: i64 = sqlx::query_scalar(
+            "SELECT pg_backend_pid()::int8 FROM \
              set_config('application_name', COALESCE($1, current_setting('application_name')), true) a, \
              set_config('statement_timeout', COALESCE($2, current_setting('statement_timeout')), true) t, \
              set_config('enable_seqscan', \
@@ -333,7 +334,7 @@ impl PgDriver {
         .await
         .map_err(db)?;
         if let Some(token) = token {
-            token.set_backend_id(pid as i64);
+            token.set_backend_id(pid);
             if token.is_cancelled() {
                 return Err(DriverError::Cancelled);
             }
@@ -538,11 +539,12 @@ impl SqlDriver for PgDriver {
         // Pin one pooled connection for the whole script so we can target it by backend PID,
         // and so BEGIN/…/COMMIT actually land on the same session.
         let mut conn = self.pool.acquire().await.map_err(db)?;
-        let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        // `::int8`: see `pin`.
+        let pid: i64 = sqlx::query_scalar("SELECT pg_backend_pid()::int8")
             .fetch_one(&mut *conn)
             .await
             .map_err(db)?;
-        token.set_backend_id(pid as i64);
+        token.set_backend_id(pid);
         // Recorded, then the flag checked (the `CancelToken` protocol): a caller that gave up
         // while this waited for a pooled connection has said it was cancelled — never run it.
         if token.is_cancelled() {
