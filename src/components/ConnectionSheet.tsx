@@ -341,7 +341,7 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
           <>
             <select
               aria-label="Compatible database"
-              aria-describedby={capsNote ? `${uid}caps` : undefined}
+              aria-describedby={[capsNote && `${uid}caps`, mode === "edit" && `${uid}detect`].filter(Boolean).join(" ") || undefined}
               className={`${mode === "new" ? "mt-[5px]" : "mt-3"} ${field()} ${form.profile ? "border-primary ring-3 ring-primary/15" : ""}`}
               value={form.profile ?? ""}
               onChange={(e) => p.onProfile(e.target.value || null)}
@@ -369,7 +369,7 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
               </div>
             )}
             {mode === "edit" && (
-              <div className="mt-1 text-[11px] text-muted">
+              <div id={`${uid}detect`} className="mt-1 text-[11px] text-muted">
                 TableIQ checks the server on connect and fills this in if the server identifies itself.
               </div>
             )}

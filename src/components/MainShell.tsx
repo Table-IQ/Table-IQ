@@ -1209,6 +1209,7 @@ export function MainShell() {
               connId={active.id}
               schema={activeTab?.schema}
               object={activeObj}
+              transactions={active.caps?.transactions !== false}
               onClose={() => setShowInspector(false)}
             />
           </aside>

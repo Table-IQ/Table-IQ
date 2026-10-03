@@ -31,7 +31,7 @@ export function ConnectionPicker({
   }, []);
 
   const filtered = useMemo(
-    () => fuzzyFilter(connections, query, (c) => `${c.name} ${c.engine} ${c.host}`),
+    () => fuzzyFilter(connections, query, (c) => `${c.name} ${c.engine} ${engineLabel(c.engine, c.profile)} ${c.host}`),
     [connections, query],
   );
 
