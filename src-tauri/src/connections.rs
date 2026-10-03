@@ -34,6 +34,10 @@ pub struct ConnConfig {
     /// "production"); tints the titlebar pill. `serde(default)` keeps old configs loading.
     #[serde(default)]
     pub env: Option<String>,
+    /// The product behind a MySQL- or Postgres-compatible server ("tidb", "cockroachdb" ...),
+    /// a key of `profiles.json`. `engine` stays the wire protocol; `None` is plain MySQL/Postgres.
+    #[serde(default)]
+    pub profile: Option<String>,
 }
 
 fn default_sslmode() -> String {
@@ -286,10 +290,17 @@ pub(crate) mod tests {
 
     pub(crate) fn cfg(engine: &str) -> ConnConfig {
         ConnConfig {
-            env: None, id: "x".into(), name: "x".into(), color: None,
+            env: None, profile: None, id: "x".into(), name: "x".into(), color: None,
             engine: engine.into(), host: "h".into(), port: 3306, database: "d".into(),
             username: "u".into(), sslmode: "prefer".into(), ssh: None,
         }
+    }
+
+    #[test]
+    fn legacy_json_without_profile_deserializes_as_none() {
+        let json = r#"{"id":"o","name":"L","engine":"mysql","host":"h","port":3306,"database":"d","username":"u"}"#;
+        let c: ConnConfig = serde_json::from_str(json).unwrap();
+        assert!(c.profile.is_none());
     }
 
     /// The saved SSL mode never reached the MySQL driver. An unknown value fails closed.
@@ -313,6 +324,7 @@ pub(crate) mod tests {
     fn config_roundtrips_through_json() {
         let cfg = ConnConfig {
             env: None,
+            profile: None,
             id: "abc".into(),
             name: "Local PG".into(),
             color: Some("#4f46e5".into()),
@@ -340,6 +352,7 @@ pub(crate) mod tests {
         // (which masks the real cause behind a connect error).
         let cfg = ConnConfig {
             env: None,
+            profile: None,
             id: "x".into(),
             name: "x".into(),
             color: None,
@@ -359,6 +372,7 @@ pub(crate) mod tests {
     fn file_engines_use_the_database_field_as_a_path() {
         let mut cfg = ConnConfig {
             env: None,
+            profile: None,
             id: "x".into(),
             name: "x".into(),
             color: None,
@@ -386,6 +400,7 @@ pub(crate) mod tests {
     fn url_encodes_special_chars_in_password() {
         let cfg = ConnConfig {
             env: None,
+            profile: None,
             id: "x".into(),
             name: "x".into(),
             color: None,
@@ -407,6 +422,7 @@ pub(crate) mod tests {
         let mut store = ConnStore::default();
         store.upsert(ConnConfig {
             env: None,
+            profile: None,
             id: "1".into(),
             name: "PG".into(),
             color: None,
@@ -448,6 +464,7 @@ pub(crate) mod tests {
     fn with_host_port_retargets_url_to_local_forward_postgres() {
         let cfg = ConnConfig {
             env: None,
+            profile: None,
             id: "x".into(),
             name: "x".into(),
             color: None,
@@ -475,6 +492,7 @@ pub(crate) mod tests {
     fn with_host_port_retargets_url_to_local_forward_mysql() {
         let cfg = ConnConfig {
             env: None,
+            profile: None,
             id: "x".into(),
             name: "x".into(),
             color: None,
@@ -497,6 +515,7 @@ pub(crate) mod tests {
         let mut store = ConnStore::default();
         store.upsert(ConnConfig {
             env: None,
+            profile: None,
             id: "1".into(),
             name: "PG via SSH".into(),
             color: None,
@@ -571,6 +590,7 @@ pub(crate) mod tests {
         let mut store = ConnStore::default();
         store.upsert(ConnConfig {
             env: None,
+            profile: None,
             id: "prod-1".into(),
             name: "Prod DB".into(),
             color: None,
@@ -613,6 +633,7 @@ pub(crate) mod tests {
     fn url_encodes_host_and_sslmode() {
         let cfg = ConnConfig {
             env: None,
+            profile: None,
             id: "x".into(),
             name: "x".into(),
             color: None,
@@ -634,6 +655,7 @@ pub(crate) mod tests {
     fn url_keeps_an_ipv6_literal_host_intact() {
         let cfg = ConnConfig {
             env: None,
+            profile: None,
             id: "x".into(),
             name: "x".into(),
             color: None,
@@ -692,6 +714,7 @@ pub(crate) mod tests {
         let mut store = ConnStore::default();
         let mut cfg = ConnConfig {
             env: None,
+            profile: None,
             id: "1".into(),
             name: "A".into(),
             color: None,

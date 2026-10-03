@@ -14,6 +14,7 @@ use arrow::record_batch::RecordBatch;
 use crate::backup;
 use crate::connections::{self, ConnConfig, ConnStore};
 use crate::lk;
+use crate::profiles;
 use crate::drivers::{
     doc_mongo::MongoDriver, duckdb::DuckDriver, kv_redis::RedisDriver, logged::Logged, mysql::MySqlDriver,
     postgres::PgDriver, sqlite::SqliteDriver, sqlserver::SqlServerDriver, CancelToken, Change,
@@ -310,13 +311,32 @@ pub fn list_connections(state: State<ConnState>) -> Vec<ConnConfig> {
     lk(&state.store).connections.clone()
 }
 
+/// Normalise an empty profile to none and refuse a known profile on the wrong engine.
+/// An unknown id is kept: a newer TableIQ saved it, and it must survive a round trip.
+fn check_profile(cfg: &mut ConnConfig) -> Result<(), String> {
+    if cfg.profile.as_deref() == Some("") {
+        cfg.profile = None;
+    }
+    match cfg.profile.as_deref().and_then(|id| profiles::lookup(id).map(|p| (id, p))) {
+        Some((id, p)) if p.base != cfg.engine => {
+            let base = if p.base == "mysql" { "MySQL" } else { "PostgreSQL" };
+            Err(format!(
+                "{} is a {base}-compatible profile. Set the engine to {base} or remove the profile.",
+                profiles::label(id)
+            ))
+        }
+        _ => Ok(()),
+    }
+}
+
 #[tauri::command(async)]
 pub fn save_connection(
     state: State<ConnState>,
-    cfg: ConnConfig,
+    mut cfg: ConnConfig,
     password: Option<String>,
     ssh_secret: Option<String>,
 ) -> Result<(), String> {
+    check_profile(&mut cfg)?;
     {
         let mut store = lk(&state.store);
         store.upsert(cfg.clone());
@@ -2285,6 +2305,28 @@ mod tests {
     }
 
     #[test]
+    fn save_validation() {
+        use crate::connections::tests::cfg;
+        let mut c = cfg("mysql");
+        c.profile = Some(String::new());
+        assert!(check_profile(&mut c).is_ok());
+        assert_eq!(c.profile, None);
+        let mut c = cfg("postgres");
+        c.profile = Some("tidb".into());
+        assert_eq!(
+            check_profile(&mut c).unwrap_err(),
+            "TiDB is a MySQL-compatible profile. Set the engine to MySQL or remove the profile."
+        );
+        let mut c = cfg("mysql");
+        c.profile = Some("tidb".into());
+        assert!(check_profile(&mut c).is_ok());
+        let mut c = cfg("mysql");
+        c.profile = Some("from-the-future".into());
+        assert!(check_profile(&mut c).is_ok());
+        assert_eq!(c.profile.as_deref(), Some("from-the-future"));
+    }
+
+    #[test]
     fn tls_hint() {
         assert!(mysql_tls_hint("verify-full", "TLS handshake failed: invalid certificate").is_some());
         assert!(mysql_tls_hint("prefer", "TLS handshake failed: invalid certificate").is_none());
@@ -2296,6 +2338,7 @@ mod tests {
     async fn open_driver_refuses_an_unknown_engine() {
         let cfg = ConnConfig {
             env: None,
+            profile: None,
             id: "x".into(),
             name: "x".into(),
             color: None,
@@ -2462,6 +2505,7 @@ mod tests {
     fn sqlite_cfg(id: &str, file: &std::path::Path) -> ConnConfig {
         ConnConfig {
             env: None,
+            profile: None,
             id: id.into(),
             name: id.into(),
             color: None,
@@ -2705,6 +2749,7 @@ mod tests {
     fn mssql_state(fake: FakeMssql) -> (ConnState, Arc<FakeMssql>) {
         let cfg = ConnConfig {
             env: None,
+            profile: None,
             id: "ms".into(),
             name: "ms".into(),
             color: None,
@@ -2773,6 +2818,7 @@ mod tests {
     fn switching_database_is_refused_for_file_engines() {
         let cfg = |engine: &str, database: &str| ConnConfig {
             env: None,
+            profile: None,
             id: "x".into(),
             name: "x".into(),
             color: None,

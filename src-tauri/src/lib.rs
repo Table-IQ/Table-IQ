@@ -13,6 +13,7 @@ pub mod mcp;
 #[cfg(any(target_os = "macos", test))]
 mod menu;
 pub mod plugins;
+pub mod profiles;
 pub mod query;
 pub mod sql_log;
 pub mod ssh;

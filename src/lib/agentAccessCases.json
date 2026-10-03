@@ -1,0 +1,11 @@
+[
+  { "engine": "postgres", "profile": null, "allowed": true },
+  { "engine": "mysql", "profile": null, "allowed": true },
+  { "engine": "postgres", "profile": "neon", "allowed": true },
+  { "engine": "mysql", "profile": "mariadb", "allowed": true },
+  { "engine": "mysql", "profile": "tidb", "allowed": false },
+  { "engine": "postgres", "profile": "cockroachdb", "allowed": false },
+  { "engine": "mysql", "profile": "doris", "allowed": false },
+  { "engine": "mysql", "profile": "from-the-future", "allowed": false },
+  { "engine": "postgres", "profile": "tidb", "allowed": false }
+]

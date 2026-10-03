@@ -696,6 +696,7 @@ mod tests {
     fn cfg_of(id: &str, engine: &str, database: &str) -> ConnConfig {
         ConnConfig {
             env: None,
+            profile: None,
             id: id.into(),
             name: format!("{id} name"),
             color: None,
