@@ -236,13 +236,19 @@ async fn probe_text(
     mysql_cell(&row, 0).ok().flatten()
 }
 
-/// Whether a refused first connect is retried with a plain session setup: the database
-/// itself refused (not I/O, TLS or a timeout) and the saved profile is a known compatible
-/// product (`real: false`). Manticore and StarRocks reject sqlx's session-setup
-/// `SET sql_mode=(SELECT CONCAT(@@sql_mode, …)),time_zone=…,NAMES …`, so they never got as far
-/// as detection. No profile, an unknown id and a real MySQL-family engine (MariaDB) never retry.
-fn retry_plain(saved: Option<&str>, first_error_is_database: bool) -> bool {
-    first_error_is_database && saved.and_then(crate::profiles::lookup).is_some_and(|p| !p.real)
+/// Whether a refused first connect is retried with a plain session setup: the server itself
+/// refused (`first` is its error number and SQLSTATE; `None` for I/O, TLS or a timeout) and the
+/// saved profile is a known compatible product (`real: false`). Manticore and StarRocks reject
+/// sqlx's session-setup `SET sql_mode=(SELECT CONCAT(@@sql_mode, …)),time_zone=…,NAMES …`, so
+/// they never got as far as detection. An authentication or connection refusal (SQLSTATE class
+/// 28 or 08, or 1045/1044/1049/1040, since engines are not consistent about SQLSTATE) is not a
+/// session-setup problem and never retries, nor do no profile, an unknown id or a real
+/// MySQL-family engine (MariaDB).
+fn retry_plain(saved: Option<&str>, first: Option<(u16, Option<&str>)>) -> bool {
+    let Some((number, state)) = first else { return false };
+    let not_setup = matches!(number, 1045 | 1044 | 1049 | 1040)
+        || state.is_some_and(|s| s.starts_with("28") || s.starts_with("08"));
+    !not_setup && saved.and_then(crate::profiles::lookup).is_some_and(|p| !p.real)
 }
 
 impl MySqlDriver {
@@ -266,19 +272,29 @@ impl MySqlDriver {
                 .map_err(|_| timed_out())?;
             let mut probe = match first {
                 Ok(c) => c,
-                Err(e) if retry_plain(saved_profile, matches!(e, sqlx::Error::Database(_))) => {
+                Err(e) => {
+                    let refused = e
+                        .as_database_error()
+                        .and_then(|d| d.try_downcast_ref::<MySqlDatabaseError>())
+                        .map(|m| (m.number(), m.code()));
+                    if !retry_plain(saved_profile, refused) {
+                        return Err(db(e));
+                    }
                     crate::applog::log(
                         "info",
                         &format!(
-                            "{} refused the standard session setup; reconnecting with a plain one",
-                            super::url_host_port(url)
+                            "{}: first connect was rejected by the server (code {}); \
+                             retrying with a plain session setup",
+                            super::url_host_port(url),
+                            refused.map_or(0, |r| r.0)
                         ),
                     );
                     // ponytail: no session `SET` at all (Manticore also rejects the combined
-                    // `SET time_zone=…,NAMES …`). The ceiling, for servers that rejected the
-                    // standard setup only: the session time zone and charset are the server's,
-                    // so TIMESTAMP values may display in server-local time. If the retry fails
-                    // too, its error is the one returned. One deadline covers both attempts.
+                    // `SET time_zone=…,NAMES …`). The ceiling, for servers whose first connect
+                    // failed for a reason other than auth or connection: the session time zone
+                    // and charset are the server's, so TIMESTAMP values may display in
+                    // server-local time. If the retry fails too, its error is the one returned.
+                    // One deadline covers both attempts.
                     opts = opts
                         .pipes_as_concat(false)
                         .no_engine_substitution(false)
@@ -289,7 +305,6 @@ impl MySqlDriver {
                         .map_err(|_| timed_out())?
                         .map_err(db)?
                 }
-                Err(e) => return Err(db(e)),
             };
             // The version text names the product, inside the same bound. The comment is
             // where some products put their name; a server without the variable still
@@ -1107,16 +1122,29 @@ mod tests {
     }
 
     /// The plain session setup is a retry, for a saved compatible product whose first connect
-    /// was refused by the database: no profile, an unknown id, a real MySQL-family engine and a
-    /// non-database failure (I/O, TLS, timeout) never retry.
+    /// was refused by the server over something other than who or where the client is: no
+    /// profile, an unknown id, a real MySQL-family engine, a non-database failure (I/O, TLS,
+    /// timeout), and auth or connection refusals never retry.
     #[test]
     fn retry_plain_is_for_refused_compatible_profiles_only() {
         for id in ["manticore", "starrocks", "tidb"] {
-            assert!(retry_plain(Some(id), true), "{id}");
+            assert!(retry_plain(Some(id), Some((1064, Some("42000")))), "{id}");
+            assert!(retry_plain(Some(id), Some((1064, None))), "{id}");
         }
-        assert!(!retry_plain(Some("tidb"), false));
+        assert!(!retry_plain(Some("tidb"), None));
+        for first in [
+            (1045, Some("28000")),
+            (1044, Some("42000")),
+            (1049, Some("42000")),
+            (1040, Some("08004")),
+            (9999, Some("28000")),
+            (9999, Some("08S01")),
+            (1045, None),
+        ] {
+            assert!(!retry_plain(Some("tidb"), Some(first)), "{first:?}");
+        }
         for id in [None, Some("mariadb"), Some("from-the-future")] {
-            assert!(!retry_plain(id, true), "{id:?}");
+            assert!(!retry_plain(id, Some((1064, Some("42000")))), "{id:?}");
         }
     }
 }
