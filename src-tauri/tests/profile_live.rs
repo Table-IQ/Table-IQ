@@ -14,6 +14,8 @@
 #[allow(dead_code)]
 mod changes_common;
 
+use std::time::{Duration, Instant};
+
 use tableiq_lib::drivers::{mysql::MySqlDriver, postgres::PgDriver, CancelToken, SqlDriver};
 use tableiq_lib::mcp::guard::read_only_wrap;
 use tableiq_lib::profiles;
@@ -22,7 +24,7 @@ use tableiq_lib::profiles;
 /// product can do on that engine.
 const EXPECTED_SOFT_FAILS: &[(&str, &[&str])] = &[
     ("tidb", &["explain_json", "mcp_read_only"]),
-    ("cockroachdb", &["explain_json"]),
+    ("cockroachdb", &["table_stats", "estimate_rows", "explain_json", "cancel"]),
     ("mariadb", &["explain_json"]),
 ];
 
@@ -64,6 +66,31 @@ async fn mcp_read_only(drv: &dyn SqlDriver, schema: &str, base: &str) -> Result<
     }
 }
 
+/// The app's Stop on a running statement: its token is flagged, then `cancel` is sent. `Ok`
+/// when the driver's cancel succeeds and the statement ends before its 3 seconds are up.
+async fn cancel(drv: &dyn SqlDriver, base: &str) -> Result<(), String> {
+    let sleep = if base == "postgres" { "SELECT pg_sleep(3)" } else { "SELECT SLEEP(3)" };
+    let (stmts, token, start) = ([sleep.to_string()], CancelToken::new(), Instant::now());
+    let stop = async {
+        // Bounded: a statement that never reached the server has nothing to cancel.
+        for _ in 0..200 {
+            if token.backend_id().is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await; // the statement is running
+        token.mark_cancelled();
+        drv.cancel(&token).await
+    };
+    let (_, stopped) = tokio::join!(drv.run_statements(&stmts, 10, &token), stop);
+    stopped.map_err(|e| e.to_string())?;
+    if start.elapsed() >= Duration::from_secs(3) {
+        return Err("the statement ran to its end".into());
+    }
+    Ok(())
+}
+
 /// Hard checks panic; the names of the soft checks that failed are returned.
 async fn smoke(drv: &dyn SqlDriver, schema: &str, transactions: bool, table: Option<&str>) -> Vec<&'static str> {
     let t = table.unwrap_or("tiq_smoke");
@@ -82,12 +109,22 @@ async fn smoke(drv: &dyn SqlDriver, schema: &str, transactions: bool, table: Opt
         .find(|o| o.name == t)
         .unwrap_or_else(|| panic!("introspect finds {schema}.{t}"));
     let page = drv.open_window(schema, t, 0, 100).await.expect("first page");
+    // The grid's own fetch: cancellable, so pinned to a connection and bounded.
+    let grid_page = drv
+        .open_window_cancellable(schema, t, 0, 100, &[], &[], None, &CancelToken::new())
+        .await
+        .expect("first cancellable page");
     let count = drv.count_rows(schema, t, &[], None).await.expect("count").count;
     if table.is_none() {
         assert_eq!(obj.columns.len(), 2, "{:?}", obj.columns);
         assert_eq!(drv.primary_key(schema, t).await.expect("primary_key"), ["id"]);
         assert_eq!(page.num_rows(), 3);
+        assert_eq!(grid_page.num_rows(), 3);
         assert_eq!(count, Some(3));
+        // The exact count the grid asks for by hand. Fixture only: it is unbounded, which
+        // an existing table of unknown size must not be put through.
+        let exact = drv.count_rows(schema, t, &[], Some(&CancelToken::new())).await.expect("exact count");
+        assert_eq!((exact.count, exact.exact), (Some(3), true));
     }
     assert_eq!(drv.run_query("SELECT 1", 10).await.expect("SELECT 1").batch.num_rows(), 1);
     if table.is_none() && transactions {
@@ -100,13 +137,20 @@ async fn smoke(drv: &dyn SqlDriver, schema: &str, transactions: bool, table: Opt
     let s = |e: tableiq_lib::drivers::DriverError| e.to_string();
     soft(&mut failed, "describe_table", drv.describe_table(schema, t).await.map_err(s));
     soft(&mut failed, "foreign_keys", drv.foreign_keys().await.map_err(s));
-    soft(&mut failed, "table_stats", drv.table_stats(schema).await.map_err(s));
-    soft(&mut failed, "estimate_rows", drv.estimate_rows(schema, t).await.map_err(s));
+    // A compat session answers a failed catalog read with nothing (`drivers::degrade`), so
+    // these two pass on a value, not on `Ok`.
+    let stats = drv.table_stats(schema).await.map_err(s).and_then(|all| {
+        all.iter().any(|st| st.name == t).then_some(()).ok_or(format!("{t} is not among {} tables", all.len()))
+    });
+    soft(&mut failed, "table_stats", stats);
+    let estimate = drv.estimate_rows(schema, t).await.map_err(s).and_then(|n| n.ok_or("no estimate".to_string()));
+    soft(&mut failed, "estimate_rows", estimate);
     soft(&mut failed, "list_databases", drv.list_databases().await.map_err(s));
     soft(&mut failed, "explain_json", drv.explain_json("SELECT 1").await.map_err(s));
+    let base = drv.product().and_then(|id| profiles::lookup(&id)).map(|p| p.base.as_str()).expect("a profile session");
+    soft(&mut failed, "cancel", cancel(drv, base).await);
     if table.is_none() {
-        let base = drv.product().and_then(|id| profiles::lookup(&id)).map(|p| p.base.as_str());
-        soft(&mut failed, "mcp_read_only", mcp_read_only(drv, schema, base.expect("a profile session")).await);
+        soft(&mut failed, "mcp_read_only", mcp_read_only(drv, schema, base).await);
         drv.run_script("DROP TABLE tiq_smoke").await.ok();
     }
     failed
