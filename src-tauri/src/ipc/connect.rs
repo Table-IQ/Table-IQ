@@ -962,6 +962,28 @@ pub async fn delete_row(
         .map_err(|e| e.to_string())
 }
 
+/// A session without multi-statement transactions can't commit a staged batch atomically.
+fn refuse_no_transactions(caps: profiles::Caps, product: Option<&str>) -> Result<(), String> {
+    if caps.transactions {
+        return Ok(());
+    }
+    let label = product.map_or_else(|| "This server".to_string(), profiles::label);
+    Err(format!(
+        "{label} has no multi-statement transactions, so staged changes can't be committed together. Run the statements from a query tab."
+    ))
+}
+
+/// `what` is "Backup" or "Restore": both shell out to `pg_dump` / `mysqldump`.
+fn refuse_no_backup(caps: profiles::Caps, product: Option<&str>, what: &str) -> Result<(), String> {
+    if caps.backup {
+        return Ok(());
+    }
+    let label = product.map_or_else(|| "This server".to_string(), profiles::label);
+    Err(format!(
+        "{what} is not supported for {label}: TableIQ backs up with pg_dump or mysqldump, which {label} does not fully support. Use {label}'s own backup tool."
+    ))
+}
+
 /// Apply a batch of staged changes to one table in ONE transaction (updates → deletes →
 /// inserts). Any failure rolls the batch back; the error names the 0-based change
 /// (`change {i}: {reason}`). Returns what was written.
@@ -974,6 +996,7 @@ pub async fn apply_changes(
     changes: Vec<Change>,
 ) -> Result<ChangesResult, String> {
     let drv = state.session(&id)?;
+    refuse_no_transactions(drv.caps(), drv.product().as_deref())?;
     drv.apply_changes(&schema, &table, &changes).await.map_err(|e| e.to_string())
 }
 
@@ -2123,7 +2146,8 @@ pub async fn backup_database(
             check_backup_path(&path)?;
             // Connected only: a tunnel exists only while connected, and without it the tool
             // would go straight to the host behind the bastion.
-            state.session(&id)?;
+            let drv = state.session(&id)?;
+            refuse_no_backup(drv.caps(), drv.product().as_deref(), "Backup")?;
             let tunnel = lk(&state.tunnels).get(&id).map(|t| t.local_addr());
             if tunnel.is_none() && cfg.ssh.as_ref().is_some_and(|s| s.enabled) {
                 return Err("The SSH tunnel for this connection is not open — reconnect, then back up".into());
@@ -2235,7 +2259,8 @@ async fn restore_inner(
     match cfg.engine.as_str() {
         "postgres" | "mysql" => {
             check_restore_source(&path)?;
-            state.session(id)?;
+            let drv = state.session(id)?;
+            refuse_no_backup(drv.caps(), drv.product().as_deref(), "Restore")?;
             let tunnel = lk(&state.tunnels).get(id).map(|t| t.local_addr());
             if tunnel.is_none() && cfg.ssh.as_ref().is_some_and(|s| s.enabled) {
                 return Err("The SSH tunnel for this connection is not open — reconnect, then restore".into());
@@ -2328,6 +2353,28 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    #[test]
+    fn staged_commits_are_refused_without_transactions() {
+        let no = profiles::Caps { transactions: false, backup: true, user_mgmt: true };
+        assert_eq!(
+            refuse_no_transactions(no, Some("doris")).unwrap_err(),
+            "Apache Doris has no multi-statement transactions, so staged changes can't be committed together. Run the statements from a query tab."
+        );
+        assert!(refuse_no_transactions(profiles::Caps { transactions: true, ..no }, Some("doris")).is_ok());
+    }
+
+    #[test]
+    fn backup_and_restore_are_refused_without_backup() {
+        let no = profiles::Caps { transactions: true, backup: false, user_mgmt: true };
+        for what in ["Backup", "Restore"] {
+            assert_eq!(
+                refuse_no_backup(no, Some("tidb"), what).unwrap_err(),
+                format!("{what} is not supported for TiDB: TableIQ backs up with pg_dump or mysqldump, which TiDB does not fully support. Use TiDB's own backup tool.")
+            );
+        }
+        assert!(refuse_no_backup(profiles::Caps { backup: true, ..no }, Some("tidb"), "Backup").is_ok());
     }
 
     #[test]
