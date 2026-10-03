@@ -229,6 +229,8 @@ pub struct PgDriver {
     detected: Option<String>,
     /// `ConnConfig.profile`, as saved.
     saved: Option<String>,
+    /// A degraded estimate has been logged (see [`super::degrade`]).
+    degrade_logged: std::sync::atomic::AtomicBool,
 }
 
 /// The session GUCs every pooled connection pins (see `connect_as`).
@@ -285,6 +287,16 @@ impl PgDriver {
             row.ok().and_then(Result::ok).and_then(|r| pg_cell(&r, 0).ok().flatten())
         };
         let detect_ok = version.is_some();
+        if !detect_ok {
+            crate::applog::log(
+                "warn",
+                &format!(
+                    "the version query failed or timed out on {}: product not detected, \
+                     the session is treated as compatible",
+                    super::url_host_port(url)
+                ),
+            );
+        }
         let detected = version.and_then(|v| crate::profiles::detect("postgres", &v)).map(str::to_string);
         let saved = saved_profile.map(str::to_string);
         if let (Some(s), Some(d)) = (saved.as_deref().filter(|s| crate::profiles::lookup(s).is_some()), &detected) {
@@ -341,6 +353,7 @@ impl PgDriver {
             detect_ok,
             detected,
             saved,
+            degrade_logged: Default::default(),
         })
     }
 
@@ -791,7 +804,8 @@ impl SqlDriver for PgDriver {
     /// (current pages / `relpages`). A never-ANALYZEd leaf (`reltuples = -1`; before PG 14,
     /// `reltuples = 0` with `relpages = 0`) is estimated from its size: pages ×
     /// tuples-per-page, a tuple being its fixed-width columns (32 bytes per variable-width
-    /// one) plus 28 bytes of header and line pointer. Views: `None`.
+    /// one) plus 28 bytes of header and line pointer. Views: `None` — and so is any error
+    /// on a compat session ([`super::degrade`]).
     async fn estimate_rows(&self, schema: &str, table: &str) -> DResult<Option<i64>> {
         let sql = format!(
             "WITH RECURSIVE rel AS ( \
@@ -812,14 +826,15 @@ impl SqlDriver for PgDriver {
             .fetch_optional(&self.pool)
             .await
             .map_err(db);
-        super::degrade(self.compat(), res, schema, table)
+        super::degrade(self.compat(), &self.degrade_logged, res, schema, table)
     }
 
     /// Every base table (and materialized view) in `schema`, top-level meaning "not a child
     /// in `pg_inherits`" — a declarative partition or legacy-inheritance child is excluded
     /// and instead summed into its top ancestor. Rows: [`PG_LEAF_ROW_ESTIMATE`] per leaf,
     /// summed. Bytes: `pg_total_relation_size` (table + indexes + toast) per leaf, summed.
-    /// Bounded by [`STATS_TIMEOUT_MS`]; on a timeout the error is returned as-is.
+    /// Bounded by [`STATS_TIMEOUT_MS`]; on a timeout the error is returned as-is — except
+    /// on a compat session, where any error here becomes no tables ([`super::degrade`]).
     async fn table_stats(&self, schema: &str) -> DResult<Vec<TableStat>> {
         let sql = format!(
             "WITH RECURSIVE tops AS ( \
@@ -852,7 +867,7 @@ impl SqlDriver for PgDriver {
                 .collect())
         }
         .await;
-        super::degrade(self.compat(), res, schema, "*")
+        super::degrade(self.compat(), &self.degrade_logged, res, schema, "*")
     }
 
     async fn open_window_filtered(

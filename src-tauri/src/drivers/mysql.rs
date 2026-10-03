@@ -221,6 +221,8 @@ pub struct MySqlDriver {
     detected: Option<String>,
     /// `ConnConfig.profile`, as saved.
     saved: Option<String>,
+    /// A degraded estimate has been logged (see [`super::degrade`]).
+    degrade_logged: std::sync::atomic::AtomicBool,
 }
 
 /// One text cell from the connect probe; `None` when the query fails or outlives `deadline`.
@@ -266,6 +268,16 @@ impl MySqlDriver {
             version
         };
         let detect_ok = version.is_some();
+        if !detect_ok {
+            crate::applog::log(
+                "warn",
+                &format!(
+                    "the version query failed or timed out on {}: product not detected, \
+                     the session is treated as compatible",
+                    super::url_host_port(url)
+                ),
+            );
+        }
         let detected = version.and_then(|v| crate::profiles::detect("mysql", &v)).map(str::to_string);
         let saved = saved_profile.map(str::to_string);
         if let (Some(s), Some(d)) = (saved.as_deref().filter(|s| crate::profiles::lookup(s).is_some()), &detected) {
@@ -291,6 +303,7 @@ impl MySqlDriver {
             detect_ok,
             detected,
             saved,
+            degrade_logged: Default::default(),
         })
     }
 
@@ -676,7 +689,7 @@ impl SqlDriver for MySqlDriver {
         .await
         .map(|est| est.flatten().map(|n| n as i64))
         .map_err(db);
-        super::degrade(self.compat(), est, schema, table)
+        super::degrade(self.compat(), &self.degrade_logged, est, schema, table)
     }
 
     /// The data dictionary's per-table size: `TABLE_ROWS` (InnoDB's sampled estimate) and
@@ -692,7 +705,7 @@ impl SqlDriver for MySqlDriver {
         .fetch_all(&self.pool)
         .await
         .map_err(db);
-        Ok(super::degrade(self.compat(), rows, schema, "*")?
+        Ok(super::degrade(self.compat(), &self.degrade_logged, rows, schema, "*")?
             .into_iter()
             .map(|(name, r, b)| TableStat { name, rows: r.map(|n| n as i64), bytes: b.map(|n| n as i64) })
             .collect())

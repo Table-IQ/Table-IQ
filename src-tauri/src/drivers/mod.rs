@@ -151,13 +151,26 @@ pub(crate) fn compat_session(detect_ok: bool, saved: Option<&str>, detected: Opt
 }
 
 /// A catalog estimate on a compat session: an error becomes "nothing to offer" (`None`, no
-/// tables) and one log line, so a product without the base engine's catalog still browses.
+/// tables), so a product without the base engine's catalog still browses. `logged` is the
+/// session's: the first degraded read is logged and the rest are not, since every table
+/// open asks for an estimate.
 // ponytail: any error is treated as "catalog lacks it"; narrow to SQLSTATE 42883/0A000 if an
 // outage is ever masked.
-pub(crate) fn degrade<T: Default>(compat: bool, res: DResult<T>, schema: &str, table: &str) -> DResult<T> {
+pub(crate) fn degrade<T: Default>(
+    compat: bool,
+    logged: &std::sync::atomic::AtomicBool,
+    res: DResult<T>,
+    schema: &str,
+    table: &str,
+) -> DResult<T> {
     match res {
         Err(e) if compat => {
-            crate::applog::log("warn", &format!("estimate degraded on {schema}.{table}: {e}"));
+            if !logged.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                crate::applog::log(
+                    "warn",
+                    &format!("estimate degraded on {schema}.{table}: {e} (logged once per session)"),
+                );
+            }
             Ok(T::default())
         }
         res => res,
@@ -1621,8 +1634,13 @@ mod compat_tests {
     #[test]
     fn degrade_swallows_an_error_only_on_a_compat_session() {
         let err = || -> DResult<Option<i64>> { Err(DriverError::Db("no pg_inherits".into())) };
-        assert_eq!(degrade(true, err(), "s", "t").unwrap(), None);
-        assert!(degrade(false, err(), "s", "t").is_err());
-        assert_eq!(degrade(true, Ok(Some(7)), "s", "t").unwrap(), Some(7));
+        let logged = std::sync::atomic::AtomicBool::new(false);
+        let was_logged = || logged.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(degrade(false, &logged, err(), "s", "t").is_err());
+        assert_eq!(degrade(true, &logged, Ok(Some(7)), "s", "t").unwrap(), Some(7));
+        assert!(!was_logged(), "nothing degraded yet");
+        assert_eq!(degrade(true, &logged, err(), "s", "t").unwrap(), None);
+        assert!(was_logged(), "the first degraded read marks the session");
+        assert_eq!(degrade(true, &logged, err(), "s", "t").unwrap(), None, "and later ones still degrade");
     }
 }
