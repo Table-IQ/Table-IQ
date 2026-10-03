@@ -3,7 +3,8 @@
  * snippets, the masked token, allowlist edits and the same bounds `McpConfig::validate`
  * enforces in Rust.
  */
-import type { McpConfig } from "./commands";
+import type { ConnConfig, McpConfig, McpConn } from "./commands";
+import { capsOf, profileOf } from "./profiles";
 
 /** Shown under every DuckDB connection in Settings → MCP: the first agent call turns
  *  external access off and locks the instance's configuration (`harden_duckdb` in
@@ -52,6 +53,28 @@ export function setShared(cfg: McpConfig, id: string, shared: boolean): McpConfi
 /** Allow or forbid writes on an already-shared connection. */
 export function setWrites(cfg: McpConfig, id: string, writes: boolean): McpConfig {
   return { ...cfg, connections: cfg.connections.map((c) => (c.id === id ? { ...c, writes } : c)) };
+}
+
+export interface McpRowState {
+  /** False for a compatible product or a profile this build lacks: the server refuses both. */
+  shareable: boolean;
+  shared: boolean;
+  writes: boolean;
+  /** Why it cannot be shared; null when it can. */
+  note: string | null;
+}
+
+/** A connection's row in Settings → MCP, from its SAVED profile and its allowlist entry.
+ *  What cannot be shared reads unshared whatever the allowlist still holds — the server
+ *  refuses it either way (`agent_block_reasons` in `profiles.rs`). */
+export function mcpRowState(conn: Pick<ConnConfig, "engine" | "profile">, shared: McpConn | undefined): McpRowState {
+  if (capsOf(conn.engine, conn.profile).agents) {
+    return { shareable: true, shared: !!shared, writes: !!shared?.writes, note: null };
+  }
+  const note = profileOf(conn.engine, conn.profile)
+    ? "Not available over MCP yet: TableIQ's agent guard has been reviewed for PostgreSQL, MySQL and MariaDB only."
+    : `Not available over MCP: this connection's profile (${conn.profile}) was saved by a newer TableIQ. Update TableIQ to manage it.`;
+  return { shareable: false, shared: false, writes: false, note };
 }
 
 export function validPort(n: number): boolean {

@@ -3,6 +3,7 @@ import type { ConnConfig, Engine } from "../lib/commands";
 import { defaultSshConfig, type SshConfig } from "../lib/ssh";
 import { CONN_ENVS, envTone, type ConnEnv } from "../lib/connEnv";
 import { isUnsupportedConnUrl, looksLikeConnUrl, parseConnUrl, validateConn, type ConnFieldErrors, type ParsedConnUrl } from "../lib/connUrl";
+import { capsOf, profileOf, profilesFor } from "../lib/profiles";
 import { EngineIcon, engineLabel } from "./ui/EngineIcon";
 import { ContextMenu } from "./ui/ContextMenu";
 import { IconClose, IconEye, IconKey, IconLink, IconRefresh } from "./ui/Icon";
@@ -26,6 +27,8 @@ export interface ConnectionSheetProps {
   sshKeyPass: string;
   onField: <K extends keyof ConnConfig>(k: K, v: ConnConfig[K]) => void;
   onEngine: (e: Engine) => void;
+  /** A compatible product picked in the select (a key of `profiles.json`); null = the plain engine. */
+  onProfile: (id: string | null) => void;
   onSsh: (next: Partial<SshConfig>) => void;
   onPassword: (v: string) => void;
   onSshPassword: (v: string) => void;
@@ -44,9 +47,9 @@ export interface ConnectionSheetProps {
   canPickFiles: boolean;
 }
 
-const ENGINES: { id: Engine; short: string }[] = [
+const ENGINES: { id: Engine; short: string; title?: string }[] = [
   { id: "postgres", short: "Postgres" },
-  { id: "mysql", short: "MySQL" },
+  { id: "mysql", short: "MySQL", title: "MySQL / MariaDB" },
   { id: "sqlserver", short: "SQL Server" },
   { id: "sqlite", short: "SQLite" },
   { id: "duckdb", short: "DuckDB" },
@@ -73,7 +76,7 @@ const BAD_URL = "Not a connection URL we recognise";
 export function readConnUrl(text: string, lockedEngine?: Engine): { parsed: ParsedConnUrl } | { note: string } {
   const parsed = parseConnUrl(text);
   if (!parsed) return { note: isUnsupportedConnUrl(text) ? `${BAD_URL} — mongodb+srv:// and rediss:// aren't supported yet` : BAD_URL };
-  if (lockedEngine && parsed.engine !== lockedEngine) return { note: `URL is for ${engineLabel(parsed.engine)}; engine unchanged` };
+  if (lockedEngine && parsed.engine !== lockedEngine) return { note: `URL is for ${engineLabel(parsed.engine, parsed.profile)}; engine unchanged` };
   return { parsed };
 }
 
@@ -136,6 +139,32 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
   const blockReason = firstErr ? `${ERR_LABEL[firstErr]}: ${errs[firstErr]}` : undefined;
   const busy = status.kind === "busy";
   const isFile = form.engine === "sqlite" || form.engine === "duckdb";
+  // The two engines other products speak the wire protocol of; both also take an SSL mode.
+  const wireBase = form.engine === "postgres" || form.engine === "mysql" ? form.engine : null;
+  const product = profileOf(form.engine, form.profile);
+  // A saved id this build lacks (or one of another base) stays its own option, so the
+  // select never shows a product the connection is not.
+  const unlistedProfile = form.profile && !product ? form.profile : null;
+  const beta = !!product && !product.tested;
+  const caps = capsOf(form.engine, form.profile);
+  const missing = [
+    !caps.transactions && "grid editing",
+    !caps.backup && "backup and restore",
+    !caps.userMgmt && "user management",
+    !caps.agents && "agent access",
+  ].filter(Boolean);
+  const capsNote = [
+    missing.length > 0 && `Not available for ${product?.label ?? form.profile}: ${missing.join(", ")}.`,
+    beta && "Beta: not yet verified against a live server.",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const profileOptions = (base: "postgres" | "mysql") =>
+    profilesFor(base).map(([id, pr]) => (
+      <option key={id} value={id}>
+        {pr.tested ? pr.label : `${pr.label} (Beta)`}
+      </option>
+    ));
   const ssh = form.ssh ?? defaultSshConfig();
   const useKey = ssh.auth.mode === "keyfile";
   const keyPath = ssh.auth.mode === "keyfile" ? ssh.auth.path : "";
@@ -214,13 +243,13 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
     <div className="flex min-h-0 flex-1 flex-col">
       {/* Header */}
       <div className="flex shrink-0 items-center gap-[11px] border-b border-border px-4 py-3.5">
-        <EngineIcon engine={form.engine} size="lg" />
+        <EngineIcon engine={form.engine} profile={form.profile} size="lg" />
         <div className="min-w-0 flex-1">
           <div className="truncate text-[14.5px] font-semibold text-text">
             {mode === "new" ? "New Connection" : form.name || "Untitled"}
           </div>
           <div className="mt-px truncate text-[11.5px] text-muted">
-            {engineLabel(form.engine)}
+            {beta ? `${product.label} · Beta` : engineLabel(form.engine, form.profile)}
             {mode === "edit" && p.dirty && <span className="text-warn"> · ● Unsaved changes</span>}
           </div>
         </div>
@@ -282,14 +311,15 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
 
         {mode === "new" && (
           <div className="mt-3 grid grid-cols-7 gap-[5px]">
-            {ENGINES.map(({ id, short }) => {
-              const on = form.engine === id;
+            {ENGINES.map(({ id, short, title }) => {
+              // A picked product presses the select below instead of its base engine's tile.
+              const on = form.engine === id && !form.profile;
               return (
                 <button
                   key={id}
                   type="button"
                   aria-pressed={on}
-                  title={engineLabel(id)}
+                  title={title ?? engineLabel(id)}
                   onClick={() => p.onEngine(id)}
                   className={`flex flex-col items-center gap-1 rounded-lg border px-px pt-[7px] pb-[5px] text-[10px] leading-tight transition-colors ${focusRing} ${
                     on ? "border-primary text-text ring-3 ring-primary/15" : "border-border text-muted hover:bg-surface"
@@ -301,6 +331,49 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
               );
             })}
           </div>
+        )}
+
+        {/* Wire-compatible products. New: any of them, under the tiles (picking one also
+            picks its base engine). Edit: the connection's own base only — the engine is fixed.
+            A picked product rings the select like a pressed tile; `border-primary` is emitted
+            after `field()`'s border colours in Tailwind's output, so it wins over the test tone. */}
+        {(mode === "new" || wireBase) && (
+          <>
+            <select
+              aria-label="Compatible database"
+              aria-describedby={capsNote ? `${uid}caps` : undefined}
+              className={`${mode === "new" ? "mt-[5px]" : "mt-3"} ${field()} ${form.profile ? "border-primary ring-3 ring-primary/15" : ""}`}
+              value={form.profile ?? ""}
+              onChange={(e) => p.onProfile(e.target.value || null)}
+            >
+              {mode === "new" ? (
+                <option value="" disabled>
+                  Or a compatible database…
+                </option>
+              ) : (
+                <option value="">{`Plain ${engineLabel(form.engine)}`}</option>
+              )}
+              {unlistedProfile && <option value={unlistedProfile}>{`${unlistedProfile} (unknown to this version)`}</option>}
+              {mode === "new" ? (
+                <>
+                  <optgroup label="PostgreSQL-compatible">{profileOptions("postgres")}</optgroup>
+                  <optgroup label="MySQL-compatible">{profileOptions("mysql")}</optgroup>
+                </>
+              ) : (
+                wireBase && profileOptions(wireBase)
+              )}
+            </select>
+            {capsNote && (
+              <div id={`${uid}caps`} className="mt-1 text-[11px] text-muted">
+                {capsNote}
+              </div>
+            )}
+            {mode === "edit" && (
+              <div className="mt-1 text-[11px] text-muted">
+                TableIQ checks the server on connect and fills this in if the server identifies itself.
+              </div>
+            )}
+          </>
         )}
 
         <Field id={`${uid}name`} label="Name" className="mt-3 mb-[9px]">
@@ -391,10 +464,10 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
                   {passwordField("Password")}
                 </div>
                 <div className="mb-[9px] grid grid-cols-2 gap-[9px]">
-                  <Field id={`${uid}db`} label="Database" className={form.engine === "postgres" ? "" : "col-span-2"}>
+                  <Field id={`${uid}db`} label="Database" className={wireBase ? "" : "col-span-2"}>
                     <input {...ids("db")} className={field()} value={form.database} onChange={(e) => p.onField("database", e.target.value)} />
                   </Field>
-                  {form.engine === "postgres" && (
+                  {wireBase && (
                     <Field id={`${uid}ssl`} label="SSL mode">
                       <select {...ids("ssl")} className={field()} value={form.sslmode} onChange={(e) => p.onField("sslmode", e.target.value)}>
                         {SSL_MODES.map((m) => (

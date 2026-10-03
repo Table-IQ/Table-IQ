@@ -8,7 +8,7 @@ const base: ConnectionSheetProps = {
   form: { id: "c1", name: "", color: "#4f46e5", engine: "postgres", host: "127.0.0.1", port: 5432, database: "", username: "postgres", sslmode: "prefer" },
   dirty: false, status: { kind: "idle", msg: "" },
   password: "", sshPassword: "", sshKeyPass: "",
-  onField: noop, onEngine: noop, onSsh: noop, onPassword: noop, onSshPassword: noop, onSshKeyPass: noop,
+  onField: noop, onEngine: noop, onProfile: noop, onSsh: noop, onPassword: noop, onSshPassword: noop, onSshKeyPass: noop,
   onApplyUrl: noop, onPickFile: noop, onPickKey: noop, onTest: noop, onSave: noop, onConnect: noop,
   onDiscard: noop, onClose: noop, onCopyUrl: noop, onDuplicate: noop, onDelete: noop, canPickFiles: true,
 };
@@ -80,6 +80,87 @@ describe("ConnectionSheet", () => {
   });
 });
 
+describe("ConnectionSheet compatible-database picker", () => {
+  const mysql = { ...base.form, engine: "mysql" as const, port: 3306, username: "" };
+  /** The picker's own markup: the `<select>` and everything inside it. */
+  const picker = (h: string) => /<select[^>]*aria-label="Compatible database".*?<\/select>/.exec(h)?.[0] ?? "";
+
+  it("new mode: a native select under the tiles, grouped by wire protocol, untested products marked (Beta)", () => {
+    const h = html();
+    const sel = picker(h);
+    expect(sel).toContain('aria-label="Compatible database"');
+    expect(sel).toMatch(/<option[^>]*disabled=""[^>]*>Or a compatible database…<\/option>/);
+    expect(sel).toContain('<optgroup label="PostgreSQL-compatible">');
+    expect(sel).toContain('<optgroup label="MySQL-compatible">');
+    expect(sel).toContain(">Amazon Redshift (Beta)</option>");
+    expect(sel).toContain(">CockroachDB</option>");
+    expect(sel).toContain(">TiDB</option>");
+    // Nothing picked: the select reads as a plain field and the Postgres tile stays pressed.
+    expect(sel).not.toContain("ring-3");
+    expect(h).not.toContain("Not available for");
+  });
+
+  it("new mode with TiDB picked: its icon and label, SSL mode, what it lacks, and no pressed MySQL tile", () => {
+    const h = html({ form: { ...mysql, profile: "tidb", port: 4000 } });
+    expect(h).toMatch(/title="TiDB"[^>]*>Ti</);
+    expect(h).toContain(">TiDB<");
+    expect(h).not.toContain("TiDB · Beta");
+    expect(h).toContain("SSL mode");
+    expect(h).toContain("Not available for TiDB: backup and restore, user management, agent access.");
+    expect(h).not.toContain("grid editing");
+    expect(h).not.toContain("Beta: not yet verified");
+    expect(h).toMatch(/<button[^>]*aria-pressed="false"[^>]*title="MySQL \/ MariaDB"/);
+    expect(picker(h)).toMatch(/<select[^>]*border-primary ring-3 ring-primary\/15/);
+    expect(picker(h)).toMatch(/<option[^>]*value="tidb"[^>]*selected=""/);
+  });
+
+  it("plain MySQL: the tile is pressed, titled MySQL / MariaDB, and SSL mode is offered", () => {
+    const h = html({ form: mysql });
+    expect(h).toMatch(/<button[^>]*aria-pressed="true"[^>]*title="MySQL \/ MariaDB"/);
+    expect(h).toContain("SSL mode");
+    expect(html({ form: { ...base.form, engine: "sqlserver", port: 1433 } })).not.toContain("SSL mode");
+  });
+
+  it("edit mode on a MySQL connection: the same select, its own base only, Plain MySQL first", () => {
+    const h = html({ mode: "edit", form: { ...mysql, name: "orders" } });
+    const sel = picker(h);
+    expect(sel).toMatch(/^<select[^>]*><option[^>]*value=""[^>]*>Plain MySQL<\/option>/);
+    expect(sel).toContain(">MariaDB</option>");
+    expect(sel).toContain(">Apache Doris (Beta)</option>");
+    expect(sel).not.toContain("CockroachDB");
+    expect(sel).not.toContain("optgroup");
+    expect(sel).not.toContain("Or a compatible database…");
+    expect(h).toContain("TableIQ checks the server on connect and fills this in if the server identifies itself.");
+    expect(picker(html({ mode: "edit", form: { ...base.form, name: "shop" } }))).toContain(">Plain PostgreSQL</option>");
+  });
+
+  it("edit mode on an engine with no compatible products has no select", () => {
+    expect(html({ mode: "edit", form: { ...base.form, engine: "sqlite", database: "/a.db" } })).not.toContain('aria-label="Compatible database"');
+  });
+
+  it("a saved profile this build does not know stays selectable as itself", () => {
+    const h = html({ mode: "edit", form: { ...mysql, name: "orders", profile: "from-the-future" } });
+    expect(picker(h)).toMatch(/<option[^>]*value="from-the-future"[^>]*selected=""[^>]*>from-the-future \(unknown to this version\)<\/option>/);
+    expect(h).toContain("Not available for from-the-future: agent access.");
+  });
+
+  it("an untested profile reads Beta in the header and in the capability line", () => {
+    const h = html({ form: { ...base.form, profile: "redshift", port: 5439 } });
+    expect(h).toContain("Amazon Redshift · Beta");
+    expect(h).toContain(
+      "Not available for Amazon Redshift: backup and restore, user management, agent access. Beta: not yet verified against a live server.",
+    );
+    // Lacks nothing, still unverified: the Beta note stands alone.
+    const neon = html({ form: { ...base.form, profile: "neon" } });
+    expect(neon).toContain("Beta: not yet verified against a live server.");
+    expect(neon).not.toContain("Not available for");
+    // No transactions: grid editing leads the list.
+    expect(html({ form: { ...mysql, profile: "doris", port: 9030 } })).toContain(
+      "Not available for Apache Doris: grid editing, backup and restore, user management, agent access.",
+    );
+  });
+});
+
 describe("readConnUrl (URL paste into the URL field or Host)", () => {
   it("returns the parsed fields for a good URL", () => {
     expect(readConnUrl("postgres://app:p@db/shop")).toEqual({ parsed: expect.objectContaining({ host: "db", password: "p" }) });
@@ -93,7 +174,8 @@ describe("readConnUrl (URL paste into the URL field or Host)", () => {
     });
   });
   it("in edit mode a URL for another engine leaves the engine alone and says so", () => {
-    expect(readConnUrl("mysql://root:pw@h/app", "postgres")).toEqual({ note: "URL is for MySQL / MariaDB; engine unchanged" });
+    expect(readConnUrl("mysql://root:pw@h/app", "postgres")).toEqual({ note: "URL is for MySQL; engine unchanged" });
+    expect(readConnUrl("tidb://root:pw@h:4000/app", "postgres")).toEqual({ note: "URL is for TiDB; engine unchanged" });
     expect(readConnUrl("postgres://app@db/shop", "postgres")).toHaveProperty("parsed");
   });
 });

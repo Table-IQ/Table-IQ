@@ -191,6 +191,12 @@ neither is measured.
 - **Left:** `public.wide · Table · 5 cols · ~1,000,000 rows`
 - **Center:** `‹ ‹ 1-300 of 721 rows › ›`
 - **Right:** `Data | Structure` segmented · `+ Row` · `Filters` · `Columns` · editable/RO chip
+- The chip reads `editable` (`--ok`) or `read-only` (`--muted`) plus its reason. Three things
+  make a grid read-only, checked in this order (`readOnlyReason`, `lib/gridEditable.ts`): the
+  object is a view; the session's product has no multi-statement transactions
+  (`read-only · no transactions`); the table has no primary key (`read-only · no PK`, or
+  `· PK unknown` in `--warn` when the key could not be read). A one-line hint above the grid
+  spells the reason out; cell edit, `+ Row`, delete and paste are all off.
 
 ## Surface treatments
 
@@ -283,6 +289,14 @@ engine colour fill + an inset 1px white-on-top / black-on-bottom highlight that
 reads as glass depth. Used everywhere a connection is identified (welcome list,
 ⌘O picker). Sizes: sm 16 / md 22 / lg 32 / xl 44. Monograms: Pg, My, Sq, Dk, Re, Mo, Ms.
 
+A connection saved as a wire-compatible product (a **profile**: TiDB, CockroachDB, Neon, …)
+takes its monogram and fill from [src/lib/profiles.json](src/lib/profiles.json), the one table
+the backend reads too; no colour for a product lives in a component. An id this build does not
+know draws the base engine. In lists (welcome list, ⌘O picker, lobby header) the icon carries
+the product label as its tooltip, and in the welcome list as its accessible name too
+(`role="img"`). Fills pass the palette test in `profiles.test.ts`: distinct from every other
+fill, at least 4.5:1 under the white monogram and at least 2:1 on the dark `--surface`.
+
 ### Env tag derivation
 Without a dedicated `environment` field on `ConnConfig`, we derive the row's
 parenthetical tag from existing data: `(local)` for loopback host, `(ssh)` for
@@ -300,14 +314,25 @@ floats recently-used connections to the top of the list without any UI grouping
 ### Connection sheet
 `ConnectionSheet.tsx`, a 460px right-hand slide-in over a `bg-black/30` scrim.
 - **Header:** EngineIcon (lg), the title (the only 600 weight: "New Connection" or
-  the name), then the engine label and, when editing, `● Unsaved changes` in
+  the name), then the engine or product label (an untested product reads
+  "{label} · Beta") and, when editing, `● Unsaved changes` in
   `text-warn`. A ⋯ menu (edit only) holds Copy as URL (never includes the
   password), Duplicate and Delete. Then ×.
 - **Body:** a dashed paste-a-URL field that fills the form. In new mode, a row of
-  7 engine tiles. Name, then an Environment segmented control (tinted with
-  `--env-<tone>`) and the colour dots. Then Server (or File for SQLite/DuckDB),
-  with 32px inputs and validation errors under their field. Then Advanced: the
-  SSH tunnel switch.
+  7 engine tiles, then a native `<select>` of wire-compatible databases
+  ("Or a compatible database…"), grouped "PostgreSQL-compatible" / "MySQL-compatible",
+  tested products first and "(Beta)" on the untested. Picking one sets its base
+  engine and presets, and the select takes the pressed-tile ring
+  (`border-primary ring-3 ring-primary/15`) in place of the tile. Under it a
+  capability line in `text-muted`: "Not available for {label}: …" listing what the
+  product lacks (grid editing, backup and restore, user management, agent access),
+  plus "Beta: not yet verified against a live server." for an untested one. In edit
+  mode the tiles stay hidden and the same select (PostgreSQL and MySQL connections
+  only) lists that base's products after a "Plain PostgreSQL" / "Plain MySQL" option,
+  with a note that the server is checked on connect. Name, then an Environment
+  segmented control (tinted with `--env-<tone>`) and the colour dots. Then Server
+  (or File for SQLite/DuckDB), with 32px inputs and validation errors under their
+  field; PostgreSQL and MySQL take an SSL mode. Then Advanced: the SSH tunnel switch.
 - **Footer:** pinned, `bg-surface`. A result line: spinner, `✓ Connected in N ms`,
   or `✕` plus the first line with the full error in a mono box you can copy.
   Then Test ⌘T on the left, and Discard (edit + dirty), Save ⌘S and **Connect ⌘↵**

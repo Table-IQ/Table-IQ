@@ -68,7 +68,7 @@ const ERD_MAX_SCALE = 0.75;
 const SQL_PREVIEW_CHARS = 90;
 const ASK_TITLE_CHARS = 40;
 
-export type LobbyCfg = Pick<ConnConfig, "name" | "engine" | "database" | "env"> &
+export type LobbyCfg = Pick<ConnConfig, "name" | "engine" | "profile" | "database" | "env"> &
   Partial<Pick<ConnConfig, "host" | "port">>;
 
 /** First rows of a pinned table: already cut to the columns the card shows. */
@@ -577,11 +577,11 @@ function Header(p: LobbyViewProps) {
     rel !== null ? (rel === "just now" ? rel : `${rel} ago`) : p.stats === undefined ? "loading…" : "—";
   return (
     <div className="mb-[18px] flex items-center gap-3">
-      <EngineIcon engine={cfg.engine} size="xl" />
+      <EngineIcon engine={cfg.engine} profile={cfg.profile} size="xl" />
       <div className="min-w-0">
         <h1 className="truncate text-[20px] font-semibold leading-tight tracking-[-0.01em] text-text">{cfg.name}</h1>
         <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-muted">
-          <span>{engineLabel(cfg.engine)}</span>
+          <span>{engineLabel(cfg.engine, cfg.profile)}</span>
           {where && (
             <>
               <span className="text-muted-2">·</span>

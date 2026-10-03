@@ -35,7 +35,7 @@ export interface TitleBarItem {
 }
 
 export interface TitleBarProps {
-  cfg: Pick<ConnConfig, "engine" | "sslmode" | "ssh" | "database" | "name" | "env" | "color">;
+  cfg: Pick<ConnConfig, "engine" | "profile" | "sslmode" | "ssh" | "database" | "name" | "env" | "color">;
   /** "schema.table" of the active table tab. */
   activeObject: string | null;
   fileEngine: boolean;

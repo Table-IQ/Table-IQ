@@ -11,7 +11,7 @@ const props = (form: Partial<ConnectionSheetProps["form"]>): ConnectionSheetProp
   mode: "new",
   form: { id: "c1", name: "", color: "#4f46e5", engine: "postgres", host: "127.0.0.1", port: 5432, database: "", username: "", sslmode: "prefer", ...form },
   dirty: false, status: { kind: "idle", msg: "" }, password: "", sshPassword: "", sshKeyPass: "",
-  onField: noop, onEngine: noop, onSsh: noop, onPassword: noop, onSshPassword: noop, onSshKeyPass: noop,
+  onField: noop, onEngine: noop, onProfile: noop, onSsh: noop, onPassword: noop, onSshPassword: noop, onSshKeyPass: noop,
   onApplyUrl: noop, onPickFile: noop, onPickKey: noop, onTest: noop, onSave: noop, onConnect: noop,
   onDiscard: noop, onClose: noop, onCopyUrl: noop, onDuplicate: noop, onDelete: noop, canPickFiles: true,
 });

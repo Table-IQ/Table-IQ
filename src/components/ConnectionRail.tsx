@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import type { Engine } from "../lib/commands";
 import { canLeaveSession, closeConnection, useConnections } from "../state/connectionStore";
 import { isFileEngine } from "./ConnectionManager";
+import { engineLabel } from "./ui/EngineIcon";
 import { ContextMenu } from "./ui/ContextMenu";
 import { IconClose, IconDatabase, IconSliders } from "./ui/Icon";
 
@@ -62,7 +63,9 @@ export function ConnectionRail() {
       <div className="flex flex-1 flex-col gap-1 overflow-y-auto px-1.5 py-2">
         {open.map(({ info }) => {
           const isActive = active?.id === info.id;
-          const color = saved.find((c) => c.id === info.id)?.color;
+          // The rail lists connections, so it names the SAVED product, like the other lists.
+          const cfg = saved.find((c) => c.id === info.id);
+          const color = cfg?.color;
           // A file engine's "database" is its full path: show just the file name.
           const db = isFileEngine(info.engine as Engine)
             ? info.database.split(/[\\/]/).pop()
@@ -75,7 +78,7 @@ export function ConnectionRail() {
                   if (!isActive && (await canLeaveSession())) switchTo(info.id);
                 }}
                 aria-current={isActive ? "true" : undefined}
-                title={`${info.name} · ${info.engine} · ${info.database}`}
+                title={`${info.name} · ${engineLabel(info.engine as Engine, cfg?.profile)} · ${info.database}`}
                 className={`flex w-full flex-col items-center gap-1 rounded-[var(--radius)] px-1 py-2 transition-colors ${
                   isActive
                     ? "bg-bg text-text shadow-[var(--shadow-soft)]"

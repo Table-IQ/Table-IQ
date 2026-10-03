@@ -1,11 +1,13 @@
 import type { Engine } from "../../lib/commands";
+import { profileOf } from "../../lib/profiles";
 
 /**
  * TablePlus-style engine badge — a soft-coloured circle with a 2-letter monogram.
  * Used everywhere a connection is identified (sidebar list, ⌘O picker, MainShell
  * breadcrumb dot). Deliberately matches TablePlus's idiom rather than rendering
  * vendor logos, both for trademark hygiene and so the colour is what carries
- * recognition at a glance.
+ * recognition at a glance. A connection saved as a compatible product (TiDB,
+ * CockroachDB, …) takes its fill, monogram and label from `profiles.json`.
  */
 export type EngineIconSize = "sm" | "md" | "lg" | "xl";
 
@@ -34,7 +36,7 @@ export const ENGINE_MONOGRAMS: Record<Engine, string> = {
 
 export const ENGINE_LABELS: Record<Engine, string> = {
   postgres: "PostgreSQL",
-  mysql: "MySQL / MariaDB",
+  mysql: "MySQL",
   sqlite: "SQLite",
   duckdb: "DuckDB",
   redis: "Redis",
@@ -44,22 +46,29 @@ export const ENGINE_LABELS: Record<Engine, string> = {
 
 export function EngineIcon({
   engine,
+  profile,
   size = "md",
   className = "",
   title,
 }: {
   engine: Engine;
+  /** The connection's product (a key of `profiles.json`); unknown ids draw the base engine. */
+  profile?: string | null;
   size?: EngineIconSize;
   className?: string;
+  /** Tooltip; passing one also names the icon for assistive tech (it is decorative otherwise). */
   title?: string;
 }) {
   const px = PX[size];
   const font = FONT[size];
-  const color = ENGINE_COLORS[engine];
+  const product = profileOf(engine, profile);
+  const color = product?.color ?? ENGINE_COLORS[engine];
   return (
     <span
+      role={title ? "img" : undefined}
+      aria-label={title}
       aria-hidden={!title}
-      title={title ?? ENGINE_LABELS[engine]}
+      title={title ?? engineLabel(engine, profile)}
       className={`inline-flex shrink-0 items-center justify-center font-semibold text-white ${className}`}
       style={{
         width: px,
@@ -75,11 +84,12 @@ export function EngineIcon({
           "inset 0 1px 0 rgb(255 255 255 / 0.18), inset 0 -1px 0 rgb(0 0 0 / 0.18)",
       }}
     >
-      {ENGINE_MONOGRAMS[engine]}
+      {product?.monogram ?? ENGINE_MONOGRAMS[engine]}
     </span>
   );
 }
 
-export function engineLabel(engine: Engine): string {
-  return ENGINE_LABELS[engine] ?? engine;
+/** The product's label when the profile is one this build knows, else the engine's. */
+export function engineLabel(engine: Engine, profile?: string | null): string {
+  return profileOf(engine, profile)?.label ?? ENGINE_LABELS[engine] ?? engine;
 }

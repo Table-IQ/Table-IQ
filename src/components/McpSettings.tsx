@@ -16,6 +16,7 @@ import {
   DUCKDB_SHARING_NOTE,
   isSqlEngine,
   maskToken,
+  mcpRowState,
   mcpUrl,
   setShared,
   setWrites,
@@ -23,6 +24,7 @@ import {
   validRowCap,
 } from "../lib/mcp";
 import { StatusDot } from "./ui/StatusBar";
+import { engineLabel } from "./ui/EngineIcon";
 
 const input =
   "w-24 rounded-md border border-border bg-bg px-2 py-1 text-sm text-text focus:border-primary focus:outline-none";
@@ -194,26 +196,29 @@ export function McpSettings() {
         {conns.length === 0 && <p className="text-xs text-muted">No SQL connections saved yet.</p>}
         <ul className="space-y-0.5">
           {conns.map((c) => {
-            const s = shared(c.id);
+            // From the saved profile: a compatible product is listed, but cannot be shared.
+            const s = mcpRowState(c, shared(c.id));
             return (
               <li
                 key={c.id}
                 className={`flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 rounded-md px-2 py-1 ${
-                  s?.writes ? "border border-warn/40 bg-warn/10" : "border border-transparent hover:bg-surface-2"
+                  s.writes ? "border border-warn/40 bg-warn/10" : "border border-transparent hover:bg-surface-2"
                 }`}
               >
                 <label className="flex min-w-0 items-center gap-2 text-sm text-text">
                   <input
                     type="checkbox"
-                    checked={!!s}
+                    checked={s.shared}
+                    disabled={!s.shareable}
+                    aria-describedby={s.note ? `mcp-note-${c.id}` : undefined}
                     onChange={(e) => void apply(setShared(cfg, c.id, e.target.checked))}
                   />
                   <span className="truncate">{c.name}</span>
                   <span className="truncate font-mono text-xs text-muted">
-                    {c.engine} · {c.database}
+                    {engineLabel(c.engine, c.profile)} · {c.database}
                   </span>
                 </label>
-                {s && (
+                {s.shared && (
                   <label className={`flex shrink-0 items-center gap-1.5 text-xs ${s.writes ? "text-warn" : "text-muted"}`}>
                     <input
                       type="checkbox"
@@ -223,6 +228,11 @@ export function McpSettings() {
                     />
                     {s.writes ? "Writes allowed" : "Allow writes"}
                   </label>
+                )}
+                {s.note && (
+                  <p id={`mcp-note-${c.id}`} className="basis-full text-xs text-muted">
+                    {s.note}
+                  </p>
                 )}
                 {c.engine === "duckdb" && (
                   <p className="basis-full text-xs text-muted">{DUCKDB_SHARING_NOTE}</p>

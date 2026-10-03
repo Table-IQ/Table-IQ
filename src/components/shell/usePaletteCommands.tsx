@@ -73,8 +73,9 @@ export function usePaletteCommands(options: UsePaletteCommandsOptions): Command[
   return useMemo<Command[]>(() => {
     const list: Command[] = [
       { id: "act:erd", label: "Diagram", group: "Commands", icon: <IconErd />, run: () => void tabGuard.openErd() },
-      // Hidden for engines with no user-management SQL (sqlite/duckdb/mongodb/redis).
-      ...((active && supportsUserMgmt(active.engine as Engine)
+      // Hidden for engines with no user-management SQL (sqlite/duckdb/mongodb/redis), and
+      // for a session whose product does not take it (the live session's `caps`).
+      ...((active && supportsUserMgmt(active.engine as Engine, active.caps)
         ? [
             {
               id: "act:users",
@@ -188,7 +189,7 @@ export function usePaletteCommands(options: UsePaletteCommandsOptions): Command[
         run: () => setShowDiff(true),
       },
       // Hidden for mongodb/redis, which have no backup here.
-      ...((active && supportsBackup(active.engine as Engine)
+      ...((active && supportsBackup(active.engine as Engine, active.caps)
         ? [
             {
               id: "act:backup",
@@ -200,7 +201,7 @@ export function usePaletteCommands(options: UsePaletteCommandsOptions): Command[
           ]
         : []) as Command[]),
       // Hidden where there is nothing to restore into (mongodb/redis, an in-memory file db).
-      ...((active && supportsRestore(active.engine as Engine, active.database)
+      ...((active && supportsRestore(active.engine as Engine, active.database, active.caps)
         ? [
             {
               id: "act:restore",
