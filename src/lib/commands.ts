@@ -142,7 +142,7 @@ export interface ConnectedInfo {
   name: string;
   database: string;
   engine: string;
-  /** The product detected at connect, else the saved one; null for a plain base engine. */
+  /** The saved profile when this build knows it, else the product detected at connect; null for a plain base engine. */
   profile?: string | null;
   caps?: SessionCaps;
 }

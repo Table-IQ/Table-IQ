@@ -819,7 +819,7 @@ export function MainShell() {
             env: null,
             color: null,
           }),
-          // The pill names the product this session is talking to, not the saved hint.
+          // The pill names the session's profile: the saved one when known, else the detected product.
           profile: active.profile,
         }}
         activeObject={

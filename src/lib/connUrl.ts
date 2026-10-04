@@ -1,8 +1,6 @@
 import type { ConnConfig, Engine } from "./commands";
 import { DEFAULT_PORT, PROFILES, profileForUrl } from "./profiles";
 
-export { DEFAULT_PORT };
-
 const SCHEME_ENGINE: Record<string, Engine> = {
   postgres: "postgres", postgresql: "postgres", mysql: "mysql",
   sqlserver: "sqlserver", mssql: "sqlserver", redis: "redis", rediss: "redis",

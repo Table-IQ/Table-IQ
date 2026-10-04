@@ -1,6 +1,5 @@
 import type { ConnConfig } from "./commands";
 import { engineLabel } from "../components/ui/EngineIcon";
-import { profileOf } from "./profiles";
 
 /** TablePlus-style connection environment; tints the titlebar status pill. */
 export type ConnEnv = "local" | "development" | "testing" | "staging" | "production";
@@ -42,7 +41,7 @@ export function pillSegments(
   const file = FILE_ENGINES.has(cfg.engine);
   return {
     env: envLabel(cfg.env),
-    engine: profileOf(cfg.engine, cfg.profile)?.label ?? engineLabel(cfg.engine),
+    engine: engineLabel(cfg.engine, cfg.profile),
     // Only Postgres, MySQL and SQL Server read sslmode; showing "SSL" elsewhere would be a lie.
     ssl: SSL_ENGINES.has(cfg.engine) && /^(require|verify)/.test(cfg.sslmode ?? ""),
     ssh: !!cfg.ssh?.enabled,

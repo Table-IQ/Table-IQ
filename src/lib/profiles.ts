@@ -1,7 +1,7 @@
 /**
  * Engine profiles — the saved hint that a "PostgreSQL" or "MySQL" connection is really
  * CockroachDB, TiDB, Neon, … One table (`profiles.json`, also `include_str!`ed by the Rust
- * backend); `Connection.engine` never changes, so no switch on the engine string learns a
+ * backend); `ConnConfig.engine` never changes, so no switch on the engine string learns a
  * profile id. An id this build does not know (saved by a newer one) loads as the base engine.
  */
 import type { Engine } from "./commands";

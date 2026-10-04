@@ -224,7 +224,7 @@ export function TableView({ connId, schema, object, view }: Props) {
   useEffect(() => () => window.clearTimeout(savedTimer.current), []);
   const gridRef = useRef<DataGridHandle>(null);
   const engine = useConnections((s) => s.active?.engine ?? "postgres") as Engine;
-  // The live session's product and capabilities (the backend's word, not the saved hint).
+  // The session's profile (the saved one when known, else the detected product) and its capabilities.
   const productLabel = useConnections((s) => engineLabel(engine, s.active?.profile));
   const transactions = useConnections((s) => s.active?.caps?.transactions !== false);
   const setSelectedRow = useSelectedRow((s) => s.setRow);
