@@ -75,10 +75,24 @@ describe("openConnection", () => {
   });
 
   it("saves the product the session detected and refreshes the saved list", async () => {
+    useConnections.setState({ saved: [cfg("a")] });
     connect.mockResolvedValue({ ...info("a"), profile: "tidb" });
     listObjects.mockResolvedValue(schema("a"));
     expect(await openConnection(cfg("a"))).toBe(true);
     await vi.waitFor(() => expect(useConnections.getState().saved.find((c) => c.id === "a")?.profile).toBe("tidb"));
+  });
+
+  it("saves the detected product onto the entry as saved now, keeping an edit made during the connect", async () => {
+    useConnections.setState({ saved: [cfg("slow")] });
+    const p = pending<ConnectedInfo>();
+    connect.mockReturnValueOnce(p.promise);
+    listObjects.mockResolvedValue(schema("slow"));
+    const attempt = openConnection(cfg("slow"));
+    useConnections.setState({ saved: [{ ...cfg("slow"), name: "Renamed", host: "db.internal" }] });
+    p.resolve({ ...info("slow"), profile: "tidb" });
+    expect(await attempt).toBe(true);
+    await vi.waitFor(() => expect(useConnections.getState().saved.find((c) => c.id === "slow")?.profile).toBe("tidb"));
+    expect(useConnections.getState().saved.find((c) => c.id === "slow")).toMatchObject({ name: "Renamed", host: "db.internal" });
   });
 
   it("cancel mid-connect leaves active unchanged and disconnects the late result exactly once", async () => {

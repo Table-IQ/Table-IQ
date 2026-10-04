@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import type { ConnectedInfo, SchemaModel } from "../lib/commands";
-import { canLeaveSession, clearMetaCaches, profileToSave, useConnections } from "./connectionStore";
+import type { ConnConfig, ConnectedInfo, SchemaModel } from "../lib/commands";
+import { canLeaveSession, clearMetaCaches, profileToSave, useConnections, withDetectedProfile } from "./connectionStore";
 import { useTabs } from "./tabsStore";
 
 const info = (id: string): ConnectedInfo => ({ id, name: id, database: `${id}_db`, engine: "postgres" });
@@ -309,5 +309,21 @@ describe("profileToSave", () => {
     expect(profileToSave("planetscale", "vitess")).toBeNull();
     expect(profileToSave("tidb", null)).toBeNull();
     expect(profileToSave(null, null)).toBeNull();
+  });
+});
+
+describe("withDetectedProfile", () => {
+  const conn = (id: string, profile?: string): ConnConfig => ({
+    id, name: id, engine: "mysql", host: "h", port: 3306, database: "d", username: "u", sslmode: "prefer", profile,
+  });
+
+  it("patches the profile onto the entry as saved now", () => {
+    expect(withDetectedProfile([conn("a"), conn("b")], "b", "tidb")).toEqual({ ...conn("b"), profile: "tidb" });
+  });
+
+  it("saves nothing when the entry is gone, has a profile by now, or nothing was detected", () => {
+    expect(withDetectedProfile([conn("a")], "b", "tidb")).toBeNull();
+    expect(withDetectedProfile([conn("b", "planetscale")], "b", "vitess")).toBeNull();
+    expect(withDetectedProfile([conn("b")], "b", null)).toBeNull();
   });
 });
