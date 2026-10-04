@@ -140,13 +140,14 @@ async fn smoke(drv: &dyn SqlDriver, schema: &str, transactions: bool, table: Opt
     soft(&mut failed, "describe_table", drv.describe_table(schema, t).await.map_err(s));
     soft(&mut failed, "foreign_keys", drv.foreign_keys().await.map_err(s));
     // A compat session answers a failed catalog read with nothing (`drivers::degrade`), so
-    // these two pass on a value, not on `Ok`; and on such a session an error is a hard
-    // failure, or removing `degrade` from a driver would change nothing here.
+    // these two pass on a value, not on `Ok`. A session whose profile is not the base engine
+    // is always compat, so there an error is a hard failure: otherwise removing `degrade`
+    // from a driver would change nothing here.
     let profile = drv.product().and_then(|id| profiles::lookup(&id)).expect("a profile session");
     let stats = drv.table_stats(schema).await.map_err(s);
     let estimate = drv.estimate_rows(schema, t).await.map_err(s);
     if !profile.real {
-        assert!(stats.is_ok() && estimate.is_ok(), "a compat session degrades: {:?} {:?}", stats.as_ref().err(), estimate.as_ref().err());
+        assert!(stats.is_ok() && estimate.is_ok(), "a session on a compatible product degrades: {:?} {:?}", stats.as_ref().err(), estimate.as_ref().err());
     }
     let stats = stats.and_then(|all| {
         all.iter().any(|st| st.name == t).then_some(()).ok_or(format!("{t} is not among {} tables", all.len()))

@@ -338,8 +338,8 @@ impl MySqlDriver {
             crate::applog::log(
                 "warn",
                 &format!(
-                    "the version query failed or timed out on {}: product not detected, \
-                     the session is treated as compatible",
+                    "the version query failed, timed out, or named no product without its \
+                     comment on {}: product not detected, the session is treated as compatible",
                     super::url_host_port(url)
                 ),
             );

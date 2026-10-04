@@ -226,8 +226,9 @@ marker, ties by profile id. The first match names the product.
   Parquet) is refused on that session, because its text quoting is only safe with that setting
   on. No server that rejects or ignores it was at hand, so the refusal is not covered by a
   live run.
-- A server that reports a plain MySQL or PostgreSQL version and is saved through a base tile is
-  treated as the base engine. Detection cannot see a product that does not say what it is.
+- A server that reports a plain MySQL (version and comment) or PostgreSQL version and is saved
+  through a base tile is treated as the base engine. Detection cannot see a product that does
+  not say what it is.
 - **Copy as URL** writes the base scheme (`postgres://`, `mysql://`). A profile with no host
   suffix and no marker is therefore not restored when that URL is pasted back. A profile with
   a host suffix (for example `*.tidbcloud.com`) is restored on paste, and one with a marker at
