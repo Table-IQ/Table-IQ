@@ -69,8 +69,8 @@ uses; a failure means that feature degrades on that product.
 - `explain_json`: the Explain view.
 - `cancel`: the Stop button on a running statement.
 - `mcp_read_only`: whether the read-only wrapper used for agent reads keeps a write from
-  landing. Measured on every run, but compatible products are not shared over MCP at all in
-  this release (see below).
+  landing. Measured on every run that creates its own fixture table, but compatible products
+  are not shared over MCP at all in this release (see below).
 
 | Profile | describe_table | foreign_keys | table_stats | estimate_rows | list_databases | explain_json | cancel | mcp_read_only |
 |---|---|---|---|---|---|---|---|---|
@@ -195,14 +195,16 @@ detected product differ, the saved one stays and the more restrictive capabiliti
 
 On connect the driver opens a probe connection and reads the version text: `SELECT version()`
 on PostgreSQL; `SELECT VERSION()` followed by `SELECT @@version_comment` on MySQL. TableIQ
-looks for each profile's `detect` markers in that text, longest marker first and ties by
-profile id. The first match names the product.
+looks for each profile's `detect` markers in that text: a product that is not the base engine
+before one that is (so a text naming both TiDB and MariaDB reads as TiDB), then the longest
+marker, ties by profile id. The first match names the product.
 
 - A detected product fills in an **empty** profile only. A saved profile of the same base
   stays; if it differs from the detected one, the connection logs the mismatch and the more
   restrictive capabilities apply.
 - If the version query fails or times out, the session is treated as compatible and a warning
-  is logged.
+  is logged. The same holds on MySQL when the version answers but `@@version_comment` does not
+  and the version alone names no product: GreatSQL and Dolt name themselves only in the comment.
 - Markers are substrings of text a server really returns. Where a product's version text
   carries no name (TimescaleDB, Manticore, StarRocks 4.1.6) or no name was found in vendor
   documentation (SelectDB, Doris, Vitess, openGauss), the profile has no marker and is only
@@ -219,15 +221,17 @@ profile id. The first match names the product.
   default. A compatible server saved through the plain MySQL tile (no profile) gets no fallback
   and still fails to connect.
 - **PostgreSQL session settings.** A compatible PostgreSQL session sends its four session
-  settings one at a time and keeps going past the ones the server rejects. If
-  `standard_conforming_strings` is the one rejected, import (CSV, JSON, Parquet) is refused on
-  that session, because its text quoting is only safe with that setting on. No server that
-  rejects it was at hand, so this path is not covered by a live run.
+  settings one at a time and keeps going past the ones the server rejects. It then asks the
+  session (`SHOW standard_conforming_strings`); unless the answer is `on`, import (CSV, JSON,
+  Parquet) is refused on that session, because its text quoting is only safe with that setting
+  on. No server that rejects or ignores it was at hand, so the refusal is not covered by a
+  live run.
 - A server that reports a plain MySQL or PostgreSQL version and is saved through a base tile is
   treated as the base engine. Detection cannot see a product that does not say what it is.
 - **Copy as URL** writes the base scheme (`postgres://`, `mysql://`). A profile with no host
-  suffix and no marker is therefore not restored when that URL is pasted back. Profiles with a
-  scheme or host suffix (for example `tidb://`, `*.tidbcloud.com`) are.
+  suffix and no marker is therefore not restored when that URL is pasted back. A profile with
+  a host suffix (for example `*.tidbcloud.com`) is restored on paste, and one with a marker at
+  the next connect.
 - Vendor extensions on Neon, Supabase and AlloyDB are outside the reviewed agent-guard function
   list. Those profiles keep MCP access because they are the base engine; a function only that
   vendor ships is not reviewed.
@@ -280,7 +284,8 @@ Markers in `profiles.json`, and where the text came from:
    ```
 
    Add `TIQ_PROFILE_TABLE=<existing table>` to the variables for a server where the fixture
-   table cannot be created; the run then uses that table and skips the staged-commit check.
+   table cannot be created; the run then uses that table and skips the fixture assertions,
+   the exact count, the staged-commit check and `mcp_read_only`.
 5. **Flip `tested`** to `true` only if every hard check passed in that run. A profile with no
    run of its own stays `false`, whatever its base engine does.
 6. **Add the matrix row** to this page: hard result, each soft check, the image and the date.
