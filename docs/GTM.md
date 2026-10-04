@@ -1,6 +1,6 @@
 # TableIQ Go-To-Market
 
-_Last updated 2026-09-30 · companion doc: [ROADMAP.md](ROADMAP.md)_
+_Last updated 2026-10-04 · companion doc: [ROADMAP.md](ROADMAP.md)_
 
 ## 1. What we learned from dbx
 
@@ -55,7 +55,7 @@ One wedge, not three. The agent-safe story is the headline; polish and scale are
 | **Scale** (the credibility post) | Keyset paging to 1T rows (2.3 ms at row 15M vs 2.3 s with OFFSET), bounded and cancellable page fetches | Grid lag issues (#9246) |
 | **Polish** (why you keep it open) | macOS-native chrome, staged edits with SQL review, ⌘K parity, SQL log | Vue UI the maintainers say "can't sustain growth" |
 
-We still need engine breadth, as table stakes: roadmap P1 (+22 profiles) and P3 bring us to about 50 without growing the binary. **We publish size honestly, per OS.**
+We still need engine breadth, as table stakes: roadmap P1 (23 engine profiles, shipped in v0.8.3 with 7 verified and 16 Beta) and P3 bring us to about 50 without growing the binary. **We publish size honestly, per OS.**
 
 **We do not claim "safer than dbx" until the guard test suite (§4) proves it.**
 

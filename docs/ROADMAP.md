@@ -1,14 +1,15 @@
 # TableIQ Roadmap
 
-_Last updated 2026-09-30 · current version v0.8.2 · companion doc: [GTM.md](GTM.md)_
+_Last updated 2026-10-04 · current version v0.8.3 · companion doc: [GTM.md](GTM.md)_
 
 We are aiming for engine parity with [dbx](https://github.com/t8y2/dbx) (100+ database profiles, 22k★ in five months) while keeping the product TablePlus-grade and agent-safe. Each phase ships as one `/rudys-workflow` slice and one PR, and each merged phase gets its own release announcement (see GTM.md).
 
-## Where we are (v0.8.2)
+## Where we are (v0.8.3)
 
 | Area | Status |
 |---|---|
 | Full SQL engines | PostgreSQL, MySQL/MariaDB, SQL Server, SQLite, DuckDB |
+| Engine profiles (PostgreSQL and MySQL wire) | 23 on the existing drivers: 7 verified, 16 Beta ([ENGINES.md](ENGINES.md)) |
 | Non-SQL shells (read-only, thin) | MongoDB (`DocShell`), Redis (`KvShell`) |
 | Built | Keyset paging to 1T rows, staged edits in one transaction, SQL log, user management, metrics board, backup/restore, ERD, schema/result diff, ⌘K, BYO-key AI (Anthropic/OpenAI/Gemini/Ollama), MCP server with a fail-closed guard and an in-repo adversarial guard suite, WASM plugins, SSH tunnels, keychain secrets, Apache-2.0 LICENSE |
 | Missing before launch | A public repo (private today), signing/notarization, auto-updater, any published release, the public cross-vendor guard test suite |
@@ -52,7 +53,7 @@ Only the Windows NSIS installer is actually 25 MB. The macOS dmg is 36 MB, the L
 
 ## P1 · Engine profiles: about +22 databases, no new crates
 
-A **profile** is a base driver plus default port and URL scheme, dialect quirks, feature gates, and an icon and label. The engine is already a free string (`src-tauri/src/connections.rs:21`), so a profile resolves to an existing driver in `open_driver()` (`src-tauri/src/ipc/connect.rs:137`). Keep it one data table on each side (Rust + TS) and do not add a plugin system for it.
+A **profile** is a base driver plus default port and URL scheme, dialect quirks, feature gates, and an icon and label. The engine is already a free string (`src-tauri/src/connections.rs:21`), so a profile resolves to an existing driver in `open_driver()` (`src-tauri/src/ipc/connect.rs:148`). Keep it one data table on each side (Rust + TS) and do not add a plugin system for it.
 
 - **MySQL wire:** TiDB, OceanBase (MySQL mode), Apache Doris, StarRocks, SelectDB, PolarDB-X, GreatSQL, Dolt, Manticore Search, PlanetScale, Vitess.
 - **PG wire:** CockroachDB, Amazon Redshift, YugabyteDB, Neon, Supabase, TimescaleDB, AlloyDB, openGauss, QuestDB, Materialize, RisingWave.
@@ -148,6 +149,8 @@ Built only after the open-source launch has traction and three to five design pa
 
 Follow the compiler. `Engine` is a TS union, and the `Record<Engine, …>` maps flag every missing entry.
 
+A product that speaks the PostgreSQL or MySQL wire protocol is a profile, not a new engine: follow "Add a profile" in [ENGINES.md](ENGINES.md) instead of this recipe.
+
 **Backend (`src-tauri/`)**
 1. Add the dependency to `Cargo.toml`. Skip this step for P1 profiles and P4 agents.
 2. Create `src/drivers/<engine>.rs` implementing `SqlDriver`, `DocumentDriver` or `KvDriver` (`src/drivers/mod.rs`), and register it with `pub mod`.
@@ -178,8 +181,8 @@ Follow the compiler. `Engine` is a TS union, and the `Record<Engine, …>` maps 
 |---|---|---|
 | PostgreSQL, MySQL, MariaDB, SQL Server, SQLite, DuckDB | native / sidecar | ✅ shipped |
 | MongoDB, Redis | native | 🟡 read-only → P2 |
-| TiDB, OceanBase-MySQL, Doris, StarRocks, SelectDB, PolarDB, GreatSQL, Dolt, Manticore, TDSQL, GoldenDB | MySQL wire | P1 |
-| CockroachDB, Redshift, openGauss, GaussDB, QuestDB, KWDB, Cloudberry, OpenTenBase | PG wire | P1 (GaussDB, KWDB, Cloudberry and OpenTenBase only with zh launch) |
+| TiDB, OceanBase-MySQL, Doris, StarRocks, SelectDB, PolarDB, GreatSQL, Dolt, Manticore, TDSQL, GoldenDB | MySQL wire | P1, profiles in v0.8.3: TiDB, GreatSQL and Dolt verified; OceanBase, Doris, StarRocks, SelectDB, PolarDB-X and Manticore Beta. TDSQL and GoldenDB have no profile yet |
+| CockroachDB, Redshift, openGauss, GaussDB, QuestDB, KWDB, Cloudberry, OpenTenBase | PG wire | P1, profiles in v0.8.3: CockroachDB verified; Redshift, openGauss and QuestDB Beta. GaussDB, KWDB, Cloudberry and OpenTenBase only with zh launch |
 | ClickHouse, Elasticsearch, Easysearch, Solr, Meilisearch | HTTP | P3 (Easysearch and Solr on request) |
 | Qdrant, Milvus, Weaviate, ChromaDB | HTTP | P3 |
 | Turso, Cloudflare D1, rqlite, InfluxDB 3, VictoriaMetrics, HBase REST | HTTP | P3 (HBase on request) |

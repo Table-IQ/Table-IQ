@@ -35,12 +35,15 @@ product): MariaDB, TiDB, CockroachDB, GreatSQL, Dolt, YugabyteDB and TimescaleDB
 Amazon Redshift, OceanBase, Apache Doris, StarRocks, SelectDB, PolarDB-X, Manticore Search,
 openGauss, QuestDB, Materialize and RisingWave. Products without transactions open read-only
 in the grid, and a compatible product cannot be shared over MCP yet (MariaDB, Neon, Supabase,
-TimescaleDB and AlloyDB can: they are the base engine under another name).
+TimescaleDB and AlloyDB can: they are the base engine under another name). A compatible
+product also has no Backup / Restore or User Management; MariaDB keeps backup but has no
+User Management.
 [`docs/ENGINES.md`](docs/ENGINES.md) has the compatibility matrix, what was run and what was
 not, and how to add a profile.
 
 New and existing connections use a slide-in sheet: paste a full connection URL to fill every
-field, or start from one of the engine tiles; tag the connection with an environment (local,
+field, or start from one of the engine tiles or the compatible-database list under them; tag
+the connection with an environment (local,
 development, testing, staging, production — production tints the titlebar pill and gates
 commits behind a confirmation), pick a colour, and optionally enable an SSH tunnel
 (password/agent or key-file auth). Test the connection before saving.
@@ -130,9 +133,11 @@ TIQ_MSSQL_URL="Server=tcp:127.0.0.1,51433;User Id=sa;Password=TableIQ_pw1;Databa
 ```
 
 CI (`.github/workflows/ci.yml`) runs `tsc`, `vitest`, `vite build`, `cargo test` (against
-live Postgres and MySQL containers), and `cargo clippy --all-targets -- -D warnings` on every
-pull request. SQL Server is deliberately left out of CI (a 1.5 GB image for a handful of
-tests) and runs locally, where the container is already up.
+live Postgres, MySQL, TiDB, CockroachDB and MariaDB containers), and
+`cargo clippy --all-targets -- -D warnings` on every pull request. It also re-runs
+`profile_live` and `mysql_ssl_live` with `TIQ_REQUIRE_LIVE=1`, which turns a missing URL into
+a failure instead of a skip. SQL Server is deliberately left out of CI (a 1.5 GB image for a
+handful of tests) and runs locally, where the container is already up.
 
 ## Test databases
 
