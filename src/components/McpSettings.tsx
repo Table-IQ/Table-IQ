@@ -215,6 +215,7 @@ export function McpSettings() {
                     type="checkbox"
                     checked={s.shared}
                     disabled={!s.shareable}
+                    className="disabled:cursor-not-allowed disabled:opacity-50"
                     aria-describedby={s.note ? `mcp-note-${c.id}` : undefined}
                     onChange={(e) => void apply(setShared(cfg, c.id, e.target.checked))}
                   />

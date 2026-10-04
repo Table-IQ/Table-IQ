@@ -111,6 +111,8 @@ describe("ConnectionSheet compatible-database picker", () => {
     expect(h).not.toContain("Beta: not yet verified");
     expect(h).toMatch(/<button[^>]*aria-pressed="false"[^>]*title="MySQL \/ MariaDB"/);
     expect(picker(h)).toMatch(/<select[^>]*border-primary ring-3 ring-primary\/15/);
+    // Focused, the picked select is stronger than picked-and-unfocused: same width, focus alpha.
+    expect(picker(h)).toMatch(/<select[^>]*focus:border-primary focus:ring-3 focus:ring-primary\/40/);
     expect(picker(h)).toMatch(/<option[^>]*value="tidb"[^>]*selected=""/);
   });
 

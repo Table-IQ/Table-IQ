@@ -323,7 +323,8 @@ floats recently-used connections to the top of the list without any UI grouping
   ("Or a compatible database…"), grouped "PostgreSQL-compatible" / "MySQL-compatible",
   tested products first and "(Beta)" on the untested. Picking one sets its base
   engine and presets, and the select takes the pressed-tile ring
-  (`border-primary ring-3 ring-primary/15`) in place of the tile. Under it a
+  (`border-primary ring-3 ring-primary/15`) in place of the tile; focused, the
+  ring stays 3px at the focus ring's alpha (`ring-primary/40`). Under it a
   capability line in `text-muted`: "Not available for {label}: …" listing what the
   product lacks (grid editing, backup and restore, user management, agent access),
   plus "Beta: not yet verified against a live server." for an untested one. In edit

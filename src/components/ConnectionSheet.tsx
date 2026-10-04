@@ -64,6 +64,8 @@ const SSL_MODES = ["disable", "allow", "prefer", "require", "verify-ca", "verify
 const ERR_LABEL: Record<keyof ConnFieldErrors, string> = { host: "Host", port: "Port", database: "Database file" };
 
 const focusRing = "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40";
+// The pressed-tile ring on the compatible-database select, and its stronger focused state.
+const pickedRing = "border-primary ring-3 ring-primary/15 focus:border-primary focus:ring-3 focus:ring-primary/40";
 const btn = `inline-flex h-[30px] items-center gap-1.5 rounded-[7px] border border-border bg-bg px-3 text-[12.5px] font-medium text-text transition-colors hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`;
 const btnPrimary = `inline-flex h-[30px] items-center gap-1.5 rounded-[7px] border border-primary bg-primary px-3 text-[12.5px] font-medium text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`;
 const kbd = "font-sans text-[10.5px] font-normal opacity-70";
@@ -336,13 +338,15 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
         {/* Wire-compatible products. New: any of them, under the tiles (picking one also
             picks its base engine). Edit: the connection's own base only — the engine is fixed.
             A picked product rings the select like a pressed tile; `border-primary` is emitted
-            after `field()`'s border colours in Tailwind's output, so it wins over the test tone. */}
+            after `field()`'s border colours in Tailwind's output, so it wins over the test tone.
+            Focused, it keeps the 3px ring at the focus ring's alpha (`focusRing`): `field()`'s
+            own 2px focus ring would read weaker than the picked one. */}
         {(mode === "new" || wireBase) && (
           <>
             <select
               aria-label="Compatible database"
               aria-describedby={[capsNote && `${uid}caps`, mode === "edit" && `${uid}detect`].filter(Boolean).join(" ") || undefined}
-              className={`${mode === "new" ? "mt-[5px]" : "mt-3"} ${field()} ${form.profile ? "border-primary ring-3 ring-primary/15" : ""}`}
+              className={`${mode === "new" ? "mt-[5px]" : "mt-3"} ${field()} ${form.profile ? pickedRing : ""}`}
               value={form.profile ?? ""}
               onChange={(e) => p.onProfile(e.target.value || null)}
             >
