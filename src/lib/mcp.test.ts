@@ -5,6 +5,7 @@ import {
   isSqlEngine,
   maskToken,
   mcpRowState,
+  pruneUnshareable,
   setShared,
   setWrites,
   validPort,
@@ -87,6 +88,37 @@ describe("mcpRowState (a connection's row in Settings → MCP)", () => {
       shareable: true, shared: true, writes: false, note: null,
     });
     expect(mcpRowState({ engine: "sqlite" }, undefined).shareable).toBe(true);
+  });
+});
+
+describe("pruneUnshareable (allowlist entries for connections that can no longer be shared)", () => {
+  const saved = [
+    { id: "ti", engine: "mysql", profile: "tidb" },
+    { id: "ne", engine: "postgres", profile: "neon" },
+    { id: "pg", engine: "postgres", profile: null },
+    { id: "fu", engine: "mysql", profile: "from-the-future" },
+  ] as const;
+
+  it("drops a compatible product and an unknown profile, keeps the base engine and its vendor-named self", () => {
+    const cfg: McpConfig = {
+      ...base,
+      connections: [
+        { id: "ti", writes: true },
+        { id: "ne", writes: true },
+        { id: "pg", writes: false },
+        { id: "fu", writes: false },
+      ],
+    };
+    expect(pruneUnshareable(cfg, saved).connections).toEqual([
+      { id: "ne", writes: true },
+      { id: "pg", writes: false },
+    ]);
+    expect(cfg.connections).toHaveLength(4); // pure
+  });
+
+  it("returns the same config when nothing is stale, so a caller can tell", () => {
+    const cfg: McpConfig = { ...base, connections: [{ id: "pg", writes: true }, { id: "deleted", writes: false }] };
+    expect(pruneUnshareable(cfg, saved)).toBe(cfg);
   });
 });
 

@@ -18,6 +18,7 @@ import {
   maskToken,
   mcpRowState,
   mcpUrl,
+  pruneUnshareable,
   setShared,
   setWrites,
   validPort,
@@ -99,6 +100,8 @@ export function McpSettings() {
         setCfg(c);
         setStatus(s);
         setConns(list.filter((x) => isSqlEngine(x.engine)));
+        // An entry for a connection that can no longer be shared is dropped, and saved.
+        if (pruneUnshareable(c, list) !== c) void apply(c, list);
       })
       .catch((e) => setError(String(e)));
     // Created (and kept in the keychain) on first use.
@@ -109,9 +112,11 @@ export function McpSettings() {
   }, []);
 
   // One restart at a time. Controls stay enabled (a disabled checkbox drops keyboard focus);
-  // a change made while one is applying is ignored and the control snaps back.
-  const apply = async (next: McpConfig) => {
+  // a change made while one is applying is ignored and the control snaps back. Every apply
+  // writes the config without its unshareable entries (`saved`: the list just loaded).
+  const apply = async (next: McpConfig, saved: ConnConfig[] = conns) => {
     if (busy) return;
+    next = pruneUnshareable(next, saved);
     setBusy(true);
     try {
       setStatus(await mcpSetConfig(next));

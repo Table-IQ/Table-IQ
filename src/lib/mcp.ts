@@ -66,7 +66,8 @@ export interface McpRowState {
 
 /** A connection's row in Settings → MCP, from its SAVED profile and its allowlist entry.
  *  What cannot be shared reads unshared whatever the allowlist still holds — the server
- *  refuses it either way (`agent_block_reasons` in `profiles.rs`). */
+ *  refuses it either way (`agent_block_reasons` in `profiles.rs`), and the panel drops the
+ *  entry (`pruneUnshareable`). */
 export function mcpRowState(conn: Pick<ConnConfig, "engine" | "profile">, shared: McpConn | undefined): McpRowState {
   if (capsOf(conn.engine, conn.profile).agents) {
     return { shareable: true, shared: !!shared, writes: !!shared?.writes, note: null };
@@ -75,6 +76,16 @@ export function mcpRowState(conn: Pick<ConnConfig, "engine" | "profile">, shared
     ? "Not available over MCP yet: TableIQ's agent guard has been reviewed for PostgreSQL, MySQL and MariaDB only."
     : `Not available over MCP: this connection's profile (${conn.profile}) was saved by a newer TableIQ. Update TableIQ to manage it.`;
   return { shareable: false, shared: false, writes: false, note };
+}
+
+/** `cfg` without the allowlist entries of saved connections that can no longer be shared (a
+ *  product detected since, a profile this build lacks). Such a row renders unchecked and
+ *  disabled, so the entry could not be removed by hand — and a build that opens the product to
+ *  MCP would bring it back, writes included. The same object when nothing is stale. */
+export function pruneUnshareable(cfg: McpConfig, saved: readonly Pick<ConnConfig, "id" | "engine" | "profile">[]): McpConfig {
+  const stale = new Set(saved.filter((c) => !capsOf(c.engine, c.profile).agents).map((c) => c.id));
+  const connections = cfg.connections.filter((c) => !stale.has(c.id));
+  return connections.length === cfg.connections.length ? cfg : { ...cfg, connections };
 }
 
 export function validPort(n: number): boolean {
