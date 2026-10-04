@@ -984,6 +984,15 @@ fn refuse_no_backup(caps: profiles::Caps, product: Option<&str>, what: &str) -> 
     ))
 }
 
+/// Import builds its SQL from literals that only double the quote; see
+/// [`SqlDriver::literals_safe`].
+fn refuse_unsafe_literals(safe: bool) -> Result<(), String> {
+    if safe {
+        return Ok(());
+    }
+    Err("Import is not available on this connection: the server rejected standard_conforming_strings, so TableIQ cannot quote text safely. Load the data with the server's own import tool.".to_string())
+}
+
 /// Apply a batch of staged changes to one table in ONE transaction (updates → deletes →
 /// inserts). Any failure rolls the batch back; the error names the 0-based change
 /// (`change {i}: {reason}`). Returns what was written.
@@ -1653,6 +1662,7 @@ pub async fn import_rows(
     rows: Vec<Vec<Option<String>>>,
 ) -> Result<ImportResult, String> {
     let drv = state.session(&id)?;
+    refuse_unsafe_literals(drv.literals_safe())?;
     let dialect = crate::query::ddl::Dialect::from_engine(&engine);
     let sql = crate::query::import::build_insert_sql(schema.as_deref(), &table, &columns, &rows, dialect);
     if sql.is_empty() {
@@ -1771,6 +1781,8 @@ pub async fn apply_parquet_import(
     // interpolation. (Quoting catches it, but explicit is better than implicit.)
     validate_target_idents(schema.as_deref(), &table, &column_mapping)?;
     let drv = state.session(&id)?;
+    // The rows go through the same literal builder as `import_rows`.
+    refuse_unsafe_literals(drv.literals_safe())?;
     let dialect = crate::query::ddl::Dialect::from_engine(&engine);
 
     // 1) Parse all rows server-side.
@@ -2375,6 +2387,15 @@ mod tests {
             );
         }
         assert!(refuse_no_backup(profiles::Caps { backup: true, ..no }, Some("tidb"), "Backup").is_ok());
+    }
+
+    #[test]
+    fn import_is_refused_when_literals_are_not_safe() {
+        assert_eq!(
+            refuse_unsafe_literals(false).unwrap_err(),
+            "Import is not available on this connection: the server rejected standard_conforming_strings, so TableIQ cannot quote text safely. Load the data with the server's own import tool."
+        );
+        assert!(refuse_unsafe_literals(true).is_ok());
     }
 
     #[test]

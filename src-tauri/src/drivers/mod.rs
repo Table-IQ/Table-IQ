@@ -958,6 +958,12 @@ pub trait SqlDriver: Send + Sync {
     /// Err(reason) when this session must not be reachable over MCP. No default: every
     /// driver and wrapper states it, so a forgotten forward cannot grant access.
     fn agent_access(&self) -> Result<(), String>;
+    /// Whether the import path's quote-doubling literals are safe on this session. False
+    /// only where a Postgres-compatible server rejected `SET standard_conforming_strings`
+    /// (see `PgDriver::connect_as`). Default: safe.
+    fn literals_safe(&self) -> bool {
+        true
+    }
 }
 
 /// Document stores (MongoDB). The third data-model trait (plan spec #1).

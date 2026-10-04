@@ -231,12 +231,18 @@ pub struct PgDriver {
     saved: Option<String>,
     /// A degraded estimate has been logged (see [`super::degrade`]).
     degrade_logged: std::sync::atomic::AtomicBool,
+    /// A pooled connection's `SET standard_conforming_strings = on` was rejected (compat
+    /// sessions only): a backslash may be an escape here, so import is refused.
+    scs_rejected: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// The session GUCs every pooled connection pins (see `connect_as`).
 const SESSION_SETS: &str = "SET TimeZone = 'UTC'; SET DateStyle = 'ISO, MDY'; \
                             SET extra_float_digits = 3; \
                             SET standard_conforming_strings = on;";
+
+/// The one of [`SESSION_SETS`] the import path's literals depend on.
+const SCS: &str = "standard_conforming_strings";
 
 /// [`SESSION_SETS`] one statement at a time, as a compat session sends them.
 fn session_sets() -> impl Iterator<Item = &'static str> {
@@ -317,11 +323,15 @@ impl PgDriver {
         // backslash an ordinary character in a literal, which is what the import path's
         // `sql_literal` assumes when it escapes only the quote.
         // A compat session sends them one at a time and keeps going past the ones the
-        // server rejects: a product without `DateStyle` still connects.
+        // server rejects: a product without `DateStyle` still connects. A rejected
+        // `standard_conforming_strings` is remembered, and import is refused on the session.
+        let scs_rejected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let rejected = scs_rejected.clone();
         let pool = PgPoolOptions::new()
             .max_connections(4)
             .acquire_timeout(std::time::Duration::from_secs(10))
             .after_connect(move |conn, _meta| {
+                let rejected = rejected.clone();
                 Box::pin(async move {
                     if !compat {
                         return conn.execute(SESSION_SETS).await.map(|_| ());
@@ -331,6 +341,9 @@ impl PgDriver {
                             Ok(_) => {}
                             Err(sqlx::Error::Database(e)) => {
                                 crate::applog::log("warn", &format!("{set} rejected: {}", e.message()));
+                                if set.contains(SCS) {
+                                    rejected.store(true, std::sync::atomic::Ordering::Relaxed);
+                                }
                             }
                             Err(e) => return Err(e),
                         }
@@ -354,6 +367,7 @@ impl PgDriver {
             detected,
             saved,
             degrade_logged: Default::default(),
+            scs_rejected,
         })
     }
 
@@ -604,6 +618,9 @@ impl SqlDriver for PgDriver {
     fn agent_access(&self) -> Result<(), String> {
         crate::profiles::agent_block("postgres", self.saved.as_deref(), self.detected.as_deref(), self.detect_ok)
             .map_or(Ok(()), Err)
+    }
+    fn literals_safe(&self) -> bool {
+        !self.scs_rejected.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     async fn run_statements(
@@ -1220,7 +1237,7 @@ fn text_rows_to_batch(cols: &[String], rows: &[PgRow]) -> DResult<RecordBatch> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_delete_sql, build_update_sql, pg_change_sql, session_sets};
+    use super::{build_delete_sql, build_update_sql, pg_change_sql, session_sets, SCS};
     use crate::drivers::{Change, EditSpec};
     use std::collections::HashMap;
 
@@ -1235,6 +1252,7 @@ mod tests {
                 "SET standard_conforming_strings = on",
             ]
         );
+        assert_eq!(session_sets().filter(|s| s.contains(SCS)).count(), 1, "the one import depends on");
     }
 
     #[test]

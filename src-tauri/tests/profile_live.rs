@@ -174,6 +174,7 @@ async fn cockroachdb_smoke() {
     let Some(url) = url("TIQ_CRDB_URL") else { return };
     let drv = PgDriver::connect(&url).await.expect("connect");
     assert_eq!(drv.product().as_deref(), Some("cockroachdb"));
+    assert!(drv.literals_safe(), "CockroachDB accepts SET standard_conforming_strings");
     assert_eq!(smoke(&drv, "public", true, None).await, expected("cockroachdb"));
 }
 

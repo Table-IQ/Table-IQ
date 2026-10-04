@@ -155,6 +155,9 @@ impl SqlDriver for Logged {
     fn agent_access(&self) -> Result<(), String> {
         self.inner.agent_access()
     }
+    fn literals_safe(&self) -> bool {
+        self.inner.literals_safe()
+    }
 }
 
 #[cfg(test)]
@@ -315,6 +318,9 @@ mod tests {
         fn agent_access(&self) -> Result<(), String> {
             Err("no".into())
         }
+        fn literals_safe(&self) -> bool {
+            false
+        }
     }
 
     fn tag(b: &RecordBatch) -> String {
@@ -381,5 +387,6 @@ mod tests {
         assert_eq!(d.product().as_deref(), Some("tidb"));
         assert_eq!(d.caps(), Caps { transactions: false, backup: false, user_mgmt: false });
         assert_eq!(d.agent_access(), Err("no".to_string()));
+        assert!(!d.literals_safe());
     }
 }
