@@ -7,13 +7,20 @@ const connect = vi.fn<(id: string) => Promise<ConnectedInfo>>();
 const disconnect = vi.fn<(id: string) => Promise<void>>();
 const listObjects = vi.fn<(id: string) => Promise<SchemaModel>>();
 const switchDatabase = vi.fn<(id: string, db: string) => Promise<ConnectedInfo>>();
-vi.mock("../lib/commands", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../lib/commands")>()),
-  connect: (id: string) => connect(id),
-  disconnect: (id: string) => disconnect(id),
-  listObjects: (id: string) => listObjects(id),
-  switchDatabase: (id: string, db: string) => switchDatabase(id, db),
-}));
+// Unset, `saveConnection` is the real (browser-mock) one; a test sets it to make the save fail.
+let saveConnectionOverride: ((c: ConnConfig) => Promise<void>) | null = null;
+vi.mock("../lib/commands", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../lib/commands")>();
+  return {
+    ...real,
+    connect: (id: string) => connect(id),
+    disconnect: (id: string) => disconnect(id),
+    listObjects: (id: string) => listObjects(id),
+    switchDatabase: (id: string, db: string) => switchDatabase(id, db),
+    saveConnection: (...a: Parameters<typeof real.saveConnection>) =>
+      saveConnectionOverride ? saveConnectionOverride(a[0]) : real.saveConnection(...a),
+  };
+});
 
 const { cancelConnecting, openConnection, switchDatabaseFlow, useConnections } =
   await import("./connectionStore");
@@ -53,6 +60,7 @@ describe("openConnection", () => {
     disconnect.mockReset();
     listObjects.mockReset();
     switchDatabase.mockReset();
+    saveConnectionOverride = null;
     useConnections.setState({ active: null, schema: null, open: [], connecting: null });
   });
 
@@ -93,6 +101,20 @@ describe("openConnection", () => {
     expect(await attempt).toBe(true);
     await vi.waitFor(() => expect(useConnections.getState().saved.find((c) => c.id === "slow")?.profile).toBe("tidb"));
     expect(useConnections.getState().saved.find((c) => c.id === "slow")).toMatchObject({ name: "Renamed", host: "db.internal" });
+  });
+
+  it("a rejected save of the detected product does not fail the connect", async () => {
+    useConnections.setState({ saved: [cfg("a")] });
+    const save = vi.fn<(c: ConnConfig) => Promise<void>>().mockRejectedValue(new Error("disk full"));
+    saveConnectionOverride = save;
+    connect.mockResolvedValue({ ...info("a"), profile: "tidb" });
+    listObjects.mockResolvedValue(schema("a"));
+    expect(await openConnection(cfg("a"))).toBe(true);
+    await vi.waitFor(() => expect(save).toHaveBeenCalledWith({ ...cfg("a"), profile: "tidb" }));
+    const s = useConnections.getState();
+    expect(s.active?.id).toBe("a");
+    expect(s.connecting).toBeNull();
+    expect(s.saved.find((c) => c.id === "a")?.profile).toBeUndefined();
   });
 
   it("cancel mid-connect leaves active unchanged and disconnects the late result exactly once", async () => {

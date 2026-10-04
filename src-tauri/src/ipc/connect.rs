@@ -1006,7 +1006,7 @@ fn refuse_unsafe_literals(safe: bool) -> Result<(), String> {
     if safe {
         return Ok(());
     }
-    Err("Import is not available on this connection: the server rejected standard_conforming_strings, so TableIQ cannot quote text safely. Load the data with the server's own import tool.".to_string())
+    Err("Import is not available on this connection: the server did not turn on standard_conforming_strings, so TableIQ cannot quote text safely. Load the data with the server's own import tool.".to_string())
 }
 
 /// Apply a batch of staged changes to one table in ONE transaction (updates → deletes →
@@ -1015,6 +1015,16 @@ fn refuse_unsafe_literals(safe: bool) -> Result<(), String> {
 #[tauri::command]
 pub async fn apply_changes(
     state: State<'_, ConnState>,
+    id: String,
+    schema: String,
+    table: String,
+    changes: Vec<Change>,
+) -> Result<ChangesResult, String> {
+    apply_changes_inner(&state, id, schema, table, changes).await
+}
+
+async fn apply_changes_inner(
+    state: &ConnState,
     id: String,
     schema: String,
     table: String,
@@ -1677,6 +1687,18 @@ pub async fn import_rows(
     columns: Vec<String>,
     rows: Vec<Vec<Option<String>>>,
 ) -> Result<ImportResult, String> {
+    import_rows_inner(&state, id, engine, schema, table, columns, rows).await
+}
+
+async fn import_rows_inner(
+    state: &ConnState,
+    id: String,
+    engine: String,
+    schema: Option<String>,
+    table: String,
+    columns: Vec<String>,
+    rows: Vec<Vec<Option<String>>>,
+) -> Result<ImportResult, String> {
     let drv = state.session(&id)?;
     refuse_unsafe_literals(drv.literals_safe())?;
     let dialect = crate::query::ddl::Dialect::from_engine(&engine);
@@ -1783,6 +1805,20 @@ pub async fn apply_parquet_import(
     schema: Option<String>,
     table: String,
     column_mapping: Vec<(usize, String, String)>, // (file_col_idx, target_name, sql_type)
+    create_table: bool,
+    bytes: Vec<u8>,
+) -> Result<ImportResult, String> {
+    apply_parquet_import_inner(&state, id, engine, schema, table, column_mapping, create_table, bytes).await
+}
+
+#[allow(clippy::too_many_arguments)] // mirrors the command
+async fn apply_parquet_import_inner(
+    state: &ConnState,
+    id: String,
+    engine: String,
+    schema: Option<String>,
+    table: String,
+    column_mapping: Vec<(usize, String, String)>,
     create_table: bool,
     bytes: Vec<u8>,
 ) -> Result<ImportResult, String> {
@@ -2164,6 +2200,17 @@ pub async fn backup_database(
     format: Option<String>,
     tool_dir: Option<String>,
 ) -> Result<String, String> {
+    backup_inner(&state, id, database, path, format, tool_dir).await
+}
+
+async fn backup_inner(
+    state: &ConnState,
+    id: String,
+    database: String,
+    path: String,
+    format: Option<String>,
+    tool_dir: Option<String>,
+) -> Result<String, String> {
     let cfg = {
         let store = lk(&state.store);
         store.connections.iter().find(|c| c.id == id).cloned().ok_or_else(|| "unknown connection".to_string())?
@@ -2405,11 +2452,161 @@ mod tests {
         assert!(refuse_no_backup(profiles::Caps { backup: true, ..no }, Some("tidb"), "Backup").is_ok());
     }
 
+    /// With no product named (a session that only lacks a capability), the refusals say
+    /// "This server" rather than a label.
+    #[test]
+    fn refusals_without_a_product_say_this_server() {
+        let none = profiles::Caps { transactions: false, backup: false, user_mgmt: true };
+        assert!(refuse_no_transactions(none, None).unwrap_err().starts_with("This server has no multi-statement transactions"));
+        let e = refuse_no_backup(none, None, "Restore").unwrap_err();
+        assert!(e.starts_with("Restore is not supported for This server:"), "{e}");
+    }
+
+    /// A session whose driver reports a profile and capabilities, nothing else: the gates
+    /// read `caps()`, `product()` and `literals_safe()` from the session they find.
+    struct Capped {
+        caps: profiles::Caps,
+        product: Option<&'static str>,
+        literals_safe: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl SqlDriver for Capped {
+        fn product(&self) -> Option<String> {
+            self.product.map(str::to_string)
+        }
+        fn caps(&self) -> profiles::Caps {
+            self.caps
+        }
+        fn literals_safe(&self) -> bool {
+            self.literals_safe
+        }
+        fn agent_access(&self) -> Result<(), String> {
+            Ok(())
+        }
+        async fn introspect(&self) -> crate::drivers::DResult<crate::drivers::SchemaModel> {
+            unimplemented!()
+        }
+        async fn count_rows(
+            &self,
+            _: &str,
+            _: &str,
+            _: &[crate::drivers::ColumnFilter],
+            _: Option<&CancelToken>,
+        ) -> crate::drivers::DResult<crate::drivers::RowCount> {
+            unimplemented!()
+        }
+        async fn open_window_filtered(
+            &self,
+            _: &str,
+            _: &str,
+            _: usize,
+            _: usize,
+            _: &[crate::drivers::ColumnFilter],
+            _: &[crate::drivers::SortKey],
+            _: Option<&[Option<String>]>,
+        ) -> crate::drivers::DResult<RecordBatch> {
+            unimplemented!()
+        }
+        async fn primary_key(&self, _: &str, _: &str) -> crate::drivers::DResult<Vec<String>> {
+            unimplemented!()
+        }
+        async fn apply_edit(&self, _: &str, _: &str, _: &crate::drivers::EditSpec) -> crate::drivers::DResult<u64> {
+            unimplemented!()
+        }
+        async fn run_statements(
+            &self,
+            _: &[String],
+            _: usize,
+            _: &CancelToken,
+        ) -> crate::drivers::DResult<Vec<crate::drivers::StmtOutput>> {
+            unimplemented!()
+        }
+        async fn run_script(&self, _: &str) -> crate::drivers::DResult<u64> {
+            unimplemented!()
+        }
+    }
+
+    /// The restore call site, not just its helper: on a TiDB session the typed confirmation
+    /// and the backup file pass, and the refusal comes before any tool is looked for or run.
+    #[tokio::test]
+    async fn restore_is_refused_on_a_session_without_backup() {
+        let dir = std::env::temp_dir().join(format!("tiq-restore-gate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("dump.sql");
+        std::fs::write(&file, "SELECT 1;").unwrap();
+        let mut cfg = crate::connections::tests::cfg("mysql");
+        cfg.id = "tidb-session".into();
+        cfg.database = "shop".into();
+        let state = state_with(vec![cfg]);
+        let caps = profiles::effective_caps(None, Some("tidb"));
+        lk(&state.sessions).insert("tidb-session".into(), Arc::new(Capped { caps, product: Some("tidb"), literals_safe: true }));
+
+        let e = restore_inner(&state, "tidb-session", "shop".into(), file.to_string_lossy().into_owned(), "shop", None)
+            .await
+            .unwrap_err();
+        assert!(e.starts_with("Restore is not supported for TiDB:"), "{e}");
+        // The typed name is still checked first, and the session is left connected.
+        let e = restore_inner(&state, "tidb-session", "shop".into(), file.to_string_lossy().into_owned(), "oops", None)
+            .await
+            .unwrap_err();
+        assert!(!e.contains("not supported"), "{e}");
+        assert!(state.session("tidb-session").is_ok());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The other gated commands at their call sites: delete a gate line and this fails. Each
+    /// refusal comes before the driver is asked to write anything (`Capped` cannot).
+    #[tokio::test]
+    async fn gated_commands_refuse_at_the_call_site() {
+        let mut cfg = crate::connections::tests::cfg("mysql");
+        cfg.id = "s".into();
+        let state = state_with(vec![cfg]);
+        let caps = profiles::Caps { transactions: false, backup: false, user_mgmt: false };
+        lk(&state.sessions).insert("s".into(), Arc::new(Capped { caps, product: Some("doris"), literals_safe: false }));
+
+        let e = apply_changes_inner(&state, "s".into(), "shop".into(), "orders".into(), vec![]).await.unwrap_err();
+        assert!(e.starts_with("Apache Doris has no multi-statement transactions"), "{e}");
+        let path = std::env::temp_dir().join("tiq-gate.sql").to_string_lossy().into_owned();
+        let e = backup_inner(&state, "s".into(), "shop".into(), path, None, None).await.unwrap_err();
+        assert!(e.starts_with("Backup is not supported for Apache Doris:"), "{e}");
+        let row = vec![vec![Some("x".to_string())]];
+        let e = import_rows_inner(&state, "s".into(), "postgres".into(), None, "t".into(), vec!["a".into()], row)
+            .await
+            .err()
+            .expect("refused");
+        assert!(e.starts_with("Import is not available on this connection"), "{e}");
+        let map = vec![(0, "a".to_string(), "text".to_string())];
+        let e = apply_parquet_import_inner(&state, "s".into(), "postgres".into(), None, "t".into(), map, false, vec![])
+            .await
+            .err()
+            .expect("refused");
+        assert!(e.starts_with("Import is not available on this connection"), "{e}");
+    }
+
+    /// What `connect` hands the UI, as the UI reads it: `SessionCaps` in `commands.ts` names
+    /// the three capabilities exactly like this and takes a missing one for supported, so a
+    /// renamed field would switch every restriction off in the UI without an error anywhere.
+    #[tokio::test]
+    async fn connected_info_carries_the_session_caps_under_the_names_the_ui_reads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_with(vec![sqlite_cfg("c1", &tmp.path().join("live.db"))]);
+        let info = serde_json::to_value(connect_inner(&state, "c1").await.unwrap()).unwrap();
+        // A plain engine: no product, nothing restricted.
+        assert!(info["profile"].is_null(), "{info}");
+        assert_eq!(info["caps"], serde_json::json!({ "transactions": true, "backup": true, "user_mgmt": true }));
+        // A product's restrictions travel under the same names.
+        assert_eq!(
+            serde_json::to_value(profiles::effective_caps(None, Some("tidb"))).unwrap(),
+            serde_json::json!({ "transactions": true, "backup": false, "user_mgmt": false })
+        );
+    }
+
     #[test]
     fn import_is_refused_when_literals_are_not_safe() {
         assert_eq!(
             refuse_unsafe_literals(false).unwrap_err(),
-            "Import is not available on this connection: the server rejected standard_conforming_strings, so TableIQ cannot quote text safely. Load the data with the server's own import tool."
+            "Import is not available on this connection: the server did not turn on standard_conforming_strings, so TableIQ cannot quote text safely. Load the data with the server's own import tool."
         );
         assert!(refuse_unsafe_literals(true).is_ok());
     }
