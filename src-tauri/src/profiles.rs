@@ -79,8 +79,10 @@ pub fn effective_caps(saved: Option<&str>, detected: Option<&str>) -> Caps {
     )
 }
 
-/// Why a connection cannot be shared over MCP, or None when it can.
+/// Why a connection cannot be shared over MCP, or None when it can. An empty saved profile
+/// is no profile, as in `capsOf` (`profiles.ts`).
 pub fn agent_block(base: &str, saved: Option<&str>, detected: Option<&str>, detect_ok: bool) -> Option<String> {
+    let saved = saved.filter(|id| !id.is_empty());
     if let Some(id) = saved.filter(|id| lookup(id).is_none_or(|p| p.base != base)) {
         return Some(format!(
             "This connection cannot be shared over MCP: its profile ({id}) was saved by a newer TableIQ. Update TableIQ to manage it."
@@ -159,8 +161,8 @@ mod tests {
     fn detect_is_deterministic() {
         // MariaDB (7) and TiDB (4) both match; the longest marker wins.
         assert_eq!(detect("mysql", "5.7.0-TiDB-v1 MariaDB"), Some("mariadb"));
-        // StarRocks and OceanBase are both 9 characters; the tie goes to the lower id.
-        assert_eq!(detect("mysql", "x StarRocks OceanBase"), Some("oceanbase"));
+        // TiDB and Dolt are both 4 characters; the tie goes to the lower id.
+        assert_eq!(detect("mysql", "x TiDB Dolt"), Some("dolt"));
     }
 
     #[test]
@@ -202,5 +204,8 @@ mod tests {
         assert!(m.contains("could not identify this server"), "{m}");
         let m = agent_block("mysql", Some("from-the-future"), None, true).unwrap();
         assert!(m.contains("was saved by a newer TableIQ"), "{m}");
+        // An empty saved profile is no profile: what was detected still decides.
+        let m = agent_block("mysql", Some(""), Some("tidb"), true).unwrap();
+        assert!(m.contains("TiDB cannot be shared over MCP yet"), "{m}");
     }
 }

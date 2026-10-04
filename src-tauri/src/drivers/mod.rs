@@ -142,12 +142,13 @@ pub(crate) fn url_host_port(url: &str) -> &str {
 
 /// A Postgres/MySQL session that cannot be taken for the base engine itself (a "compat"
 /// session): the version query failed, the saved or detected profile is a wire-compatible
-/// product (`real: false`), or the saved profile is an id this build does not know.
+/// product (`real: false`), or the saved profile is an id this build does not know. An empty
+/// saved profile is no profile, as in `profiles::agent_block`.
 pub(crate) fn compat_session(detect_ok: bool, saved: Option<&str>, detected: Option<&str>) -> bool {
     use crate::profiles::lookup;
     !detect_ok
         || detected.and_then(lookup).is_some_and(|p| !p.real)
-        || saved.is_some_and(|id| lookup(id).is_none_or(|p| !p.real))
+        || saved.is_some_and(|id| !id.is_empty() && lookup(id).is_none_or(|p| !p.real))
 }
 
 /// A catalog estimate on a compat session: an error becomes "nothing to offer" (`None`, no
@@ -1635,6 +1636,7 @@ mod compat_tests {
         assert!(compat_session(true, Some("cockroachdb"), None));
         assert!(compat_session(true, Some("neon"), Some("cockroachdb")), "either one decides");
         assert!(compat_session(true, Some("from-the-future"), None), "an unknown saved id");
+        assert!(!compat_session(true, Some(""), None), "an empty profile is no profile");
     }
 
     #[test]

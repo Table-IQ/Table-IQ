@@ -7,5 +7,6 @@
   { "engine": "postgres", "profile": "cockroachdb", "allowed": false },
   { "engine": "mysql", "profile": "doris", "allowed": false },
   { "engine": "mysql", "profile": "from-the-future", "allowed": false },
-  { "engine": "postgres", "profile": "tidb", "allowed": false }
+  { "engine": "postgres", "profile": "tidb", "allowed": false },
+  { "engine": "mysql", "profile": "", "allowed": true }
 ]

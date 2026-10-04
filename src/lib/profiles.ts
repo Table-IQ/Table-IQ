@@ -61,7 +61,8 @@ export function profileForUrl(scheme: string, host: string, base: string | null)
 export interface SheetCaps { transactions: boolean; backup: boolean; userMgmt: boolean; agents: boolean }
 
 /** What the UI may offer for a saved connection (the saved value only; a live session also
- *  carries the backend's own `caps`). Unknown ids keep every feature but never reach agents. */
+ *  carries the backend's own `caps`). Unknown ids keep every feature but never reach agents;
+ *  an empty profile is no profile, as in `agent_block` (`profiles.rs`). */
 export function capsOf(engine: string, profile?: string | null): SheetCaps {
   const p = profileOf(engine, profile);
   if (p) return { transactions: p.transactions, backup: p.backup, userMgmt: p.userMgmt, agents: p.real };

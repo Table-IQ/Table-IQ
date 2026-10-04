@@ -382,8 +382,24 @@ pub fn export_connections(state: State<ConnState>) -> Result<String, String> {
 #[tauri::command(async)]
 pub fn import_connections(state: State<ConnState>, json: String) -> Result<usize, String> {
     let mut store = lk(&state.store);
-    let n = store.import_bundle(&json)?;
+    let n = import_into(&mut store, &json)?;
     store.save()?;
+    Ok(n)
+}
+
+/// `import_connections` without the save. A bundle never went through `save_connection`, so
+/// each imported connection gets [`check_profile`]'s normalisation here — except that a known
+/// profile on the wrong engine is dropped to none rather than refused: one bad entry must not
+/// fail the whole import.
+fn import_into(store: &mut ConnStore, json: &str) -> Result<usize, String> {
+    let n = store.import_bundle(json)?;
+    // `import_bundle` appends: the imported connections are the last `n`.
+    let first = store.connections.len() - n;
+    for cfg in &mut store.connections[first..] {
+        if check_profile(cfg).is_err() {
+            cfg.profile = None;
+        }
+    }
     Ok(n)
 }
 
@@ -2418,6 +2434,32 @@ mod tests {
         c.profile = Some("from-the-future".into());
         assert!(check_profile(&mut c).is_ok());
         assert_eq!(c.profile.as_deref(), Some("from-the-future"));
+    }
+
+    /// A bundle never went through `save_connection`, so its profiles are normalised here.
+    #[test]
+    fn imported_profiles_are_normalised() {
+        let entry = |id: &str, engine: &str, profile: &str| {
+            format!(
+                r#"{{"id":"{id}","name":"n","engine":"{engine}","profile":"{profile}","host":"h","port":1,"database":"d","username":"u","sslmode":"prefer"}}"#
+            )
+        };
+        let bundle = format!(
+            "[{},{},{},{}]",
+            entry("empty", "mysql", ""),
+            entry("wrong-base", "postgres", "tidb"),
+            entry("right-base", "mysql", "tidb"),
+            entry("unknown", "mysql", "from-the-future"),
+        );
+        let mut store = ConnStore::default();
+        store.upsert(ConnConfig { profile: Some(String::new()), ..crate::connections::tests::cfg("mysql") });
+        assert_eq!(import_into(&mut store, &bundle).unwrap(), 4);
+        let profile = |id: &str| store.connections.iter().find(|c| c.id == id).unwrap().profile.clone();
+        assert_eq!(profile("empty"), None);
+        assert_eq!(profile("wrong-base"), None, "dropped, and the rest of the bundle still imports");
+        assert_eq!(profile("right-base").as_deref(), Some("tidb"));
+        assert_eq!(profile("unknown").as_deref(), Some("from-the-future"), "a newer TableIQ's id survives");
+        assert_eq!(profile("x"), Some(String::new()), "only the imported entries are touched");
     }
 
     #[test]
