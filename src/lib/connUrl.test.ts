@@ -49,6 +49,18 @@ describe("parseConnUrl", () => {
     expect(toConnUrl({ engine: "mysql", host: "h", port: 3306, username: "u", database: "db", sslmode: "require" })).toBe("mysql://u@h:3306/db?ssl-mode=REQUIRED");
     expect(toConnUrl({ engine: "mysql", profile: "tidb", host: "h", port: 4000, username: "u", database: "db", sslmode: "prefer" })).toBe("mysql://u@h:4000/db");
   });
+  it("keeps sslmode=allow on a Postgres URL and reads it as prefer on a MySQL one", () => {
+    expect(parseConnUrl("postgres://u@h/db?sslmode=allow")?.sslmode).toBe("allow");
+    // A managed-cloud host does not turn a pasted `allow` into `require`.
+    expect(parseConnUrl("postgres://u@db.abc.eu-west-1.rds.amazonaws.com/db?sslmode=allow")?.sslmode).toBe("allow");
+    // MySQL has no `allow`; the backend connects it as PREFERRED.
+    expect(parseConnUrl("mysql://u@h/db?sslmode=allow")?.sslmode).toBe("prefer");
+    expect(parseConnUrl("mysql://u@db.abc.eu-west-1.rds.amazonaws.com/db?sslmode=allow")?.sslmode).toBe("prefer");
+  });
+  it("looks SSL modes up by own key only", () => {
+    expect(parseConnUrl("postgres://u@h/db?sslmode=constructor")).not.toHaveProperty("sslmode");
+    expect(toConnUrl({ engine: "mysql", host: "h", port: 3306, username: "u", database: "db", sslmode: "constructor" })).toBe("mysql://u@h:3306/db");
+  });
   it("never throws on a raw % — keeps the undecodable text as typed", () => {
     expect(parseConnUrl("postgres://app:100%@db/shop")).toMatchObject({ host: "db", username: "app", password: "100%", database: "shop" });
     expect(parseConnUrl("sqlite:///tmp/100%.db")).toMatchObject({ engine: "sqlite", database: "/tmp/100%.db" });

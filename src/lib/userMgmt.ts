@@ -4,8 +4,9 @@
  * caller (`UsersView.tsx`) previews the SQL (password rendered as `'***'`) and runs the
  * real statement through `runScript`, which records no history.
  *
- * Supported engines only: postgres, mysql, sqlserver (`supportsUserMgmt`). MariaDB has no
- * separate `Engine` id in this build, so it isn't listed.
+ * Supported engines only: postgres, mysql, sqlserver (`supportsUserMgmt`), and only where
+ * the session's `caps.user_mgmt` allows it. MariaDB is a profile on `mysql` with
+ * `userMgmt: false` (`profiles.json`), so a MariaDB session has no User Management.
  */
 import type { Engine, SessionCaps } from "./commands";
 import { quoteIdent, quoteLiteral } from "./tableScript";

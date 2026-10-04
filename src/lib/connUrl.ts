@@ -19,12 +19,15 @@ export interface ParsedConnUrl {
   profile?: string;
 }
 
-/** SSL spellings (Postgres `sslmode`, MySQL `ssl-mode`) → the form's five modes. */
+/** SSL spellings (Postgres `sslmode`, MySQL `ssl-mode`) → the form's six modes. */
 const SSL_MODES: Record<string, string> = {
-  disable: "disable", disabled: "disable", prefer: "prefer", preferred: "prefer", require: "require", required: "require",
+  disable: "disable", disabled: "disable", allow: "allow", prefer: "prefer", preferred: "prefer", require: "require", required: "require",
   "verify-ca": "verify-ca", verify_ca: "verify-ca", "verify-full": "verify-full", verify_full: "verify-full", verify_identity: "verify-full",
 };
 const MYSQL_SSL: Record<string, string> = { disable: "DISABLED", require: "REQUIRED", "verify-ca": "VERIFY_CA", "verify-full": "VERIFY_IDENTITY" };
+/** An own-key lookup, so `constructor` is not an entry. (`Object.hasOwn` is ES2022; `lib` is ES2020.) */
+const own = (table: Record<string, string>, key: string): string | undefined =>
+  Object.prototype.hasOwnProperty.call(table, key) ? table[key] : undefined;
 // Managed clouds that refuse a plaintext connection.
 const TLS_HOSTS = [".rds.amazonaws.com", ".database.azure.com"];
 
@@ -70,8 +73,11 @@ export function parseConnUrl(input: string): ParsedConnUrl | null {
     return null;
   }
   const profile = profileForUrl(sc, u.hostname, engine) ?? undefined;
+  const pasted = (u.searchParams.get("sslmode") ?? u.searchParams.get("ssl-mode") ?? "").toLowerCase();
+  const mode = own(SSL_MODES, pasted);
   const sslmode =
-    SSL_MODES[(u.searchParams.get("sslmode") ?? u.searchParams.get("ssl-mode") ?? "").toLowerCase()] ??
+    // MySQL has no `allow`: the backend connects it as PREFERRED, so the form says `prefer`.
+    (engine === "mysql" && mode === "allow" ? "prefer" : mode) ??
     (profile && PROFILES[profile].ssl) ??
     (TLS_HOSTS.some((s) => u.hostname.endsWith(s)) ? "require" : undefined);
   return {
@@ -94,7 +100,7 @@ export function toConnUrl(cfg: Pick<ConnConfig, "engine" | "profile" | "host" | 
   const user = cfg.username ? `${encodeURIComponent(cfg.username)}@` : "";
   const q =
     cfg.engine === "postgres" && cfg.sslmode && cfg.sslmode !== "prefer" ? `?sslmode=${cfg.sslmode}`
-    : cfg.engine === "mysql" && MYSQL_SSL[cfg.sslmode] ? `?ssl-mode=${MYSQL_SSL[cfg.sslmode]}`
+    : cfg.engine === "mysql" && own(MYSQL_SSL, cfg.sslmode) ? `?ssl-mode=${own(MYSQL_SSL, cfg.sslmode)}`
     : "";
   return `${scheme}://${user}${cfg.host}:${cfg.port}/${encodeURIComponent(cfg.database)}${q}`;
 }
