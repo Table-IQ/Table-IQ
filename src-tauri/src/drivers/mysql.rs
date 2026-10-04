@@ -215,7 +215,8 @@ pub struct MySqlDriver {
     /// [`super::WINDOW_TIMEOUT_MS`]; only tests shorten it.
     window_timeout_ms: u64,
     meta: super::MetaCache<Arc<MyMeta>>,
-    /// The probe's `SELECT VERSION()` answered.
+    /// The probe identified the server: `VERSION()` answered, and its comment too unless the
+    /// version alone names a product ([`version_text`]).
     detect_ok: bool,
     /// The profile id the version text names (`profiles::detect`), if any.
     detected: Option<String>,
@@ -223,6 +224,16 @@ pub struct MySqlDriver {
     saved: Option<String>,
     /// A degraded estimate has been logged (see [`super::degrade`]).
     degrade_logged: std::sync::atomic::AtomicBool,
+}
+
+/// The text detection reads: the version and its comment. GreatSQL and Dolt name themselves
+/// only in the comment, so without it a version that names no product has identified nothing.
+fn version_text(version: Option<String>, comment: Option<String>) -> Option<String> {
+    let v = version?;
+    match comment {
+        Some(c) => Some(format!("{v} {c}")),
+        None => crate::profiles::detect("mysql", &v).is_some().then_some(v),
+    }
 }
 
 /// One text cell from the connect probe; `None` when the query fails or outlives `deadline`.
@@ -313,17 +324,14 @@ impl MySqlDriver {
                         .map_err(db)?
                 }
             };
-            // The version text names the product, inside the same bound. The comment is
-            // where some products put their name; a server without the variable still
-            // has a version.
-            let mut version = probe_text(&mut probe, "SELECT VERSION()", deadline).await;
-            if let Some(v) = &mut version {
-                if let Some(c) = probe_text(&mut probe, "SELECT @@version_comment", deadline).await {
-                    *v = format!("{v} {c}");
-                }
-            }
+            // The version text names the product, inside the same bound.
+            let version = probe_text(&mut probe, "SELECT VERSION()", deadline).await;
+            let comment = match version {
+                Some(_) => probe_text(&mut probe, "SELECT @@version_comment", deadline).await,
+                None => None,
+            };
             let _ = probe.close().await;
-            version
+            version_text(version, comment)
         };
         let detect_ok = version.is_some();
         if !detect_ok {
@@ -1075,8 +1083,18 @@ impl SqlDriver for MySqlDriver {
 
 #[cfg(test)]
 mod tests {
-    use super::{change_sql, delete_sql, insert_sql, kill_query_sql, retry_plain, update_sql};
+    use super::{change_sql, delete_sql, insert_sql, kill_query_sql, retry_plain, update_sql, version_text};
     use crate::drivers::{Change, EditSpec};
+
+    #[test]
+    fn a_version_without_its_comment_identifies_only_a_named_product() {
+        let v = |version: &str, comment: Option<&str>| version_text(Some(version.into()), comment.map(str::to_string));
+        assert_eq!(v("8.4.4-5", Some("GreatSQL, Release 5")).as_deref(), Some("8.4.4-5 GreatSQL, Release 5"));
+        // The comment query failed: a bare number could be GreatSQL or Dolt, so nothing is known.
+        assert_eq!(v("8.4.4-5", None), None);
+        assert_eq!(v("8.0.11-TiDB-v8.5.0", None).as_deref(), Some("8.0.11-TiDB-v8.5.0"));
+        assert_eq!(version_text(None, None), None);
+    }
 
     /// MySQL has no `DEFAULT VALUES`; an all-blank draft is `() VALUES ()`.
     #[test]

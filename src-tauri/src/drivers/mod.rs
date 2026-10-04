@@ -960,7 +960,7 @@ pub trait SqlDriver: Send + Sync {
     /// driver and wrapper states it, so a forgotten forward cannot grant access.
     fn agent_access(&self) -> Result<(), String>;
     /// Whether the import path's quote-doubling literals are safe on this session. False
-    /// only where a Postgres-compatible server rejected `SET standard_conforming_strings`
+    /// only where a Postgres-compatible server did not turn `standard_conforming_strings` on
     /// (see `PgDriver::connect_as`). Default: safe.
     fn literals_safe(&self) -> bool {
         true

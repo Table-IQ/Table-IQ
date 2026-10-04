@@ -8,8 +8,6 @@ use std::sync::LazyLock;
 
 use serde::{Deserialize, Serialize};
 
-use crate::connections::ConnConfig;
-
 #[derive(Debug, Deserialize)]
 pub struct Profile {
     pub base: String,
@@ -44,21 +42,17 @@ pub fn label(id: &str) -> String {
     lookup(id).map_or_else(|| id.to_string(), |p| p.label.clone())
 }
 
-/// The saved profile, when it is known and sits on the connection's engine.
-pub fn of(cfg: &ConnConfig) -> Option<&'static Profile> {
-    lookup(cfg.profile.as_deref()?).filter(|p| p.base == cfg.engine)
-}
-
-/// The product a server's version text names, among the profiles of `base`. Longest marker
-/// first, ties by id, so the answer never depends on map order.
+/// The product a server's version text names, among the profiles of `base`. A product that
+/// is not the base engine wins over one that is, so a text naming both is restricted; then
+/// the longest marker, ties by id, so the answer never depends on map order.
 pub fn detect(base: &str, version_text: &str) -> Option<&'static str> {
-    let mut markers: Vec<(&str, &str)> = PROFILES
+    let mut markers: Vec<(bool, &str, &str)> = PROFILES
         .iter()
         .filter(|(_, p)| p.base == base)
-        .flat_map(|(id, p)| p.detect.iter().map(move |m| (m.as_str(), id.as_str())))
+        .flat_map(|(id, p)| p.detect.iter().map(move |m| (p.real, m.as_str(), id.as_str())))
         .collect();
-    markers.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then(a.1.cmp(b.1)));
-    markers.into_iter().find(|(m, _)| version_text.contains(m)).map(|(_, id)| id)
+    markers.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.len().cmp(&a.1.len())).then(a.2.cmp(b.2)));
+    markers.into_iter().find(|(_, m, _)| version_text.contains(m)).map(|(_, _, id)| id)
 }
 
 /// The profile a live session runs under: a known saved one on `base`, else the detected one.
@@ -102,7 +96,6 @@ pub fn agent_block(base: &str, saved: Option<&str>, detected: Option<&str>, dete
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::connections::tests::cfg;
 
     #[test]
     fn every_profile_sits_on_postgres_or_mysql() {
@@ -118,18 +111,6 @@ mod tests {
         for id in ["tidb", "cockroachdb", "mariadb"] {
             assert!(lookup(id).unwrap().tested, "{id}");
         }
-    }
-
-    #[test]
-    fn a_profile_on_the_wrong_base_is_not_a_profile() {
-        let mut c = cfg("postgres");
-        c.profile = Some("tidb".into());
-        assert!(of(&c).is_none());
-        let mut c = cfg("mysql");
-        c.profile = Some("tidb".into());
-        assert!(of(&c).is_some());
-        c.profile = Some("from-the-future".into());
-        assert!(of(&c).is_none());
     }
 
     #[test]
@@ -159,8 +140,13 @@ mod tests {
 
     #[test]
     fn detect_is_deterministic() {
-        // MariaDB (7) and TiDB (4) both match; the longest marker wins.
-        assert_eq!(detect("mysql", "5.7.0-TiDB-v1 MariaDB"), Some("mariadb"));
+        // MariaDB and TiDB both match. MariaDB is the longer marker, but it is the base
+        // engine and TiDB is not: the text must not read as a server agents may reach.
+        assert_eq!(detect("mysql", "5.7.0-TiDB-v1 MariaDB"), Some("tidb"));
+        assert!(agent_block("mysql", None, detect("mysql", "10.6.0-MariaDB TiDB Server"), true).is_some());
+        assert_eq!(detect("mysql", "11.4.2-MariaDB-ubu2404 mariadb.org binary distribution"), Some("mariadb"));
+        // OceanBase (9) and TiDB (4), neither the base engine: the longest marker wins.
+        assert_eq!(detect("mysql", "x TiDB OceanBase"), Some("oceanbase"));
         // TiDB and Dolt are both 4 characters; the tie goes to the lower id.
         assert_eq!(detect("mysql", "x TiDB Dolt"), Some("dolt"));
     }
@@ -182,6 +168,9 @@ mod tests {
         assert!(!effective_caps(Some("tidb"), None).backup);
         let c = effective_caps(Some("mariadb"), Some("doris"));
         assert!(!c.transactions && !c.backup);
+        // Either side restricts: a fold where the detected product simply won would allow these.
+        assert!(!effective_caps(Some("doris"), Some("tidb")).transactions);
+        assert_eq!(effective_caps(Some("doris"), Some("mariadb")), Caps { transactions: false, backup: false, user_mgmt: false });
         assert_eq!(effective_caps(Some("from-the-future"), None), all);
     }
 
@@ -194,6 +183,34 @@ mod tests {
             let blocked = agent_block(&c.engine, c.profile.as_deref(), None, true);
             assert_eq!(blocked.is_none(), c.allowed, "{} {:?}", c.engine, c.profile);
         }
+    }
+
+    #[test]
+    fn label_names_the_product_or_falls_back_to_the_id() {
+        assert_eq!(label("tidb"), "TiDB");
+        assert_eq!(label("from-the-future"), "from-the-future");
+    }
+
+    /// A known product saved on the other wire protocol is not a profile of this session: it
+    /// reads like an id a newer build wrote, and a failed version query only matters where
+    /// nothing else has already refused.
+    #[test]
+    fn agent_block_edges() {
+        let m = agent_block("postgres", Some("tidb"), None, true).unwrap();
+        assert!(m.contains("(tidb) was saved by a newer TableIQ"), "{m}");
+        // A real engine under a vendor name is shared, unless the version query failed.
+        assert!(agent_block("postgres", Some("neon"), None, true).is_none());
+        let m = agent_block("postgres", Some("neon"), None, false).unwrap();
+        assert!(m.contains("could not identify this server"), "{m}");
+        // A compatible product is named even when the version query also failed.
+        let m = agent_block("mysql", Some("tidb"), None, false).unwrap();
+        assert!(m.contains("TiDB cannot be shared over MCP yet"), "{m}");
+        // The detected product alone blocks a connection saved as plain MySQL; MariaDB does not.
+        assert!(agent_block("mysql", None, Some("mariadb"), true).is_none());
+        let m = agent_block("postgres", None, Some("cockroachdb"), true).unwrap();
+        assert!(m.contains("CockroachDB cannot be shared over MCP yet"), "{m}");
+        // An empty saved profile is no profile, and no version failure means nothing to say.
+        assert!(agent_block("mysql", Some(""), None, true).is_none());
     }
 
     #[test]

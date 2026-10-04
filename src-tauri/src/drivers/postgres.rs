@@ -231,8 +231,9 @@ pub struct PgDriver {
     saved: Option<String>,
     /// A degraded estimate has been logged (see [`super::degrade`]).
     degrade_logged: std::sync::atomic::AtomicBool,
-    /// A pooled connection's `SET standard_conforming_strings = on` was rejected (compat
-    /// sessions only): a backslash may be an escape here, so import is refused.
+    /// A pooled connection rejected `SET standard_conforming_strings = on`, or did not report
+    /// it on afterwards (compat sessions only): a backslash may be an escape here, so import
+    /// is refused.
     scs_rejected: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -323,8 +324,9 @@ impl PgDriver {
         // backslash an ordinary character in a literal, which is what the import path's
         // `sql_literal` assumes when it escapes only the quote.
         // A compat session sends them one at a time and keeps going past the ones the
-        // server rejects: a product without `DateStyle` still connects. A rejected
-        // `standard_conforming_strings` is remembered, and import is refused on the session.
+        // server rejects: a product without `DateStyle` still connects. A session that does
+        // not then report `standard_conforming_strings` on is remembered, and import is
+        // refused on it.
         let scs_rejected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let rejected = scs_rejected.clone();
         let pool = PgPoolOptions::new()
@@ -347,6 +349,16 @@ impl PgDriver {
                             }
                             Err(e) => return Err(e),
                         }
+                    }
+                    // Accepted is not applied: a server can take the SET and ignore it.
+                    // Import stays off unless the session itself says the setting is on.
+                    let on = match conn.fetch_optional(sqlx::raw_sql("SHOW standard_conforming_strings")).await {
+                        Ok(row) => row.and_then(|r| pg_cell(&r, 0).ok().flatten()).is_some_and(|v| v == "on"),
+                        Err(sqlx::Error::Database(_)) => false,
+                        Err(e) => return Err(e),
+                    };
+                    if !on {
+                        rejected.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
                     Ok(())
                 })

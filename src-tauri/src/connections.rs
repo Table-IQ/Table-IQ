@@ -119,11 +119,11 @@ impl ConnConfig {
 
 /// The sqlx `ssl-mode` for a saved SSL mode (libpq or MySQL spelling). Unknown fails closed.
 pub(crate) fn mysql_ssl_mode(saved: &str) -> &'static str {
-    match saved.to_ascii_lowercase().as_str() {
+    match saved.trim().to_ascii_lowercase().as_str() {
         "disable" | "disabled" => "DISABLED",
         "prefer" | "preferred" | "allow" => "PREFERRED",
         "verify-ca" | "verify_ca" => "VERIFY_CA",
-        "verify-full" | "verify_identity" => "VERIFY_IDENTITY",
+        "verify-full" | "verify_full" | "verify_identity" | "verify-identity" => "VERIFY_IDENTITY",
         _ => "REQUIRED",
     }
 }

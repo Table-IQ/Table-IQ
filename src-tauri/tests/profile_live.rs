@@ -5,7 +5,9 @@
 //!   TIQ_CRDB_URL='postgres://root@127.0.0.1:56257/defaultdb?sslmode=disable' \
 //!   TIQ_MARIADB_URL=mysql://root:tableiq@127.0.0.1:53307/tableiq \
 //!     cargo test --test profile_live -- --nocapture
-//! With TIQ_REQUIRE_LIVE=1 a missing URL fails instead of skipping.
+//! With TIQ_REQUIRE_LIVE=1 a missing URL fails instead of skipping. That includes TIQ_PG_URL
+//! and TIQ_MYSQL_URL: the negative controls run against the genuine engines of
+//! `docker/postgres` and `docker/mysql`.
 //!
 //! Any other profile, by hand (`TIQ_PROFILE_TABLE` names a table that already exists, for a
 //! server where the fixture cannot be created):
@@ -138,16 +140,22 @@ async fn smoke(drv: &dyn SqlDriver, schema: &str, transactions: bool, table: Opt
     soft(&mut failed, "describe_table", drv.describe_table(schema, t).await.map_err(s));
     soft(&mut failed, "foreign_keys", drv.foreign_keys().await.map_err(s));
     // A compat session answers a failed catalog read with nothing (`drivers::degrade`), so
-    // these two pass on a value, not on `Ok`.
-    let stats = drv.table_stats(schema).await.map_err(s).and_then(|all| {
+    // these two pass on a value, not on `Ok`; and on such a session an error is a hard
+    // failure, or removing `degrade` from a driver would change nothing here.
+    let profile = drv.product().and_then(|id| profiles::lookup(&id)).expect("a profile session");
+    let stats = drv.table_stats(schema).await.map_err(s);
+    let estimate = drv.estimate_rows(schema, t).await.map_err(s);
+    if !profile.real {
+        assert!(stats.is_ok() && estimate.is_ok(), "a compat session degrades: {:?} {:?}", stats.as_ref().err(), estimate.as_ref().err());
+    }
+    let stats = stats.and_then(|all| {
         all.iter().any(|st| st.name == t).then_some(()).ok_or(format!("{t} is not among {} tables", all.len()))
     });
     soft(&mut failed, "table_stats", stats);
-    let estimate = drv.estimate_rows(schema, t).await.map_err(s).and_then(|n| n.ok_or("no estimate".to_string()));
-    soft(&mut failed, "estimate_rows", estimate);
+    soft(&mut failed, "estimate_rows", estimate.and_then(|n| n.ok_or("no estimate".to_string())));
     soft(&mut failed, "list_databases", drv.list_databases().await.map_err(s));
     soft(&mut failed, "explain_json", drv.explain_json("SELECT 1").await.map_err(s));
-    let base = drv.product().and_then(|id| profiles::lookup(&id)).map(|p| p.base.as_str()).expect("a profile session");
+    let base = profile.base.as_str();
     soft(&mut failed, "cancel", cancel(drv, base).await);
     if table.is_none() {
         soft(&mut failed, "mcp_read_only", mcp_read_only(drv, schema, base).await);
@@ -174,7 +182,7 @@ async fn cockroachdb_smoke() {
     let Some(url) = url("TIQ_CRDB_URL") else { return };
     let drv = PgDriver::connect(&url).await.expect("connect");
     assert_eq!(drv.product().as_deref(), Some("cockroachdb"));
-    assert!(drv.literals_safe(), "CockroachDB accepts SET standard_conforming_strings");
+    assert!(drv.literals_safe(), "CockroachDB reports standard_conforming_strings on");
     assert_eq!(smoke(&drv, "public", true, None).await, expected("cockroachdb"));
 }
 
@@ -206,4 +214,91 @@ async fn any_profile_smoke() {
     println!("detected: {:?}", drv.product());
     let failed = smoke(drv.as_ref(), &schema, p.transactions, table.as_deref()).await;
     println!("soft failures: {failed:?}");
+}
+
+/// The negative control: a genuine PostgreSQL names no product, restricts nothing, is open to
+/// agents, and its literals are safe. The profile branches must not touch the base engine.
+#[tokio::test]
+async fn genuine_postgres_is_unrestricted() {
+    let Some(url) = url("TIQ_PG_URL") else { return };
+    let drv = PgDriver::connect(&url).await.expect("connect");
+    assert_eq!(drv.product(), None);
+    assert_eq!(drv.caps(), profiles::effective_caps(None, None));
+    assert_eq!(drv.agent_access(), Ok(()));
+    assert!(drv.literals_safe());
+}
+
+#[tokio::test]
+async fn genuine_mysql_is_unrestricted() {
+    let Some(url) = url("TIQ_MYSQL_URL") else { return };
+    let drv = MySqlDriver::connect(&url).await.expect("connect");
+    assert_eq!(drv.product(), None);
+    assert_eq!(drv.caps(), profiles::effective_caps(None, None));
+    assert_eq!(drv.agent_access(), Ok(()));
+}
+
+/// Nothing saved: the product the server names still restricts the session and answers agents,
+/// so a TiDB or CockroachDB saved as plain MySQL or PostgreSQL is not taken for one. MariaDB
+/// is the base engine to agents and still has no user management. A change here is a change
+/// in what the product can do on that engine.
+#[tokio::test]
+async fn a_detected_product_restricts_a_session_saved_as_the_plain_engine() {
+    let all = profiles::effective_caps(None, None);
+    if let Some(url) = url("TIQ_TIDB_URL") {
+        let drv = MySqlDriver::connect(&url).await.expect("connect");
+        assert_eq!(drv.caps(), profiles::Caps { backup: false, user_mgmt: false, ..all });
+        assert!(drv.agent_access().unwrap_err().contains("TiDB cannot be shared over MCP yet"));
+        // A wrong label lifts nothing: saved as MariaDB (the base engine to agents), the
+        // server still says TiDB, and the more restrictive of the two decides.
+        let mislabelled = MySqlDriver::connect_as(&url, Some("mariadb")).await.expect("connect");
+        assert!(!mislabelled.caps().backup && !mislabelled.caps().user_mgmt);
+        assert!(mislabelled.agent_access().unwrap_err().contains("TiDB cannot be shared over MCP yet"));
+    }
+    if let Some(url) = url("TIQ_CRDB_URL") {
+        let drv = PgDriver::connect(&url).await.expect("connect");
+        assert_eq!(drv.caps(), profiles::Caps { backup: false, user_mgmt: false, ..all });
+        assert!(drv.agent_access().unwrap_err().contains("CockroachDB cannot be shared over MCP yet"));
+    }
+    if let Some(url) = url("TIQ_MARIADB_URL") {
+        let drv = MySqlDriver::connect(&url).await.expect("connect");
+        assert_eq!(drv.caps(), profiles::Caps { user_mgmt: false, ..all });
+        assert_eq!(drv.agent_access(), Ok(()));
+    }
+}
+
+/// A saved profile decides when the server does not identify itself: a genuine PostgreSQL
+/// saved as CockroachDB runs the compatible session setup (one `SET` at a time, every one
+/// accepted here), restricts like CockroachDB, and is refused to agents.
+#[tokio::test]
+async fn a_saved_profile_applies_to_a_genuine_postgres() {
+    let Some(url) = url("TIQ_PG_URL") else { return };
+    let drv = PgDriver::connect_as(&url, Some("cockroachdb")).await.expect("compat connect");
+    assert_eq!(drv.product().as_deref(), Some("cockroachdb"));
+    assert!(!drv.caps().backup && !drv.caps().user_mgmt && drv.caps().transactions);
+    assert!(drv.agent_access().unwrap_err().contains("CockroachDB cannot be shared over MCP yet"));
+    assert!(drv.literals_safe(), "this server reports standard_conforming_strings on");
+    // The session works, and the pinned GUCs were applied through the one-at-a-time path:
+    // sqlx starts a connection at extra_float_digits 2, and only the session SETs make it 3.
+    let q = drv.run_query("SELECT current_setting('extra_float_digits')", 1).await.expect("query");
+    let cell = q.batch.column(0).as_any().downcast_ref::<arrow::array::StringArray>().expect("Utf8");
+    assert_eq!(cell.value(0), "3");
+
+    // A real engine under a vendor name stays open to agents; an id from a newer build does not.
+    let neon = PgDriver::connect_as(&url, Some("neon")).await.expect("connect");
+    assert_eq!(neon.agent_access(), Ok(()));
+    let future = PgDriver::connect_as(&url, Some("from-the-future")).await.expect("connect");
+    assert_eq!(future.product(), None);
+    assert!(future.agent_access().unwrap_err().contains("saved by a newer TableIQ"));
+}
+
+#[tokio::test]
+async fn a_saved_profile_applies_to_a_genuine_mysql() {
+    let Some(url) = url("TIQ_MYSQL_URL") else { return };
+    let drv = MySqlDriver::connect_as(&url, Some("tidb")).await.expect("connect");
+    assert_eq!(drv.product().as_deref(), Some("tidb"));
+    assert!(!drv.caps().backup && drv.caps().transactions);
+    assert!(drv.agent_access().unwrap_err().contains("TiDB cannot be shared over MCP yet"));
+    let future = MySqlDriver::connect_as(&url, Some("from-the-future")).await.expect("connect");
+    assert_eq!(future.product(), None);
+    assert!(future.agent_access().unwrap_err().contains("saved by a newer TableIQ"));
 }

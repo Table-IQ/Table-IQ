@@ -108,16 +108,17 @@ pub fn mysqldump_args(
     a
 }
 
-/// The MySQL client flags for the connection's (Postgres-style) `sslmode`.
+/// The MySQL client flags for the connection's saved `sslmode`, read as the driver reads it
+/// (`connections::mysql_ssl_mode`), so a required or verifying mode means the same to both.
 fn mysql_ssl_flags(sslmode: &str, mariadb: bool) -> &'static [&'static str] {
-    match (mariadb, sslmode) {
-        (false, "disable") => &["--ssl-mode=DISABLED"],
-        (false, "require") => &["--ssl-mode=REQUIRED"],
-        (false, "verify-ca") => &["--ssl-mode=VERIFY_CA"],
-        (false, "verify-full") => &["--ssl-mode=VERIFY_IDENTITY"],
-        (true, "disable") => &["--skip-ssl"],
-        (true, "require") => &["--ssl"],
-        (true, "verify-ca" | "verify-full") => &["--ssl", "--ssl-verify-server-cert"],
+    match (mariadb, crate::connections::mysql_ssl_mode(sslmode)) {
+        (false, "DISABLED") => &["--ssl-mode=DISABLED"],
+        (false, "REQUIRED") => &["--ssl-mode=REQUIRED"],
+        (false, "VERIFY_CA") => &["--ssl-mode=VERIFY_CA"],
+        (false, "VERIFY_IDENTITY") => &["--ssl-mode=VERIFY_IDENTITY"],
+        (true, "DISABLED") => &["--skip-ssl"],
+        (true, "REQUIRED") => &["--ssl"],
+        (true, "VERIFY_CA" | "VERIFY_IDENTITY") => &["--ssl", "--ssl-verify-server-cert"],
         // `prefer`/`allow`: the client's own default already prefers TLS.
         _ => &[],
     }
