@@ -193,6 +193,10 @@ The compatibility matrix is `docs/ENGINES.md`. Failures below are from runs on 2
 | **Frontend literal quoting assumes `standard_conforming_strings`** | `quoteLiteral` (`src/lib/tableScript.ts`) doubles quotes and leaves backslashes alone for PostgreSQL, like the import path did. It feeds the staged-change preview, copy-as-SQL and the user-management statements. None of these is an exposure today: staged commits bind their values in the backend, copy-as-SQL does not execute, and user management is hidden on compatible sessions. |
 | **Deleting a connection leaves its MCP share behind** (found in QA, predates this branch) | The entry stays in `mcp.json` after the connection is deleted. The server refuses an id it does not know, so nothing is reachable; the panel does not show it. |
 | **First open of Settings → MCP can show a keychain error** (found in QA, predates this branch) | Two `mcp_token` calls can run at once while the token is first created; the second fails with "The specified item already exists in the keychain." Seen under the dev build's double effect; a second open is clean. |
+| **Test in the edit sheet ignores the saved password** (found in QA, present on `main`) | With the password field showing "Keep saved password", Test sends an empty password and the server answers "Access denied … (using password: NO)". `src/components/ConnectionManager.tsx`. |
+| **The welcome screen's "+" button sits partly under the title-bar drag strip** (found in QA, present on `main`) | A click on the button's centre lands on the drag strip. "Create Connection" works. `src/components/ConnectionManager.tsx`. |
+| **An empty MySQL-family database lists a schema named "database"** (found in QA, present on `main`) | Seen on TiDB's empty `test` and MariaDB's empty `tableiq`: "database · 0 tables". `src-tauri/src/drivers/mysql.rs`. |
+| **The Inspector keeps the pre-edit value after a grid edit** (found in QA, not compared with `main`) | After a cell edit is staged, and still after it is committed, the Inspector's row detail shows the old value. Seen on all five engines. |
 
 ---
 

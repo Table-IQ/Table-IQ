@@ -1,0 +1,33 @@
+Network: `test_connection` 200, `save_connection` 200 (saved with `"profile":"cockroachdb"`), `connect` 200, `list_objects` 200.
+Created `qa3_t` from the query tab (`run_query` 200, 3 rows affected); the schema browser listed it; the grid showed 3 rows and the chip "editable". Screenshot `C-crdb-grid.png`.
+Staged `beta` to `beta2` in row 2, "1 unsaved change", Commit: `apply_changes` 200 `{"updated":1,"deleted":0,"inserted":0}`. Verified with an in-app `SELECT` and with `cockroach sql`: row 2 is `beta2`. Screenshots `C-crdb-staged.png`, `C-crdb-committed.png`, `C-crdb-verify-query.png`.
+62:  1. `cancel_query` 400 `"unknown function: pg_cancel_backend()"`.
+64:  3. The query is not cancelled. It runs the full 20 s and `run_query` returns 200 with one row (`exec_ms` 20007).
+`qa3-tidb-plain` created with the plain MySQL tile at 54000, root, db `test`; first `save_connection` carried `"profile":null`.
+`connect` 200 returned `"profile":"tidb","caps":{"transactions":true,"backup":false,"user_mgmt":false}`.
+One extra `save_connection` 200 followed, with `"profile":"tidb"` and `"password":null,"sshSecret":null` (keeps whatever is stored). `connections.json` then had `profile: tidb`.
+Lobby "Ti" icon and "TiDB · 127.0.0.1:54000", title bar "TiDB : qa3-tidb-plain : test". Screenshot `D-tidb-connected.png`.
+Created `qa3_t`, staged and committed `beta2`: `apply_changes` 200 `{"updated":1,…}`, verified with the mysql CLI against TiDB. Screenshots `D-tidb-grid.png`, `D-tidb-staged.png`.
+After disconnect the list row's accessible name is "TiDB qa3-tidb-plain (local) 127.0.0.1:54000/test" with the red Ti icon; the edit sheet's select shows TiDB (first option "Plain MySQL") with both notes. Screenshots `D-list-after-detect.png`, `D-tidb-edit-sheet.png`.
+Reconnect: `connect` 200, no second detection save.
+`qa3-maria-plain`, MySQL tile, 53307, root / tableiq. `connect` 200 returned `"profile":"mariadb","caps":{"transactions":true,"backup":true,"user_mgmt":false}`, then the detection `save_connection` 200 with `"profile":"mariadb","password":null`.
+Grid edit and commit: `apply_changes` 200, verified with the mariadb CLI. Screenshot `E-maria-committed.png`.
+Reconnect from the list after the detection save: `connect` 200 (stored password intact).
+`connect` 200 `"profile":null,"caps":{"transactions":true,"backup":true,"user_mgmt":true}`; no detection save.
+Stop on `SELECT pg_sleep(20)`: `cancel_query` 200, `run_query` 400 "Query cancelled", toolbar back at once. Screenshot `F-pg-stop.png`.
+Grid edit and commit: `apply_changes` 200, verified with psql. Screenshots `F-pg-grid.png`, `F-pg-committed.png`.
+`connect` 200 `"profile":null`, all three caps true; label "MySQL"; Backup, Restore, user management and "Run in tx" present.
+Stop on `SELECT SLEEP(20)`: `cancel_query` 200; the statement returned after 1558 ms as a normal one-row result (MySQL's interrupted SLEEP returns 1), so the user sees "1 row · 1558 ms" rather than "Query cancelled". Screenshot `F-mysql-stop.png`.
+Grid edit and commit: `apply_changes` 200, verified with the mysql CLI. Screenshot `F-mysql-committed.png`.
+**SSL mode `require` against the local MySQL: succeeds over TLS.** `test_connection` 200 ("✓ Connected in 29 ms"), `connect` 200, the title bar gains an "SSL" segment ("MySQL : SSL : qa3-mysql : tableiq"), and `SHOW SESSION STATUS LIKE 'Ssl_cipher'` in the query tab returned `TLS_AES_256_GCM_SHA384`. The hint text was therefore not exercised. Screenshots `F-mysql-ssl-require-test.png`, `F-mysql-ssl-require-connected.png`.
+`qa3-notx` pointed at MySQL 53306. `connect` 200 `"profile":"doris","caps":{"transactions":false,"backup":false,"user_mgmt":false}`; labels read "Apache Doris".
+Query tab: Run, Run all, Explain; no "Run in tx". Plain `UPDATE qa3_t SET name='gamma2' WHERE id=3`: `run_query` 200, 1 row affected, verified with the CLI. Screenshot `G-notx-update-from-query.png`.
+Forged staged commit, same request the frontend sends (`POST /__ipc/apply_changes` with `{id, schema, table, changes:[{kind:"update", edit:{…}}]}`): **400** `"Apache Doris has no multi-statement transactions, so staged changes can't be committed together. Run the statements from a query tab."` Data unchanged.
+Extra probe, see Finding 1: a forged `apply_edit` on the same session returned 200 and wrote the row.
+Sharing `qa3-pg`: `mcp_set_config` 200 with `connections:[{id: <pg>, writes:false}]`; the row is checked and gains "Allow writes". Ticking it turns the row amber with "Writes allowed". Screenshots `H-mcp-pg-shared.png`, `H-mcp-pg-writes.png`.
+Save keeps the id: `save_connection` 200 with `"profile":"from-the-future"`, and the file still has it after Save and after Connect.
+Connect: `connect` 200 `"profile":null`, all caps true; title "MySQL : SSL : qa3-mysql"; Backup, Restore, user management and "Run in tx" are present. Screenshot `J-connected-unknown-profile.png`.
+167:1. **`apply_edit` is not gated on a no-transactions session (backend).** On `qa3-notx` (caps `transactions:false`), `POST /__ipc/apply_edit {id, schema:"tableiq", table:"qa3_t", edit:{pk:[["id","1"]], column:"name", new_value:"FORGED1", orig_value:"alpha"}}` returned 200 `{"rows_affected":1}` and the row changed. Only `apply_changes` calls `refuse_no_transactions` (`src-tauri/src/ipc/connect.rs:999`). `insert_row` and `delete_row` look ungated too by reading; I did not call them. The UI gate holds everywhere I looked (grid, context menu, Inspector), so this is reachable only by a forged call, and a single statement may be intended to pass. Product behaviour, low severity; worth a decision.
+179:10. Test in the edit sheet sends an empty password when the field shows "Keep saved password": `test_connection` 400 "Access denied for user 'root'@'…' (using password: NO)". `src/components/ConnectionManager.tsx:290`.
+`qa3_t` dropped on all five engines through the app's query tab (`run_query` 200 each) and confirmed absent with each database's CLI. No other table was touched.
+All seven `qa3-` connections deleted in the app (`delete_connection` 200 each); `connections.json` is `{"connections": []}`; their keychain entries are gone (checked by attribute lookup, no secret read).
