@@ -218,6 +218,10 @@ fn text_rows_to_batch(cols: &[String], rows: &[SqliteRow]) -> DResult<RecordBatc
 
 #[async_trait]
 impl SqlDriver for SqliteDriver {
+    fn agent_access(&self) -> Result<(), String> {
+        Ok(())
+    }
+
     async fn run_statements(
         &self,
         stmts: &[String],

@@ -29,6 +29,7 @@ use super::guard::{guard_sql, read_only_stmts};
 use super::{record, Activity, McpConfig};
 use crate::connections::ConnConfig;
 use crate::drivers::{DriverError, SqlDriver};
+use crate::profiles;
 use crate::ipc::connect::{
     cancel_registered, ckey, connect_inner, not_restoring, open_sql_session, replace_session, rows_of, ConnState,
     Rows,
@@ -309,6 +310,10 @@ fn allowed(host: &dyn Host, cfg: &McpConfig, id: &str) -> Result<(ConnConfig, bo
     if !SQL_ENGINES.contains(&conn.engine.as_str()) {
         return Err(format!("Connection `{id}` is not a SQL connection."));
     }
+    // The saved profile, before anything connects; the live session is checked in `session`.
+    if let Some(reason) = profiles::agent_block(&conn.engine, conn.profile.as_deref(), None, true) {
+        return Err(reason);
+    }
     Ok((conn, entry.writes))
 }
 
@@ -321,6 +326,7 @@ async fn session(host: &dyn Host, conn: &ConnConfig) -> Result<Arc<dyn SqlDriver
         Ok(d) => d,
         Err(_) => connect_once(state, &conn.id).await?,
     };
+    drv.agent_access()?;
     if conn.engine == "duckdb" {
         harden_duckdb(drv.as_ref()).await?;
     }
@@ -384,7 +390,11 @@ fn list_connections_body(host: &dyn Host, cfg: &McpConfig) -> Done {
         .conns()
         .configs()
         .into_iter()
-        .filter(|c| cfg.connections.iter().any(|a| a.id == c.id) && SQL_ENGINES.contains(&c.engine.as_str()))
+        .filter(|c| {
+            cfg.connections.iter().any(|a| a.id == c.id)
+                && SQL_ENGINES.contains(&c.engine.as_str())
+                && profiles::agent_block(&c.engine, c.profile.as_deref(), None, true).is_none()
+        })
         .map(|c| ConnSummary { id: c.id, name: c.name, engine: c.engine, database: c.database })
         .collect();
     let n = list.len();
@@ -622,7 +632,9 @@ impl TiqMcp {
                           longer than 30 seconds times out and the error says what TableIQ did about the \
                           query. On a connection that allows writes, a timed-out statement may have taken \
                           effect, or may still take effect (a DuckDB query keeps running until it finishes), \
-                          so confirm its outcome before running it again.")]
+                          so confirm its outcome before running it again. The connection must be a server \
+                          TableIQ recognises as PostgreSQL, MySQL, MariaDB, SQL Server, SQLite or DuckDB; \
+                          compatible engines such as TiDB or CockroachDB are refused.")]
     async fn run_query(&self, ext: Extensions, Parameters(a): Parameters<RunQueryArgs>) -> Result<String, String> {
         let (id, sql) = (a.connection_id.clone(), a.sql.clone());
         let engine = allowed(self.host.as_ref(), &self.cfg, &id).map(|(c, _)| c.engine).unwrap_or_default();
@@ -696,6 +708,7 @@ mod tests {
     fn cfg_of(id: &str, engine: &str, database: &str) -> ConnConfig {
         ConnConfig {
             env: None,
+            profile: None,
             id: id.into(),
             name: format!("{id} name"),
             color: None,
@@ -777,6 +790,98 @@ mod tests {
         let tools = TiqMcp::tool_router().list_all();
         let desc = tools.iter().find(|t| t.name == "run_query").and_then(|t| t.description.as_deref()).unwrap();
         assert!(desc.contains(&format!("{} seconds", TOOL_TIMEOUT.as_secs())), "{desc}");
+        assert!(desc.contains("compatible engines such as TiDB or CockroachDB are refused"), "{desc}");
+    }
+
+    /// The saved profile alone decides, before anything connects: a known compatible product
+    /// and an id this build has never heard of are both out of reach.
+    #[test]
+    fn a_compatible_saved_profile_is_refused_before_connecting() {
+        for (profile, engine) in [("tidb", "mysql"), ("from-the-future", "mysql")] {
+            let mut c = cfg_of("c", engine, "d");
+            c.profile = Some(profile.into());
+            let m = mcp(vec![c], &[("c", true)]);
+            let e = allowed(m.host.as_ref(), &m.cfg, "c").unwrap_err();
+            assert!(e.contains("cannot be shared over MCP"), "{profile}: {e}");
+        }
+        let mut real = cfg_of("n", "postgres", "d");
+        real.profile = Some("neon".into());
+        let m = mcp(vec![real], &[("n", true)]);
+        assert!(allowed(m.host.as_ref(), &m.cfg, "n").is_ok(), "a real engine under a vendor name stays shared");
+    }
+
+    #[tokio::test]
+    async fn list_connections_omits_compatible_profiles() {
+        let with = |id: &str, profile: Option<&str>| {
+            let mut c = cfg_of(id, if id == "my" { "mysql" } else { "postgres" }, "d");
+            c.profile = profile.map(Into::into);
+            c
+        };
+        let conns = vec![with("pg", None), with("neon", Some("neon")), with("my", Some("tidb"))];
+        let m = mcp(conns, &[("pg", false), ("neon", false), ("my", false)]);
+        let out = m.list_connections(Extensions::new()).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let ids: Vec<&str> = v.as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["pg", "neon"], "{out}");
+    }
+
+    /// A live session that says it is a compatible product is refused even when the saved
+    /// connection looked plain: the check on the session is what catches an unlabelled TiDB.
+    #[tokio::test]
+    async fn a_session_that_refuses_agents_is_refused() {
+        struct Refuses;
+        #[async_trait::async_trait]
+        impl SqlDriver for Refuses {
+            fn agent_access(&self) -> Result<(), String> {
+                Err("nope".into())
+            }
+            async fn introspect(&self) -> crate::drivers::DResult<crate::drivers::SchemaModel> {
+                unimplemented!()
+            }
+            async fn count_rows(
+                &self,
+                _: &str,
+                _: &str,
+                _: &[crate::drivers::ColumnFilter],
+                _: Option<&CancelToken>,
+            ) -> crate::drivers::DResult<crate::drivers::RowCount> {
+                unimplemented!()
+            }
+            async fn open_window_filtered(
+                &self,
+                _: &str,
+                _: &str,
+                _: usize,
+                _: usize,
+                _: &[crate::drivers::ColumnFilter],
+                _: &[crate::drivers::SortKey],
+                _: Option<&[Option<String>]>,
+            ) -> crate::drivers::DResult<arrow::record_batch::RecordBatch> {
+                unimplemented!()
+            }
+            async fn primary_key(&self, _: &str, _: &str) -> crate::drivers::DResult<Vec<String>> {
+                unimplemented!()
+            }
+            async fn apply_edit(&self, _: &str, _: &str, _: &crate::drivers::EditSpec) -> crate::drivers::DResult<u64> {
+                unimplemented!()
+            }
+            async fn run_statements(
+                &self,
+                _: &[String],
+                _: usize,
+                _: &CancelToken,
+            ) -> crate::drivers::DResult<Vec<crate::drivers::StmtOutput>> {
+                unimplemented!()
+            }
+            async fn run_script(&self, _: &str) -> crate::drivers::DResult<u64> {
+                unimplemented!()
+            }
+        }
+        let conn = cfg_of("plain", "mysql", "d");
+        let m = mcp(vec![conn.clone()], &[("plain", true)]);
+        m.host.conns().adopt_session("plain", Arc::new(Refuses));
+        assert_eq!(session(m.host.as_ref(), &conn).await.err().as_deref(), Some("nope"));
+        assert_eq!(query(&m, "plain", "SELECT 1").await.unwrap_err(), "nope");
     }
 
     /// Bearer auth and the Origin refusal, over real HTTP on an ephemeral loopback port.
@@ -1123,6 +1228,9 @@ mod tests {
 
     #[async_trait::async_trait]
     impl SqlDriver for Abandons {
+        fn agent_access(&self) -> Result<(), String> {
+            Ok(())
+        }
         async fn introspect(&self) -> crate::drivers::DResult<crate::drivers::SchemaModel> {
             unimplemented!()
         }

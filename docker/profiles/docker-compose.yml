@@ -1,0 +1,43 @@
+# Wire-compatible engines for tests/profile_live.rs. Each image is pinned by its
+# multi-architecture index digest (`docker buildx imagetools inspect <image>` prints it), so
+# CI (amd64) and an Apple Silicon dev box run the same release.
+services:
+  # The TiDB image ships no SQL client, so it has no healthcheck: `up --wait` returns once the
+  # container runs, before the server accepts connections. Wait from the host instead:
+  #   until mysql -h 127.0.0.1 -P 54000 -uroot -e 'select 1'; do sleep 2; done
+  tidb:
+    image: pingcap/tidb:v8.5.7@sha256:41708a564e47e96d346fed433c3b9bc40d1950fdcc9c768812daeff6aadd930c
+    container_name: tableiq-tidb
+    ports:
+      - "54000:4000"
+  cockroach:
+    image: cockroachdb/cockroach:v26.3.2@sha256:bc15746ef2c2493b2cfd46a76898a745587d068b1a259fff3c4447c3f3b36ea2
+    container_name: tableiq-crdb
+    command: start-single-node --insecure
+    environment:
+      # CockroachDB exits when a disk sync takes over 20s, which a box busy linking the test
+      # suite can manage. This is a fixture, not a database: wait instead.
+      COCKROACH_ENGINE_MAX_SYNC_DURATION_DEFAULT: 10m
+      COCKROACH_LOG_MAX_SYNC_DURATION: 10m
+    ports:
+      - "56257:26257"
+    healthcheck:
+      test: ["CMD", "cockroach", "sql", "--insecure", "-e", "select 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  mariadb:
+    image: mariadb:11@sha256:79d59758afc91b89b120b0a8904d637f5a3b3e1c4900f29b740d6d46c72fef68
+    container_name: tableiq-mariadb
+    environment:
+      MARIADB_ROOT_PASSWORD: tableiq
+      MARIADB_DATABASE: tableiq
+    ports:
+      - "53307:3306"
+    healthcheck:
+      # Over TCP: the image's throwaway init server listens on the socket only, so this
+      # cannot pass before the real server is up.
+      test: ["CMD", "mariadb", "-h", "127.0.0.1", "-uroot", "-ptableiq", "-e", "select 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 30

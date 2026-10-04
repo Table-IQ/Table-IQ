@@ -65,4 +65,8 @@ describe("isDirty", () => {
     expect(isDirty(cfg, reverted, none)).toBe(false);
     expect(isDirty(cfg, { ...reverted, ssh: { ...defaultSshConfig(), enabled: true } }, none)).toBe(true);
   });
+  it("reads clean after a product is picked and the plain engine's tile is pressed again", () => {
+    expect(isDirty(cfg, { ...cfg, profile: null }, none)).toBe(false);
+    expect(isDirty(cfg, { ...cfg, profile: "cockroachdb" }, none)).toBe(true);
+  });
 });

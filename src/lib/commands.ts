@@ -108,6 +108,8 @@ export interface ConnConfig {
   ssh?: SshConfig | null;
   /** Environment tag; tints the titlebar pill. */
   env?: import("./connEnv").ConnEnv | null;
+  /** Saved product hint (a key of `profiles.json`); `engine` stays the base engine. */
+  profile?: string | null;
 }
 export interface ColumnInfo {
   name: string;
@@ -129,11 +131,20 @@ export interface SchemaInfo {
 export interface SchemaModel {
   schemas: SchemaInfo[];
 }
+/** What the live session can do, as the backend decided at connect (Rust `Caps`). */
+export interface SessionCaps {
+  transactions: boolean;
+  backup: boolean;
+  user_mgmt: boolean;
+}
 export interface ConnectedInfo {
   id: string;
   name: string;
   database: string;
   engine: string;
+  /** The saved profile when this build knows it, else the product detected at connect; null for a plain base engine. */
+  profile?: string | null;
+  caps?: SessionCaps;
 }
 
 export interface KeyInfo {
@@ -297,6 +308,8 @@ const mockSchema: SchemaModel = {
   ],
 };
 
+const MOCK_CAPS: SessionCaps = { transactions: true, backup: true, user_mgmt: true };
+
 // ── API ──────────────────────────────────────────────────────────────────
 export async function listConnections(): Promise<ConnConfig[]> {
   if (!inTauri()) return [...mockStore];
@@ -356,7 +369,7 @@ export async function testConnection(cfg: ConnConfig, password: string): Promise
 export async function connect(id: string): Promise<ConnectedInfo> {
   if (!inTauri()) {
     const c = mockStore.find((x) => x.id === id) ?? mockStore[0];
-    return { id: c.id, name: c.name, database: c.database, engine: c.engine };
+    return { id: c.id, name: c.name, database: c.database, engine: c.engine, profile: c.profile ?? null, caps: MOCK_CAPS };
   }
   return invoke<ConnectedInfo>("connect", { id });
 }
@@ -443,6 +456,8 @@ export async function switchDatabase(id: string, database: string): Promise<Conn
       name: c?.name ?? id,
       database,
       engine: c?.engine ?? "postgres",
+      profile: c?.profile ?? null,
+      caps: MOCK_CAPS,
     };
   }
   return invoke<ConnectedInfo>("switch_database", { id, database });

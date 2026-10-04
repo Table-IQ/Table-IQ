@@ -7,7 +7,7 @@ use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use sqlx::mysql::{MySqlDatabaseError, MySqlPoolOptions, MySqlQueryResult, MySqlRow};
-use sqlx::{MySql, Pool, Row};
+use sqlx::{Executor, MySql, Pool, Row};
 
 use super::{
     build_insert_sql, build_keyset, build_order_by, build_where_clause, exec, CancelToken, Change,
@@ -215,29 +215,146 @@ pub struct MySqlDriver {
     /// [`super::WINDOW_TIMEOUT_MS`]; only tests shorten it.
     window_timeout_ms: u64,
     meta: super::MetaCache<Arc<MyMeta>>,
+    /// The probe identified the server: `VERSION()` answered, and its comment too unless the
+    /// version alone names a product ([`version_text`]).
+    detect_ok: bool,
+    /// The profile id the version text names (`profiles::detect`), if any.
+    detected: Option<String>,
+    /// `ConnConfig.profile`, as saved.
+    saved: Option<String>,
+    /// A degraded estimate has been logged (see [`super::degrade`]).
+    degrade_logged: std::sync::atomic::AtomicBool,
+}
+
+/// The text detection reads: the version and its comment. GreatSQL and Dolt name themselves
+/// only in the comment, so without it a version that names no product has identified nothing.
+fn version_text(version: Option<String>, comment: Option<String>) -> Option<String> {
+    let v = version?;
+    match comment {
+        Some(c) => Some(format!("{v} {c}")),
+        None => crate::profiles::detect("mysql", &v).is_some().then_some(v),
+    }
+}
+
+/// One text cell from the connect probe; `None` when the query fails or outlives `deadline`.
+/// Simple protocol: a wire-compatible server need not support prepared statements.
+async fn probe_text(
+    conn: &mut sqlx::MySqlConnection,
+    sql: &str,
+    deadline: tokio::time::Instant,
+) -> Option<String> {
+    let row = tokio::time::timeout_at(deadline, conn.fetch_one(sqlx::raw_sql(sql))).await.ok()?.ok()?;
+    mysql_cell(&row, 0).ok().flatten()
+}
+
+/// Whether a refused first connect is retried with a plain session setup: the server itself
+/// refused (`first` is its error number and SQLSTATE; `None` for I/O, TLS or a timeout) with a
+/// setup-shaped error, and the saved profile is a known compatible product (`real: false`).
+/// Manticore and StarRocks reject sqlx's session-setup
+/// `SET sql_mode=(SELECT CONCAT(@@sql_mode, …)),time_zone=…,NAMES …`, so they never got as far
+/// as detection. Setup-shaped is an allow-list: 1064 (Manticore reports it as 42000, StarRocks
+/// as HY000), 1105, or SQLSTATE class 42 (syntax error or access rule violation) — except the
+/// class-42 numbers that say who or where the client is: 1044 (no access to the database),
+/// 1049 (unknown database), 1203 and 1226 (user connection and resource limits). Everything
+/// else returns the first error: authentication (1045), too many connections (1040), host not
+/// allowed (1130), and no profile, an unknown id or a real MySQL-family engine (MariaDB).
+// ponytail: 1105 is here for Doris, which is said to report analysis errors as 1105/HY000 —
+// unverified, no Doris server was at hand. The ceiling: 1105 is MySQL's catch-all "unknown
+// error", so a compatible server using it for something else gets one pointless retry, whose
+// own error is then the one shown.
+fn retry_plain(saved: Option<&str>, first: Option<(u16, Option<&str>)>) -> bool {
+    let Some((number, state)) = first else { return false };
+    let setup = matches!(number, 1064 | 1105)
+        || (state.is_some_and(|s| s.starts_with("42")) && !matches!(number, 1044 | 1049 | 1203 | 1226));
+    setup && saved.and_then(crate::profiles::lookup).is_some_and(|p| !p.real)
 }
 
 impl MySqlDriver {
     pub async fn connect(url: &str) -> DResult<Self> {
+        Self::connect_as(url, None).await
+    }
+
+    /// [`MySqlDriver::connect`] for a saved connection: `saved_profile` is its
+    /// `ConnConfig.profile`.
+    pub async fn connect_as(url: &str, saved_profile: Option<&str>) -> DResult<Self> {
+        let mut opts: sqlx::mysql::MySqlConnectOptions = url.parse().map_err(db)?;
         // Probe with a direct connection first so the real error surfaces instead
         // of the pool's opaque "pool timed out" after a 30s retry (see PgDriver).
-        {
+        let version = {
             use sqlx::Connection;
-            let probe = tokio::time::timeout(
-                super::CONNECT_TIMEOUT,
-                sqlx::mysql::MySqlConnection::connect(url),
-            )
-            .await
-            .map_err(|_| {
-                DriverError::Db(format!("timed out connecting to {}", super::url_host_port(url)))
-            })?
-            .map_err(db)?;
+            let deadline = tokio::time::Instant::now() + super::CONNECT_TIMEOUT;
+            let timed_out =
+                || DriverError::Db(format!("timed out connecting to {}", super::url_host_port(url)));
+            let first = tokio::time::timeout_at(deadline, sqlx::mysql::MySqlConnection::connect_with(&opts))
+                .await
+                .map_err(|_| timed_out())?;
+            let mut probe = match first {
+                Ok(c) => c,
+                Err(e) => {
+                    let refused = e
+                        .as_database_error()
+                        .and_then(|d| d.try_downcast_ref::<MySqlDatabaseError>())
+                        .map(|m| (m.number(), m.code()));
+                    if !retry_plain(saved_profile, refused) {
+                        return Err(db(e));
+                    }
+                    crate::applog::log(
+                        "info",
+                        &format!(
+                            "{}: first connect was rejected by the server (code {}); \
+                             retrying with a plain session setup",
+                            super::url_host_port(url),
+                            refused.map_or(0, |r| r.0)
+                        ),
+                    );
+                    // ponytail: no session `SET` at all (Manticore also rejects the combined
+                    // `SET time_zone=…,NAMES …`). The ceiling, for servers whose first connect
+                    // failed with a setup-shaped error: the session time zone
+                    // and charset are the server's, so TIMESTAMP values may display in
+                    // server-local time. If the retry fails too, its error is the one returned.
+                    // One deadline covers both attempts.
+                    opts = opts
+                        .pipes_as_concat(false)
+                        .no_engine_substitution(false)
+                        .timezone(None)
+                        .set_names(false);
+                    tokio::time::timeout_at(deadline, sqlx::mysql::MySqlConnection::connect_with(&opts))
+                        .await
+                        .map_err(|_| timed_out())?
+                        .map_err(db)?
+                }
+            };
+            // The version text names the product, inside the same bound.
+            let version = probe_text(&mut probe, "SELECT VERSION()", deadline).await;
+            let comment = match version {
+                Some(_) => probe_text(&mut probe, "SELECT @@version_comment", deadline).await,
+                None => None,
+            };
             let _ = probe.close().await;
+            version_text(version, comment)
+        };
+        let detect_ok = version.is_some();
+        if !detect_ok {
+            crate::applog::log(
+                "warn",
+                &format!(
+                    "the version query failed, timed out, or named no product without its \
+                     comment on {}: product not detected, the session is treated as compatible",
+                    super::url_host_port(url)
+                ),
+            );
+        }
+        let detected = version.and_then(|v| crate::profiles::detect("mysql", &v)).map(str::to_string);
+        let saved = saved_profile.map(str::to_string);
+        if let (Some(s), Some(d)) = (saved.as_deref().filter(|s| crate::profiles::lookup(s).is_some()), &detected) {
+            if s != d {
+                crate::applog::log("warn", &format!("saved profile {s}, but the server reports {d}"));
+            }
         }
         let pool = MySqlPoolOptions::new()
             .max_connections(4)
             .acquire_timeout(std::time::Duration::from_secs(10))
-            .connect(url)
+            .connect_with(opts)
             .await
             .map_err(db)?;
         let cancel_pool = MySqlPoolOptions::new()
@@ -249,7 +366,16 @@ impl MySqlDriver {
             cancel_pool,
             meta: Default::default(),
             window_timeout_ms: super::WINDOW_TIMEOUT_MS,
+            detect_ok,
+            detected,
+            saved,
+            degrade_logged: Default::default(),
         })
+    }
+
+    /// See [`super::compat_session`].
+    fn compat(&self) -> bool {
+        super::compat_session(self.detect_ok, self.saved.as_deref(), self.detected.as_deref())
     }
 
     /// Shorten the page timeouts, so a test can reach them quickly.
@@ -452,6 +578,17 @@ fn text_rows_to_batch(cols: &[String], rows: &[MySqlRow]) -> DResult<RecordBatch
 
 #[async_trait]
 impl SqlDriver for MySqlDriver {
+    fn product(&self) -> Option<String> {
+        crate::profiles::session_profile("mysql", self.saved.as_deref(), self.detected.as_deref())
+    }
+    fn caps(&self) -> crate::profiles::Caps {
+        crate::profiles::effective_caps(self.saved.as_deref(), self.detected.as_deref())
+    }
+    fn agent_access(&self) -> Result<(), String> {
+        crate::profiles::agent_block("mysql", self.saved.as_deref(), self.detected.as_deref(), self.detect_ok)
+            .map_or(Ok(()), Err)
+    }
+
     async fn run_statements(
         &self,
         stmts: &[String],
@@ -606,25 +743,26 @@ impl SqlDriver for MySqlDriver {
     }
 
     /// The data dictionary's `TABLE_ROWS` (InnoDB's sampled estimate). A view has none.
+    /// CAST as in `table_stats`: TiDB's column is a signed BIGINT, which fails to decode.
     async fn estimate_rows(&self, schema: &str, table: &str) -> DResult<Option<i64>> {
-        let est: Option<u64> = sqlx::query_scalar(
-            "SELECT TABLE_ROWS AS table_rows FROM information_schema.tables \
+        let est = sqlx::query_scalar::<_, Option<u64>>(
+            "SELECT CAST(TABLE_ROWS AS UNSIGNED) AS table_rows FROM information_schema.tables \
              WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND TABLE_TYPE = 'BASE TABLE'",
         )
         .bind(schema)
         .bind(table)
         .fetch_optional(&self.pool)
         .await
-        .map_err(db)?
-        .flatten();
-        Ok(est.map(|n| n as i64))
+        .map(|est| est.flatten().map(|n| n as i64))
+        .map_err(db);
+        super::degrade(self.compat(), &self.degrade_logged, est, schema, table)
     }
 
     /// The data dictionary's per-table size: `TABLE_ROWS` (InnoDB's sampled estimate) and
     /// `DATA_LENGTH + INDEX_LENGTH`. Cached for `information_schema_stats_expiry` (24h by
     /// default), so both are estimates — the lobby shows them with a "≈" prefix.
     async fn table_stats(&self, schema: &str) -> DResult<Vec<TableStat>> {
-        let rows: Vec<(String, Option<u64>, Option<u64>)> = sqlx::query_as(
+        let rows: DResult<Vec<(String, Option<u64>, Option<u64>)>> = sqlx::query_as(
             "SELECT CAST(TABLE_NAME AS CHAR) AS name, CAST(TABLE_ROWS AS UNSIGNED) AS table_rows, \
                     CAST(DATA_LENGTH + INDEX_LENGTH AS UNSIGNED) AS bytes \
              FROM information_schema.tables WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE'",
@@ -632,8 +770,8 @@ impl SqlDriver for MySqlDriver {
         .bind(schema)
         .fetch_all(&self.pool)
         .await
-        .map_err(db)?;
-        Ok(rows
+        .map_err(db);
+        Ok(super::degrade(self.compat(), &self.degrade_logged, rows, schema, "*")?
             .into_iter()
             .map(|(name, r, b)| TableStat { name, rows: r.map(|n| n as i64), bytes: b.map(|n| n as i64) })
             .collect())
@@ -945,8 +1083,18 @@ impl SqlDriver for MySqlDriver {
 
 #[cfg(test)]
 mod tests {
-    use super::{change_sql, delete_sql, insert_sql, kill_query_sql, update_sql};
+    use super::{change_sql, delete_sql, insert_sql, kill_query_sql, retry_plain, update_sql, version_text};
     use crate::drivers::{Change, EditSpec};
+
+    #[test]
+    fn a_version_without_its_comment_identifies_only_a_named_product() {
+        let v = |version: &str, comment: Option<&str>| version_text(Some(version.into()), comment.map(str::to_string));
+        assert_eq!(v("8.4.4-5", Some("GreatSQL, Release 5")).as_deref(), Some("8.4.4-5 GreatSQL, Release 5"));
+        // The comment query failed: a bare number could be GreatSQL or Dolt, so nothing is known.
+        assert_eq!(v("8.4.4-5", None), None);
+        assert_eq!(v("8.0.11-TiDB-v8.5.0", None).as_deref(), Some("8.0.11-TiDB-v8.5.0"));
+        assert_eq!(version_text(None, None), None);
+    }
 
     /// MySQL has no `DEFAULT VALUES`; an all-blank draft is `() VALUES ()`.
     #[test]
@@ -996,5 +1144,44 @@ mod tests {
                AND kcu.referenced_table_name IS NOT NULL";
         assert!(q.contains("DATABASE()"));
         assert!(q.contains("referenced_table_name IS NOT NULL"));
+    }
+
+    /// The plain session setup is a retry, for a saved compatible product whose first connect
+    /// the server refused with a setup-shaped error: 1064, 1105, or SQLSTATE class 42 short of
+    /// the numbers that say who or where the client is. No profile, an unknown id, a real
+    /// MySQL-family engine, a non-database failure (I/O, TLS, timeout) and every other refusal
+    /// never retry.
+    #[test]
+    fn retry_plain_is_for_setup_shaped_refusals_of_compatible_profiles_only() {
+        for id in ["manticore", "starrocks", "tidb"] {
+            for first in [
+                (1064, Some("42000")),
+                (1064, Some("HY000")),
+                (1064, None),
+                (1105, Some("HY000")),
+                (1231, Some("42000")),
+            ] {
+                assert!(retry_plain(Some(id), Some(first)), "{id} {first:?}");
+            }
+        }
+        assert!(!retry_plain(Some("tidb"), None));
+        for first in [
+            (1045, Some("28000")),
+            (1044, Some("42000")),
+            (1049, Some("42000")),
+            (1040, Some("08004")),
+            (1130, Some("HY000")),
+            (1226, Some("42000")),
+            (1203, Some("42000")),
+            (9999, Some("28000")),
+            (9999, Some("08S01")),
+            (1045, None),
+            (1130, None),
+        ] {
+            assert!(!retry_plain(Some("tidb"), Some(first)), "{first:?}");
+        }
+        for id in [None, Some("mariadb"), Some("from-the-future")] {
+            assert!(!retry_plain(id, Some((1064, Some("42000")))), "{id:?}");
+        }
     }
 }

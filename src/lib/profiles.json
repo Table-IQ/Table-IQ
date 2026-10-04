@@ -1,0 +1,463 @@
+{
+  "mariadb": {
+    "base": "mysql",
+    "label": "MariaDB",
+    "monogram": "Ma",
+    "color": "#00546d",
+    "port": 3306,
+    "schemes": [
+      "mariadb"
+    ],
+    "hosts": [],
+    "real": true,
+    "transactions": true,
+    "backup": true,
+    "userMgmt": false,
+    "detect": [
+      "MariaDB"
+    ],
+    "tested": true
+  },
+  "tidb": {
+    "base": "mysql",
+    "label": "TiDB",
+    "monogram": "Ti",
+    "color": "#e30c34",
+    "port": 4000,
+    "user": "root",
+    "schemes": [
+      "tidb"
+    ],
+    "hosts": [
+      ".tidbcloud.com"
+    ],
+    "real": false,
+    "transactions": true,
+    "backup": false,
+    "userMgmt": false,
+    "detect": [
+      "TiDB"
+    ],
+    "tested": true
+  },
+  "oceanbase": {
+    "base": "mysql",
+    "label": "OceanBase",
+    "monogram": "Ob",
+    "color": "#0173e2",
+    "port": 2881,
+    "user": "root",
+    "schemes": [
+      "oceanbase"
+    ],
+    "hosts": [],
+    "real": false,
+    "transactions": true,
+    "backup": false,
+    "userMgmt": false,
+    "detect": [
+      "OceanBase"
+    ],
+    "tested": false
+  },
+  "doris": {
+    "base": "mysql",
+    "label": "Apache Doris",
+    "monogram": "Do",
+    "color": "#3055d5",
+    "port": 9030,
+    "user": "root",
+    "schemes": [
+      "doris"
+    ],
+    "hosts": [],
+    "real": false,
+    "transactions": false,
+    "backup": false,
+    "userMgmt": false,
+    "detect": [],
+    "tested": false
+  },
+  "starrocks": {
+    "base": "mysql",
+    "label": "StarRocks",
+    "monogram": "Sr",
+    "color": "#976e09",
+    "port": 9030,
+    "user": "root",
+    "schemes": [
+      "starrocks"
+    ],
+    "hosts": [],
+    "real": false,
+    "transactions": false,
+    "backup": false,
+    "userMgmt": false,
+    "detect": [],
+    "tested": false
+  },
+  "selectdb": {
+    "base": "mysql",
+    "label": "SelectDB",
+    "monogram": "Sd",
+    "color": "#1a66ff",
+    "port": 9030,
+    "user": "admin",
+    "schemes": [
+      "selectdb"
+    ],
+    "hosts": [
+      ".selectdbcloud.com"
+    ],
+    "real": false,
+    "transactions": false,
+    "backup": false,
+    "userMgmt": false,
+    "detect": [],
+    "tested": false
+  },
+  "polardbx": {
+    "base": "mysql",
+    "label": "PolarDB-X",
+    "monogram": "Px",
+    "color": "#c15400",
+    "port": 3306,
+    "schemes": [
+      "polardbx"
+    ],
+    "hosts": [],
+    "real": false,
+    "transactions": true,
+    "backup": false,
+    "userMgmt": false,
+    "detect": [],
+    "tested": false
+  },
+  "greatsql": {
+    "base": "mysql",
+    "label": "GreatSQL",
+    "monogram": "Gs",
+    "color": "#1e6fd9",
+    "port": 3306,
+    "schemes": [
+      "greatsql"
+    ],
+    "hosts": [],
+    "real": false,
+    "transactions": true,
+    "backup": false,
+    "userMgmt": false,
+    "detect": [
+      "GreatSQL"
+    ],
+    "tested": true
+  },
+  "dolt": {
+    "base": "mysql",
+    "label": "Dolt",
+    "monogram": "Dt",
+    "color": "#0e8471",
+    "port": 3306,
+    "user": "root",
+    "schemes": [
+      "dolt"
+    ],
+    "hosts": [],
+    "real": false,
+    "transactions": true,
+    "backup": false,
+    "userMgmt": false,
+    "detect": [
+      "Dolt"
+    ],
+    "tested": true
+  },
+  "manticore": {
+    "base": "mysql",
+    "label": "Manticore Search",
+    "monogram": "Mc",
+    "color": "#0f5464",
+    "port": 9306,
+    "schemes": [
+      "manticore"
+    ],
+    "hosts": [],
+    "real": false,
+    "transactions": false,
+    "backup": false,
+    "userMgmt": false,
+    "detect": [],
+    "tested": false
+  },
+  "planetscale": {
+    "base": "mysql",
+    "label": "PlanetScale",
+    "monogram": "Ps",
+    "color": "#5b5b5b",
+    "port": 3306,
+    "ssl": "require",
+    "schemes": [
+      "planetscale"
+    ],
+    "hosts": [
+      ".psdb.cloud"
+    ],
+    "real": false,
+    "transactions": true,
+    "backup": false,
+    "userMgmt": false,
+    "detect": [],
+    "tested": false
+  },
+  "vitess": {
+    "base": "mysql",
+    "label": "Vitess",
+    "monogram": "Vt",
+    "color": "#c84d1c",
+    "port": 15306,
+    "schemes": [
+      "vitess"
+    ],
+    "hosts": [],
+    "real": false,
+    "transactions": true,
+    "backup": false,
+    "userMgmt": false,
+    "detect": [],
+    "tested": false
+  },
+  "cockroachdb": {
+    "base": "postgres",
+    "label": "CockroachDB",
+    "monogram": "Cr",
+    "color": "#6933ff",
+    "port": 26257,
+    "user": "root",
+    "database": "defaultdb",
+    "schemes": [
+      "cockroachdb",
+      "cockroach"
+    ],
+    "hosts": [
+      ".cockroachlabs.cloud"
+    ],
+    "real": false,
+    "transactions": true,
+    "backup": false,
+    "userMgmt": false,
+    "detect": [
+      "CockroachDB"
+    ],
+    "tested": true
+  },
+  "redshift": {
+    "base": "postgres",
+    "label": "Amazon Redshift",
+    "monogram": "Rs",
+    "color": "#8a4cff",
+    "port": 5439,
+    "database": "dev",
+    "ssl": "require",
+    "schemes": [
+      "redshift"
+    ],
+    "hosts": [
+      ".redshift.amazonaws.com",
+      ".redshift-serverless.amazonaws.com"
+    ],
+    "real": false,
+    "transactions": true,
+    "backup": false,
+    "userMgmt": false,
+    "detect": [
+      "Redshift"
+    ],
+    "tested": false
+  },
+  "yugabytedb": {
+    "base": "postgres",
+    "label": "YugabyteDB",
+    "monogram": "Yb",
+    "color": "#cb4b18",
+    "port": 5433,
+    "user": "yugabyte",
+    "database": "yugabyte",
+    "schemes": [
+      "yugabytedb",
+      "yugabyte"
+    ],
+    "hosts": [
+      ".yugabyte.cloud"
+    ],
+    "real": false,
+    "transactions": true,
+    "backup": false,
+    "userMgmt": false,
+    "detect": [
+      "-YB-"
+    ],
+    "tested": true
+  },
+  "neon": {
+    "base": "postgres",
+    "label": "Neon",
+    "monogram": "Ne",
+    "color": "#00855d",
+    "port": 5432,
+    "ssl": "require",
+    "schemes": [
+      "neon"
+    ],
+    "hosts": [
+      ".neon.tech"
+    ],
+    "real": true,
+    "transactions": true,
+    "backup": true,
+    "userMgmt": true,
+    "detect": [],
+    "tested": false
+  },
+  "supabase": {
+    "base": "postgres",
+    "label": "Supabase",
+    "monogram": "Sb",
+    "color": "#218558",
+    "port": 5432,
+    "user": "postgres",
+    "database": "postgres",
+    "ssl": "require",
+    "schemes": [
+      "supabase"
+    ],
+    "hosts": [
+      ".supabase.co",
+      ".supabase.com"
+    ],
+    "real": true,
+    "transactions": true,
+    "backup": true,
+    "userMgmt": true,
+    "detect": [],
+    "tested": false
+  },
+  "timescaledb": {
+    "base": "postgres",
+    "label": "TimescaleDB",
+    "monogram": "Ts",
+    "color": "#956f00",
+    "port": 5432,
+    "schemes": [
+      "timescaledb",
+      "timescale"
+    ],
+    "hosts": [
+      ".tsdb.cloud.timescale.com"
+    ],
+    "real": true,
+    "transactions": true,
+    "backup": true,
+    "userMgmt": true,
+    "detect": [],
+    "tested": true
+  },
+  "alloydb": {
+    "base": "postgres",
+    "label": "AlloyDB",
+    "monogram": "Al",
+    "color": "#1d6df2",
+    "port": 5432,
+    "schemes": [
+      "alloydb"
+    ],
+    "hosts": [],
+    "real": true,
+    "transactions": true,
+    "backup": true,
+    "userMgmt": true,
+    "detect": [],
+    "tested": false
+  },
+  "opengauss": {
+    "base": "postgres",
+    "label": "openGauss",
+    "monogram": "Og",
+    "color": "#0a5fd1",
+    "port": 5432,
+    "schemes": [
+      "opengauss"
+    ],
+    "hosts": [],
+    "real": false,
+    "transactions": true,
+    "backup": false,
+    "userMgmt": false,
+    "detect": [],
+    "tested": false
+  },
+  "questdb": {
+    "base": "postgres",
+    "label": "QuestDB",
+    "monogram": "Qd",
+    "color": "#c2325a",
+    "port": 8812,
+    "user": "admin",
+    "database": "qdb",
+    "schemes": [
+      "questdb"
+    ],
+    "hosts": [],
+    "real": false,
+    "transactions": false,
+    "backup": false,
+    "userMgmt": false,
+    "detect": [
+      "QuestDB"
+    ],
+    "tested": false
+  },
+  "materialize": {
+    "base": "postgres",
+    "label": "Materialize",
+    "monogram": "Mz",
+    "color": "#7f4eff",
+    "port": 6875,
+    "user": "materialize",
+    "database": "materialize",
+    "schemes": [
+      "materialize"
+    ],
+    "hosts": [
+      ".materialize.cloud"
+    ],
+    "real": false,
+    "transactions": false,
+    "backup": false,
+    "userMgmt": false,
+    "detect": [
+      "Materialize"
+    ],
+    "tested": false
+  },
+  "risingwave": {
+    "base": "postgres",
+    "label": "RisingWave",
+    "monogram": "Rw",
+    "color": "#005eec",
+    "port": 4566,
+    "user": "root",
+    "database": "dev",
+    "schemes": [
+      "risingwave"
+    ],
+    "hosts": [],
+    "real": false,
+    "transactions": false,
+    "backup": false,
+    "userMgmt": false,
+    "detect": [
+      "RisingWave"
+    ],
+    "tested": false
+  }
+}

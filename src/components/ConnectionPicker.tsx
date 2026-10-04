@@ -31,7 +31,7 @@ export function ConnectionPicker({
   }, []);
 
   const filtered = useMemo(
-    () => fuzzyFilter(connections, query, (c) => `${c.name} ${c.engine} ${c.host}`),
+    () => fuzzyFilter(connections, query, (c) => `${c.name} ${c.engine} ${engineLabel(c.engine, c.profile)} ${c.host}`),
     [connections, query],
   );
 
@@ -101,7 +101,7 @@ export function ConnectionPicker({
                     i === sel ? "bg-selection-bg" : "hover:bg-surface-2"
                   }`}
                 >
-                  <EngineIcon engine={c.engine} size="md" />
+                  <EngineIcon engine={c.engine} profile={c.profile} size="md" />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5 text-[12px] text-text">
                       <span className="truncate font-medium">{c.name}</span>
@@ -120,7 +120,7 @@ export function ConnectionPicker({
                       )}
                     </div>
                     <div className="truncate text-[10.5px] text-muted">
-                      {engineLabel(c.engine)} · {c.host}:{c.port}/{c.database}
+                      {engineLabel(c.engine, c.profile)} · {c.host}:{c.port}/{c.database}
                     </div>
                   </div>
                 </button>

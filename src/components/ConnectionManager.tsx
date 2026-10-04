@@ -3,7 +3,7 @@ import { BrandMark } from "./Brand";
 import { ThemeToggle } from "./ThemeToggle";
 import { useSettingsUi } from "./Settings";
 import { Onboarding } from "./Onboarding";
-import { EngineIcon } from "./ui/EngineIcon";
+import { EngineIcon, engineLabel } from "./ui/EngineIcon";
 import { Elapsed } from "./ui/Elapsed";
 import { IconExport, IconImport, IconPlus, IconRefresh, IconSearch } from "./ui/Icon";
 import { ContextMenu } from "./ui/ContextMenu";
@@ -23,7 +23,8 @@ import {
   type Engine,
 } from "../lib/commands";
 import { defaultSshConfig, type SshConfig } from "../lib/ssh";
-import { DEFAULT_PORT, toConnUrl, validateConn } from "../lib/connUrl";
+import { toConnUrl, validateConn } from "../lib/connUrl";
+import { PROFILES, applyPreset, presetFor } from "../lib/profiles";
 import { confirmDialog } from "../lib/confirmDialog";
 import { cancelConnecting, openConnection, useConnections, type ConnectingState } from "../state/connectionStore";
 import { getLastConnected } from "../lib/lastConnected";
@@ -76,11 +77,11 @@ type Secrets = { password: string; sshPassword: string; sshKeyPass: string };
 const NO_SECRETS: Secrets = { password: "", sshPassword: "", sshKeyPass: "" };
 
 /** Compare-ready form: a missing, null or default-and-off SSH block are the same,
- *  and so are a missing and a null env, so reverting a change reads clean. */
+ *  and so are a missing and a null env or profile, so reverting a change reads clean. */
 function normalise(c: ConnConfig) {
-  const { ssh, env, ...rest } = c;
+  const { ssh, env, profile, ...rest } = c;
   const noSsh = !ssh || JSON.stringify(ssh) === JSON.stringify(defaultSshConfig());
-  return { ...rest, ssh: noSsh ? null : ssh, env: env ?? null };
+  return { ...rest, ssh: noSsh ? null : ssh, env: env ?? null, profile: profile ?? null };
 }
 
 /** Unsaved changes: any field differs from what was loaded or last saved, or a
@@ -333,6 +334,7 @@ export function ConnectionManager() {
       (c) =>
         c.name.toLowerCase().includes(q) ||
         c.engine.toLowerCase().includes(q) ||
+        engineLabel(c.engine, c.profile).toLowerCase().includes(q) ||
         c.host.toLowerCase().includes(q) ||
         c.database.toLowerCase().includes(q),
     );
@@ -567,7 +569,21 @@ export function ConnectionManager() {
             sshKeyPass={sshKeyPass}
             onField={set}
             onEngine={(eng) => {
-              setForm((f) => ({ ...f, engine: eng, port: DEFAULT_PORT[eng] ?? f.port }));
+              setForm((f) => ({
+                ...applyPreset(f, presetFor(f.engine, f.profile ?? null), presetFor(eng, null)),
+                engine: eng,
+                profile: null,
+              }));
+              clearStatus();
+            }}
+            onProfile={(id) => {
+              if (id !== null && !PROFILES[id]) return; // the "(unknown to this version)" option
+              setForm((f) => {
+                const was = presetFor(f.engine, f.profile ?? null);
+                if (id === null) return { ...applyPreset(f, was, presetFor(f.engine, null)), profile: null };
+                const base = PROFILES[id].base;
+                return { ...applyPreset(f, was, presetFor(base, id)), engine: base, profile: id };
+              });
               clearStatus();
             }}
             onSsh={setSsh}
@@ -587,6 +603,7 @@ export function ConnectionManager() {
               setForm((f) => ({
                 ...f,
                 engine: mode === "edit" ? f.engine : p.engine, // editing never switches engine
+                profile: mode === "edit" ? f.profile : (p.profile ?? null),
                 host: p.host,
                 port: p.port,
                 username: p.username,
@@ -686,7 +703,7 @@ function ConnRow({
         className="flex min-w-0 flex-1 items-center gap-3 text-left"
         title={`Double-click or press Enter to connect to ${conn.name}`}
       >
-        <EngineIcon engine={conn.engine} size="lg" />
+        <EngineIcon engine={conn.engine} profile={conn.profile} size="lg" title={engineLabel(conn.engine, conn.profile)} />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5 text-[13.5px] font-medium text-text">
             <span className="truncate">{conn.name || "(unnamed)"}</span>

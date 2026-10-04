@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { LobbyView, type LobbyViewProps } from "./Lobby";
 import type { SchemaModel } from "../lib/commands";
+import { PROFILES } from "../lib/profiles";
+import { ENGINE_MONOGRAMS } from "./ui/EngineIcon";
 
 // No jsdom here (vitest runs in node): LobbyView is the pure presentational half,
 // so every state is reachable through props and react-dom/server.
@@ -66,6 +68,20 @@ describe("LobbyView", () => {
     expect(html).toContain("Load stats");
     expect(html).toContain("Ask about shop");
     expect(html).not.toContain("animate-pulse");
+  });
+
+  it("names the connection's product in the header, with its own badge", () => {
+    const cfg = props().cfg;
+    const html = render({ cfg: { ...cfg, profile: "cockroachdb" } });
+    expect(html).toContain("<span>CockroachDB</span>");
+    expect(html).toContain(`>${PROFILES.cockroachdb.monogram}<`);
+    expect(html).not.toContain("<span>PostgreSQL</span>");
+    // No profile, or one this build does not know: the base engine.
+    for (const profile of [undefined, "from-the-future"]) {
+      const plain = render({ cfg: { ...cfg, profile } });
+      expect(plain).toContain("<span>PostgreSQL</span>");
+      expect(plain).toContain(`>${ENGINE_MONOGRAMS.postgres}<`);
+    }
   });
 
   it("keeps a failed section on screen with the reason", () => {

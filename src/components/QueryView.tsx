@@ -109,6 +109,8 @@ export function QueryView({
   const recentCount = useResults((s) => s.recents.length);
   const setTabSql = useTabs((s) => s.setTabSql);
   const schemaModel = useConnections((s) => s.schema);
+  // The live session's word: a product without multi-statement transactions has no "Run in tx".
+  const canRunInTx = useConnections((s) => s.active?.caps?.transactions !== false);
   const completionSchema = useMemo(
     () => schemaModelToCompletionMap(schemaModel),
     [schemaModel],
@@ -392,7 +394,7 @@ export function QueryView({
           />
         )}
         <ToolbarButton label="Run all" shortcut="⇧⌘↵" onClick={runAll} disabled={running} />
-        <ToolbarButton label="Run in tx" onClick={runInTx} disabled={running} />
+        {canRunInTx && <ToolbarButton label="Run in tx" onClick={runInTx} disabled={running} />}
         {engine !== "sqlserver" && engine !== "duckdb" && (
           <ToolbarButton label="Explain" onClick={() => void explain()} disabled={running} />
         )}

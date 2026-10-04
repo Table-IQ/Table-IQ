@@ -4,6 +4,8 @@ import {
   claudeDesktopConfig,
   isSqlEngine,
   maskToken,
+  mcpRowState,
+  pruneUnshareable,
   setShared,
   setWrites,
   validPort,
@@ -56,6 +58,67 @@ describe("allowlist edits", () => {
     const on = setShared(base, "c1", true);
     expect(setWrites(on, "c1", true).connections).toEqual([{ id: "c1", writes: true }]);
     expect(setWrites(base, "c2", true).connections).toEqual([]);
+  });
+});
+
+describe("mcpRowState (a connection's row in Settings → MCP)", () => {
+  const on = { id: "c1", writes: true };
+
+  it("a compatible product cannot be shared, whatever the stored allowlist says", () => {
+    expect(mcpRowState({ engine: "mysql", profile: "tidb" }, undefined)).toMatchObject({
+      shareable: false,
+      note: "Not available over MCP yet: TableIQ's agent guard has been reviewed for PostgreSQL, MySQL and MariaDB only.",
+    });
+    // Shared with writes before the product was detected: unchecked, and never amber.
+    expect(mcpRowState({ engine: "mysql", profile: "tidb" }, on)).toMatchObject({ shareable: false, shared: false, writes: false });
+  });
+
+  it("a profile this build does not know cannot be shared, and the note names it", () => {
+    const row = mcpRowState({ engine: "mysql", profile: "from-the-future" }, on);
+    expect(row).toMatchObject({ shareable: false, shared: false, writes: false });
+    expect(row.note).toContain(
+      "this connection's profile (from-the-future) was saved by a newer TableIQ. Update TableIQ to manage it.",
+    );
+  });
+
+  it("the base engines and their vendor-named selves stay shareable and mirror the allowlist", () => {
+    expect(mcpRowState({ engine: "postgres" }, undefined)).toEqual({ shareable: true, shared: false, writes: false, note: null });
+    expect(mcpRowState({ engine: "postgres", profile: null }, on)).toEqual({ shareable: true, shared: true, writes: true, note: null });
+    expect(mcpRowState({ engine: "postgres", profile: "neon" }, { id: "c1", writes: false })).toEqual({
+      shareable: true, shared: true, writes: false, note: null,
+    });
+    expect(mcpRowState({ engine: "sqlite" }, undefined).shareable).toBe(true);
+  });
+});
+
+describe("pruneUnshareable (allowlist entries for connections that can no longer be shared)", () => {
+  const saved = [
+    { id: "ti", engine: "mysql", profile: "tidb" },
+    { id: "ne", engine: "postgres", profile: "neon" },
+    { id: "pg", engine: "postgres", profile: null },
+    { id: "fu", engine: "mysql", profile: "from-the-future" },
+  ] as const;
+
+  it("drops a compatible product and an unknown profile, keeps the base engine and its vendor-named self", () => {
+    const cfg: McpConfig = {
+      ...base,
+      connections: [
+        { id: "ti", writes: true },
+        { id: "ne", writes: true },
+        { id: "pg", writes: false },
+        { id: "fu", writes: false },
+      ],
+    };
+    expect(pruneUnshareable(cfg, saved).connections).toEqual([
+      { id: "ne", writes: true },
+      { id: "pg", writes: false },
+    ]);
+    expect(cfg.connections).toHaveLength(4); // pure
+  });
+
+  it("returns the same config when nothing is stale, so a caller can tell", () => {
+    const cfg: McpConfig = { ...base, connections: [{ id: "pg", writes: true }, { id: "deleted", writes: false }] };
+    expect(pruneUnshareable(cfg, saved)).toBe(cfg);
   });
 });
 

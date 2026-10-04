@@ -3,9 +3,11 @@ import {
   connect,
   disconnect,
   foreignKeys,
+  listConnections,
   listObjects,
   openTable,
   primaryKey,
+  saveConnection,
   switchDatabase,
   type ConnConfig,
   type ConnectedInfo,
@@ -283,6 +285,21 @@ function discardIfStale(id: string): void {
   disconnect(id).catch((e) => logError("discard stale connection", e));
 }
 
+/** The profile to remember after a connect: the one the session detected, only when the
+ *  connection has none yet — a profile the user chose is never overwritten. */
+export function profileToSave(saved: string | null | undefined, session: string | null | undefined): string | null {
+  return !saved && session ? session : null;
+}
+
+/** The saved entry to rewrite after a connect, or null. The profile goes onto the entry as
+ *  saved NOW, not the one the connect started from: an edit saved during a slow connect is
+ *  kept. Nothing is saved when the entry is gone or has a profile by now. */
+export function withDetectedProfile(saved: ConnConfig[], id: string, session: string | null | undefined): ConnConfig | null {
+  const current = saved.find((c) => c.id === id);
+  const profile = current && profileToSave(current.profile, session);
+  return profile ? { ...current, profile } : null;
+}
+
 /** Connect to `cfg` and load its schema, tracking `connecting` throughout.
  *  Resolves `true` on success, `false` when cancelled/superseded — including
  *  when the stale attempt's own connect/schema call later fails, which is
@@ -298,6 +315,14 @@ export async function openConnection(cfg: ConnConfig): Promise<boolean> {
     if (my !== gen) {
       discardIfStale(cfg.id);
       return false;
+    }
+    const detected = withDetectedProfile(useConnections.getState().saved, cfg.id, info.profile);
+    if (detected) {
+      // Remember the detected product; failing to save must not fail the connect.
+      saveConnection(detected)
+        .then(() => listConnections())
+        .then((saved) => useConnections.getState().setSaved(saved))
+        .catch((e) => logError("save detected profile", e));
     }
     useConnections.setState({ connecting: { id: cfg.id, name: cfg.name, stage: "schema", since } });
     const schema =

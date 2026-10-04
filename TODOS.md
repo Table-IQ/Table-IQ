@@ -35,6 +35,33 @@ Deferred from the Connected Home plan review (2026-09-27, `docs/superpowers/plan
   - **T4: live SQL Server guard test.** CI has no SQL Server, so the T-SQL escapes are proven by the suite only. Add a gated `TIQ_MSSQL_URL` guard_live case, and check whether width-insensitive collations resolve full-width spellings (`ｓｐ_configure`) to system procedures — `to_uppercase()` does not fold them to ASCII (raised by the /ship adversarial review, unverified).
   - **T5: give MCP its own SQL Server connection.** The guard refuses the literal session-changing statements, but the real fix for the shared, never-reset connection (`sqlserver::restore_database`) is a separate session for agent queries.
 
+- **Engine profiles follow-ups** (2026-10-03, from 0.8.3; matrix in `docs/ENGINES.md`):
+  - **Review the agent guard for TiDB and CockroachDB so they can be shared over MCP.**
+    - What: review the guard's function denylist and read-only wrapper against each engine, add live guard cases, then open them to agents. Do not flip `real` for that: `real` also tells the drivers to treat the server as the base engine (no tolerant session setup, ctid paging, no degraded estimates), so agent access needs its own flag in `profiles.json`.
+    - Precondition: no stale allowlist entry may come back to life. A connection shared (possibly with writes) before it was recognised as TiDB or CockroachDB must not be re-shared silently when the engine opens to MCP: such entries are pruned, or the user re-confirms them. 0.8.3 does the pruning (`pruneUnshareable` in `src/lib/mcp.ts`), but only when Settings → MCP is opened or changed; check `mcp.json` for entries that were never pruned, or prune on the backend, before opening them to agents.
+    - Why: both are verified engines and are blocked from MCP in 0.8.3. TiDB rejects `START TRANSACTION READ ONLY` by default (it is a no-op only if `tidb_enable_noop_functions` is enabled), so the read-only wrapper cannot be relied on there and the agent guard is unreviewed for it.
+    - Context: `src-tauri/src/profiles.rs` `agent_block`, `mcp_read_only` in `src-tauri/tests/profile_live.rs`, `guard_live.rs`.
+  - **Verify Neon, Supabase, CockroachDB Cloud and TiDB Cloud on free tiers.**
+    - What: run `any_profile_smoke` against each; flip `tested` for Neon and Supabase if every hard check passes.
+    - Why: they are cloud-only, so no local image exists, and Neon and Supabase are Beta.
+    - Context: TLS settings and host suffixes in `profiles.json`; the matrix rows say `not run (no local image)`.
+  - **Probe transaction support at connect instead of the static flag.**
+    - What: try a `BEGIN`/`ROLLBACK` on the probe connection and use the answer over `transactions` in the profile.
+    - Why: Doris, StarRocks, SelectDB and Manticore have no detection marker, so a server saved through a base tile still gets staged commits that are not atomic.
+    - Context: `pending.md` 2i; `Caps` in `src-tauri/src/profiles.rs`.
+  - **Per-feature "not available on {label} yet" states for Structure, ERD and Explain.**
+    - What: replace the raw catalog error with a named, per-feature message.
+    - Why: `explain_json` fails on five verified engines, QuestDB fails its catalog query and Materialize fails the grid's page query (`set_config`); the user sees a driver error.
+    - Context: `docs/ENGINES.md` soft-check table.
+  - **`TIQ_REQUIRE_LIVE` for the existing live tests.**
+    - What: make the Postgres, MySQL and SQL Server live tests fail instead of skip when the flag is set and their URL is not.
+    - Why: only `profile_live` and `mysql_ssl_live` do so; a CI service that does not start leaves the others skipped and green. `guard_live`'s MariaDB cases are the same: they skip silently when `TIQ_MARIADB_URL` is unset.
+    - Context: `.github/workflows/ci.yml`.
+  - **A readable error for Metrics widgets on engines without read-only transactions.**
+    - What: say that the engine has no read-only transactions, instead of passing on the driver text.
+    - Why: widgets run inside `START TRANSACTION READ ONLY` (§2g), which TiDB rejects by default (`tidb_enable_noop_functions` turns it into a no-op) and other engines may reject.
+    - Context: `query_rows` with `read_only: true`.
+
 ## Completed
 
 - **Confirm `+ Row` inserts in production.** New rows are now staged and go through the production commit confirm. **Completed:** v0.8.0 (2026-09-28)

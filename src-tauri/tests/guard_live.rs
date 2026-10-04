@@ -62,24 +62,32 @@ async fn postgres_gaps_were_real_and_are_refused() {
     assert!(guard_sql("postgres", copy, true).is_err(), "refused even where writes are allowed");
 }
 
-/// MySQL: `INTO OUTFILE` writes a server file on a connection that allows writes.
+/// MySQL and MariaDB: `INTO OUTFILE` writes a server file on a connection that allows writes.
+/// MariaDB runs when `TIQ_MARIADB_URL` is set.
 #[tokio::test]
 async fn mysql_outfile_was_real_and_is_refused() {
-    let Ok(url) = std::env::var("TIQ_MYSQL_URL") else {
+    let Ok(mysql) = std::env::var("TIQ_MYSQL_URL") else {
         assert!(std::env::var("CI").is_err(), "CI must set TIQ_MYSQL_URL: a skipped proof proves nothing");
         eprintln!("skipping: TIQ_MYSQL_URL not set");
         return;
     };
-    let my = tableiq_lib::drivers::mysql::MySqlDriver::connect(&url).await.unwrap();
-    let dir = one(&my, "SELECT @@secure_file_priv").await.unwrap().unwrap_or_default();
-    if dir.is_empty() {
-        // A skipped proof proves nothing in CI, where the fixture allows the directory.
-        assert!(std::env::var("CI").is_err(), "secure_file_priv disables file writes on the CI fixture");
-        eprintln!("skipping: secure_file_priv disables file writes on this server");
-        return;
+    for url in std::iter::once(mysql).chain(std::env::var("TIQ_MARIADB_URL")) {
+        let my = tableiq_lib::drivers::mysql::MySqlDriver::connect(&url).await.unwrap();
+        let mut dir = one(&my, "SELECT @@secure_file_priv").await.unwrap().unwrap_or_default();
+        // MariaDB leaves the variable unset (NULL) when files may go anywhere; MySQL's empty
+        // or NULL value turns them off, so it skips below.
+        if dir.is_empty() && one(&my, "SELECT @@version").await.unwrap().is_some_and(|v| v.contains("MariaDB")) {
+            dir = "/tmp/".into();
+        }
+        if dir.is_empty() {
+            // A skipped proof proves nothing in CI, where the fixture allows the directory.
+            assert!(std::env::var("CI").is_err(), "secure_file_priv disables file writes on the CI fixture");
+            eprintln!("skipping: secure_file_priv disables file writes on this server");
+            continue;
+        }
+        let nanos = std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos();
+        let sql = format!("SELECT 1 INTO OUTFILE '{dir}tiq_guard_{}_{nanos}.txt'", std::process::id());
+        rows_of(&my, std::slice::from_ref(&sql), 10, &CancelToken::new()).await.unwrap();
+        assert!(guard_sql("mysql", &sql, true).is_err(), "refused even where writes are allowed");
     }
-    let nanos = std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos();
-    let sql = format!("SELECT 1 INTO OUTFILE '{dir}tiq_guard_{}_{nanos}.txt'", std::process::id());
-    rows_of(&my, std::slice::from_ref(&sql), 10, &CancelToken::new()).await.unwrap();
-    assert!(guard_sql("mysql", &sql, true).is_err(), "refused even where writes are allowed");
 }

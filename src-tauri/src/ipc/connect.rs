@@ -14,6 +14,7 @@ use arrow::record_batch::RecordBatch;
 use crate::backup;
 use crate::connections::{self, ConnConfig, ConnStore};
 use crate::lk;
+use crate::profiles;
 use crate::drivers::{
     doc_mongo::MongoDriver, duckdb::DuckDriver, kv_redis::RedisDriver, logged::Logged, mysql::MySqlDriver,
     postgres::PgDriver, sqlite::SqliteDriver, sqlserver::SqlServerDriver, CancelToken, Change,
@@ -133,6 +134,16 @@ async fn maybe_open_tunnel(
     Ok((rewritten, Some(tunnel)))
 }
 
+/// A TLS-looking connect failure under a mode that now demands TLS: the saved mode used to be
+/// ignored for MySQL, so a connection that worked before can fail here.
+fn mysql_tls_hint(sslmode: &str, err: &str) -> Option<String> {
+    let strict = !matches!(connections::mysql_ssl_mode(sslmode), "DISABLED" | "PREFERRED");
+    let e = err.to_lowercase();
+    (strict && ["tls", "ssl", "certificate"].iter().any(|k| e.contains(k))).then(|| {
+        format!(" SSL mode '{sslmode}' is now applied to MySQL connections; change it in the connection sheet if this server has no valid certificate.")
+    })
+}
+
 /// Build the right driver for an engine. `pw` is unused for the file engines.
 async fn open_driver(cfg: &ConnConfig, pw: &str) -> Result<Arc<dyn SqlDriver>, String> {
     // SQL Server takes the parts, not a URL: tiberius' ADO string has no escaping rule for a
@@ -148,10 +159,28 @@ async fn open_driver(cfg: &ConnConfig, pw: &str) -> Result<Arc<dyn SqlDriver>, S
     let drv: Arc<dyn SqlDriver> = match cfg.engine.as_str() {
         "sqlite" => Arc::new(SqliteDriver::connect(&url).await.map_err(|e| e.to_string())?),
         "duckdb" => Arc::new(DuckDriver::connect(&url).await.map_err(|e| e.to_string())?),
-        "mysql" => Arc::new(MySqlDriver::connect(&url).await.map_err(|e| e.to_string())?),
-        "postgres" => Arc::new(PgDriver::connect(&url).await.map_err(|e| e.to_string())?),
+        "mysql" => Arc::new(MySqlDriver::connect_as(&url, cfg.profile.as_deref()).await.map_err(|e| {
+            let e = e.to_string();
+            match mysql_tls_hint(&cfg.sslmode, &e) {
+                Some(h) => format!("{e}{h}"),
+                None => e,
+            }
+        })?),
+        "postgres" => {
+            Arc::new(PgDriver::connect_as(&url, cfg.profile.as_deref()).await.map_err(|e| e.to_string())?)
+        }
         other => return Err(format!("unsupported engine {other}")),
     };
+    crate::applog::log(
+        "info",
+        &format!(
+            "connected {} ({}): product {:?}, agents {}",
+            cfg.name,
+            cfg.engine,
+            drv.product(),
+            drv.agent_access().is_ok()
+        ),
+    );
     Ok(drv)
 }
 
@@ -278,6 +307,10 @@ pub struct ConnectedInfo {
     pub name: String,
     pub database: String,
     pub engine: String,
+    /// The session's profile ([`SqlDriver::product`]); `None` for a plain engine.
+    pub profile: Option<String>,
+    /// What the session supports ([`SqlDriver::caps`]).
+    pub caps: crate::profiles::Caps,
 }
 
 /// What the grid needs to size its scrollbar. `count: null` means the engine could not
@@ -294,13 +327,32 @@ pub fn list_connections(state: State<ConnState>) -> Vec<ConnConfig> {
     lk(&state.store).connections.clone()
 }
 
+/// Normalise an empty profile to none and refuse a known profile on the wrong engine.
+/// An unknown id is kept: a newer TableIQ saved it, and it must survive a round trip.
+fn check_profile(cfg: &mut ConnConfig) -> Result<(), String> {
+    if cfg.profile.as_deref() == Some("") {
+        cfg.profile = None;
+    }
+    match cfg.profile.as_deref().and_then(|id| profiles::lookup(id).map(|p| (id, p))) {
+        Some((id, p)) if p.base != cfg.engine => {
+            let base = if p.base == "mysql" { "MySQL" } else { "PostgreSQL" };
+            Err(format!(
+                "{} is a {base}-compatible profile. Set the engine to {base} or remove the profile.",
+                profiles::label(id)
+            ))
+        }
+        _ => Ok(()),
+    }
+}
+
 #[tauri::command(async)]
 pub fn save_connection(
     state: State<ConnState>,
-    cfg: ConnConfig,
+    mut cfg: ConnConfig,
     password: Option<String>,
     ssh_secret: Option<String>,
 ) -> Result<(), String> {
+    check_profile(&mut cfg)?;
     {
         let mut store = lk(&state.store);
         store.upsert(cfg.clone());
@@ -330,8 +382,24 @@ pub fn export_connections(state: State<ConnState>) -> Result<String, String> {
 #[tauri::command(async)]
 pub fn import_connections(state: State<ConnState>, json: String) -> Result<usize, String> {
     let mut store = lk(&state.store);
-    let n = store.import_bundle(&json)?;
+    let n = import_into(&mut store, &json)?;
     store.save()?;
+    Ok(n)
+}
+
+/// `import_connections` without the save. A bundle never went through `save_connection`, so
+/// each imported connection gets [`check_profile`]'s normalisation here — except that a known
+/// profile on the wrong engine is dropped to none rather than refused: one bad entry must not
+/// fail the whole import.
+fn import_into(store: &mut ConnStore, json: &str) -> Result<usize, String> {
+    let n = store.import_bundle(json)?;
+    // `import_bundle` appends: the imported connections are the last `n`.
+    let first = store.connections.len() - n;
+    for cfg in &mut store.connections[first..] {
+        if check_profile(cfg).is_err() {
+            cfg.profile = None;
+        }
+    }
     Ok(n)
 }
 
@@ -407,6 +475,8 @@ pub(crate) async fn connect_session(
     // `eff` is the connection config with host/port rewritten to 127.0.0.1:<ephemeral> when tunneled.
     let (eff, tunnel) = maybe_open_tunnel(&cfg, &id).await?;
 
+    // Redis and MongoDB sessions have no profile: none, and every capability.
+    let mut session = (None, crate::profiles::effective_caps(None, None));
     let result: Result<(), String> = async {
         if eff.engine == "redis" {
             let drv = RedisDriver::connect(&eff.url_with_password(&password))
@@ -420,6 +490,7 @@ pub(crate) async fn connect_session(
             lk(&state.doc_sessions).insert(id.clone(), Arc::new(drv));
         } else {
             let drv = open_driver(&eff, &password).await?;
+            session = (drv.product(), drv.caps());
             let drv = Arc::new(Logged { inner: drv, log: state.sql_log_for(&id) });
             // Checked again under the sessions lock: a restore that began while this was
             // opening takes the session out after marking the connection, so it never finds
@@ -446,6 +517,8 @@ pub(crate) async fn connect_session(
         name: cfg.name,
         database: cfg.database,
         engine: cfg.engine,
+        profile: session.0,
+        caps: session.1,
     })
 }
 
@@ -619,6 +692,8 @@ pub(crate) async fn switch_inner(state: &ConnState, id: String, database: String
         Doc(Arc<dyn DocumentDriver>),
         Sql(Arc<dyn SqlDriver>),
     }
+    // Redis and MongoDB sessions have no profile: none, and every capability.
+    let mut profile = (None, crate::profiles::effective_caps(None, None));
     let session = if eff.engine == "redis" {
         NewSession::Kv(Arc::new(
             RedisDriver::connect(&eff.url_with_password(&password))
@@ -633,6 +708,7 @@ pub(crate) async fn switch_inner(state: &ConnState, id: String, database: String
         ))
     } else {
         let drv = open_driver(&eff, &password).await?;
+        profile = (drv.product(), drv.caps());
         NewSession::Sql(Arc::new(Logged { inner: drv, log: state.sql_log_for(&id) }))
     };
 
@@ -659,6 +735,8 @@ pub(crate) async fn switch_inner(state: &ConnState, id: String, database: String
         name: new_cfg.name,
         database: new_cfg.database,
         engine: new_cfg.engine,
+        profile: profile.0,
+        caps: profile.1,
     })
 }
 
@@ -900,6 +978,37 @@ pub async fn delete_row(
         .map_err(|e| e.to_string())
 }
 
+/// A session without multi-statement transactions can't commit a staged batch atomically.
+fn refuse_no_transactions(caps: profiles::Caps, product: Option<&str>) -> Result<(), String> {
+    if caps.transactions {
+        return Ok(());
+    }
+    let label = product.map_or_else(|| "This server".to_string(), profiles::label);
+    Err(format!(
+        "{label} has no multi-statement transactions, so staged changes can't be committed together. Run the statements from a query tab."
+    ))
+}
+
+/// `what` is "Backup" or "Restore": both shell out to `pg_dump` / `mysqldump`.
+fn refuse_no_backup(caps: profiles::Caps, product: Option<&str>, what: &str) -> Result<(), String> {
+    if caps.backup {
+        return Ok(());
+    }
+    let label = product.map_or_else(|| "This server".to_string(), profiles::label);
+    Err(format!(
+        "{what} is not supported for {label}: TableIQ backs up with pg_dump or mysqldump, which {label} does not fully support. Use {label}'s own backup tool."
+    ))
+}
+
+/// Import builds its SQL from literals that only double the quote; see
+/// [`SqlDriver::literals_safe`].
+fn refuse_unsafe_literals(safe: bool) -> Result<(), String> {
+    if safe {
+        return Ok(());
+    }
+    Err("Import is not available on this connection: the server did not turn on standard_conforming_strings, so TableIQ cannot quote text safely. Load the data with the server's own import tool.".to_string())
+}
+
 /// Apply a batch of staged changes to one table in ONE transaction (updates → deletes →
 /// inserts). Any failure rolls the batch back; the error names the 0-based change
 /// (`change {i}: {reason}`). Returns what was written.
@@ -911,7 +1020,18 @@ pub async fn apply_changes(
     table: String,
     changes: Vec<Change>,
 ) -> Result<ChangesResult, String> {
+    apply_changes_inner(&state, id, schema, table, changes).await
+}
+
+async fn apply_changes_inner(
+    state: &ConnState,
+    id: String,
+    schema: String,
+    table: String,
+    changes: Vec<Change>,
+) -> Result<ChangesResult, String> {
     let drv = state.session(&id)?;
+    refuse_no_transactions(drv.caps(), drv.product().as_deref())?;
     drv.apply_changes(&schema, &table, &changes).await.map_err(|e| e.to_string())
 }
 
@@ -1567,7 +1687,20 @@ pub async fn import_rows(
     columns: Vec<String>,
     rows: Vec<Vec<Option<String>>>,
 ) -> Result<ImportResult, String> {
+    import_rows_inner(&state, id, engine, schema, table, columns, rows).await
+}
+
+async fn import_rows_inner(
+    state: &ConnState,
+    id: String,
+    engine: String,
+    schema: Option<String>,
+    table: String,
+    columns: Vec<String>,
+    rows: Vec<Vec<Option<String>>>,
+) -> Result<ImportResult, String> {
     let drv = state.session(&id)?;
+    refuse_unsafe_literals(drv.literals_safe())?;
     let dialect = crate::query::ddl::Dialect::from_engine(&engine);
     let sql = crate::query::import::build_insert_sql(schema.as_deref(), &table, &columns, &rows, dialect);
     if sql.is_empty() {
@@ -1675,6 +1808,20 @@ pub async fn apply_parquet_import(
     create_table: bool,
     bytes: Vec<u8>,
 ) -> Result<ImportResult, String> {
+    apply_parquet_import_inner(&state, id, engine, schema, table, column_mapping, create_table, bytes).await
+}
+
+#[allow(clippy::too_many_arguments)] // mirrors the command
+async fn apply_parquet_import_inner(
+    state: &ConnState,
+    id: String,
+    engine: String,
+    schema: Option<String>,
+    table: String,
+    column_mapping: Vec<(usize, String, String)>,
+    create_table: bool,
+    bytes: Vec<u8>,
+) -> Result<ImportResult, String> {
     if bytes.len() > PARQUET_MAX_BYTES {
         return Err(format!(
             "parquet file is {} MB — over the 500 MB cap.",
@@ -1686,6 +1833,8 @@ pub async fn apply_parquet_import(
     // interpolation. (Quoting catches it, but explicit is better than implicit.)
     validate_target_idents(schema.as_deref(), &table, &column_mapping)?;
     let drv = state.session(&id)?;
+    // The rows go through the same literal builder as `import_rows`.
+    refuse_unsafe_literals(drv.literals_safe())?;
     let dialect = crate::query::ddl::Dialect::from_engine(&engine);
 
     // 1) Parse all rows server-side.
@@ -2051,6 +2200,17 @@ pub async fn backup_database(
     format: Option<String>,
     tool_dir: Option<String>,
 ) -> Result<String, String> {
+    backup_inner(&state, id, database, path, format, tool_dir).await
+}
+
+async fn backup_inner(
+    state: &ConnState,
+    id: String,
+    database: String,
+    path: String,
+    format: Option<String>,
+    tool_dir: Option<String>,
+) -> Result<String, String> {
     let cfg = {
         let store = lk(&state.store);
         store.connections.iter().find(|c| c.id == id).cloned().ok_or_else(|| "unknown connection".to_string())?
@@ -2061,7 +2221,8 @@ pub async fn backup_database(
             check_backup_path(&path)?;
             // Connected only: a tunnel exists only while connected, and without it the tool
             // would go straight to the host behind the bastion.
-            state.session(&id)?;
+            let drv = state.session(&id)?;
+            refuse_no_backup(drv.caps(), drv.product().as_deref(), "Backup")?;
             let tunnel = lk(&state.tunnels).get(&id).map(|t| t.local_addr());
             if tunnel.is_none() && cfg.ssh.as_ref().is_some_and(|s| s.enabled) {
                 return Err("The SSH tunnel for this connection is not open — reconnect, then back up".into());
@@ -2173,7 +2334,8 @@ async fn restore_inner(
     match cfg.engine.as_str() {
         "postgres" | "mysql" => {
             check_restore_source(&path)?;
-            state.session(id)?;
+            let drv = state.session(id)?;
+            refuse_no_backup(drv.caps(), drv.product().as_deref(), "Restore")?;
             let tunnel = lk(&state.tunnels).get(id).map(|t| t.local_addr());
             if tunnel.is_none() && cfg.ssh.as_ref().is_some_and(|s| s.enabled) {
                 return Err("The SSH tunnel for this connection is not open — reconnect, then restore".into());
@@ -2268,11 +2430,248 @@ mod tests {
         )
     }
 
+    #[test]
+    fn staged_commits_are_refused_without_transactions() {
+        let no = profiles::Caps { transactions: false, backup: true, user_mgmt: true };
+        assert_eq!(
+            refuse_no_transactions(no, Some("doris")).unwrap_err(),
+            "Apache Doris has no multi-statement transactions, so staged changes can't be committed together. Run the statements from a query tab."
+        );
+        assert!(refuse_no_transactions(profiles::Caps { transactions: true, ..no }, Some("doris")).is_ok());
+    }
+
+    #[test]
+    fn backup_and_restore_are_refused_without_backup() {
+        let no = profiles::Caps { transactions: true, backup: false, user_mgmt: true };
+        for what in ["Backup", "Restore"] {
+            assert_eq!(
+                refuse_no_backup(no, Some("tidb"), what).unwrap_err(),
+                format!("{what} is not supported for TiDB: TableIQ backs up with pg_dump or mysqldump, which TiDB does not fully support. Use TiDB's own backup tool.")
+            );
+        }
+        assert!(refuse_no_backup(profiles::Caps { backup: true, ..no }, Some("tidb"), "Backup").is_ok());
+    }
+
+    /// With no product named (a session that only lacks a capability), the refusals say
+    /// "This server" rather than a label.
+    #[test]
+    fn refusals_without_a_product_say_this_server() {
+        let none = profiles::Caps { transactions: false, backup: false, user_mgmt: true };
+        assert!(refuse_no_transactions(none, None).unwrap_err().starts_with("This server has no multi-statement transactions"));
+        let e = refuse_no_backup(none, None, "Restore").unwrap_err();
+        assert!(e.starts_with("Restore is not supported for This server:"), "{e}");
+    }
+
+    /// A session whose driver reports a profile and capabilities, nothing else: the gates
+    /// read `caps()`, `product()` and `literals_safe()` from the session they find.
+    struct Capped {
+        caps: profiles::Caps,
+        product: Option<&'static str>,
+        literals_safe: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl SqlDriver for Capped {
+        fn product(&self) -> Option<String> {
+            self.product.map(str::to_string)
+        }
+        fn caps(&self) -> profiles::Caps {
+            self.caps
+        }
+        fn literals_safe(&self) -> bool {
+            self.literals_safe
+        }
+        fn agent_access(&self) -> Result<(), String> {
+            Ok(())
+        }
+        async fn introspect(&self) -> crate::drivers::DResult<crate::drivers::SchemaModel> {
+            unimplemented!()
+        }
+        async fn count_rows(
+            &self,
+            _: &str,
+            _: &str,
+            _: &[crate::drivers::ColumnFilter],
+            _: Option<&CancelToken>,
+        ) -> crate::drivers::DResult<crate::drivers::RowCount> {
+            unimplemented!()
+        }
+        async fn open_window_filtered(
+            &self,
+            _: &str,
+            _: &str,
+            _: usize,
+            _: usize,
+            _: &[crate::drivers::ColumnFilter],
+            _: &[crate::drivers::SortKey],
+            _: Option<&[Option<String>]>,
+        ) -> crate::drivers::DResult<RecordBatch> {
+            unimplemented!()
+        }
+        async fn primary_key(&self, _: &str, _: &str) -> crate::drivers::DResult<Vec<String>> {
+            unimplemented!()
+        }
+        async fn apply_edit(&self, _: &str, _: &str, _: &crate::drivers::EditSpec) -> crate::drivers::DResult<u64> {
+            unimplemented!()
+        }
+        async fn run_statements(
+            &self,
+            _: &[String],
+            _: usize,
+            _: &CancelToken,
+        ) -> crate::drivers::DResult<Vec<crate::drivers::StmtOutput>> {
+            unimplemented!()
+        }
+        async fn run_script(&self, _: &str) -> crate::drivers::DResult<u64> {
+            unimplemented!()
+        }
+    }
+
+    /// The restore call site, not just its helper: on a TiDB session the typed confirmation
+    /// and the backup file pass, and the refusal comes before any tool is looked for or run.
+    #[tokio::test]
+    async fn restore_is_refused_on_a_session_without_backup() {
+        let dir = std::env::temp_dir().join(format!("tiq-restore-gate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("dump.sql");
+        std::fs::write(&file, "SELECT 1;").unwrap();
+        let mut cfg = crate::connections::tests::cfg("mysql");
+        cfg.id = "tidb-session".into();
+        cfg.database = "shop".into();
+        let state = state_with(vec![cfg]);
+        let caps = profiles::effective_caps(None, Some("tidb"));
+        lk(&state.sessions).insert("tidb-session".into(), Arc::new(Capped { caps, product: Some("tidb"), literals_safe: true }));
+
+        let e = restore_inner(&state, "tidb-session", "shop".into(), file.to_string_lossy().into_owned(), "shop", None)
+            .await
+            .unwrap_err();
+        assert!(e.starts_with("Restore is not supported for TiDB:"), "{e}");
+        // The typed name is still checked first, and the session is left connected.
+        let e = restore_inner(&state, "tidb-session", "shop".into(), file.to_string_lossy().into_owned(), "oops", None)
+            .await
+            .unwrap_err();
+        assert!(!e.contains("not supported"), "{e}");
+        assert!(state.session("tidb-session").is_ok());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The other gated commands at their call sites: delete a gate line and this fails. Each
+    /// refusal comes before the driver is asked to write anything (`Capped` cannot).
+    #[tokio::test]
+    async fn gated_commands_refuse_at_the_call_site() {
+        let mut cfg = crate::connections::tests::cfg("mysql");
+        cfg.id = "s".into();
+        let state = state_with(vec![cfg]);
+        let caps = profiles::Caps { transactions: false, backup: false, user_mgmt: false };
+        lk(&state.sessions).insert("s".into(), Arc::new(Capped { caps, product: Some("doris"), literals_safe: false }));
+
+        let e = apply_changes_inner(&state, "s".into(), "shop".into(), "orders".into(), vec![]).await.unwrap_err();
+        assert!(e.starts_with("Apache Doris has no multi-statement transactions"), "{e}");
+        let path = std::env::temp_dir().join("tiq-gate.sql").to_string_lossy().into_owned();
+        let e = backup_inner(&state, "s".into(), "shop".into(), path, None, None).await.unwrap_err();
+        assert!(e.starts_with("Backup is not supported for Apache Doris:"), "{e}");
+        let row = vec![vec![Some("x".to_string())]];
+        let e = import_rows_inner(&state, "s".into(), "postgres".into(), None, "t".into(), vec!["a".into()], row)
+            .await
+            .err()
+            .expect("refused");
+        assert!(e.starts_with("Import is not available on this connection"), "{e}");
+        let map = vec![(0, "a".to_string(), "text".to_string())];
+        let e = apply_parquet_import_inner(&state, "s".into(), "postgres".into(), None, "t".into(), map, false, vec![])
+            .await
+            .err()
+            .expect("refused");
+        assert!(e.starts_with("Import is not available on this connection"), "{e}");
+    }
+
+    /// What `connect` hands the UI, as the UI reads it: `SessionCaps` in `commands.ts` names
+    /// the three capabilities exactly like this and takes a missing one for supported, so a
+    /// renamed field would switch every restriction off in the UI without an error anywhere.
+    #[tokio::test]
+    async fn connected_info_carries_the_session_caps_under_the_names_the_ui_reads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_with(vec![sqlite_cfg("c1", &tmp.path().join("live.db"))]);
+        let info = serde_json::to_value(connect_inner(&state, "c1").await.unwrap()).unwrap();
+        // A plain engine: no product, nothing restricted.
+        assert!(info["profile"].is_null(), "{info}");
+        assert_eq!(info["caps"], serde_json::json!({ "transactions": true, "backup": true, "user_mgmt": true }));
+        // A product's restrictions travel under the same names.
+        assert_eq!(
+            serde_json::to_value(profiles::effective_caps(None, Some("tidb"))).unwrap(),
+            serde_json::json!({ "transactions": true, "backup": false, "user_mgmt": false })
+        );
+    }
+
+    #[test]
+    fn import_is_refused_when_literals_are_not_safe() {
+        assert_eq!(
+            refuse_unsafe_literals(false).unwrap_err(),
+            "Import is not available on this connection: the server did not turn on standard_conforming_strings, so TableIQ cannot quote text safely. Load the data with the server's own import tool."
+        );
+        assert!(refuse_unsafe_literals(true).is_ok());
+    }
+
+    #[test]
+    fn save_validation() {
+        use crate::connections::tests::cfg;
+        let mut c = cfg("mysql");
+        c.profile = Some(String::new());
+        assert!(check_profile(&mut c).is_ok());
+        assert_eq!(c.profile, None);
+        let mut c = cfg("postgres");
+        c.profile = Some("tidb".into());
+        assert_eq!(
+            check_profile(&mut c).unwrap_err(),
+            "TiDB is a MySQL-compatible profile. Set the engine to MySQL or remove the profile."
+        );
+        let mut c = cfg("mysql");
+        c.profile = Some("tidb".into());
+        assert!(check_profile(&mut c).is_ok());
+        let mut c = cfg("mysql");
+        c.profile = Some("from-the-future".into());
+        assert!(check_profile(&mut c).is_ok());
+        assert_eq!(c.profile.as_deref(), Some("from-the-future"));
+    }
+
+    /// A bundle never went through `save_connection`, so its profiles are normalised here.
+    #[test]
+    fn imported_profiles_are_normalised() {
+        let entry = |id: &str, engine: &str, profile: &str| {
+            format!(
+                r#"{{"id":"{id}","name":"n","engine":"{engine}","profile":"{profile}","host":"h","port":1,"database":"d","username":"u","sslmode":"prefer"}}"#
+            )
+        };
+        let bundle = format!(
+            "[{},{},{},{}]",
+            entry("empty", "mysql", ""),
+            entry("wrong-base", "postgres", "tidb"),
+            entry("right-base", "mysql", "tidb"),
+            entry("unknown", "mysql", "from-the-future"),
+        );
+        let mut store = ConnStore::default();
+        store.upsert(ConnConfig { profile: Some(String::new()), ..crate::connections::tests::cfg("mysql") });
+        assert_eq!(import_into(&mut store, &bundle).unwrap(), 4);
+        let profile = |id: &str| store.connections.iter().find(|c| c.id == id).unwrap().profile.clone();
+        assert_eq!(profile("empty"), None);
+        assert_eq!(profile("wrong-base"), None, "dropped, and the rest of the bundle still imports");
+        assert_eq!(profile("right-base").as_deref(), Some("tidb"));
+        assert_eq!(profile("unknown").as_deref(), Some("from-the-future"), "a newer TableIQ's id survives");
+        assert_eq!(profile("x"), Some(String::new()), "only the imported entries are touched");
+    }
+
+    #[test]
+    fn tls_hint() {
+        assert!(mysql_tls_hint("verify-full", "TLS handshake failed: invalid certificate").is_some());
+        assert!(mysql_tls_hint("prefer", "TLS handshake failed: invalid certificate").is_none());
+        assert!(mysql_tls_hint("require", "Access denied for user").is_none());
+    }
+
     /// An engine this build doesn't know must not silently become a Postgres connection.
     #[tokio::test]
     async fn open_driver_refuses_an_unknown_engine() {
         let cfg = ConnConfig {
             env: None,
+            profile: None,
             id: "x".into(),
             name: "x".into(),
             color: None,
@@ -2439,6 +2838,7 @@ mod tests {
     fn sqlite_cfg(id: &str, file: &std::path::Path) -> ConnConfig {
         ConnConfig {
             env: None,
+            profile: None,
             id: id.into(),
             name: id.into(),
             color: None,
@@ -2627,6 +3027,9 @@ mod tests {
 
     #[async_trait::async_trait]
     impl SqlDriver for FakeMssql {
+        fn agent_access(&self) -> Result<(), String> {
+            Ok(())
+        }
         async fn introspect(&self) -> crate::drivers::DResult<crate::drivers::SchemaModel> {
             unimplemented!()
         }
@@ -2682,6 +3085,7 @@ mod tests {
     fn mssql_state(fake: FakeMssql) -> (ConnState, Arc<FakeMssql>) {
         let cfg = ConnConfig {
             env: None,
+            profile: None,
             id: "ms".into(),
             name: "ms".into(),
             color: None,
@@ -2750,6 +3154,7 @@ mod tests {
     fn switching_database_is_refused_for_file_engines() {
         let cfg = |engine: &str, database: &str| ConnConfig {
             env: None,
+            profile: None,
             id: "x".into(),
             name: "x".into(),
             color: None,

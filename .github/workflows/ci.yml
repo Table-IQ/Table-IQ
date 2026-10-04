@@ -52,6 +52,10 @@ jobs:
     env:
       TIQ_PG_URL: postgres://postgres:tableiq@127.0.0.1:55432/tableiq
       TIQ_MYSQL_URL: mysql://root:tableiq@127.0.0.1:53306/tableiq
+      # The wire-compatible engines of docker/profiles/docker-compose.yml (tests/profile_live.rs).
+      TIQ_TIDB_URL: mysql://root@127.0.0.1:54000/test
+      TIQ_CRDB_URL: postgres://root@127.0.0.1:56257/defaultdb?sslmode=disable
+      TIQ_MARIADB_URL: mysql://root:tableiq@127.0.0.1:53307/tableiq
       # TIQ_MSSQL_URL is deliberately unset — mssql:2022 is a 1.5GB image for six tests, and
       # tests/sqlserver.rs skips itself when the variable is absent. Same for TIQ_PG_FULL_SEED
       # (see the seed step). Both suites run locally, where the containers are already up.
@@ -97,6 +101,16 @@ jobs:
             /opt/hostedtoolcache/CodeQL || true
           df -h / | tail -1
 
+      # Compose, not `services:` — CockroachDB needs a start command.
+      - name: Start wire-compatible engines
+        run: |
+          docker compose -f docker/profiles/docker-compose.yml up -d --wait
+          for i in $(seq 60); do
+            mysql -h 127.0.0.1 -P 54000 -uroot -e 'select 1' >/dev/null 2>&1 && exit 0
+            sleep 2
+          done
+          echo "TiDB did not become ready" >&2; exit 1
+
       - uses: dtolnay/rust-toolchain@stable
         with: { components: clippy }
       - uses: swatinem/rust-cache@v2
@@ -108,6 +122,12 @@ jobs:
       - name: Test
         working-directory: src-tauri
         run: cargo test --locked
+
+      # The suite above skips a live test whose URL is unset (SQL Server, by design). These
+      # two must never skip: a missing URL here fails the job.
+      - name: Live tests that must not skip
+        working-directory: src-tauri
+        run: TIQ_REQUIRE_LIVE=1 cargo test --locked --test profile_live --test mysql_ssl_live
 
       - name: Clippy
         working-directory: src-tauri

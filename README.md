@@ -28,8 +28,22 @@ schema) under the title bar instead of freezing the window.
 MongoDB and Redis get a lighter document/key-value shell (`DocShell` / `KvShell`) rather
 than the SQL grid and ERD.
 
+Products that speak the PostgreSQL or MySQL wire protocol run on the same drivers, as engine
+profiles. **Verified** (every hard check of the live smoke test passed against the real
+product): MariaDB, TiDB, CockroachDB, GreatSQL, Dolt, YugabyteDB and TimescaleDB. **Beta**
+(in the picker, marked "(Beta)", not verified): Neon, Supabase, AlloyDB, PlanetScale, Vitess,
+Amazon Redshift, OceanBase, Apache Doris, StarRocks, SelectDB, PolarDB-X, Manticore Search,
+openGauss, QuestDB, Materialize and RisingWave. Products without transactions open read-only
+in the grid, and a compatible product cannot be shared over MCP yet (MariaDB, Neon, Supabase,
+TimescaleDB and AlloyDB can: they are the base engine under another name). A compatible
+product also has no Backup / Restore or User Management; MariaDB keeps backup but has no
+User Management.
+[`docs/ENGINES.md`](docs/ENGINES.md) has the compatibility matrix, what was run and what was
+not, and how to add a profile.
+
 New and existing connections use a slide-in sheet: paste a full connection URL to fill every
-field, or start from one of the engine tiles; tag the connection with an environment (local,
+field, or start from one of the engine tiles or the compatible-database list under them; tag
+the connection with an environment (local,
 development, testing, staging, production — production tints the titlebar pill and gates
 commits behind a confirmation), pick a colour, and optionally enable an SSH tunnel
 (password/agent or key-file auth). Test the connection before saving.
@@ -119,9 +133,11 @@ TIQ_MSSQL_URL="Server=tcp:127.0.0.1,51433;User Id=sa;Password=TableIQ_pw1;Databa
 ```
 
 CI (`.github/workflows/ci.yml`) runs `tsc`, `vitest`, `vite build`, `cargo test` (against
-live Postgres and MySQL containers), and `cargo clippy --all-targets -- -D warnings` on every
-pull request. SQL Server is deliberately left out of CI (a 1.5 GB image for a handful of
-tests) and runs locally, where the container is already up.
+live Postgres, MySQL, TiDB, CockroachDB and MariaDB containers), and
+`cargo clippy --all-targets -- -D warnings` on every pull request. It also re-runs
+`profile_live` and `mysql_ssl_live` with `TIQ_REQUIRE_LIVE=1`, which turns a missing URL into
+a failure instead of a skip. SQL Server is deliberately left out of CI (a 1.5 GB image for a
+handful of tests) and runs locally, where the container is already up.
 
 ## Test databases
 
@@ -147,6 +163,24 @@ trigger, an index, and assorted NULLs.
 partitioned table whose planner stats are faked to ~1T, plus a 2M-row table with no PK, for
 checking paging, estimates and search at size. Load it with
 `docker exec -i tableiq-pg psql -U postgres -d tableiq < docker/postgres/big.sql`.
+
+The wire-compatible engines the profile smoke test (`tests/profile_live.rs`) runs against
+share one compose file, each image pinned by digest:
+
+```sh
+docker compose -f docker/profiles/docker-compose.yml up -d --wait
+```
+
+This brings up `tableiq-tidb` on `54000`, `tableiq-crdb` on `56257` and `tableiq-mariadb` on
+`53307`. The TiDB image ships no client and so has no healthcheck; give it a few seconds
+after `up` returns. The test reads:
+
+```sh
+TIQ_TIDB_URL=mysql://root@127.0.0.1:54000/test \
+TIQ_CRDB_URL='postgres://root@127.0.0.1:56257/defaultdb?sslmode=disable' \
+TIQ_MARIADB_URL=mysql://root:tableiq@127.0.0.1:53307/tableiq \
+  cargo test --test profile_live -- --nocapture
+```
 
 DuckDB needs no container: `duckdb /tmp/tiq-qa.duckdb < docker/duckdb/qa.sql` builds a
 seeded file (or open that path in TableIQ and run the file from a query tab).

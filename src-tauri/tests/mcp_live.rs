@@ -38,7 +38,7 @@ fn config_dir() -> &'static std::path::Path {
         std::fs::write(dir.path().join("secret.csv"), "k,v\nkey,hunter2\n").unwrap();
         // Live-database connections: their sessions are adopted from a test URL, so the saved
         // host/user are placeholders (and no keychain is read).
-        for (id, engine) in [("pg", "postgres"), ("mssql", "sqlserver")] {
+        for (id, engine) in [("pg", "postgres"), ("mssql", "sqlserver"), ("tidb", "mysql")] {
             let mut c = sqlite_conn(id, &db);
             c.engine = engine.into();
             store.upsert(c);
@@ -65,6 +65,7 @@ fn seed(db: &std::path::Path) {
 fn sqlite_conn(id: &str, db: &std::path::Path) -> ConnConfig {
     ConnConfig {
         env: None,
+        profile: None,
         id: id.into(),
         name: id.into(),
         color: None,
@@ -82,14 +83,19 @@ async fn start() -> (String, CancellationToken) {
     start_with(|_| {}).await
 }
 
-/// A server sharing `lite`, `duck`, `pg` and `mssql`; `prep` can adopt sessions first.
+/// A server sharing `lite`, `duck`, `pg` and `mssql` read-only; `prep` can adopt sessions first.
 async fn start_with(prep: impl FnOnce(&ConnState)) -> (String, CancellationToken) {
+    start_sharing(&["lite", "duck", "pg", "mssql"], false, prep).await
+}
+
+/// `start_with` sharing exactly `ids`, with writes allowed on them or not.
+async fn start_sharing(ids: &[&str], writes: bool, prep: impl FnOnce(&ConnState)) -> (String, CancellationToken) {
     config_dir();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/mcp", listener.local_addr().unwrap());
     let cfg = McpConfig {
         enabled: true,
-        connections: ["lite", "duck", "pg", "mssql"].iter().map(|id| McpConn { id: (*id).into(), writes: false }).collect(),
+        connections: ids.iter().map(|id| McpConn { id: (*id).into(), writes }).collect(),
         ..McpConfig::default()
     };
     let state = ConnState::new();
@@ -223,6 +229,44 @@ async fn postgres_over_http_refuses_sql_executing_builtins() {
         assert!(t.contains("not allowed"), "{sql}: {t}");
         assert!(!t.contains("localhost") && !t.contains("<x>"), "{sql} ran: {t}");
     }
+    stop.cancel();
+}
+
+/// The URL in `var`, or None to skip; with `TIQ_REQUIRE_LIVE=1` an unset one fails instead.
+fn url(var: &str) -> Option<String> {
+    let v = std::env::var(var).ok();
+    if v.is_none() {
+        assert!(std::env::var("TIQ_REQUIRE_LIVE").as_deref() != Ok("1"), "{var} unset");
+        println!("SKIP: {var} unset");
+    }
+    v
+}
+
+/// A TiDB saved as plain `mysql` (no profile), shared with writes: the live session says what
+/// it is, so every tool is refused and the INSERT never runs.
+#[tokio::test]
+async fn a_tidb_saved_as_plain_mysql_is_unreachable_over_http() {
+    let Some(tidb_url) = url("TIQ_TIDB_URL") else { return };
+    let tidb = Arc::new(tableiq_lib::drivers::mysql::MySqlDriver::connect(&tidb_url).await.unwrap());
+    let table = format!("tiq_mcp_tidb_{}", std::process::id());
+    tidb.run_script(&format!("DROP TABLE IF EXISTS {table}; CREATE TABLE {table} (n INT); INSERT INTO {table} VALUES (1),(2),(3)"))
+        .await
+        .unwrap();
+    let (url, stop) = start_sharing(&["tidb"], true, |s| s.adopt_session("tidb", tidb.clone())).await;
+
+    for (i, (tool, args)) in [
+        ("list_tables", json!({"connection_id": "tidb"})),
+        ("run_query", json!({"connection_id": "tidb", "sql": format!("INSERT INTO {table} VALUES (4)")})),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let r = call(&url, 1 + i as u32, tool, args).await;
+        assert_eq!(r["isError"], true, "{tool}: {r}");
+        assert!(text(&r).contains("TiDB cannot be shared over MCP yet"), "{tool}: {r}");
+    }
+    assert_eq!(run(tidb.as_ref(), &[format!("SELECT count(*) FROM {table}")]).await.unwrap(), vec![vec![Some("3".to_string())]]);
+    tidb.run_script(&format!("DROP TABLE {table}")).await.unwrap();
     stop.cancel();
 }
 

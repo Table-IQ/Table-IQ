@@ -56,6 +56,8 @@ import { ContextMenu, type ContextMenuItem } from "./ui/ContextMenu";
 import { buildRowAs } from "../lib/rowFormat";
 import { buildDeleteStatement, quoteIdent } from "../lib/tableScript";
 import { buildInsertValues, isDraftDirty } from "../lib/insertRow";
+import { readOnlyReason } from "../lib/gridEditable";
+import { engineLabel } from "./ui/EngineIcon";
 import {
   buildBatch,
   buildPreviewSql,
@@ -222,6 +224,9 @@ export function TableView({ connId, schema, object, view }: Props) {
   useEffect(() => () => window.clearTimeout(savedTimer.current), []);
   const gridRef = useRef<DataGridHandle>(null);
   const engine = useConnections((s) => s.active?.engine ?? "postgres") as Engine;
+  // The session's profile (the saved one when known, else the detected product) and its capabilities.
+  const productLabel = useConnections((s) => engineLabel(engine, s.active?.profile));
+  const transactions = useConnections((s) => s.active?.caps?.transactions !== false);
   const setSelectedRow = useSelectedRow((s) => s.setRow);
   const clearSelectedRowIfFrom = useSelectedRow((s) => s.clearIfFrom);
   // Per-(conn, schema, table) column widths, hydrated from localStorage so a
@@ -506,7 +511,10 @@ export function TableView({ connId, schema, object, view }: Props) {
     return () => window.removeEventListener("tiq:row-edited", onEdited);
   }, [schema, object.name, refresh]);
 
-  const editable = object.kind === "Table" && !!pk && pk.length > 0;
+  // Every write path below (cell edit, "+ Row", delete, paste, Set value) hangs off `editable`.
+  const reason = readOnlyReason(object.kind, !!pk && pk.length > 0, transactions);
+  const editable = reason === null;
+  const noTx = reason === "no-transactions";
 
   // Build the FK lookup the grid uses to render the cell-level "go to referenced row" chevron.
   const fkByColumn = useMemo(() => {
@@ -986,12 +994,17 @@ export function TableView({ connId, schema, object, view }: Props) {
 
       {/* Read-only hint — explains WHY cells can't be edited, at the point of
           interaction (the bottom-bar dot alone left "editing does nothing"
-          feeling like a bug). Only in data view, once the PK has loaded. */}
-      {view === "data" && !editable && pk !== null && (
+          feeling like a bug). Only in data view, once the PK has loaded — a
+          session without transactions needs no PK to know. */}
+      {view === "data" && !editable && (pk !== null || reason === "no-transactions") && (
         <div className="flex items-center gap-1.5 border-b border-border bg-bg px-3 py-1 text-[10.5px] text-muted">
           <StatusDot tone="muted" />
-          {object.kind !== "Table" ? (
+          {reason === "view" ? (
             <span>Read-only — a {object.kind.toLowerCase()} can't be edited.</span>
+          ) : reason === "no-transactions" ? (
+            <span>
+              Read-only: {productLabel} has no multi-statement transactions. Run INSERT or UPDATE from a query tab.
+            </span>
           ) : (
             <span>Read-only — this table has no primary key, so cells can't be edited.</span>
           )}
@@ -1184,19 +1197,21 @@ export function TableView({ connId, schema, object, view }: Props) {
               </span>
             ) : (
               <span
-                className={`inline-flex items-center gap-1 ${pkError ? "text-warn" : "text-muted"}`}
+                className={`inline-flex items-center gap-1 ${pkError && !noTx ? "text-warn" : "text-muted"}`}
                 title={
-                  pkError
-                    ? `Couldn't read the primary key, so editing is disabled — this table may well have one. ${pkError}`
-                    : pk && pk.length === 0
-                      ? "No primary key — editing disabled"
-                      : "Read-only"
+                  noTx
+                    ? `${productLabel} has no multi-statement transactions — editing disabled`
+                    : pkError
+                      ? `Couldn't read the primary key, so editing is disabled — this table may well have one. ${pkError}`
+                      : pk && pk.length === 0
+                        ? "No primary key — editing disabled"
+                        : "Read-only"
                 }
               >
-                <StatusDot tone={pkError ? "warn" : "muted"} />
+                <StatusDot tone={pkError && !noTx ? "warn" : "muted"} />
                 <span>
                   read-only
-                  {pkError ? " · PK unknown" : pk && pk.length === 0 ? " · no PK" : ""}
+                  {noTx ? " · no transactions" : pkError ? " · PK unknown" : pk && pk.length === 0 ? " · no PK" : ""}
                 </span>
               </span>
             )}

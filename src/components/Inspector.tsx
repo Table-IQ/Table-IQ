@@ -2,12 +2,20 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { applyEdit, type ForeignKey, type ObjectInfo } from "../lib/commands";
 import { buildEdit, writeOutcomeMessage } from "../lib/edit";
 import { incomingForeignKeys, outgoingForeignKeys } from "../lib/fk";
+import { readOnlyReason } from "../lib/gridEditable";
 import { logError } from "../lib/report";
 import { Tabs } from "./ui/Panel";
 import { Chip } from "./ui/Chip";
 import { IconClose, IconKey, IconLink, IconSearch } from "./ui/Icon";
 import { useSelectedRow } from "../state/selectedRowStore";
 import { loadForeignKeys, loadTableMeta } from "../state/connectionStore";
+
+/** Whether the row-detail fields can be edited: the grid's own rule (`readOnlyReason`), so a
+ *  view, a table without a primary key and a session without multi-statement transactions
+ *  are read-only here exactly when they are in the grid. */
+export function fieldsEditable(object: ObjectInfo | null, pk: string[], transactions: boolean): boolean {
+  return !!object && readOnlyReason(object.kind, pk.length > 0, transactions) === null;
+}
 
 /**
  * Right-side metadata inspector. Two modes:
@@ -27,11 +35,14 @@ export function Inspector({
   connId,
   schema,
   object,
+  transactions,
   onClose,
 }: {
   connId: string;
   schema?: string;
   object: ObjectInfo | null;
+  /** The live session has multi-statement transactions (`ConnectedInfo.caps`). */
+  transactions: boolean;
   onClose: () => void;
 }) {
   const [tab, setTab] = useState("details");
@@ -76,12 +87,12 @@ export function Inspector({
   }, [connId, schema, object?.name]);
 
   // Commit a single inspector-field edit to the DB (TablePlus parity, Slice 33).
-  // Editable only when the object is a Table with a primary key. On success we
+  // Editable only when the grid is (`fieldsEditable`). On success we
   // update the selected-row store (so the panel shows the new value) and ask the
   // matching TableView to re-sync its grid.
-  const editable = object?.kind === "Table" && pk.length > 0;
+  const editable = fieldsEditable(object, pk, transactions);
   const commitField = async (col: string, newValue: string): Promise<boolean> => {
-    if (!rowDetail || !object || !schema || pk.length === 0) return false;
+    if (!editable || !rowDetail || !object || !schema) return false;
     const orig = rowDetail.values[col] ?? "";
     if (orig === newValue) return true;
     const edit = buildEdit(pk, (c) => rowDetail.values[c] ?? null, col, newValue);

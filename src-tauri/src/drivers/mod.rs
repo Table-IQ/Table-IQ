@@ -140,6 +140,44 @@ pub(crate) fn url_host_port(url: &str) -> &str {
     authority.rsplit_once('@').map_or(authority, |(_, h)| h)
 }
 
+/// A Postgres/MySQL session that cannot be taken for the base engine itself (a "compat"
+/// session): the version query failed, the saved or detected profile is a wire-compatible
+/// product (`real: false`), or the saved profile is an id this build does not know. An empty
+/// saved profile is no profile, as in `profiles::agent_block`.
+pub(crate) fn compat_session(detect_ok: bool, saved: Option<&str>, detected: Option<&str>) -> bool {
+    use crate::profiles::lookup;
+    !detect_ok
+        || detected.and_then(lookup).is_some_and(|p| !p.real)
+        || saved.is_some_and(|id| !id.is_empty() && lookup(id).is_none_or(|p| !p.real))
+}
+
+/// A catalog estimate on a compat session: an error becomes "nothing to offer" (`None`, no
+/// tables), so a product without the base engine's catalog still browses. `logged` is the
+/// session's: the first degraded read is logged and the rest are not, since every table
+/// open asks for an estimate.
+// ponytail: any error is treated as "catalog lacks it"; narrow to SQLSTATE 42883/0A000 if an
+// outage is ever masked.
+pub(crate) fn degrade<T: Default>(
+    compat: bool,
+    logged: &std::sync::atomic::AtomicBool,
+    res: DResult<T>,
+    schema: &str,
+    table: &str,
+) -> DResult<T> {
+    match res {
+        Err(e) if compat => {
+            if !logged.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                crate::applog::log(
+                    "warn",
+                    &format!("estimate degraded on {schema}.{table}: {e} (logged once per session)"),
+                );
+            }
+            Ok(T::default())
+        }
+        res => res,
+    }
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum DriverError {
     // Just the database message: the driver `db()` helpers already unwrap
@@ -909,6 +947,24 @@ pub trait SqlDriver: Send + Sync {
     /// swaps a file engine's file only after this. Default: nothing to close (the driver
     /// lets go when its last `Arc` drops).
     async fn close(&self) {}
+
+    /// The session's profile id: the saved one when known, else what the server reports.
+    fn product(&self) -> Option<String> {
+        None
+    }
+    /// What this session supports beyond its base engine's own rules.
+    fn caps(&self) -> crate::profiles::Caps {
+        crate::profiles::Caps { transactions: true, backup: true, user_mgmt: true }
+    }
+    /// Err(reason) when this session must not be reachable over MCP. No default: every
+    /// driver and wrapper states it, so a forgotten forward cannot grant access.
+    fn agent_access(&self) -> Result<(), String>;
+    /// Whether the import path's quote-doubling literals are safe on this session. False
+    /// only where a Postgres-compatible server did not turn `standard_conforming_strings` on
+    /// (see `PgDriver::connect_as`). Default: safe.
+    fn literals_safe(&self) -> bool {
+        true
+    }
 }
 
 /// Document stores (MongoDB). The third data-model trait (plan spec #1).
@@ -1563,5 +1619,36 @@ mod url_tests {
         assert_eq!(url_host_port("mysql://root:secret@127.0.0.1:53306/tableiq"), "127.0.0.1:53306");
         assert_eq!(url_host_port("postgres://db.internal:5432/app"), "db.internal:5432");
         assert_eq!(url_host_port("127.0.0.1:5432"), "127.0.0.1:5432");
+    }
+}
+
+#[cfg(test)]
+mod compat_tests {
+    use super::*;
+
+    #[test]
+    fn compat_is_anything_but_the_base_engine_itself() {
+        assert!(!compat_session(true, None, None), "genuine Postgres/MySQL");
+        assert!(!compat_session(true, Some("neon"), None), "a real profile");
+        assert!(!compat_session(true, None, Some("mariadb")));
+        assert!(compat_session(false, None, None), "the version query failed");
+        assert!(compat_session(true, None, Some("tidb")));
+        assert!(compat_session(true, Some("cockroachdb"), None));
+        assert!(compat_session(true, Some("neon"), Some("cockroachdb")), "either one decides");
+        assert!(compat_session(true, Some("from-the-future"), None), "an unknown saved id");
+        assert!(!compat_session(true, Some(""), None), "an empty profile is no profile");
+    }
+
+    #[test]
+    fn degrade_swallows_an_error_only_on_a_compat_session() {
+        let err = || -> DResult<Option<i64>> { Err(DriverError::Db("no pg_inherits".into())) };
+        let logged = std::sync::atomic::AtomicBool::new(false);
+        let was_logged = || logged.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(degrade(false, &logged, err(), "s", "t").is_err());
+        assert_eq!(degrade(true, &logged, Ok(Some(7)), "s", "t").unwrap(), Some(7));
+        assert!(!was_logged(), "nothing degraded yet");
+        assert_eq!(degrade(true, &logged, err(), "s", "t").unwrap(), None);
+        assert!(was_logged(), "the first degraded read marks the session");
+        assert_eq!(degrade(true, &logged, err(), "s", "t").unwrap(), None, "and later ones still degrade");
     }
 }

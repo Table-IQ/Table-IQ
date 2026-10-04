@@ -809,8 +809,8 @@ export function MainShell() {
     <div className="flex h-full flex-col">
       {/* ── TITLE BAR ─────────────────────────────────────────────────────── */}
       <TitleBar
-        cfg={
-          saved.find((c) => c.id === active.id) ?? {
+        cfg={{
+          ...(saved.find((c) => c.id === active.id) ?? {
             name: active.name,
             engine,
             database: active.database,
@@ -818,8 +818,10 @@ export function MainShell() {
             ssh: null,
             env: null,
             color: null,
-          }
-        }
+          }),
+          // The pill names the session's profile: the saved one when known, else the detected product.
+          profile: active.profile,
+        }}
         activeObject={
           activeTab?.kind === "table" && activeTab.schema && activeTab.table
             ? `${activeTab.schema}.${activeTab.table}`
@@ -832,8 +834,8 @@ export function MainShell() {
         showSidebar={showSidebar}
         showInspector={showInspector}
         items={titlebarItems}
-        canBackup={supportsBackup(engine)}
-        canRestore={supportsRestore(engine, active.database)}
+        canBackup={supportsBackup(engine, active.caps)}
+        canRestore={supportsRestore(engine, active.database, active.caps)}
         onToggleSidebar={() => setShowSidebar((v) => !v)}
         onToggleInspector={() => setShowInspector((v) => !v)}
         onOpenConnection={() => setShowConnPicker(true)}
@@ -1148,7 +1150,7 @@ export function MainShell() {
               left={
                 <>
                   <StatusDot tone="ok" />
-                  <span>Connected · {engineLabel(active.engine as Engine)}</span>
+                  <span>Connected · {engineLabel(active.engine as Engine, active.profile)}</span>
                 </>
               }
               center={
@@ -1207,6 +1209,7 @@ export function MainShell() {
               connId={active.id}
               schema={activeTab?.schema}
               object={activeObj}
+              transactions={active.caps?.transactions !== false}
               onClose={() => setShowInspector(false)}
             />
           </aside>

@@ -306,6 +306,10 @@ impl DuckDriver {
 
 #[async_trait]
 impl SqlDriver for DuckDriver {
+    fn agent_access(&self) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Each run gets its own connection, so `BEGIN`/`SET` stay inside it and die with it.
     async fn run_statements(
         &self,

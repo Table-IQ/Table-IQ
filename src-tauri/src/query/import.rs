@@ -164,8 +164,9 @@ fn sql_literal(v: &Option<String>, d: Dialect) -> String {
     match d {
         Dialect::MySql => format!("'{}'", s.replace('\\', r"\\").replace('\'', "''")),
         Dialect::SqlServer => format!("N'{}'", s.replace('\'', "''")),
-        // Postgres (with standard_conforming_strings on, which PgDriver pins), SQLite and
-        // DuckDB treat a backslash as an ordinary character.
+        // Postgres (with standard_conforming_strings on, which PgDriver pins; `import_rows`
+        // refuses a session where the server rejected it), SQLite and DuckDB treat a
+        // backslash as an ordinary character.
         Dialect::Postgres | Dialect::Sqlite | Dialect::DuckDb => format!("'{}'", s.replace('\'', "''")),
     }
 }
