@@ -189,6 +189,10 @@ The compatibility matrix is `docs/ENGINES.md`. Failures below are from runs on 2
 | **Compose image digests and the new CI steps are unverified** | The multi-arch digests in `docker/profiles/docker-compose.yml` and the profile steps in `.github/workflows/ci.yml` have not had a green CI run yet. |
 | **MariaDB guard coverage can skip silently** | `guard_live` runs its MariaDB cases only when `TIQ_MARIADB_URL` is set, whatever `TIQ_REQUIRE_LIVE` says. Folded into the `TIQ_REQUIRE_LIVE` item in TODOS.md. |
 | **Capability gates cannot be overridden per connection** | A product the table marks as lacking transactions, backup or user management stays that way, even where a particular server version supports it. |
+| **Detected-profile save can still overwrite a just-saved edit** | The save patches the profile onto the store's current saved entry. An edit whose list refresh has not landed when the connect resolves is still overwritten; the window is one IPC round trip. Fix: a backend "set profile" that runs under the store lock. |
+| **Frontend literal quoting assumes `standard_conforming_strings`** | `quoteLiteral` (`src/lib/tableScript.ts`) doubles quotes and leaves backslashes alone for PostgreSQL, like the import path did. It feeds the staged-change preview, copy-as-SQL and the user-management statements. None of these is an exposure today: staged commits bind their values in the backend, copy-as-SQL does not execute, and user management is hidden on compatible sessions. |
+| **Deleting a connection leaves its MCP share behind** (found in QA, predates this branch) | The entry stays in `mcp.json` after the connection is deleted. The server refuses an id it does not know, so nothing is reachable; the panel does not show it. |
+| **First open of Settings → MCP can show a keychain error** (found in QA, predates this branch) | Two `mcp_token` calls can run at once while the token is first created; the second fails with "The specified item already exists in the keychain." Seen under the dev build's double effect; a second open is clean. |
 
 ---
 
