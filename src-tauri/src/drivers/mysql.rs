@@ -237,18 +237,25 @@ async fn probe_text(
 }
 
 /// Whether a refused first connect is retried with a plain session setup: the server itself
-/// refused (`first` is its error number and SQLSTATE; `None` for I/O, TLS or a timeout) and the
-/// saved profile is a known compatible product (`real: false`). Manticore and StarRocks reject
-/// sqlx's session-setup `SET sql_mode=(SELECT CONCAT(@@sql_mode, …)),time_zone=…,NAMES …`, so
-/// they never got as far as detection. An authentication or connection refusal (SQLSTATE class
-/// 28 or 08, or 1045/1044/1049/1040, since engines are not consistent about SQLSTATE) is not a
-/// session-setup problem and never retries, nor do no profile, an unknown id or a real
-/// MySQL-family engine (MariaDB).
+/// refused (`first` is its error number and SQLSTATE; `None` for I/O, TLS or a timeout) with a
+/// setup-shaped error, and the saved profile is a known compatible product (`real: false`).
+/// Manticore and StarRocks reject sqlx's session-setup
+/// `SET sql_mode=(SELECT CONCAT(@@sql_mode, …)),time_zone=…,NAMES …`, so they never got as far
+/// as detection. Setup-shaped is an allow-list: 1064 (Manticore reports it as 42000, StarRocks
+/// as HY000), 1105, or SQLSTATE class 42 (syntax error or access rule violation) — except the
+/// class-42 numbers that say who or where the client is: 1044 (no access to the database),
+/// 1049 (unknown database), 1203 and 1226 (user connection and resource limits). Everything
+/// else returns the first error: authentication (1045), too many connections (1040), host not
+/// allowed (1130), and no profile, an unknown id or a real MySQL-family engine (MariaDB).
+// ponytail: 1105 is here for Doris, which is said to report analysis errors as 1105/HY000 —
+// unverified, no Doris server was at hand. The ceiling: 1105 is MySQL's catch-all "unknown
+// error", so a compatible server using it for something else gets one pointless retry, whose
+// own error is then the one shown.
 fn retry_plain(saved: Option<&str>, first: Option<(u16, Option<&str>)>) -> bool {
     let Some((number, state)) = first else { return false };
-    let not_setup = matches!(number, 1045 | 1044 | 1049 | 1040)
-        || state.is_some_and(|s| s.starts_with("28") || s.starts_with("08"));
-    !not_setup && saved.and_then(crate::profiles::lookup).is_some_and(|p| !p.real)
+    let setup = matches!(number, 1064 | 1105)
+        || (state.is_some_and(|s| s.starts_with("42")) && !matches!(number, 1044 | 1049 | 1203 | 1226));
+    setup && saved.and_then(crate::profiles::lookup).is_some_and(|p| !p.real)
 }
 
 impl MySqlDriver {
@@ -291,7 +298,7 @@ impl MySqlDriver {
                     );
                     // ponytail: no session `SET` at all (Manticore also rejects the combined
                     // `SET time_zone=…,NAMES …`). The ceiling, for servers whose first connect
-                    // failed for a reason other than auth or connection: the session time zone
+                    // failed with a setup-shaped error: the session time zone
                     // and charset are the server's, so TIMESTAMP values may display in
                     // server-local time. If the retry fails too, its error is the one returned.
                     // One deadline covers both attempts.
@@ -1122,14 +1129,22 @@ mod tests {
     }
 
     /// The plain session setup is a retry, for a saved compatible product whose first connect
-    /// was refused by the server over something other than who or where the client is: no
-    /// profile, an unknown id, a real MySQL-family engine, a non-database failure (I/O, TLS,
-    /// timeout), and auth or connection refusals never retry.
+    /// the server refused with a setup-shaped error: 1064, 1105, or SQLSTATE class 42 short of
+    /// the numbers that say who or where the client is. No profile, an unknown id, a real
+    /// MySQL-family engine, a non-database failure (I/O, TLS, timeout) and every other refusal
+    /// never retry.
     #[test]
-    fn retry_plain_is_for_refused_compatible_profiles_only() {
+    fn retry_plain_is_for_setup_shaped_refusals_of_compatible_profiles_only() {
         for id in ["manticore", "starrocks", "tidb"] {
-            assert!(retry_plain(Some(id), Some((1064, Some("42000")))), "{id}");
-            assert!(retry_plain(Some(id), Some((1064, None))), "{id}");
+            for first in [
+                (1064, Some("42000")),
+                (1064, Some("HY000")),
+                (1064, None),
+                (1105, Some("HY000")),
+                (1231, Some("42000")),
+            ] {
+                assert!(retry_plain(Some(id), Some(first)), "{id} {first:?}");
+            }
         }
         assert!(!retry_plain(Some("tidb"), None));
         for first in [
@@ -1137,9 +1152,13 @@ mod tests {
             (1044, Some("42000")),
             (1049, Some("42000")),
             (1040, Some("08004")),
+            (1130, Some("HY000")),
+            (1226, Some("42000")),
+            (1203, Some("42000")),
             (9999, Some("28000")),
             (9999, Some("08S01")),
             (1045, None),
+            (1130, None),
         ] {
             assert!(!retry_plain(Some("tidb"), Some(first)), "{first:?}");
         }
