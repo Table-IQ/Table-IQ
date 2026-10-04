@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.3 — unreleased
+## 0.8.3 — 2026-10-04
 
 TableIQ now names the product behind a PostgreSQL or MySQL connection. 23 engine profiles ship, seven of them verified against the real product: MariaDB, TiDB, CockroachDB, GreatSQL, Dolt, YugabyteDB and TimescaleDB. The other sixteen are Beta.
 
@@ -19,7 +19,7 @@ TableIQ now names the product behind a PostgreSQL or MySQL connection. 23 engine
 - **Connecting saves the detected product onto a connection that had no profile.** The saved connection is rewritten with it. A MariaDB server saved as plain MySQL is relabelled MariaDB and loses the User Management entry; it keeps backup and agent access.
 - **Import is refused on a PostgreSQL-compatible server that rejects or ignores `SET standard_conforming_strings = on`.** CSV, JSON and Parquet import quote text in a way that is only safe with that setting on, so TableIQ says so and points to the server's own import tool. PostgreSQL itself is unaffected.
 - **Settings → MCP drops the allowlist entry of a connection that can no longer be shared.** A connection shared with agents before it was recognised as a compatible product (or saved with a profile this build does not know) used to keep its entry, unchecked and disabled. The entry is now removed when the panel opens and on every change made there.
-- MySQL connections now apply the saved SSL mode. A connection saved with `require` or a `verify-` mode that used to connect without TLS will now fail until the mode is changed or the server has a valid certificate.
+- MySQL connections now apply the saved SSL mode. A connection saved with `require` or a `verify-` mode that used to connect without TLS will now fail until the mode is changed or the server has a valid certificate. Backup and restore read the saved mode the same way as the connection.
 
 ## 0.8.2 — 2026-09-30
 

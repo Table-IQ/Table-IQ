@@ -138,3 +138,21 @@ From the session transcripts (`cost-table.py`). Pricing is best-effort; subagent
 | **Total** | | **940** | **818,176** | **118,908,202** | **5,214,099** | **$337.50** |
 
 Subagent token counts as reported at each agent's completion, for scale: implementers about 1.0 M (seven tasks), task reviews and re-reviews about 0.7 M, whole-branch review, fix wave and its re-review about 0.64 M, the two QA runs about 0.49 M.
+
+## Ship step (added later on 2026-10-04)
+
+Everything above describes the branch at `669e302`. The ship step ran its own coverage audit and pre-landing review (a checklist pass, six specialists, a red-team pass and two re-reviews of the fixes) and changed the following. The test results for the shipped code are in the pull request, not here.
+
+| Commit | Change |
+|---|---|
+| `96af7f4` | **Gate call sites are tested.** `apply_changes`, `import_rows`, `apply_parquet_import` and `backup_database` delegate to `*_inner(&ConnState, …)`, as `restore_inner` already did, so deleting a gate line now fails a test. Coverage tests for session caps, product labels and icons, and a rejected detected-profile save |
+| `aef0eeb` | **Detection and literal safety fail closed.** A text naming both a compatible product and the base engine detects as the compatible one (TiDB over MariaDB). On MySQL a version that names no product, with no `@@version_comment`, identifies nothing. A compatible PostgreSQL session asks `SHOW standard_conforming_strings` after the SET, and import stays refused unless the answer is `on`. `verify_full` and `verify-identity` are read as verifying modes, and the dump tools read the saved mode through the same function as the driver. Three live assertions that could not fail now can |
+| `a15948a`, `41260da` | Comments and docs corrected against the code; eight new rows in `pending.md` §2i |
+
+Decisions made in the ship step:
+
+- **Version 0.8.3**, as planned. 0.9.0 stays reserved for the first public release.
+- **Not fixed, recorded in `pending.md`:** products without a version marker (Doris, StarRocks, SelectDB, PolarDB-X, Manticore, PlanetScale, Vitess, openGauss) saved as the plain engine stay shareable over MCP, as in 0.8.2; the CHANGELOG now says so. A detected profile is saved for good and not re-evaluated when the address later serves another product. An MCP call refused on the live session leaves that session open.
+- **Not changed:** the unshareable-row note in Settings → MCP still says the guard is reviewed "for PostgreSQL, MySQL and MariaDB only"; the plan fixed that string and QA checked it.
+- **One test failed once and was not explained:** `backup::tests::detect_lists_every_tool_with_its_version` (unchanged since 0.7.0) failed in one full parallel run and passed in 42 later runs. Recorded in `pending.md`.
+- **No outside-model review:** Codex was still not authenticated. The red-team pass stands in for the ship step's adversarial review.
