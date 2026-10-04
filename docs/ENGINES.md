@@ -25,7 +25,8 @@ here is `ok`.
 
 - **Connect:** a plain connect, with the product named by the server's version text or the
   saved profile. On MySQL, a connection whose saved profile is a compatible product falls back to
-  a plain session setup if the server rejects the standard one (see "Session setup" below).
+  a plain session setup if the server rejects the standard one as a syntax or analysis error
+  (see "Session setup" below).
 - **Browse:** schema introspection, the first page, and the grid's own cancellable page.
 - **Count:** the row count, and on the fixture table also the exact count.
 - **Query:** `SELECT 1`.
@@ -137,10 +138,11 @@ Notes on the runs that were made:
   `SET sql_mode=(SELECT …),time_zone='+00:00',NAMES …` that neither server parses. Both runs
   were on 2026-10-03. The first Manticore run failed at connect (`P01: syntax error, unexpected
   '('`) and StarRocks failed at connect (`Set statement only support constant expr..`). A driver
-  change then added a fallback to a plain session setup (below). After it, Manticore connects and
-  is detected as `manticore`, and fails at Browse: `information_schema.tables` is answered by
-  Manticore's Buddy helper, which returns no rows (with Buddy down, the query fails with a
-  syntax error at `CAST(… AS CHAR)`), so `introspect finds Manticore.tiq_probe` fails.
+  change then added a fallback to a plain session setup (below). After it, Manticore connects
+  under its saved profile (`manticore` has no detection marker, so the product comes from the
+  saved profile, not from the server), and fails at Browse: `information_schema.tables` is
+  answered by Manticore's Buddy helper, which returns no rows (with Buddy down, the query fails
+  with a syntax error at `CAST(… AS CHAR)`), so `introspect finds Manticore.tiq_probe` fails.
   **StarRocks was not re-run after the fallback**; its row keeps the pre-fallback result and
   does not claim that it connects now.
 - **QuestDB** connects, then its catalog query fails on `ANY(INT)`. **Materialize** connects and
@@ -206,11 +208,21 @@ profile id. The first match names the product.
   documentation (SelectDB, Doris, Vitess, openGauss), the profile has no marker and is only
   recognised when saved.
 - **Session setup.** The standard MySQL session setup sets `sql_mode`, the time zone and the
-  character set in one `SET`. If the server rejects it and the connection's saved profile is a
-  compatible product (`real: false`), TableIQ reconnects with a plain setup and logs it. On such
-  a session the time zone is the server's and the charset is the server default. A compatible
-  server saved through the plain MySQL tile (no profile) gets no fallback and still fails to
-  connect.
+  character set in one `SET`. If the server rejects it as a syntax or analysis error (error
+  1064 or 1105, or SQLSTATE class 42 other than 1044, 1049, 1203 and 1226) and the connection's
+  saved profile is a compatible product (`real: false`), TableIQ reconnects with a plain setup
+  and logs it. Any other refusal (authentication, host not allowed, a connection or user limit)
+  is returned as it is, with no second attempt. The codes were not re-measured after this rule
+  replaced "any refusal but authentication or connection": Manticore's refusal is taken to be
+  1064 with SQLSTATE 42000 and StarRocks' 1064 with HY000, and 1105 is included for Apache Doris
+  without a run. On such a session the time zone is the server's and the charset is the server
+  default. A compatible server saved through the plain MySQL tile (no profile) gets no fallback
+  and still fails to connect.
+- **PostgreSQL session settings.** A compatible PostgreSQL session sends its four session
+  settings one at a time and keeps going past the ones the server rejects. If
+  `standard_conforming_strings` is the one rejected, import (CSV, JSON, Parquet) is refused on
+  that session, because its text quoting is only safe with that setting on. No server that
+  rejects it was at hand, so this path is not covered by a live run.
 - A server that reports a plain MySQL or PostgreSQL version and is saved through a base tile is
   treated as the base engine. Detection cannot see a product that does not say what it is.
 - **Copy as URL** writes the base scheme (`postgres://`, `mysql://`). A profile with no host

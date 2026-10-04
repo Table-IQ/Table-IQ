@@ -38,6 +38,7 @@ Deferred from the Connected Home plan review (2026-09-27, `docs/superpowers/plan
 - **Engine profiles follow-ups** (2026-10-03, from 0.8.3; matrix in `docs/ENGINES.md`):
   - **Review the agent guard for TiDB and CockroachDB so they can be shared over MCP.**
     - What: review the guard's function denylist and read-only wrapper against each engine, add live guard cases, then mark the profiles `real` for agent access.
+    - Precondition: no stale allowlist entry may come back to life. A connection shared (possibly with writes) before it was recognised as TiDB or CockroachDB must not be re-shared silently when the engine opens to MCP: such entries are pruned, or the user re-confirms them. 0.8.3 does the pruning (`pruneUnshareable` in `src/lib/mcp.ts`), but only when Settings → MCP is opened or changed; check `mcp.json` for entries that were never pruned, or prune on the backend, before flipping `real`.
     - Why: both are verified engines and are blocked from MCP in 0.8.3. TiDB rejects `START TRANSACTION READ ONLY` by default (it is a no-op only if `tidb_enable_noop_functions` is enabled), so the read-only wrapper cannot be relied on there and the agent guard is unreviewed for it.
     - Context: `src-tauri/src/profiles.rs` `agent_block`, `mcp_read_only` in `src-tauri/tests/profile_live.rs`, `guard_live.rs`.
   - **Verify Neon, Supabase, CockroachDB Cloud and TiDB Cloud on free tiers.**
@@ -54,7 +55,7 @@ Deferred from the Connected Home plan review (2026-09-27, `docs/superpowers/plan
     - Context: `docs/ENGINES.md` soft-check table.
   - **`TIQ_REQUIRE_LIVE` for the existing live tests.**
     - What: make the Postgres, MySQL and SQL Server live tests fail instead of skip when the flag is set and their URL is not.
-    - Why: only `profile_live` and `mysql_ssl_live` do so; a CI service that does not start leaves the others skipped and green.
+    - Why: only `profile_live` and `mysql_ssl_live` do so; a CI service that does not start leaves the others skipped and green. `guard_live`'s MariaDB cases are the same: they skip silently when `TIQ_MARIADB_URL` is unset.
     - Context: `.github/workflows/ci.yml`.
   - **A readable error for Metrics widgets on engines without read-only transactions.**
     - What: say that the engine has no read-only transactions, instead of passing on the driver text.
