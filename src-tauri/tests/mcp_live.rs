@@ -476,10 +476,10 @@ async fn cockroachdb_read_only_transaction_refuses_dml_and_ddl_escapes_it() {
 /// SQL a read-only CockroachDB share must refuse, each with what it would have done.
 fn crdb_read_only_attacks(t: &str) -> Vec<String> {
     vec![
-        format!("SELECT 1; SELECT 2"),
+        "SELECT 1; SELECT 2".to_string(),
         format!("SELECT 1; COMMIT; DELETE FROM {t}"),
         format!("SELECT 1 -- x\r; DELETE FROM {t}"),
-        format!("/*! SELECT 2; */ SELECT 1"),
+        "/*! SELECT 2; */ SELECT 1".to_string(),
         format!("DELETE FROM {t}"),
         format!("INSERT INTO {t} VALUES (99)"),
         format!("UPDATE {t} SET n = n + 10"),
