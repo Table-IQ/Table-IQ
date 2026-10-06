@@ -6,6 +6,9 @@
 //!   TIQ_MYSQL_URL=mysql://root:tableiq@127.0.0.1:53306/tableiq \
 //!     cargo test --test window_bound -- --nocapture
 
+mod common;
+use common::live_url;
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -33,8 +36,7 @@ async fn pg_slow(url: &str, schema: &str) -> PgDriver {
 
 #[tokio::test]
 async fn pg_filtered_window_times_out() {
-    let Ok(url) = std::env::var("TIQ_PG_URL") else {
-        eprintln!("skip: no TIQ_PG_URL");
+    let Some(url) = live_url("TIQ_PG_URL") else {
         return;
     };
     let drv = pg_slow(&url, "tiq_win_timeout").await.with_window_timeout_ms(300);
@@ -63,7 +65,7 @@ async fn pg_filtered_window_times_out() {
 
 #[tokio::test]
 async fn pg_window_cancel_during_and_before_the_fetch() {
-    let Ok(url) = std::env::var("TIQ_PG_URL") else {
+    let Some(url) = live_url("TIQ_PG_URL") else {
         return;
     };
     let drv = Arc::new(pg_slow(&url, "tiq_win_cancel").await);
@@ -113,8 +115,7 @@ async fn mysql_slow_named(url: &str, p: &str) -> MySqlDriver {
 /// Both MySQL cases share the fixture, so they run in one test.
 #[tokio::test]
 async fn mysql_window_timeout_and_cancel() {
-    let Ok(url) = std::env::var("TIQ_MYSQL_URL") else {
-        eprintln!("skip: no TIQ_MYSQL_URL");
+    let Some(url) = live_url("TIQ_MYSQL_URL") else {
         return;
     };
     let drv = mysql_slow(&url).await.with_window_timeout_ms(300);
@@ -157,7 +158,7 @@ async fn pg_same_request_key_supersedes_the_page_in_flight() {
     use std::collections::HashMap;
     use std::sync::Mutex;
     use tableiq_lib::ipc::connect::table_window;
-    let Ok(url) = std::env::var("TIQ_PG_URL") else {
+    let Some(url) = live_url("TIQ_PG_URL") else {
         return;
     };
     let drv = Arc::new(pg_slow(&url, "tiq_win_supersede").await);
@@ -219,7 +220,7 @@ fn stale_token_of(finished: &[CancelToken], running: &CancelToken) -> CancelToke
 /// is scoped to the statement the token started, not to the connection.
 #[tokio::test]
 async fn pg_stale_cancel_spares_the_next_query_on_the_same_connection() {
-    let Ok(url) = std::env::var("TIQ_PG_URL") else {
+    let Some(url) = live_url("TIQ_PG_URL") else {
         return;
     };
     let drv = Arc::new(pg_slow(&url, "tiq_win_stale").await);
@@ -250,7 +251,7 @@ async fn pg_stale_cancel_spares_the_next_query_on_the_same_connection() {
 
 #[tokio::test]
 async fn mysql_stale_cancel_spares_the_next_query_on_the_same_connection() {
-    let Ok(url) = std::env::var("TIQ_MYSQL_URL") else {
+    let Some(url) = live_url("TIQ_MYSQL_URL") else {
         return;
     };
     let drv = Arc::new(mysql_slow_named(&url, "tiq_stale").await.with_window_timeout_ms(60_000));
@@ -316,7 +317,7 @@ async fn cancel_flagged_right_after_the_pin<D: SqlDriver + 'static>(drv: Arc<D>,
 
 #[tokio::test]
 async fn pg_cancel_never_waits_for_the_pool_and_rechecks_after_the_send() {
-    let Ok(url) = std::env::var("TIQ_PG_URL") else {
+    let Some(url) = live_url("TIQ_PG_URL") else {
         return;
     };
     let drv = Arc::new(pg_slow(&url, "tiq_win_sat").await.with_window_timeout_ms(60_000));
@@ -327,7 +328,7 @@ async fn pg_cancel_never_waits_for_the_pool_and_rechecks_after_the_send() {
 
 #[tokio::test]
 async fn mysql_cancel_never_waits_for_the_pool_and_rechecks_after_the_send() {
-    let Ok(url) = std::env::var("TIQ_MYSQL_URL") else {
+    let Some(url) = live_url("TIQ_MYSQL_URL") else {
         return;
     };
     let drv = Arc::new(mysql_slow_named(&url, "tiq_sat").await.with_window_timeout_ms(60_000));
@@ -359,8 +360,7 @@ async fn running_page_sql<D: SqlDriver + 'static>(
 /// churned the cache). The cancel scope rides on `application_name` instead.
 #[tokio::test]
 async fn pg_page_sql_is_identical_across_tokens() {
-    let Ok(url) = std::env::var("TIQ_PG_URL") else {
-        eprintln!("skip: no TIQ_PG_URL");
+    let Some(url) = live_url("TIQ_PG_URL") else {
         return;
     };
     let drv = Arc::new(pg_slow(&url, "tiq_win_same").await.with_window_timeout_ms(60_000));
@@ -392,8 +392,7 @@ async fn pg_page_sql_is_identical_across_tokens() {
 
 #[tokio::test]
 async fn mysql_page_sql_is_identical_across_tokens() {
-    let Ok(url) = std::env::var("TIQ_MYSQL_URL") else {
-        eprintln!("skip: no TIQ_MYSQL_URL");
+    let Some(url) = live_url("TIQ_MYSQL_URL") else {
         return;
     };
     let drv = Arc::new(mysql_slow_named(&url, "tiq_same").await.with_window_timeout_ms(60_000));
@@ -427,8 +426,7 @@ async fn mysql_page_sql_is_identical_across_tokens() {
 /// instead of reporting a cancel nobody asked for.
 #[tokio::test]
 async fn mysql_page_killed_without_its_token_cancelled_retries() {
-    let Ok(url) = std::env::var("TIQ_MYSQL_URL") else {
-        eprintln!("skip: no TIQ_MYSQL_URL");
+    let Some(url) = live_url("TIQ_MYSQL_URL") else {
         return;
     };
     let drv = Arc::new(mysql_slow_named(&url, "tiq_spur").await.with_window_timeout_ms(60_000));

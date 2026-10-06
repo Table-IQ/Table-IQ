@@ -222,6 +222,8 @@ pub struct MySqlDriver {
     detected: Option<String>,
     /// `ConnConfig.profile`, as saved.
     saved: Option<String>,
+    /// What a `BEGIN` on the probe connection said: `Some(false)` only if the server refused it.
+    tx_probe: Option<bool>,
     /// A degraded estimate has been logged (see [`super::degrade`]).
     degrade_logged: std::sync::atomic::AtomicBool,
 }
@@ -280,7 +282,7 @@ impl MySqlDriver {
         let mut opts: sqlx::mysql::MySqlConnectOptions = url.parse().map_err(db)?;
         // Probe with a direct connection first so the real error surfaces instead
         // of the pool's opaque "pool timed out" after a 30s retry (see PgDriver).
-        let version = {
+        let (version, tx_probe) = {
             use sqlx::Connection;
             let deadline = tokio::time::Instant::now() + super::CONNECT_TIMEOUT;
             let timed_out =
@@ -330,8 +332,20 @@ impl MySqlDriver {
                 Some(_) => probe_text(&mut probe, "SELECT @@version_comment", deadline).await,
                 None => None,
             };
+            // Ask for a transaction on the connection about to be closed, inside the same bound.
+            // Skipped when the version query got no answer (the connection may be mid-statement).
+            let tx_probe = if version.is_some() {
+                let begin = tokio::time::timeout_at(deadline, probe.execute(sqlx::raw_sql("BEGIN"))).await;
+                let verdict = super::tx_probe_verdict(begin);
+                if verdict == Some(true) {
+                    let _ = tokio::time::timeout_at(deadline, probe.execute(sqlx::raw_sql("ROLLBACK"))).await;
+                }
+                verdict
+            } else {
+                None
+            };
             let _ = probe.close().await;
-            version_text(version, comment)
+            (version_text(version, comment), tx_probe)
         };
         let detect_ok = version.is_some();
         if !detect_ok {
@@ -369,6 +383,7 @@ impl MySqlDriver {
             detect_ok,
             detected,
             saved,
+            tx_probe,
             degrade_logged: Default::default(),
         })
     }
@@ -581,8 +596,11 @@ impl SqlDriver for MySqlDriver {
     fn product(&self) -> Option<String> {
         crate::profiles::session_profile("mysql", self.saved.as_deref(), self.detected.as_deref())
     }
+    fn detected_product(&self) -> Option<String> {
+        self.detected.clone()
+    }
     fn caps(&self) -> crate::profiles::Caps {
-        crate::profiles::effective_caps(self.saved.as_deref(), self.detected.as_deref())
+        crate::profiles::caps_with_probe(self.saved.as_deref(), self.detected.as_deref(), self.tx_probe)
     }
     fn agent_access(&self) -> Result<(), String> {
         crate::profiles::agent_block("mysql", self.saved.as_deref(), self.detected.as_deref(), self.detect_ok)

@@ -85,6 +85,65 @@ fn engine_functions(engine: &str) -> &'static [&'static str] {
 /// can); a Metrics widget — the user's own SQL on their own connection — may use them.
 const DUCKDB_FILE_FUNCTIONS: [&str; 5] = ["READ_*", "GLOB", "*_SCAN", "SNIFF_CSV", "PARQUET_*"];
 
+/// The `engine` the profile-aware callers (`profiles::guard_engine`) pass for a CockroachDB
+/// server: the Postgres rules plus the lists below, which only that product needs. Everything
+/// else about it (the scanner, the read-only transaction, the Postgres function list) is
+/// Postgres's, so [`base_engine`] maps it back.
+pub const COCKROACHDB: &str = "cockroachdb";
+
+fn base_engine(engine: &str) -> &str {
+    if engine == COCKROACHDB { "postgres" } else { engine }
+}
+
+/// CockroachDB's functions that write files, change cluster state or act on other sessions,
+/// from v26.3.2's `pg_proc`, refused anywhere in the text like the Postgres list. The server
+/// refuses all of `crdb_internal` until a session sets `allow_unsafe_internals`, which a
+/// writes-allowed connection could (`SET` is allowed there), so that name is refused too: the
+/// server's own gate then holds for functions this list lacks (newer versions').
+const CRDB_FUNCTIONS: [&str; 34] = [
+    "ALLOW_UNSAFE_INTERNALS", "READ_FILE", "WRITE_FILE", "UNSAFE_*", "FORCE_ASSERTION_ERROR",
+    "FORCE_DELETE_TABLE_DATA", "FORCE_ERROR", "FORCE_LOG_FATAL", "FORCE_PANIC", "FORCE_RETRY",
+    "GENERATE_TEST_OBJECTS", "REPAIR_CATALOG_CORRUPTION", "REPAIR_TTL_TABLE_SCHEDULED_JOB",
+    "RESET_SQL_STATS", "RESET_ACTIVITY_TABLES", "RESET_INDEX_USAGE_STATS", "RESET_MULTI_REGION_ZONE_CONFIGS_FOR_*",
+    "REQUEST_JOB_EXECUTION_DETAILS", "REQUEST_STATEMENT_BUNDLE", "REQUEST_TRANSACTION_BUNDLE", "SET_VMODULE",
+    "SET_TRACE_VERBOSE", "SCHEDULE_SQL_STATS_COMPACTION", "CREATE_SQL_SCHEMA_TELEMETRY_JOB", "INJECT_HINT",
+    "TESTING_CALLBACK", "DESERIALIZE_SESSION", "CREATE_SESSION_REVIVAL_TOKEN", "CRDB_DELETE_STATEMENT_HINTS",
+    "CRDB_ENABLE_STATEMENT_HINTS", "CRDB_PIN_PLAN_GIST", "CRDB_PIN_PLAN_GRAM", "CRDB_REWRITE_INLINE_HINTS",
+    "CRDB_SET_SESSION_VARIABLE_HINT",
+];
+
+/// A writer of CockroachDB's own, refused on a read-only connection like [`WRITE_KEYWORDS`]:
+/// `UPSERT` can sit in a data source (`FROM [UPSERT … RETURNING *]`), and the read-only
+/// transaction refuses it, but a rollback is not the only line. (`IMPORT` and `EXPORT` cannot:
+/// they are not valid there, and as a first keyword they are not a read.) `SHOW BACKUPS IN
+/// '<uri>'` lists a storage location; `BACKUP`, which `SHOW BACKUP` has, is in [`WRITE_KEYWORDS`].
+const CRDB_WRITE_KEYWORDS: [&str; 2] = ["UPSERT", "BACKUPS"];
+
+/// What a writes-allowed CockroachDB connection still refuses, as [`escape_words`]: files and
+/// cloud storage the server can reach, and the sinks of a changefeed. (`SHOW BACKUP … IN '<uri>'`
+/// reads storage; a read-only connection refuses it by `BACKUP` in [`WRITE_KEYWORDS`].)
+const CRDB_ESCAPE_WORDS: [&str; 7] =
+    ["BACKUP", "BACKUPS", "RESTORE", "IMPORT", "EXPORT", "CHANGEFEED", "REPLICATION"];
+
+/// Statements that act on other sessions and jobs: refused as the first keyword, since a bare
+/// `RESUME` is a plausible column name.
+const CRDB_ESCAPE_FIRST: [&str; 3] = ["CANCEL", "PAUSE", "RESUME"];
+
+/// [`escape_pair`] for CockroachDB: cluster settings (its `ALTER SYSTEM`), external
+/// connections (stored storage URIs) and logical replication to another cluster.
+fn crdb_escape_pair(code: &str) -> Option<&'static str> {
+    let flat = blank_comments(code, false);
+    let seq = |a: &str, b: &str| after_word(&flat, a).any(|(_, r)| starts_word(r, b));
+    [
+        ("SET", "CLUSTER", "SET CLUSTER SETTING"),
+        ("RESET", "CLUSTER", "RESET CLUSTER SETTING"),
+        ("CREATE", "EXTERNAL", "CREATE EXTERNAL CONNECTION"),
+        ("CREATE", "LOGICAL", "CREATE LOGICAL REPLICATION STREAM"),
+    ]
+    .into_iter()
+    .find_map(|(a, b, label)| seq(a, b).then_some(label))
+}
+
 /// What a writes-allowed connection still refuses: statements that reach beyond the database —
 /// the disk, the OS, other servers, other sessions, the server's configuration, or the one
 /// session SQL Server shares with the app. Looked for in the scanned code (a string or quoted
@@ -251,11 +310,14 @@ fn guard(engine: &str, sql: &str, writes: bool, mcp: bool) -> Result<(), String>
     if sql.trim().is_empty() {
         return Err("Empty SQL.".into());
     }
+    let crdb = engine == COCKROACHDB;
+    let engine = base_engine(engine);
     // `code`: the text with its literals and quoted identifiers blanked out.
     let code = scan(engine, sql)?;
     let upper = sql.to_uppercase();
     let file_fns: &[&str] = if mcp && engine == "duckdb" { &DUCKDB_FILE_FUNCTIONS } else { &[] };
-    if let Some(f) = engine_functions(engine).iter().chain(file_fns).find(|f| has_pattern(&upper, f)) {
+    let crdb_fns: &[&str] = if crdb { &CRDB_FUNCTIONS } else { &[] };
+    if let Some(f) = engine_functions(engine).iter().chain(file_fns).chain(crdb_fns).find(|f| has_pattern(&upper, f)) {
         return Err(format!(
             "`{}` is not allowed on this connection: it reads files or acts outside the query \
              (refused anywhere in the text, even inside a string or comment).",
@@ -283,7 +345,25 @@ fn guard(engine: &str, sql: &str, writes: bool, mcp: bool) -> Result<(), String>
             .into());
     }
     let code = code.to_uppercase();
+    // `EXPLAIN ANALYZE (DEBUG)` runs the statement and saves a diagnostics bundle on the
+    // server, which survives the read-only transaction's rollback.
+    if crdb && first_keyword(sql) == "EXPLAIN" && has_word(&code, "DEBUG") {
+        return Err("`EXPLAIN … (DEBUG)` is not allowed on this connection: it saves a statement bundle on the server.".into());
+    }
     if writes {
+        if crdb {
+            let first = first_keyword(sql);
+            let word = CRDB_ESCAPE_WORDS.iter().find(|k| has_word(&code, k)).copied();
+            let verb = CRDB_ESCAPE_FIRST.iter().find(|k| **k == first).copied();
+            if let Some(k) = word.or(verb).or_else(|| crdb_escape_pair(&code)) {
+                return Err(format!(
+                    "`{k}` is not allowed on this connection, even with writes allowed: it reaches beyond \
+                     the database (files, cloud storage, the cluster's settings, or other sessions and jobs). \
+                     It is refused outside a string or quoted name, comments included. If it is a column or \
+                     table name, quote it."
+                ));
+            }
+        }
         if let Some(k) = escape_names(engine).iter().find(|k| has_word(&upper, k)) {
             return Err(format!(
                 "`{k}` is not allowed on this connection, even with writes allowed: it changes the \
@@ -300,7 +380,8 @@ fn guard(engine: &str, sql: &str, writes: bool, mcp: bool) -> Result<(), String>
         }
         return Ok(());
     }
-    if let Some(k) = WRITE_KEYWORDS.iter().find(|k| has_word(&upper, k)) {
+    let crdb_writers: &[&str] = if crdb { &CRDB_WRITE_KEYWORDS } else { &[] };
+    if let Some(k) = WRITE_KEYWORDS.iter().chain(crdb_writers).find(|k| has_word(&upper, k)) {
         return Err(format!(
             "Only read-only SQL is allowed here: `{k}` is not allowed (it is refused anywhere in \
              the text, even inside a string or comment)."
@@ -446,6 +527,7 @@ pub fn single_statement(engine: &str, sql: &str) -> Result<(), String> {
 /// [`single_statement`]'s scan, returning `sql` with every literal and quoted identifier
 /// (delimiters included) blanked to spaces — comments are kept.
 fn scan(engine: &str, sql: &str) -> Result<String, String> {
+    let engine = base_engine(engine);
     let refuse = |why: &str| Err(format!("Only a single statement is allowed: {why}."));
     if sql.contains("/*!") || sql.contains("/*M!") {
         return refuse("MySQL executable comments (/*! … */) are refused");
@@ -564,12 +646,13 @@ pub fn widget_stmts(engine: &str, sql: &str) -> Result<Vec<String>, String> {
 
 /// `sql` inside a transaction that cannot keep a write: `READ ONLY` on Postgres/MySQL (a
 /// write fails), `BEGIN … ROLLBACK` elsewhere (a write is undone). Not a guard by itself —
-/// MySQL DDL commits implicitly, ending the transaction first — so callers use
+/// MySQL DDL commits implicitly, ending the transaction first, and so does CockroachDB's
+/// (`autocommit_before_ddl`, live-checked in `mcp_live`) — so callers use
 /// [`read_only_stmts`]. All three run on one pinned connection; a failure mid-way never
 /// returns it to a pool mid-transaction (`touches_session` closes a sqlx connection after
 /// BEGIN; DuckDB's per-run clone and SQL Server's `rollback_orphan_tx` roll back).
 pub fn read_only_wrap(engine: &str, sql: &str) -> Result<Vec<String>, String> {
-    let begin = match engine {
+    let begin = match base_engine(engine) {
         "postgres" => "BEGIN TRANSACTION READ ONLY",
         "mysql" => "START TRANSACTION READ ONLY",
         "sqlite" | "duckdb" => "BEGIN",

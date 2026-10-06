@@ -8,6 +8,9 @@
 //!   TIQ_MSSQL_URL="Server=tcp:127.0.0.1,51433;User Id=sa;Password=TableIQ_pw1;Database=master;TrustServerCertificate=true;Encrypt=false" \
 //!     cargo test --test sql_log -- --nocapture
 
+mod common;
+use common::live_url;
+
 use std::sync::Arc;
 
 use tableiq_lib::drivers::{
@@ -89,8 +92,7 @@ async fn an_unwrapped_driver_logs_nothing() {
 
 #[tokio::test]
 async fn postgres_statements_are_logged() {
-    let Ok(url) = std::env::var("TIQ_PG_URL") else {
-        eprintln!("skip: no TIQ_PG_URL");
+    let Some(url) = live_url("TIQ_PG_URL") else {
         return;
     };
     let (d, log) = logged(Arc::new(PgDriver::connect(&url).await.unwrap()));
@@ -101,8 +103,7 @@ async fn postgres_statements_are_logged() {
 
 #[tokio::test]
 async fn mysql_statements_are_logged() {
-    let Ok(url) = std::env::var("TIQ_MYSQL_URL") else {
-        eprintln!("skip: no TIQ_MYSQL_URL");
+    let Some(url) = live_url("TIQ_MYSQL_URL") else {
         return;
     };
     let (d, log) = logged(Arc::new(MySqlDriver::connect(&url).await.unwrap()));

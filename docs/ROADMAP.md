@@ -1,6 +1,6 @@
 # TableIQ Roadmap
 
-_Last updated 2026-10-04 · current version v0.8.3 · companion doc: [GTM.md](GTM.md)_
+_Last updated 2026-10-06 · current version v0.8.4 · companion doc: [GTM.md](GTM.md)_
 
 We are aiming for engine parity with [dbx](https://github.com/t8y2/dbx) (100+ database profiles, 22k★ in five months) while keeping the product TablePlus-grade and agent-safe. Each phase ships as one `/rudys-workflow` slice and one PR, and each merged phase gets its own release announcement (see GTM.md).
 
@@ -69,8 +69,8 @@ A **profile** is a base driver plus default port and URL scheme, dialect quirks,
 - [x] Live tests in CI against TiDB, CockroachDB and MariaDB (`src-tauri/tests/profile_live.rs`).
 - [x] A by-hand smoke run against the profiles that could be run on the test machine: 8 of the 20 profiles outside CI. 7 profiles are verified, meaning every hard check passed: MariaDB, TiDB and CockroachDB (CI), and GreatSQL, Dolt, YugabyteDB and TimescaleDB (by hand).
 - [ ] The other 16 ship as Beta. Four were run and failed a hard check: QuestDB and Materialize at Browse, Manticore at Browse (it connects through the session-setup fallback), and StarRocks at connect (run before the fallback, not re-run). Twelve were not run: Apache Doris, RisingWave and openGauss have images that were too large or would not start; OceanBase, PolarDB-X and Vitess were not probed; SelectDB, PlanetScale, Amazon Redshift, Neon, Supabase and AlloyDB are cloud only. Each Beta profile moves to verified when its row in `docs/ENGINES.md` has every hard check `ok`.
-- [ ] Agent access for compatible engines. They cannot be shared over MCP in this release; it opens per engine after the agent guard is reviewed for it (TODOS.md).
-- [ ] Cloud URL presets beyond the host suffixes and schemes in the table (RDS/Aurora, Azure SQL, Cloud SQL).
+- [ ] Agent access for compatible engines. It opens per engine after the agent guard is reviewed for it: CockroachDB since 0.8.4; TiDB stays closed (it has no read-only transaction, `docs/ENGINES.md`); the rest cannot be shared yet (TODOS.md).
+- [x] Cloud URL presets for RDS/Aurora, Azure PostgreSQL/MySQL and Cloud SQL (v0.8.4); Azure SQL gets TLS only.
 
 ## P2 · Full Mongo and Redis browsers
 

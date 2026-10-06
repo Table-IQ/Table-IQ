@@ -2,6 +2,9 @@
 //! (and value escaping / NULLs) landed. Gated on TIQ_PG_URL:
 //!   TIQ_PG_URL=postgres://postgres:tableiq@127.0.0.1:55432/tableiq cargo test --test import
 
+mod common;
+use common::live_url;
+
 use arrow::array::{Array, StringArray};
 use arrow::record_batch::RecordBatch;
 
@@ -21,8 +24,7 @@ fn cell(batch: &RecordBatch, col: &str, row: usize) -> Option<String> {
 
 #[tokio::test]
 async fn csv_imports_into_postgres() {
-    let Ok(url) = std::env::var("TIQ_PG_URL") else {
-        eprintln!("skip: no TIQ_PG_URL");
+    let Some(url) = live_url("TIQ_PG_URL") else {
         return;
     };
     let drv = PgDriver::connect(&url).await.expect("connect");

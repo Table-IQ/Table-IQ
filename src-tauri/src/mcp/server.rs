@@ -26,7 +26,7 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use super::guard::{guard_sql, read_only_stmts};
-use super::{record, Activity, McpConfig};
+use super::{record, Activity, McpConfig, McpConn};
 use crate::connections::ConnConfig;
 use crate::drivers::{DriverError, SqlDriver};
 use crate::profiles;
@@ -295,9 +295,9 @@ fn client_name(ext: &Extensions) -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
-/// The allowlisted SQL connection `id` and whether it allows writes. An id that is not on
+/// The allowlisted SQL connection `id` and its allowlist entry. An id that is not on
 /// the allowlist gets the same answer whether or not it exists.
-fn allowed(host: &dyn Host, cfg: &McpConfig, id: &str) -> Result<(ConnConfig, bool), String> {
+fn allowed(host: &dyn Host, cfg: &McpConfig, id: &str) -> Result<(ConnConfig, McpConn), String> {
     let entry = cfg.connections.iter().find(|c| c.id == id).ok_or_else(|| {
         format!("Connection `{id}` is not shared over MCP. The user can allow it in TableIQ → Settings → MCP.")
     })?;
@@ -311,15 +311,18 @@ fn allowed(host: &dyn Host, cfg: &McpConfig, id: &str) -> Result<(ConnConfig, bo
         return Err(format!("Connection `{id}` is not a SQL connection."));
     }
     // The saved profile, before anything connects; the live session is checked in `session`.
-    if let Some(reason) = profiles::agent_block(&conn.engine, conn.profile.as_deref(), None, true) {
+    if let Some(reason) = profiles::agent_block(&conn.engine, conn.profile.as_deref(), None, true)
+        .or_else(|| profiles::reconfirm_block(conn.profile.as_deref(), None, entry.rev))
+    {
         return Err(reason);
     }
-    Ok((conn, entry.writes))
+    Ok((conn, entry.clone()))
 }
 
 /// The live session for `conn`, connecting on demand. A DuckDB one is hardened first.
-/// Refused while a restore is swapping the connection's file.
-async fn session(host: &dyn Host, conn: &ConnConfig) -> Result<Arc<dyn SqlDriver>, String> {
+/// Refused while a restore is swapping the connection's file. `rev`: the allowlist entry's
+/// (`McpConn::rev`), which the product the server reports must not postdate.
+async fn session(host: &dyn Host, conn: &ConnConfig, rev: u32) -> Result<Arc<dyn SqlDriver>, String> {
     let state = host.conns();
     not_restoring(&conn.id)?;
     let drv = match state.session(&conn.id) {
@@ -327,6 +330,11 @@ async fn session(host: &dyn Host, conn: &ConnConfig) -> Result<Arc<dyn SqlDriver
         Err(_) => connect_once(state, &conn.id).await?,
     };
     drv.agent_access()?;
+    // What the server says it is can postdate the entry (saved as plain PostgreSQL, shared,
+    // and only now known to be CockroachDB).
+    if let Some(reason) = profiles::reconfirm_block(conn.profile.as_deref(), drv.detected_product().as_deref(), rev) {
+        return Err(reason);
+    }
     if conn.engine == "duckdb" {
         harden_duckdb(drv.as_ref()).await?;
     }
@@ -391,7 +399,9 @@ fn list_connections_body(host: &dyn Host, cfg: &McpConfig) -> Done {
         .configs()
         .into_iter()
         .filter(|c| {
-            cfg.connections.iter().any(|a| a.id == c.id)
+            cfg.connections
+                .iter()
+                .any(|a| a.id == c.id && profiles::reconfirm_block(c.profile.as_deref(), None, a.rev).is_none())
                 && SQL_ENGINES.contains(&c.engine.as_str())
                 && profiles::agent_block(&c.engine, c.profile.as_deref(), None, true).is_none()
         })
@@ -402,16 +412,16 @@ fn list_connections_body(host: &dyn Host, cfg: &McpConfig) -> Done {
 }
 
 async fn list_databases_body(host: Arc<dyn Host>, cfg: Arc<McpConfig>, id: String) -> Done {
-    let (conn, _) = allowed(host.as_ref(), &cfg, &id)?;
-    let drv = session(host.as_ref(), &conn).await?;
+    let (conn, entry) = allowed(host.as_ref(), &cfg, &id)?;
+    let drv = session(host.as_ref(), &conn, entry.rev).await?;
     let dbs = drv.list_databases().await.map_err(|e| e.to_string())?;
     let n = dbs.len();
     Ok((json(&dbs)?, Some(n)))
 }
 
 async fn list_tables_body(host: Arc<dyn Host>, cfg: Arc<McpConfig>, a: ListTablesArgs) -> Done {
-    let (conn, _) = allowed(host.as_ref(), &cfg, &a.connection_id)?;
-    let drv = session(host.as_ref(), &conn).await?;
+    let (conn, entry) = allowed(host.as_ref(), &cfg, &a.connection_id)?;
+    let drv = session(host.as_ref(), &conn, entry.rev).await?;
     let model = drv.introspect().await.map_err(|e| e.to_string())?;
     let tables: Vec<TableSummary> = model
         .schemas
@@ -427,8 +437,8 @@ async fn list_tables_body(host: Arc<dyn Host>, cfg: Arc<McpConfig>, a: ListTable
 }
 
 async fn describe_table_body(host: Arc<dyn Host>, cfg: Arc<McpConfig>, a: DescribeArgs) -> Done {
-    let (conn, _) = allowed(host.as_ref(), &cfg, &a.connection_id)?;
-    let drv = session(host.as_ref(), &conn).await?;
+    let (conn, entry) = allowed(host.as_ref(), &cfg, &a.connection_id)?;
+    let drv = session(host.as_ref(), &conn, entry.rev).await?;
     match drv.describe_table(&a.schema, &a.table).await {
         Ok(t) => Ok((json(&t)?, Some(t.columns.len()))),
         // Engines without a Structure query still know the columns from introspection.
@@ -484,15 +494,19 @@ async fn run_query_body(
     token: CancelToken,
     started: Started,
 ) -> Done {
-    let (conn, writes) = allowed(host.as_ref(), &cfg, &a.connection_id)?;
-    let stmts = if writes {
-        guard_sql(&conn.engine, &a.sql, true)?;
-        vec![a.sql.clone()]
-    } else {
-        read_only_stmts(&conn.engine, &a.sql)?
-    };
+    let (conn, entry) = allowed(host.as_ref(), &cfg, &a.connection_id)?;
+    let writes = entry.writes;
+    // Guarded for the saved profile before anything connects, and again once the server has
+    // said what it is, when that changes the rules (saved as Neon or plain PostgreSQL, but
+    // CockroachDB).
+    let saved_engine = profiles::guard_engine(&conn.engine, conn.profile.as_deref(), None);
+    let mut stmts = guarded(saved_engine, &a.sql, writes)?;
     let cap = a.max_rows.unwrap_or(cfg.row_cap).min(cfg.row_cap);
-    let drv = session(host.as_ref(), &conn).await?;
+    let drv = session(host.as_ref(), &conn, entry.rev).await?;
+    let live_engine = profiles::guard_engine(&conn.engine, conn.profile.as_deref(), drv.detected_product().as_deref());
+    if live_engine != saved_engine {
+        stmts = guarded(live_engine, &a.sql, writes)?;
+    }
     // Timed out while connecting: the agent was told it was cancelled, so it must not run.
     if token.is_cancelled() {
         return Err("Query cancelled".into());
@@ -506,6 +520,17 @@ async fn run_query_body(
     fit_rows(&mut rows, MAX_RESPONSE_BYTES);
     let n = rows.rows.len();
     Ok((json(&rows)?, Some(n)))
+}
+
+/// `sql` as the statements to run on a connection the guard knows as `engine`: itself where
+/// writes are allowed, else inside the read-only transaction.
+fn guarded(engine: &str, sql: &str, writes: bool) -> Result<Vec<String>, String> {
+    if writes {
+        guard_sql(engine, sql, true)?;
+        Ok(vec![sql.to_string()])
+    } else {
+        read_only_stmts(engine, sql)
+    }
 }
 
 /// Drop trailing rows until `rows` serializes within `budget` bytes, flagging `truncated`.
@@ -633,8 +658,8 @@ impl TiqMcp {
                           query. On a connection that allows writes, a timed-out statement may have taken \
                           effect, or may still take effect (a DuckDB query keeps running until it finishes), \
                           so confirm its outcome before running it again. The connection must be a server \
-                          TableIQ recognises as PostgreSQL, MySQL, MariaDB, SQL Server, SQLite or DuckDB; \
-                          compatible engines such as TiDB or CockroachDB are refused.")]
+                          TableIQ recognises as PostgreSQL, MySQL, MariaDB, CockroachDB, SQL Server, SQLite or \
+                          DuckDB; other compatible engines such as TiDB are refused.")]
     async fn run_query(&self, ext: Extensions, Parameters(a): Parameters<RunQueryArgs>) -> Result<String, String> {
         let (id, sql) = (a.connection_id.clone(), a.sql.clone());
         let engine = allowed(self.host.as_ref(), &self.cfg, &id).map(|(c, _)| c.engine).unwrap_or_default();
@@ -732,7 +757,7 @@ mod tests {
 
     fn mcp(conns: Vec<ConnConfig>, allow: &[(&str, bool)]) -> TiqMcp {
         let cfg = McpConfig {
-            connections: allow.iter().map(|(id, w)| McpConn { id: (*id).into(), writes: *w }).collect(),
+            connections: allow.iter().map(|(id, w)| McpConn { id: (*id).into(), writes: *w, rev: 0 }).collect(),
             ..McpConfig::default()
         };
         TiqMcp::new(Arc::new(ConnState::with_configs(conns)), Arc::new(cfg), fresh_slots())
@@ -790,7 +815,7 @@ mod tests {
         let tools = TiqMcp::tool_router().list_all();
         let desc = tools.iter().find(|t| t.name == "run_query").and_then(|t| t.description.as_deref()).unwrap();
         assert!(desc.contains(&format!("{} seconds", TOOL_TIMEOUT.as_secs())), "{desc}");
-        assert!(desc.contains("compatible engines such as TiDB or CockroachDB are refused"), "{desc}");
+        assert!(desc.contains("other compatible engines such as TiDB are refused"), "{desc}");
     }
 
     /// The saved profile alone decides, before anything connects: a known compatible product
@@ -808,6 +833,36 @@ mod tests {
         real.profile = Some("neon".into());
         let m = mcp(vec![real], &[("n", true)]);
         assert!(allowed(m.host.as_ref(), &m.cfg, "n").is_ok(), "a real engine under a vendor name stays shared");
+    }
+
+    /// CockroachDB was opened to agents after entries for it could exist (a connection shared
+    /// as plain PostgreSQL before it was recognised): such an entry, `rev` 0, is not served
+    /// or listed until the user shares the connection again. A product always open is unaffected.
+    #[tokio::test]
+    async fn an_entry_from_before_the_products_opening_is_not_served() {
+        let with = |id: &str, profile: Option<&str>| {
+            let mut c = cfg_of(id, "postgres", "d");
+            c.profile = profile.map(Into::into);
+            c
+        };
+        let conns = vec![with("crdb", Some("cockroachdb")), with("pg", None), with("neon", Some("neon"))];
+        let stale = mcp(conns.clone(), &[("crdb", true), ("pg", true), ("neon", true)]);
+        let e = allowed(stale.host.as_ref(), &stale.cfg, "crdb").unwrap_err();
+        assert!(e.contains("shared before TableIQ supported CockroachDB over MCP"), "{e}");
+        assert!(allowed(stale.host.as_ref(), &stale.cfg, "pg").is_ok() && allowed(stale.host.as_ref(), &stale.cfg, "neon").is_ok());
+        let listed = |m: &TiqMcp| -> Vec<String> {
+            let (out, _) = list_connections_body(m.host.as_ref(), &m.cfg).unwrap();
+            serde_json::from_str::<Vec<serde_json::Value>>(&out).unwrap().iter().map(|c| c["id"].as_str().unwrap().into()).collect()
+        };
+        assert_eq!(listed(&stale), ["pg", "neon"]);
+
+        let cfg = McpConfig {
+            connections: vec![McpConn { id: "crdb".into(), writes: false, rev: profiles::agent_rev() }],
+            ..McpConfig::default()
+        };
+        let fresh = TiqMcp::new(Arc::new(ConnState::with_configs(conns)), Arc::new(cfg), fresh_slots());
+        assert!(allowed(fresh.host.as_ref(), &fresh.cfg, "crdb").is_ok());
+        assert_eq!(listed(&fresh), ["crdb"]);
     }
 
     #[tokio::test]
@@ -880,7 +935,7 @@ mod tests {
         let conn = cfg_of("plain", "mysql", "d");
         let m = mcp(vec![conn.clone()], &[("plain", true)]);
         m.host.conns().adopt_session("plain", Arc::new(Refuses));
-        assert_eq!(session(m.host.as_ref(), &conn).await.err().as_deref(), Some("nope"));
+        assert_eq!(session(m.host.as_ref(), &conn, 0).await.err().as_deref(), Some("nope"));
         assert_eq!(query(&m, "plain", "SELECT 1").await.unwrap_err(), "nope");
     }
 
@@ -1005,7 +1060,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = McpConfig {
             row_cap: 2,
-            connections: vec![McpConn { id: "c".into(), writes: false }],
+            connections: vec![McpConn { id: "c".into(), writes: false, rev: 0 }],
             ..McpConfig::default()
         };
         let m = TiqMcp::new(
@@ -1196,7 +1251,7 @@ mod tests {
         let conn = sqlite(&tmp, "mcp-restoring").await;
         let m = mcp(vec![conn.clone()], &[("mcp-restoring", false)]);
         let guard = crate::ipc::connect::Restoring::begin("mcp-restoring").unwrap();
-        let e = session(m.host.as_ref(), &conn).await.err().expect("refused");
+        let e = session(m.host.as_ref(), &conn, 0).await.err().expect("refused");
         assert!(e.contains("being restored"), "{e}");
         let e = connect_inner(m.host.conns(), "mcp-restoring").await.err().expect("refused");
         assert!(e.contains("being restored"), "{e}");
@@ -1216,7 +1271,7 @@ mod tests {
         let m = mcp(vec![conn.clone()], &[("mcp-once", false)]);
         let calls = (0..8).map(|_| {
             let (host, conn) = (m.host.clone(), conn.clone());
-            tokio::spawn(async move { session(host.as_ref(), &conn).await.map_err(|e| e.to_string()) })
+            tokio::spawn(async move { session(host.as_ref(), &conn, 0).await.map_err(|e| e.to_string()) })
         });
         let got: Vec<_> = futures_util::future::join_all(calls).await.into_iter().map(|r| r.unwrap().unwrap()).collect();
         let installed = m.host.conns().session("mcp-once").unwrap();
@@ -1417,7 +1472,7 @@ mod tests {
             let id = format!("{engine}-busy");
             let state = ConnState::with_configs(vec![cfg_of(&id, engine, "tableiq")]);
             state.adopt_session(&id, drv.clone());
-            let cfg = McpConfig { connections: vec![McpConn { id: id.clone(), writes: true }], ..McpConfig::default() };
+            let cfg = McpConfig { connections: vec![McpConn { id: id.clone(), writes: true, rev: 0 }], ..McpConfig::default() };
             let mut m = TiqMcp::new(Arc::new(state), Arc::new(cfg), fresh_slots());
             pool_held_timeout_never_runs(&mut m, &id, drv.clone(), hold, &table, "0").await;
             drv.run_script(&format!("DROP TABLE {table}")).await.unwrap();
@@ -1477,7 +1532,7 @@ mod tests {
         let state = ConnState::with_configs(vec![cfg_of("mssql-live", "sqlserver", "master")]);
         state.adopt_session("mssql-live", Arc::new(drv));
         let host: Arc<dyn Host> = Arc::new(state);
-        let cfg = McpConfig { connections: vec![McpConn { id: "mssql-live".into(), writes: false }], ..McpConfig::default() };
+        let cfg = McpConfig { connections: vec![McpConn { id: "mssql-live".into(), writes: false, rev: 0 }], ..McpConfig::default() };
         let mut m = TiqMcp::new(host.clone(), Arc::new(cfg), fresh_slots());
         m.timeout = Duration::from_millis(1500);
 
@@ -1526,7 +1581,7 @@ mod tests {
         let state = ConnState::with_configs(vec![cfg_of("mssql-q", "sqlserver", "master")]);
         state.adopt_session("mssql-q", Arc::new(mssql(&ado).await));
         let host: Arc<dyn Host> = Arc::new(state);
-        let cfg = McpConfig { connections: vec![McpConn { id: "mssql-q".into(), writes: false }], ..McpConfig::default() };
+        let cfg = McpConfig { connections: vec![McpConn { id: "mssql-q".into(), writes: false, rev: 0 }], ..McpConfig::default() };
         let mut m = TiqMcp::new(host.clone(), Arc::new(cfg), fresh_slots());
         m.timeout = Duration::from_millis(1500);
 

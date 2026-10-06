@@ -8,6 +8,9 @@
 //!
 //! SQLite needs no server; MySQL and Postgres are gated on their URLs.
 
+mod common;
+use common::live_url;
+
 use arrow::array::{Array, StringArray};
 use arrow::record_batch::RecordBatch;
 use tableiq_lib::drivers::SqlDriver;
@@ -50,8 +53,7 @@ async fn sqlite_browse_renders_non_utf8_bytes_as_hex() {
 async fn mysql_browse_renders_non_utf8_bytes_as_hex() {
     use tableiq_lib::drivers::mysql::MySqlDriver;
 
-    let Ok(url) = std::env::var("TIQ_MYSQL_URL") else {
-        eprintln!("skip: no TIQ_MYSQL_URL");
+    let Some(url) = live_url("TIQ_MYSQL_URL") else {
         return;
     };
     let pool = sqlx::mysql::MySqlPoolOptions::new().connect(&url).await.unwrap();
@@ -97,8 +99,7 @@ async fn mysql_browse_renders_non_utf8_bytes_as_hex() {
 async fn postgres_refuses_untranscodable_bytes_instead_of_inventing_a_null() {
     use tableiq_lib::drivers::postgres::PgDriver;
 
-    let Ok(url) = std::env::var("TIQ_PG_URL") else {
-        eprintln!("skip: no TIQ_PG_URL");
+    let Some(url) = live_url("TIQ_PG_URL") else {
         return;
     };
     // In a UTF8 database every `col::text` is valid UTF-8 by construction, so the only way to

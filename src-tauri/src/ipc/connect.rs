@@ -1406,8 +1406,43 @@ pub async fn query_rows(
     let drv = state.session(&id)?;
     let cap = max_rows.unwrap_or(1000).min(1000);
     let key = query_id.map(|q| ckey(&id, &q));
-    let stmts = if read_only.unwrap_or(false) { widget_stmts(&state, &id, &sql)? } else { vec![sql] };
-    registered_rows(&state.cancels, drv.as_ref(), key.as_deref(), &stmts, cap).await
+    if read_only.unwrap_or(false) {
+        let stmts = widget_stmts(&state, &id, &sql)?;
+        return widget_rows(&state.cancels, drv.as_ref(), key.as_deref(), &stmts, cap).await;
+    }
+    registered_rows(&state.cancels, drv.as_ref(), key.as_deref(), &[sql], cap).await
+}
+
+/// [`registered_rows`] for a Metrics widget (`stmts` from `mcp::guard::widget_stmts`: BEGIN,
+/// the SQL, ROLLBACK). When a wire-compatible product fails one, the transaction wrapper alone
+/// is tried: if the engine refuses that too (TiDB rejects `START TRANSACTION READ ONLY` unless
+/// `tidb_enable_noop_functions`), it has no read-only transactions, and the widget says so
+/// instead of passing on the driver text.
+pub async fn widget_rows(
+    cancels: &Mutex<HashMap<String, CancelToken>>,
+    drv: &dyn SqlDriver,
+    key: Option<&str>,
+    stmts: &[String],
+    cap: usize,
+) -> Result<Rows, String> {
+    let res = registered_rows(cancels, drv, key, stmts, cap).await;
+    let product = drv.product().and_then(|id| crate::profiles::lookup(&id).map(|p| (id, p.real)));
+    // Only a refusal that names read-only can mean "no read-only transactions": a dropped
+    // link or a cancelled run must keep its own error.
+    let read_only_refused = res.as_ref().err().is_some_and(|e| {
+        let e = e.to_lowercase();
+        e.contains("read only") || e.contains("read-only")
+    });
+    if let (true, Some((id, false)), [begin, .., end]) = (read_only_refused, product, stmts) {
+        let wrap = [begin.clone(), end.clone()];
+        if rows_of(drv, &wrap, 1, &CancelToken::new()).await.is_err() {
+            return Err(format!(
+                "{} has no read-only transactions, so Metrics widgets can't run here.",
+                crate::profiles::label(&id)
+            ));
+        }
+    }
+    res
 }
 
 /// Would a Metrics widget's `sql` pass the guard it runs under (`query_rows` with

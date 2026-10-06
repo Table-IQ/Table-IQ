@@ -69,8 +69,9 @@ uses; a failure means that feature degrades on that product.
 - `explain_json`: the Explain view.
 - `cancel`: the Stop button on a running statement.
 - `mcp_read_only`: whether the read-only wrapper used for agent reads keeps a write from
-  landing. Measured on every run that creates its own fixture table, but compatible products
-  are not shared over MCP at all in this release (see below).
+  landing. Measured on every run that creates its own fixture table. It is one line of
+  defence only: the guard (`mcp/guard.rs`) is the other, and DDL gets past the wrapper on MySQL
+  and CockroachDB. Of the compatible products only CockroachDB is shared over MCP (see below).
 
 | Profile | describe_table | foreign_keys | table_stats | estimate_rows | list_databases | explain_json | cancel | mcp_read_only |
 |---|---|---|---|---|---|---|---|---|
@@ -169,7 +170,7 @@ detected product differ, the saved one stays and the more restrictive capabiliti
 | Manticore Search | no | no | no | no |
 | PlanetScale | yes | no | no | no |
 | Vitess | yes | no | no | no |
-| CockroachDB | yes | no | no | no |
+| CockroachDB | yes | no | no | yes |
 | Amazon Redshift | yes | no | no | no |
 | YugabyteDB | yes | no | no | no |
 | Neon | yes | yes | yes | yes |
@@ -186,10 +187,64 @@ detected product differ, the saved one stays and the more restrictive capabiliti
 - **Backup and restore, user management:** taken from the profile's `backup` and `userMgmt`
   flags. Both are off for every compatible product; MariaDB has backup, and the real PostgreSQL
   profiles have both.
-- **Agent access:** a compatible product (`real: false`), a server whose version query failed
-  so TableIQ could not identify it, or a profile id saved by a newer build cannot be shared
-  over MCP at all, for reads or writes. MariaDB, Neon, Supabase, TimescaleDB and AlloyDB are the
-  base engine under a vendor name and keep MCP access.
+- **Agent access:** the profile's own `agent` flag (absent: the same as `real`), separate from
+  `real`, which also makes the drivers treat the server as the base engine. A product without
+  it, a server whose version query failed so TableIQ could not identify it, or a profile id saved
+  by a newer build cannot be shared over MCP at all, for reads or writes. MariaDB, Neon,
+  Supabase, TimescaleDB and AlloyDB are the base engine under a vendor name and keep MCP access;
+  CockroachDB has `agent: true` with `real: false`. A product's `agentNote` is the reason the
+  UI and the MCP error give for a refusal.
+- **An entry shared before a product opened to agents is not served.** `agentSince` on a
+  profile dates its opening (`agent_rev()` is the latest); an allowlist entry (`McpConn.rev`,
+  0 when the file predates the field) from before it is refused by every tool until the user turns
+  sharing off and on, which records the current generation and starts with writes off. The
+  saved profile is checked per call (`allowed`), and what the server reports at connect too
+  (`session`), so a CockroachDB saved as plain PostgreSQL, shared before this release, is caught.
+  Settings → MCP also drops such entries for connections with a saved profile (`pruneUnshareable`).
+
+### CockroachDB over MCP
+
+Opened in 0.8.4 after a live review against v26.3.2 (`tests/mcp_live.rs`, `tests/guard_suite.rs`).
+The guard runs as the `cockroachdb` dialect (`profiles::guard_engine`, chosen from the saved
+profile or the detected product, so a CockroachDB saved as Neon or plain PostgreSQL is guarded
+as one): the PostgreSQL rules, plus
+
+- **Functions** that write files, change cluster state or act on other sessions, from the
+  server's `pg_proc`: `crdb_internal.read_file`/`write_file`, `force_panic`/`force_log_fatal`/
+  `force_delete_table_data` and the other `force_*`, `unsafe_*`, `reset_*`, `generate_test_objects`,
+  the statement-bundle and hint functions, `deserialize_session` and more (`CRDB_FUNCTIONS`).
+  The server itself refuses all of `crdb_internal` until a session sets `allow_unsafe_internals`,
+  and a writes-allowed connection could set it, so that name is refused as well.
+- **Statements**: `UPSERT` (it can sit in a data source, `FROM [UPSERT … RETURNING *]`),
+  `SHOW BACKUP(S) IN '<uri>'` (reads storage), `EXPLAIN ANALYZE (DEBUG)` (saves a bundle that
+  outlives the rollback). With writes allowed also `EXPORT`, `IMPORT`, `BACKUP`, `RESTORE`,
+  `CREATE CHANGEFEED`, `SET`/`RESET CLUSTER SETTING`, `CREATE EXTERNAL CONNECTION`, `CREATE
+  LOGICAL REPLICATION STREAM`, and `CANCEL`/`PAUSE`/`RESUME` (jobs, queries, sessions).
+
+What the live tests prove: `BEGIN TRANSACTION READ ONLY` refuses `INSERT`, `UPDATE`, `DELETE`,
+`UPSERT`, data-modifying CTEs, `[INSERT … RETURNING]` as a source, `FOR SHARE`, `nextval`,
+`setval` and a SQL function that writes. It does not hold against DDL (since
+`autocommit_before_ddl` the server commits first, as MySQL does), `EXPLAIN ANALYZE (DEBUG)`
+or a second statement: `SELECT 1; COMMIT; INSERT …` through the bare wrapper keeps the
+INSERT. The guard stops all three, and the guard-suite cases (second statements, CTE writes,
+escapes) run against the `cockroachdb` dialect and through the MCP server over HTTP, with the
+table and sequence unchanged afterwards. As in the other engines a bare escape word used as a
+name (`import`, `backup`) must be quoted on a writes-allowed connection, `SHOW CREATE …` is
+refused on a read-only one (`CREATE` is a write word), and `unsafe_*` names are refused anywhere.
+New server versions can add `crdb_internal` functions: the list is from v26.3.2, and the
+server's own `allow_unsafe_internals` gate is what covers the rest.
+
+### TiDB over MCP: still closed
+
+TiDB rejects `START TRANSACTION READ ONLY` and `SET … transaction_read_only` unless
+`tidb_enable_noop_functions` is on, and then they do nothing, so there is no read-only
+transaction to stand on (`tests/mcp_live.rs`, `tidb_has_no_default_read_only_transaction`;
+`tidb_super_read_only` needs `SUPER`). `START TRANSACTION READ ONLY AS OF TIMESTAMP NOW(6)` does
+refuse DML ("only support read-only statement during read-only staleness transactions"), but
+it reads a snapshot (a row committed a moment before was not visible in a manual run), DDL
+and `SET GLOBAL` run through it, and TiDB's own function and statement list (`ADMIN`,
+`IMPORT INTO`, `PLAN REPLAYER`, `BATCH`, …) has not been reviewed. Opening TiDB needs a decision
+on snapshot reads and a TiDB dialect in the guard; its `agentNote` says why it is closed.
 
 ## How detection works, and its limits
 

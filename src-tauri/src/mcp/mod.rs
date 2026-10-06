@@ -45,6 +45,11 @@ pub struct McpConn {
     /// Lifts the read-only guard and transaction for this connection.
     #[serde(default)]
     pub writes: bool,
+    /// `profiles::agent_rev()` when the user shared it; 0 for an entry from before. A product
+    /// opened to agents since (`Profile::agent_since`) is not served on an older entry
+    /// (`profiles::reconfirm_block`): sharing it off and on records the current one.
+    #[serde(default)]
+    pub rev: u32,
 }
 
 /// Largest `row_cap` the settings accept.
@@ -355,7 +360,7 @@ mod tests {
         assert!(d.connections.is_empty(), "the allowlist starts empty");
         let partial: McpConfig = serde_json::from_str(r#"{"enabled":true,"connections":[{"id":"c1"}]}"#).unwrap();
         assert_eq!(partial.port, 7431);
-        assert_eq!(partial.connections, vec![McpConn { id: "c1".into(), writes: false }], "read-only by default");
+        assert_eq!(partial.connections, vec![McpConn { id: "c1".into(), writes: false, rev: 0 }], "read-only by default");
     }
 
     #[test]

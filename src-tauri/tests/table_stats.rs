@@ -2,6 +2,9 @@
 //! engine can say, straight from the catalog (never a scan of user data).
 //!   TIQ_PG_URL=postgres://postgres:tableiq@127.0.0.1:55432/tableiq \
 //!   TIQ_MYSQL_URL=mysql://root:tableiq@127.0.0.1:53306/tableiq cargo test --test table_stats
+mod common;
+use common::live_url;
+
 use tableiq_lib::drivers::{mysql::MySqlDriver, postgres::PgDriver, sqlite::SqliteDriver, SqlDriver};
 
 #[tokio::test]
@@ -43,8 +46,7 @@ async fn duckdb_lists_tables_with_row_estimates() {
 
 #[tokio::test]
 async fn pg_reports_rows_and_bytes() {
-    let Ok(url) = std::env::var("TIQ_PG_URL") else {
-        eprintln!("SKIP: TIQ_PG_URL unset");
+    let Some(url) = live_url("TIQ_PG_URL") else {
         return;
     };
     let drv = PgDriver::connect(&url).await.unwrap();
@@ -80,8 +82,7 @@ async fn pg_reports_rows_and_bytes() {
 
 #[tokio::test]
 async fn mysql_reports_bytes() {
-    let Ok(url) = std::env::var("TIQ_MYSQL_URL") else {
-        eprintln!("SKIP: TIQ_MYSQL_URL unset");
+    let Some(url) = live_url("TIQ_MYSQL_URL") else {
         return;
     };
     let drv = MySqlDriver::connect(&url).await.unwrap();

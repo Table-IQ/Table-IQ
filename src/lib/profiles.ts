@@ -18,8 +18,15 @@ export interface Profile {
   ssl?: string;
   schemes: string[];
   hosts: string[];
-  /** The base engine itself under a vendor name (Neon is PostgreSQL), so agents may reach it. */
+  /** The base engine itself under a vendor name (Neon is PostgreSQL): the drivers treat it as the
+   *  base engine, and unless `agent` says otherwise agents may reach it. */
   real: boolean;
+  /** May agents reach it over MCP (its guard is reviewed)? Absent: as `real`. */
+  agent?: boolean;
+  /** The generation (`AGENT_REV`) that opened it to agents; an allowlist entry older than that must be re-shared. */
+  agentSince?: number;
+  /** Why agents cannot reach it, in the user's words; absent: `AGENT_NOTE`. */
+  agentNote?: string;
   transactions: boolean;
   backup: boolean;
   userMgmt: boolean;
@@ -27,6 +34,8 @@ export interface Profile {
   detect: string[];
   /** Run against the real product in the live smoke test. */
   tested: boolean;
+  /** `false` where the live smoke test's `explain_json` soft check fails (docs/ENGINES.md); absent = no known failure. */
+  explain?: boolean;
 }
 
 export const PROFILES = raw as Record<string, Profile>;
@@ -58,6 +67,20 @@ export function profileForUrl(scheme: string, host: string, base: string | null)
   return entries.find(([, p]) => p.base === base && p.hosts.some((s) => h.endsWith(s)))?.[0] ?? null;
 }
 
+/** The named message for Explain on a product known not to run it, else null. */
+export function explainUnavailable(engine: string, profile?: string | null): string | null {
+  const p = profileOf(engine, profile);
+  return p?.explain === false ? `Explain isn't available on ${p.label} yet.` : null;
+}
+
+/** Why a product without an `agentNote` is not shared. Mirrored in `profiles.rs` (`AGENT_NOTE`). */
+export const AGENT_NOTE =
+  "TableIQ's agent guard has been reviewed for PostgreSQL, MySQL, MariaDB and CockroachDB only.";
+
+/** The generation a new allowlist entry is confirmed under: the latest opening of any product
+ *  (`agent_rev` in `profiles.rs`). */
+export const AGENT_REV = Math.max(0, ...Object.values(PROFILES).map((p) => p.agentSince ?? 0));
+
 export interface SheetCaps { transactions: boolean; backup: boolean; userMgmt: boolean; agents: boolean }
 
 /** What the UI may offer for a saved connection (the saved value only; a live session also
@@ -65,7 +88,7 @@ export interface SheetCaps { transactions: boolean; backup: boolean; userMgmt: b
  *  an empty profile is no profile, as in `agent_block` (`profiles.rs`). */
 export function capsOf(engine: string, profile?: string | null): SheetCaps {
   const p = profileOf(engine, profile);
-  if (p) return { transactions: p.transactions, backup: p.backup, userMgmt: p.userMgmt, agents: p.real };
+  if (p) return { transactions: p.transactions, backup: p.backup, userMgmt: p.userMgmt, agents: p.agent ?? p.real };
   return { transactions: true, backup: true, userMgmt: true, agents: !profile };
 }
 

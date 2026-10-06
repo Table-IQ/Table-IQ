@@ -12,6 +12,9 @@
 //!
 //! The SQLite cases need no server and always run; the other three drivers are gated.
 
+mod common;
+use common::live_url;
+
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Pool, Sqlite};
 use tableiq_lib::drivers::{sqlite::SqliteDriver, EditSpec, SqlDriver};
@@ -110,8 +113,7 @@ fn empty_pk_edit() -> EditSpec {
 
 #[tokio::test]
 async fn postgres_apply_edit_refuses_an_empty_primary_key() {
-    let Ok(url) = std::env::var("TIQ_PG_URL") else {
-        eprintln!("skip: no TIQ_PG_URL");
+    let Some(url) = live_url("TIQ_PG_URL") else {
         return;
     };
     let drv = tableiq_lib::drivers::postgres::PgDriver::connect(&url).await.expect("connect");
@@ -121,8 +123,7 @@ async fn postgres_apply_edit_refuses_an_empty_primary_key() {
 
 #[tokio::test]
 async fn mysql_apply_edit_refuses_an_empty_primary_key() {
-    let Ok(url) = std::env::var("TIQ_MYSQL_URL") else {
-        eprintln!("skip: no TIQ_MYSQL_URL");
+    let Some(url) = live_url("TIQ_MYSQL_URL") else {
         return;
     };
     let drv = tableiq_lib::drivers::mysql::MySqlDriver::connect(&url).await.expect("connect");
@@ -161,10 +162,7 @@ async fn mysql_case_fixture(pool: &sqlx::Pool<sqlx::MySql>, table: &str) {
 
 async fn mysql_pool_and_driver(
 ) -> Option<(sqlx::Pool<sqlx::MySql>, tableiq_lib::drivers::mysql::MySqlDriver)> {
-    let Ok(url) = std::env::var("TIQ_MYSQL_URL") else {
-        eprintln!("skip: no TIQ_MYSQL_URL");
-        return None;
-    };
+    let url = live_url("TIQ_MYSQL_URL")?;
     let pool = sqlx::mysql::MySqlPoolOptions::new().connect(&url).await.unwrap();
     let drv = tableiq_lib::drivers::mysql::MySqlDriver::connect(&url).await.expect("connect");
     Some((pool, drv))

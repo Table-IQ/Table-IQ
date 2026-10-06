@@ -1,11 +1,13 @@
 //! Phase 2b: EXPLAIN (FORMAT JSON) plan retrieval. Gated on TIQ_PG_URL.
 
+mod common;
+use common::live_url;
+
 use tableiq_lib::drivers::{postgres::PgDriver, SqlDriver};
 
 #[tokio::test]
 async fn explain_returns_a_plan_tree() {
-    let Ok(url) = std::env::var("TIQ_PG_URL") else {
-        eprintln!("skip: no TIQ_PG_URL");
+    let Some(url) = live_url("TIQ_PG_URL") else {
         return;
     };
     let drv = PgDriver::connect(&url).await.unwrap();

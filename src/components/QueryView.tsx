@@ -10,6 +10,7 @@ import { useResults } from "../state/resultsStore";
 import { useConnections } from "../state/connectionStore";
 import { useTabs } from "../state/tabsStore";
 import { oneLine } from "../lib/history";
+import { explainUnavailable } from "../lib/profiles";
 import { schemaModelToCompletionMap } from "../lib/schemaCompletion";
 import { dialectFor, type SqlDialect } from "../lib/sqlSplit";
 import {
@@ -111,6 +112,8 @@ export function QueryView({
   const schemaModel = useConnections((s) => s.schema);
   // The live session's word: a product without multi-statement transactions has no "Run in tx".
   const canRunInTx = useConnections((s) => s.active?.caps?.transactions !== false);
+  // The session's profile (saved, else detected) names a product Explain is documented to fail on.
+  const explainNote = useConnections((s) => explainUnavailable(engine ?? "postgres", s.active?.profile));
   const completionSchema = useMemo(
     () => schemaModelToCompletionMap(schemaModel),
     [schemaModel],
@@ -289,6 +292,10 @@ export function QueryView({
       return;
     }
     if (engine === "sqlserver") return; // no supported plan shape — button is hidden
+    if (explainNote) {
+      setError(explainNote);
+      return;
+    }
     if (runningRef.current) return;
     runningRef.current = true;
     setRunning(true);
@@ -302,7 +309,7 @@ export function QueryView({
       runningRef.current = false;
       setRunning(false);
     }
-  }, [connId, engine, runItems, targetItems]);
+  }, [connId, engine, explainNote, runItems, targetItems]);
 
   const doExport = useCallback(
     async (fmt: ExportFormat) => {

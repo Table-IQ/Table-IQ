@@ -34,8 +34,8 @@ product): MariaDB, TiDB, CockroachDB, GreatSQL, Dolt, YugabyteDB and TimescaleDB
 (in the picker, marked "(Beta)", not verified): Neon, Supabase, AlloyDB, PlanetScale, Vitess,
 Amazon Redshift, OceanBase, Apache Doris, StarRocks, SelectDB, PolarDB-X, Manticore Search,
 openGauss, QuestDB, Materialize and RisingWave. Products without transactions open read-only
-in the grid, and a compatible product cannot be shared over MCP yet (MariaDB, Neon, Supabase,
-TimescaleDB and AlloyDB can: they are the base engine under another name). A compatible
+in the grid, and a compatible product cannot be shared over MCP yet, except CockroachDB (MariaDB,
+Neon, Supabase, TimescaleDB and AlloyDB can: they are the base engine under another name). A compatible
 product also has no Backup / Restore or User Management; MariaDB keeps backup but has no
 User Management.
 [`docs/ENGINES.md`](docs/ENGINES.md) has the compatibility matrix, what was run and what was

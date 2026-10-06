@@ -12,6 +12,7 @@ import {
   validRowCap,
 } from "./mcp";
 import type { McpConfig } from "./commands";
+import { AGENT_NOTE, AGENT_REV, PROFILES } from "./profiles";
 
 const base: McpConfig = { enabled: true, port: 7431, row_cap: 500, connections: [] };
 
@@ -48,7 +49,7 @@ describe("maskToken", () => {
 describe("allowlist edits", () => {
   it("shares read-only by default and unsharing drops the entry", () => {
     const on = setShared(base, "c1", true);
-    expect(on.connections).toEqual([{ id: "c1", writes: false }]);
+    expect(on.connections).toEqual([{ id: "c1", writes: false, rev: AGENT_REV }]);
     expect(setShared(on, "c1", true).connections).toHaveLength(1);
     expect(setShared(on, "c1", false).connections).toEqual([]);
     expect(base.connections).toEqual([]); // pure
@@ -56,7 +57,7 @@ describe("allowlist edits", () => {
 
   it("toggles writes only on a shared connection", () => {
     const on = setShared(base, "c1", true);
-    expect(setWrites(on, "c1", true).connections).toEqual([{ id: "c1", writes: true }]);
+    expect(setWrites(on, "c1", true).connections).toEqual([{ id: "c1", writes: true, rev: AGENT_REV }]);
     expect(setWrites(base, "c2", true).connections).toEqual([]);
   });
 });
@@ -67,8 +68,12 @@ describe("mcpRowState (a connection's row in Settings → MCP)", () => {
   it("a compatible product cannot be shared, whatever the stored allowlist says", () => {
     expect(mcpRowState({ engine: "mysql", profile: "tidb" }, undefined)).toMatchObject({
       shareable: false,
-      note: "Not available over MCP yet: TableIQ's agent guard has been reviewed for PostgreSQL, MySQL and MariaDB only.",
+      note: `Not available over MCP yet: ${PROFILES.tidb.agentNote}`,
     });
+    expect(PROFILES.tidb.agentNote).toContain("START TRANSACTION READ ONLY");
+    expect(mcpRowState({ engine: "mysql", profile: "doris" }, undefined).note).toBe(
+      `Not available over MCP yet: ${AGENT_NOTE}`,
+    );
     // Shared with writes before the product was detected: unchecked, and never amber.
     expect(mcpRowState({ engine: "mysql", profile: "tidb" }, on)).toMatchObject({ shareable: false, shared: false, writes: false });
   });
@@ -79,6 +84,16 @@ describe("mcpRowState (a connection's row in Settings → MCP)", () => {
     expect(row.note).toContain(
       "this connection's profile (from-the-future) was saved by a newer TableIQ. Update TableIQ to manage it.",
     );
+  });
+
+  it("CockroachDB is shareable, and an entry from before it opened reads unshared until it is shared again", () => {
+    const crdb = { engine: "postgres", profile: "cockroachdb" } as const;
+    expect(mcpRowState(crdb, undefined)).toEqual({ shareable: true, shared: false, writes: false, note: null });
+    expect(mcpRowState(crdb, { id: "c1", writes: true })).toMatchObject({ shareable: true, shared: false, writes: false });
+    expect(mcpRowState(crdb, { id: "c1", writes: true, rev: 0 })).toMatchObject({ shared: false, writes: false });
+    expect(mcpRowState(crdb, { id: "c1", writes: true, rev: AGENT_REV })).toMatchObject({ shared: true, writes: true });
+    // Always-open products have no such date.
+    expect(mcpRowState({ engine: "postgres", profile: "neon" }, { id: "c1", writes: true })).toMatchObject({ shared: true });
   });
 
   it("the base engines and their vendor-named selves stay shareable and mirror the allowlist", () => {
@@ -114,6 +129,15 @@ describe("pruneUnshareable (allowlist entries for connections that can no longer
       { id: "pg", writes: false },
     ]);
     expect(cfg.connections).toHaveLength(4); // pure
+  });
+
+  it("drops an entry confirmed before its product opened to agents, so the user shares it again", () => {
+    const crdb = [{ id: "cr", engine: "postgres", profile: "cockroachdb" }] as const;
+    const old: McpConfig = { ...base, connections: [{ id: "cr", writes: true }] };
+    expect(pruneUnshareable(old, crdb).connections).toEqual([]);
+    const again = setShared(pruneUnshareable(old, crdb), "cr", true);
+    expect(again.connections).toEqual([{ id: "cr", writes: false, rev: AGENT_REV }]);
+    expect(pruneUnshareable(again, crdb)).toBe(again);
   });
 
   it("returns the same config when nothing is stale, so a caller can tell", () => {

@@ -7,6 +7,9 @@
 //!   TIQ_MSSQL_URL="Server=tcp:127.0.0.1,51433;User Id=sa;Password=TableIQ_pw1;Database=master;TrustServerCertificate=true;Encrypt=false" \
 //!     cargo test --test sqlserver -- --nocapture
 
+mod common;
+use common::live_url;
+
 use arrow::array::{Array, StringArray};
 use tableiq_lib::drivers::{
     sqlserver::SqlServerDriver, CancelToken, Change, ChangesResult, ColumnFilter, DriverError,
@@ -46,10 +49,7 @@ fn parts(ado: &str) -> (String, u16, String, String, String) {
 /// app default (`prefer`), so the live suite exercises a real encrypted TDS session.
 /// `db` overrides the database in the URL (`None` keeps it).
 async fn connect_to(db: Option<&str>) -> Option<SqlServerDriver> {
-    let Ok(ado) = std::env::var("TIQ_MSSQL_URL") else {
-        eprintln!("skip: no TIQ_MSSQL_URL");
-        return None;
-    };
+    let ado = live_url("TIQ_MSSQL_URL")?;
     let (host, port, database, user, pass) = parts(&ado);
     let database = db.map_or(database, std::string::ToString::to_string);
     Some(
@@ -564,7 +564,7 @@ async fn sqlserver_qa_seed_introspect_structure_paging_and_edit() {
 #[tokio::test]
 async fn sqlserver_sslmode_picks_the_negotiated_encryption() {
     let _serialised = serialised().await;
-    let Ok(ado) = std::env::var("TIQ_MSSQL_URL") else { return };
+    let Some(ado) = live_url("TIQ_MSSQL_URL") else { return };
     let (host, port, database, user, pass) = parts(&ado);
     // `encrypt_option` on the server side is the ground truth for this session.
     let q = "SELECT encrypt_option FROM sys.dm_exec_connections WHERE session_id = @@SPID";

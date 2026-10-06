@@ -2,6 +2,9 @@
 //!   TIQ_MYSQL_URL=mysql://root:tableiq@127.0.0.1:53306/tableiq \
 //!     cargo test --test mysql_browse -- --nocapture
 
+mod common;
+use common::live_url;
+
 use sqlx::mysql::MySqlPoolOptions;
 use tableiq_lib::drivers::{mysql::MySqlDriver, EditSpec, ObjectKind, SqlDriver};
 
@@ -17,8 +20,7 @@ fn col_text(b: &arrow::record_batch::RecordBatch, c: &str, r: usize) -> String {
 
 #[tokio::test]
 async fn mysql_browse_and_edit() {
-    let Ok(url) = std::env::var("TIQ_MYSQL_URL") else {
-        eprintln!("skip: no TIQ_MYSQL_URL");
+    let Some(url) = live_url("TIQ_MYSQL_URL") else {
         return;
     };
 
