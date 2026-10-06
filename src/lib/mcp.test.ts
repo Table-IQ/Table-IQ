@@ -3,6 +3,7 @@ import {
   claudeCodeCommand,
   claudeDesktopConfig,
   isMcpEngine,
+  REDIS_SHARING_NOTE,
   maskToken,
   mcpRowState,
   pruneUnshareable,
@@ -12,7 +13,7 @@ import {
   validRowCap,
 } from "./mcp";
 import type { McpConfig } from "./commands";
-import { AGENT_NOTE, AGENT_REV, MONGODB_AGENT_SINCE, PROFILES } from "./profiles";
+import { AGENT_NOTE, AGENT_REV, MONGODB_AGENT_SINCE, PROFILES, REDIS_AGENT_SINCE } from "./profiles";
 
 const base: McpConfig = { enabled: true, port: 7431, row_cap: 500, connections: [] };
 
@@ -158,11 +159,11 @@ describe("validation", () => {
     expect(validRowCap(10001)).toBe(false);
   });
 
-  it("SQL engines and MongoDB can be shared; the key-value store cannot", () => {
+  it("SQL engines, MongoDB and Redis can be shared", () => {
     expect(isMcpEngine("postgres")).toBe(true);
     expect(isMcpEngine("duckdb")).toBe(true);
     expect(isMcpEngine("mongodb")).toBe(true);
-    expect(isMcpEngine("redis")).toBe(false);
+    expect(isMcpEngine("redis")).toBe(true);
   });
 });
 
@@ -186,5 +187,31 @@ describe("MongoDB over MCP", () => {
     expect(again.connections).toEqual([{ id: "m", writes: false, rev: AGENT_REV }]);
     expect(pruneUnshareable(again, saved)).toBe(again);
     expect(AGENT_REV).toBeGreaterThanOrEqual(MONGODB_AGENT_SINCE);
+  });
+});
+
+describe("Redis over MCP", () => {
+  const redis = { engine: "redis", profile: null } as const;
+
+  it("is shareable but never writable, whatever the allowlist entry says", () => {
+    expect(mcpRowState(redis, undefined)).toEqual({ shareable: true, shared: false, writes: false, writable: false, note: null });
+    expect(mcpRowState(redis, { id: "r", writes: true, rev: AGENT_REV })).toMatchObject({ shared: true, writes: false, writable: false });
+  });
+
+  it("an entry from before Redis opened (MongoDB's generation included) reads unshared and is pruned", () => {
+    for (const rev of [undefined, 0, MONGODB_AGENT_SINCE, REDIS_AGENT_SINCE - 1]) {
+      expect(mcpRowState(redis, { id: "r", writes: true, rev })).toMatchObject({ shared: false, writes: false });
+    }
+    const old: McpConfig = { ...base, connections: [{ id: "r", writes: true, rev: MONGODB_AGENT_SINCE }] };
+    const saved = [{ id: "r", engine: "redis", profile: null }] as const;
+    expect(pruneUnshareable(old, saved).connections).toEqual([]);
+    const again = setShared(pruneUnshareable(old, saved), "r", true);
+    expect(again.connections).toEqual([{ id: "r", writes: false, rev: AGENT_REV }]);
+    expect(pruneUnshareable(again, saved)).toBe(again);
+  });
+
+  it("the sharing note says what agents can do and to share through a restricted ACL user", () => {
+    expect(REDIS_SHARING_NOTE).toContain("Read-only for agents");
+    expect(REDIS_SHARING_NOTE).toContain("ACL user");
   });
 });

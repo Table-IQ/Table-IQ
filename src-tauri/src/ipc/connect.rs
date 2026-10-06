@@ -19,7 +19,7 @@ use crate::drivers::{
     doc_mongo::MongoDriver, duckdb::DuckDriver, kv_redis::RedisDriver, logged::Logged, mysql::MySqlDriver,
     postgres::PgDriver, sqlite::SqliteDriver, sqlserver::SqlServerDriver, CancelToken, Change,
     AggResult, ChangesResult, ColumnFilter, DocChange, DocChangesResult, DocIndex, DocumentDriver, DriverError, EditSpec, FindOpts,
-    KeyInfo, KvDriver, KvValue, SchemaModel,
+    KeyInfo, KeyPage, KvChange, KvChangesResult, KvDriver, KvRead, KvReadOpts, KvReply, KvValue, SchemaModel,
     SortKey, SqlDriver, validate_filters,
 };
 use crate::sql_log::SqlLog;
@@ -104,8 +104,11 @@ async fn maybe_open_tunnel(
         Some(s) if s.enabled && !cfg.is_file_engine() => s,
         _ => return Ok((cfg.clone(), None)),
     };
-    if cfg.engine == "mongodb" && cfg.host.contains("://") {
-        return Err("A MongoDB connection URL can't be combined with an SSH tunnel — enter host and port instead".into());
+    if matches!(cfg.engine.as_str(), "mongodb" | "redis") && cfg.host.contains("://") {
+        return Err(format!(
+            "A {} connection URL can't be combined with an SSH tunnel — enter host and port instead",
+            if cfg.engine == "redis" { "Redis" } else { "MongoDB" }
+        ));
     }
     // Agent auth needs no stored secret; password/keyfile read the keychain (may be empty).
     let secret = match ssh.auth {
@@ -248,6 +251,12 @@ impl ConnState {
         lk(&self.doc_sessions).insert(id.to_string(), drv);
     }
 
+    /// [`adopt_session`](Self::adopt_session) for a key-value (Redis) session.
+    #[doc(hidden)]
+    pub fn adopt_kv_session(&self, id: &str, drv: Arc<dyn KvDriver>) {
+        lk(&self.kv_sessions).insert(id.to_string(), drv);
+    }
+
     /// Every saved connection's config (a snapshot).
     pub(crate) fn configs(&self) -> Vec<ConnConfig> {
         lk(&self.store).connections.clone()
@@ -260,7 +269,7 @@ impl ConnState {
             .ok_or_else(|| "not connected (or not a SQL connection)".to_string())
     }
 
-    fn kv_session(&self, id: &str) -> Result<Arc<dyn KvDriver>, String> {
+    pub(crate) fn kv_session(&self, id: &str) -> Result<Arc<dyn KvDriver>, String> {
         lk(&self.kv_sessions)
             .get(id)
             .cloned()
@@ -844,6 +853,12 @@ pub async fn doc_aggregate(
 }
 
 // ── Redis key browse ───────────────────────────────────────────────────────
+/// Runs a key-value call with `id`'s SQL log in scope, so the Redis commands the driver notes
+/// show up in the bottom panel like SQL statements do.
+pub(crate) async fn kv_logged<T>(state: &ConnState, id: &str, f: impl std::future::Future<Output = T>) -> T {
+    crate::sql_log::CURRENT.scope(state.sql_log_for(id), f).await
+}
+
 #[tauri::command]
 pub async fn kv_scan(
     state: State<'_, ConnState>,
@@ -851,13 +866,67 @@ pub async fn kv_scan(
     pattern: String,
 ) -> Result<Vec<KeyInfo>, String> {
     let drv = state.kv_session(&id)?;
-    drv.scan(&pattern, 500).await.map_err(|e| e.to_string())
+    kv_logged(&state, &id, drv.scan(&pattern, 500)).await.map_err(|e| e.to_string())
+}
+
+/// One page of keys: `cursor` `"0"`/absent starts, `nextCursor` `"0"` ends. `count` ~ keys wanted
+/// (default 100, max 1000); a page may hold a few more.
+#[tauri::command]
+pub async fn kv_scan_page(
+    state: State<'_, ConnState>,
+    id: String,
+    pattern: String,
+    cursor: Option<String>,
+    count: Option<usize>,
+) -> Result<KeyPage, String> {
+    let drv = state.kv_session(&id)?;
+    kv_logged(&state, &id, drv.scan_page(&pattern, cursor.as_deref().unwrap_or("0"), count.unwrap_or(0)))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn kv_get(state: State<'_, ConnState>, id: String, key: String) -> Result<KvValue, String> {
     let drv = state.kv_session(&id)?;
-    drv.get(&key).await.map_err(|e| e.to_string())
+    kv_logged(&state, &id, drv.get(&key)).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn kv_read(
+    state: State<'_, ConnState>,
+    id: String,
+    key: String,
+    opts: Option<KvReadOpts>,
+) -> Result<KvRead, String> {
+    let drv = state.kv_session(&id)?;
+    kv_logged(&state, &id, drv.read(&key, &opts.unwrap_or_default())).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn kv_apply_changes(
+    state: State<'_, ConnState>,
+    id: String,
+    changes: Vec<KvChange>,
+) -> Result<KvChangesResult, String> {
+    let drv = state.kv_session(&id)?;
+    kv_logged(&state, &id, drv.apply_changes(&changes)).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn kv_command(
+    state: State<'_, ConnState>,
+    id: String,
+    line: String,
+    confirmed: Option<bool>,
+) -> Result<KvReply, String> {
+    let drv = state.kv_session(&id)?;
+    kv_logged(&state, &id, drv.command(&line, confirmed.unwrap_or(false))).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn kv_dbsize(state: State<'_, ConnState>, id: String) -> Result<u64, String> {
+    let drv = state.kv_session(&id)?;
+    kv_logged(&state, &id, drv.dbsize()).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]

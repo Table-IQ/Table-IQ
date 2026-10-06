@@ -81,9 +81,13 @@ export const AGENT_NOTE =
  *  profile to carry an `agentSince`; an entry older than this is not served for a `mongodb` connection. */
 export const MONGODB_AGENT_SINCE = 2;
 
+/** The generation that opened Redis to agents (`REDIS_AGENT_SINCE` in `profiles.rs`): no Redis connection could be
+ *  shared before, so an entry older than this is not served for a `redis` connection. */
+export const REDIS_AGENT_SINCE = 3;
+
 /** The generation a new allowlist entry is confirmed under: the latest opening of any product
  *  (`agent_rev` in `profiles.rs`). */
-export const AGENT_REV = Math.max(MONGODB_AGENT_SINCE, ...Object.values(PROFILES).map((p) => p.agentSince ?? 0));
+export const AGENT_REV = Math.max(MONGODB_AGENT_SINCE, REDIS_AGENT_SINCE, ...Object.values(PROFILES).map((p) => p.agentSince ?? 0));
 
 export interface SheetCaps { transactions: boolean; backup: boolean; userMgmt: boolean; agents: boolean }
 

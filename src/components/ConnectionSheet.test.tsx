@@ -188,9 +188,9 @@ describe("readConnUrl (URL paste into the URL field or Host)", () => {
   it("a bad or undecodable URL yields only a note — never the text, so a password can't reach Host", () => {
     expect(readConnUrl("postgres://app:s3cret@[bad/shop")).toEqual({ note: "Not a connection URL we recognise" });
   });
-  it("adds a hint for rediss://", () => {
+  it("accepts rediss:// (TLS), keeping the URL in host with the password moved out", () => {
     expect(readConnUrl("rediss://:pw@cache")).toEqual({
-      note: "Not a connection URL we recognise — rediss:// isn't supported yet",
+      parsed: expect.objectContaining({ engine: "redis", host: "rediss://cache", password: "pw" }),
     });
   });
   it("in edit mode a URL for another engine leaves the engine alone and says so", () => {

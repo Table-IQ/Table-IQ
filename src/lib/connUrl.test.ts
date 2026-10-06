@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isMongoUrlHost, isUnsupportedConnUrl, looksLikeConnUrl, mongoQuerySecret, normalizeMongoSecrets, parseConnUrl, toConnUrl, validateConn } from "./connUrl";
+import { isMongoUrlHost, isUrlHost, looksLikeConnUrl, normalizeUrlSecrets, parseConnUrl, toConnUrl, urlQuerySecret, validateConn } from "./connUrl";
 
 describe("parseConnUrl", () => {
   it("parses a Postgres URL with an encoded password and sslmode", () => {
@@ -21,12 +21,16 @@ describe("parseConnUrl", () => {
     expect(parseConnUrl("redis://:secret@cache:6380/2")).toMatchObject({ engine: "redis", port: 6380, password: "secret", database: "2" });
     expect(parseConnUrl("mongodb://u:p@m:27018/app")).toMatchObject({ engine: "mongodb", port: 27018, database: "app" });
   });
-  it("rejects rediss:// (no TLS for Redis on the backend yet) but still spots it as a URL", () => {
-    expect(parseConnUrl("rediss://:secret@cache")).toBeNull();
+  it("keeps a rediss:// (TLS) or option-carrying Redis URL whole in `host`, password moved out", () => {
+    expect(parseConnUrl("rediss://agent:p%40ss@cache.example.com:6380/2")).toEqual({
+      engine: "redis", host: "rediss://agent@cache.example.com:6380/2", port: 6379, username: "agent", password: "p@ss", database: "2",
+    });
+    expect(parseConnUrl("rediss://:secret@cache")).toMatchObject({ host: "rediss://cache", username: "", password: "secret", database: "" });
+    expect(parseConnUrl("redis://cache?protocol=resp2")).toMatchObject({ host: "redis://cache?protocol=resp2" });
     expect(looksLikeConnUrl("rediss://cache")).toBe(true);
-    expect(isUnsupportedConnUrl("rediss://cache")).toBe(true);
-    expect(isUnsupportedConnUrl("redis://cache")).toBe(false);
-    expect(isUnsupportedConnUrl("mongodb+srv://u@c/app")).toBe(false);
+  });
+  it("parses a plain redis:// URL into fields, user (ACL) included", () => {
+    expect(parseConnUrl("redis://agent:agentpw@cache:6380/3")).toMatchObject({ engine: "redis", host: "cache", port: 6380, username: "agent", password: "agentpw", database: "3" });
   });
   it("keeps a Mongo URL that host + port cannot express whole in `host`, password moved out", () => {
     expect(parseConnUrl("mongodb+srv://u:p%40ss@cluster.example.net/app?retryWrites=true&w=majority")).toEqual({
@@ -115,31 +119,63 @@ describe("isMongoUrlHost", () => {
   });
 });
 
+describe("isUrlHost", () => {
+  it("covers Mongo and Redis, each only for its own engine", () => {
+    expect(isUrlHost("redis", "rediss://c")).toBe(true);
+    expect(isUrlHost("redis", "redis://u@c/1")).toBe(true);
+    expect(isUrlHost("redis", "cache")).toBe(false);
+    expect(isUrlHost("redis", "mongodb://c")).toBe(false);
+    expect(isUrlHost("mongodb", "redis://c")).toBe(false);
+    expect(isUrlHost("postgres", "redis://c")).toBe(false);
+  });
+});
+
+describe("a Redis password typed (not pasted) into Host", () => {
+  const cfg = (host: string, username = "") => ({ engine: "redis", host, username });
+  it("moves it to the keychain field, keeping the path and query", () => {
+    expect(normalizeUrlSecrets(cfg("rediss://agent:p%40ss@c:6380/2?x=1"), "")).toEqual({ host: "rediss://agent@c:6380/2?x=1", username: "agent", password: "p@ss" });
+    expect(normalizeUrlSecrets(cfg("redis://:pw@c"), "")).toEqual({ host: "redis://c", username: "", password: "pw" });
+    expect(normalizeUrlSecrets(cfg("redis://c"), "kept")).toEqual({ host: "redis://c", username: "", password: "kept" });
+    expect(normalizeUrlSecrets({ engine: "mongodb", host: "redis://:pw@c", username: "" }, "")).toMatchObject({ host: "redis://:pw@c" });
+  });
+  it("refuses a secret in the query string", () => {
+    expect(urlQuerySecret("redis://h?pass=hunter2")).toBe("pass");
+    expect(urlQuerySecret("rediss://h?password=x")).toBe("password");
+    expect(urlQuerySecret("redis://h?protocol=resp2")).toBeNull();
+    expect(validateConn({ engine: "redis", host: "redis://h?pass=x", port: 6379, database: "" }).host).toMatch(/plaintext/);
+    expect(validateConn({ engine: "redis", host: "rediss://h", port: 6379, database: "" })).toEqual({});
+  });
+  it("is copied as the URL it is", () => {
+    const host = "rediss://agent@c:6380/2";
+    expect(toConnUrl({ engine: "redis", host, port: 6379, username: "agent", database: "2", sslmode: "prefer" })).toBe(host);
+  });
+});
+
 describe("a Mongo password typed (not pasted) into Host", () => {
   const cfg = (host: string, username = "") => ({ engine: "mongodb", host, username });
   it("moves the userinfo password out of host, like a paste does", () => {
-    expect(normalizeMongoSecrets(cfg("mongodb+srv://u:p%40ss@c.example.net/app?w=majority"), "")).toEqual({
+    expect(normalizeUrlSecrets(cfg("mongodb+srv://u:p%40ss@c.example.net/app?w=majority"), "")).toEqual({
       host: "mongodb+srv://u@c.example.net/app?w=majority", username: "u", password: "p@ss",
     });
-    expect(normalizeMongoSecrets(cfg("mongodb://a:1,b:2/?replicaSet=rs0", "keep"), "old")).toEqual({
+    expect(normalizeUrlSecrets(cfg("mongodb://a:1,b:2/?replicaSet=rs0", "keep"), "old")).toEqual({
       host: "mongodb://a:1,b:2/?replicaSet=rs0", username: "keep", password: "old",
     });
-    expect(normalizeMongoSecrets(cfg("mongodb://u:p:q@h:27017/app"), "x")).toMatchObject({ host: "mongodb://u@h:27017/app", password: "p:q" });
+    expect(normalizeUrlSecrets(cfg("mongodb://u:p:q@h:27017/app"), "x")).toMatchObject({ host: "mongodb://u@h:27017/app", password: "p:q" });
     // a password containing @ and a leading space
-    expect(normalizeMongoSecrets(cfg(" mongodb://u:a@b@h/app"), "")).toMatchObject({ host: "mongodb://u@h/app", password: "a@b" });
+    expect(normalizeUrlSecrets(cfg(" mongodb://u:a@b@h/app"), "")).toMatchObject({ host: "mongodb://u@h/app", password: "a@b" });
   });
   it("leaves everything else alone", () => {
-    expect(normalizeMongoSecrets(cfg("127.0.0.1"), "pw")).toEqual({ host: "127.0.0.1", username: "", password: "pw" });
-    expect(normalizeMongoSecrets({ engine: "postgres", host: "mongodb://u:p@h", username: "" }, "")).toMatchObject({ host: "mongodb://u:p@h" });
-    expect(normalizeMongoSecrets(cfg("mongodb://u@h/app"), "pw")).toMatchObject({ host: "mongodb://u@h/app", password: "pw" });
+    expect(normalizeUrlSecrets(cfg("127.0.0.1"), "pw")).toEqual({ host: "127.0.0.1", username: "", password: "pw" });
+    expect(normalizeUrlSecrets({ engine: "postgres", host: "mongodb://u:p@h", username: "" }, "")).toMatchObject({ host: "mongodb://u:p@h" });
+    expect(normalizeUrlSecrets(cfg("mongodb://u@h/app"), "pw")).toMatchObject({ host: "mongodb://u@h/app", password: "pw" });
   });
   it("spots secrets in the query string, which the keychain can't take, and blocks saving them", () => {
-    expect(mongoQuerySecret("mongodb://h/?tlsCertificateKeyFilePassword=hunter2")).toBe("tlsCertificateKeyFilePassword");
-    expect(mongoQuerySecret("mongodb://h/?tls=true&authMechanismProperties=AWS_SESSION_TOKEN:abc")).toBe("authMechanismProperties");
-    expect(mongoQuerySecret("mongodb://h/?authMechanismProperties=ENVIRONMENT:azure,TOKEN_RESOURCE:https://x")).toBeNull();
-    expect(mongoQuerySecret("mongodb://h/?tlsCertificateKeyFilePassword=")).toBeNull();
-    expect(mongoQuerySecret("mongodb://h/?replicaSet=rs0")).toBeNull();
-    expect(mongoQuerySecret("127.0.0.1")).toBeNull();
+    expect(urlQuerySecret("mongodb://h/?tlsCertificateKeyFilePassword=hunter2")).toBe("tlsCertificateKeyFilePassword");
+    expect(urlQuerySecret("mongodb://h/?tls=true&authMechanismProperties=AWS_SESSION_TOKEN:abc")).toBe("authMechanismProperties");
+    expect(urlQuerySecret("mongodb://h/?authMechanismProperties=ENVIRONMENT:azure,TOKEN_RESOURCE:https://x")).toBeNull();
+    expect(urlQuerySecret("mongodb://h/?tlsCertificateKeyFilePassword=")).toBeNull();
+    expect(urlQuerySecret("mongodb://h/?replicaSet=rs0")).toBeNull();
+    expect(urlQuerySecret("127.0.0.1")).toBeNull();
     expect(validateConn({ engine: "mongodb", host: "mongodb://h/?tlsCertificateKeyFilePassword=x", port: 27017, database: "" }).host).toMatch(/plaintext/);
     expect(validateConn({ engine: "mongodb", host: "mongodb://h/?tls=true", port: 27017, database: "" })).toEqual({});
   });

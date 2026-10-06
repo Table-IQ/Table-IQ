@@ -385,7 +385,7 @@ export async function switchDatabaseFlow(id: string, db: string): Promise<boolea
       if (my === gen) useConnections.setState({ connecting: null });
       return false;
     }
-    const schema = await listObjects(id);
+    const schema = info.engine === "redis" || info.engine === "mongodb" ? null : await listObjects(id);
     markConnected(id);
     clearMetaCaches(id);
     // The old database's tabs go — live if this connection is still in front,

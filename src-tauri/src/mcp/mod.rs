@@ -10,6 +10,8 @@
 pub mod guard;
 mod mongo;
 pub mod mongo_guard;
+mod redis;
+pub mod redis_guard;
 mod server;
 
 pub use server::{serve, Host};

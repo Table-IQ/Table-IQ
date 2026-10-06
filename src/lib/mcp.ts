@@ -4,7 +4,7 @@
  * enforces in Rust.
  */
 import type { ConnConfig, McpConfig, McpConn } from "./commands";
-import { AGENT_NOTE, AGENT_REV, MONGODB_AGENT_SINCE, capsOf, profileOf } from "./profiles";
+import { AGENT_NOTE, AGENT_REV, MONGODB_AGENT_SINCE, REDIS_AGENT_SINCE, capsOf, profileOf } from "./profiles";
 
 /** Shown under every DuckDB connection in Settings → MCP: the first agent call turns
  *  external access off and locks the instance's configuration (`harden_duckdb` in
@@ -16,6 +16,11 @@ export const DUCKDB_SHARING_NOTE =
  *  guard (`mcp/mongo_guard.rs`), never a write, so "allow writes" is not offered. */
 export const MONGODB_SHARING_NOTE =
   "Read-only for agents, always: they can list collections, find, count and aggregate. JavaScript ($where, $function), $out/$merge, other databases and system collections are refused. Share it through a database user that can read only what agents should see.";
+
+/** Shown under every Redis connection in Settings → MCP: agents get a key scan, a typed read of one key and the key
+ *  count (`mcp/redis.rs`, behind `mcp/redis_guard.rs`), never a command or a write, so "allow writes" is not offered. */
+export const REDIS_SHARING_NOTE =
+  "Read-only for agents, always: they can scan keys, read one key (any type) and count keys, and cannot run commands. They see every key and value this connection's Redis user can read, so share it through an ACL user limited to the keys agents should see (for example ~agent:* +@read).";
 
 export function mcpUrl(port: number): string {
   return `http://127.0.0.1:${port}/mcp`;
@@ -65,7 +70,7 @@ export interface McpRowState {
   shareable: boolean;
   shared: boolean;
   writes: boolean;
-  /** Whether "allow writes" means anything: not for MongoDB, whose agent tools only read. */
+  /** Whether "allow writes" means anything: not for MongoDB or Redis, whose agent tools only read. */
   writable: boolean;
   /** Why it cannot be shared; null when it can. */
   note: string | null;
@@ -79,7 +84,7 @@ export function mcpRowState(conn: Pick<ConnConfig, "engine" | "profile">, shared
   if (capsOf(conn.engine, conn.profile).agents) {
     // An entry from before the product opened to agents reads unshared: sharing it again confirms it.
     const live = shared && !entryStale(conn, shared);
-    const writable = conn.engine !== "mongodb";
+    const writable = conn.engine !== "mongodb" && conn.engine !== "redis";
     return { shareable: true, shared: !!live, writes: writable && !!live && !!shared?.writes, writable, note: null };
   }
   const p = profileOf(conn.engine, conn.profile);
@@ -92,7 +97,12 @@ export function mcpRowState(conn: Pick<ConnConfig, "engine" | "profile">, shared
 /** The entry was confirmed before the saved profile's product opened to agents (`reconfirm_block`
  *  in `profiles.rs`). A product the server only reveals at connect is caught there, not here. */
 function entryStale(conn: Pick<ConnConfig, "engine" | "profile">, entry: McpConn): boolean {
-  const since = conn.engine === "mongodb" ? MONGODB_AGENT_SINCE : (profileOf(conn.engine, conn.profile)?.agentSince ?? 0);
+  const since =
+    conn.engine === "mongodb"
+      ? MONGODB_AGENT_SINCE
+      : conn.engine === "redis"
+        ? REDIS_AGENT_SINCE
+        : (profileOf(conn.engine, conn.profile)?.agentSince ?? 0);
   return since > (entry.rev ?? 0);
 }
 
@@ -119,9 +129,10 @@ export function validRowCap(n: number): boolean {
   return Number.isInteger(n) && n >= 1 && n <= 10000;
 }
 
-const MCP_ENGINES = new Set(["postgres", "mysql", "sqlite", "duckdb", "sqlserver", "mongodb"]);
+const MCP_ENGINES = new Set(["postgres", "mysql", "sqlite", "duckdb", "sqlserver", "mongodb", "redis"]);
 
-/** MCP serves SQL connections (the SQL tools) and MongoDB ones (the read-only mongo_* tools). */
+/** MCP serves SQL connections (the SQL tools), MongoDB ones (the read-only mongo_* tools) and Redis ones (the
+ *  read-only redis_* tools). */
 export function isMcpEngine(engine: string): boolean {
   return MCP_ENGINES.has(engine);
 }

@@ -15,6 +15,7 @@ import {
   claudeDesktopConfig,
   DUCKDB_SHARING_NOTE,
   MONGODB_SHARING_NOTE,
+  REDIS_SHARING_NOTE,
   isMcpEngine,
   maskToken,
   mcpRowState,
@@ -242,6 +243,7 @@ export function McpSettings() {
                   </p>
                 )}
                 {c.engine === "mongodb" && <p className="basis-full text-xs text-muted">{MONGODB_SHARING_NOTE}</p>}
+                {c.engine === "redis" && <p className="basis-full text-xs text-muted">{REDIS_SHARING_NOTE}</p>}
                 {c.engine === "duckdb" && (
                   <p className="basis-full text-xs text-muted">{DUCKDB_SHARING_NOTE}</p>
                 )}

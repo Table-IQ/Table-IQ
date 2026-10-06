@@ -106,6 +106,36 @@ describe("IPC bridge invoke", () => {
     expect(JSON.parse(fetchMock.mock.calls[6][1].body)).toEqual({ id: "c1", collection: "users", pipeline: "[]", limit: 5 });
   });
 
+  it("sends the redis commands' arguments under the names the Rust handlers take", async () => {
+    reply('{"keys":[],"nextCursor":"0"}', 200, "application/json");
+    await cmds.kvScanPage("c1", "user:*", "17", 50);
+    expect(fetchMock.mock.calls[0][0]).toBe("/__ipc/kv_scan_page");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ id: "c1", pattern: "user:*", cursor: "17", count: 50 });
+
+    reply('{"key":"k","kind":"list","ttl":-1,"size":0,"items":[],"truncated":false}', 200, "application/json");
+    await cmds.kvRead("c1", "k", { cursor: "100", count: 100, path: ".a" });
+    expect(fetchMock.mock.calls[1][0]).toBe("/__ipc/kv_read");
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ id: "c1", key: "k", opts: { cursor: "100", count: 100, path: ".a" } });
+
+    reply('{"applied":2}', 200, "application/json");
+    const changes: import("./commands").KvChange[] = [
+      { kind: "setString", key: "k", value: { text: "v" }, expect: { text: "old" } },
+      { kind: "rename", key: "a", newKey: "b" },
+    ];
+    await expect(cmds.kvApplyChanges("c1", changes)).resolves.toEqual({ applied: 2 });
+    expect(fetchMock.mock.calls[2][0]).toBe("/__ipc/kv_apply_changes");
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({ id: "c1", changes });
+
+    reply('{"type":"status","value":"OK"}', 200, "application/json");
+    await cmds.kvCommand("c1", "DEL k", true);
+    expect(fetchMock.mock.calls[3][0]).toBe("/__ipc/kv_command");
+    expect(JSON.parse(fetchMock.mock.calls[3][1].body)).toEqual({ id: "c1", line: "DEL k", confirmed: true });
+
+    reply("12", 200, "application/json");
+    await expect(cmds.kvDbsize("c1")).resolves.toBe(12);
+    expect(fetchMock.mock.calls[4][0]).toBe("/__ipc/kv_dbsize");
+  });
+
   it("throws the parsed body on a non-ok response, so Rust Err(String) arrives as that string", async () => {
     reply(JSON.stringify("unknown connection"), 400, "application/json");
     await expect(cmds.connect("nope")).rejects.toBe("unknown connection");

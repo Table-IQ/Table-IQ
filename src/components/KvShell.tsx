@@ -1,55 +1,93 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ConnectionRail } from "./ConnectionRail";
 import { Wordmark } from "./Brand";
 import { ThemeToggle } from "./ThemeToggle";
-import { kvGet, kvScan, type KeyInfo, type KvValue } from "../lib/commands";
-import { closeConnection, useConnections } from "../state/connectionStore";
+import { listDatabases } from "../lib/commands";
+import { canLeaveSession, closeConnection, switchDatabaseFlow, TAB_GUARD_LABELS, useConnections } from "../state/connectionStore";
+import { shouldSwitchDatabase } from "../lib/databasePicker";
+import { loadedLabel } from "../lib/kvTree";
+import { loadKvPrefs, saveKvPrefs, type KvPrefs } from "../lib/kvView";
+import type { StringFormat } from "../lib/kvFormat";
 import { StatusBar, StatusDot } from "./ui/StatusBar";
 import { ColorDot } from "./ui/Chip";
-import { Section } from "./ui/Section";
 import { IconButton } from "./ui/IconButton";
-import { IconRefresh, IconSearch } from "./ui/Icon";
+import { Tabs } from "./ui/Panel";
+import { IconRefresh } from "./ui/Icon";
+import { DatabasePicker } from "./DatabasePicker";
+import { KvKeyTree } from "./KvKeyTree";
+import { KvKey } from "./KvKey";
+import { KvConsole } from "./KvConsole";
+
+type Pane = "key" | "console";
 
 /**
- * Redis / KV shell — reuses the same chrome treatment as the SQL MainShell:
- * native titlebar overlay region, wordmark + breadcrumb chip, status bar.
+ * Redis shell — same chrome as MainShell / DocShell: native titlebar region, wordmark + connection chip,
+ * a key sidebar (SCAN pages folded on `:`), and for the open key a Key pane and a Console pane.
  */
 export function KvShell() {
   const { active, saved } = useConnections();
+  const connecting = useConnections((s) => s.connecting);
   const activeColor = active ? saved.find((c) => c.id === active.id)?.color ?? null : null;
-  const [pattern, setPattern] = useState("*");
-  const [keys, setKeys] = useState<KeyInfo[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [value, setValue] = useState<KvValue | null>(null);
-
   const id = active?.id;
+  const database = active?.database ?? "0";
 
-  const scan = (p: string) => {
-    if (!id) return;
-    kvScan(id, p).then(setKeys).catch(() => setKeys([]));
-  };
+  const [prefs, setPrefs] = useState<KvPrefs>(() => loadKvPrefs(id ?? ""));
+  const [selected, setSelected] = useState<string | null>(null);
+  const [pane, setPane] = useState<Pane>("key");
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [status, setStatus] = useState<{ loaded: number; more: boolean; dbsize: number | null }>({ loaded: 0, more: false, dbsize: null });
+  const [dbPicker, setDbPicker] = useState<{ items: string[]; loading: boolean; error: string | null } | null>(null);
+  const [connMsg, setConnMsg] = useState<string | null>(null);
 
+  const patch = (p: Partial<KvPrefs>) =>
+    setPrefs((cur) => {
+      const n = { ...cur, ...p };
+      if (id) saveKvPrefs(id, n);
+      return n;
+    });
+
+  // Another database is another keyspace: drop the open key and re-scan.
+  const lastDb = useRef(database);
   useEffect(() => {
-    scan("*");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+    if (lastDb.current === database) return;
+    lastDb.current = database;
+    setSelected(null);
+    setRefreshKey((k) => k + 1);
+  }, [database]);
 
-  const open = (key: string) => {
-    if (!id) return;
+  const open = async (key: string) => {
+    if (key === selected) return setPane("key");
+    // Leaving the key drops its staged edits; ask first (same prompt as the SQL tab guard).
+    if (!(await canLeaveSession("This key has unsaved changes. Discard them and switch keys?", TAB_GUARD_LABELS))) return;
     setSelected(key);
-    kvGet(id, key).then(setValue).catch(() => setValue(null));
+    setPane("key");
+  };
+  const gone = useCallback((to?: string) => {
+    setRefreshKey((k) => k + 1);
+    setSelected(to ?? null);
+  }, []);
+
+  const openDbPicker = async () => {
+    if (!id) return;
+    setDbPicker({ items: [], loading: true, error: null });
+    try {
+      setDbPicker({ items: await listDatabases(id), loading: false, error: null });
+    } catch (e) {
+      setDbPicker({ items: [], loading: false, error: String(e) });
+    }
+  };
+  const pickDatabase = async (db: string) => {
+    if (!id || useConnections.getState().connecting || !shouldSwitchDatabase(db, database)) return;
+    if (!(await canLeaveSession())) return;
+    setDbPicker(null);
+    setConnMsg(null);
+    switchDatabaseFlow(id, db).catch((e) => setConnMsg(`Could not switch to db ${db}: ${e}`));
   };
 
-  if (!active) return null;
+  const onStatus = useCallback((s: { loaded: number; more: boolean; dbsize: number | null }) => setStatus(s), []);
 
-  // Bucket keys by their first colon-prefixed namespace so the sidebar reads
-  // like a TablePlus schema tree (e.g. `user:*`, `session:*`, `cache:*`).
-  const buckets = new Map<string, KeyInfo[]>();
-  for (const k of keys) {
-    const ns = k.key.includes(":") ? k.key.split(":", 1)[0] : "(no prefix)";
-    if (!buckets.has(ns)) buckets.set(ns, []);
-    buckets.get(ns)!.push(k);
-  }
+  if (!active || !id) return null;
+  const switching = connecting?.id === id && connecting.stage === "switch";
 
   return (
     <div className="flex h-full flex-col">
@@ -62,9 +100,22 @@ export function KvShell() {
           {activeColor && <ColorDot color={activeColor} />}
           <span className="text-[11px] font-medium text-text">{active.name}</span>
         </span>
-        <span className="font-mono text-[11px] text-muted">redis · db {active.database}</span>
+        <button
+          onClick={() => void openDbPicker()}
+          disabled={switching}
+          title="Switch database (⌘D)"
+          className="tiq-no-drag rounded-md px-1 font-mono text-[11px] text-muted hover:bg-surface-2 hover:text-text disabled:opacity-60"
+        >
+          redis · db {database}
+          {switching ? " · switching…" : ""}
+        </button>
+        {connMsg && (
+          <span role="alert" className="min-w-0 truncate text-[11px] text-danger" title={connMsg}>
+            {connMsg}
+          </span>
+        )}
         <div className="ml-auto flex items-center gap-1">
-          <IconButton icon={<IconRefresh />} label="Rescan" onClick={() => scan(pattern)} />
+          <IconButton icon={<IconRefresh />} label="Rescan keys" onClick={() => setRefreshKey((k) => k + 1)} />
           <ThemeToggle />
           <button
             onClick={async () => {
@@ -79,99 +130,74 @@ export function KvShell() {
 
       <div className="flex min-h-0 flex-1">
         <ConnectionRail />
-        <aside
-          className="flex shrink-0 flex-col border-r border-border bg-surface"
-          style={{ width: "var(--sidebar-w)" }}
-        >
-          <div className="border-b border-border p-2">
-            <label className="flex items-center gap-1.5 rounded-md border border-border bg-bg px-2 focus-within:border-primary">
-              <IconSearch size={12} className="text-muted" />
-              <input
-                value={pattern}
-                onChange={(e) => setPattern(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && scan(pattern)}
-                placeholder="key pattern (e.g. user:*)"
-                className="h-6 flex-1 bg-transparent text-xs text-text placeholder:text-muted focus:outline-none"
-              />
-            </label>
-          </div>
-          <div className="min-h-0 flex-1 overflow-auto px-1.5 py-1">
-            {[...buckets.entries()].map(([ns, items]) => (
-              <Section key={ns} label={ns} count={items.length}>
-                {items.map((k) => (
-                  <button
-                    key={k.key}
-                    onClick={() => open(k.key)}
-                    className={`flex h-[var(--row-h)] w-full items-center gap-2 rounded-md px-2 text-left font-mono text-[12.5px] ${
-                      selected === k.key
-                        ? "bg-selection-bg text-text"
-                        : "text-text hover:bg-surface-2"
-                    }`}
-                  >
-                    <span className="min-w-0 flex-1 truncate font-mono">{k.key}</span>
-                    <span className="shrink-0 rounded bg-bg px-1 text-[10px] text-muted">
-                      {k.kind}
-                    </span>
-                  </button>
-                ))}
-              </Section>
-            ))}
-            {keys.length === 0 && <div className="px-3 py-4 text-xs text-muted">No keys.</div>}
-          </div>
+        <aside className="flex shrink-0 flex-col border-r border-border bg-surface" style={{ width: "var(--sidebar-w)" }}>
+          <KvKeyTree
+            key={id}
+            connId={id}
+            pattern={prefs.pattern}
+            onPattern={(pattern) => patch({ pattern })}
+            selected={selected}
+            onSelect={(k) => void open(k)}
+            refreshKey={refreshKey}
+            onStatus={onStatus}
+          />
         </aside>
 
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
-          {value && selected ? (
-            <>
-              <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border bg-bg px-3 text-xs">
-                <span className="font-mono font-semibold text-text">{selected}</span>
-                <span className="rounded bg-surface px-1.5 py-0.5 text-[10px] uppercase text-muted">
-                  {value.kind}
-                </span>
-                <span className="text-muted">· {value.rows.length} row{value.rows.length === 1 ? "" : "s"}</span>
-              </div>
-              <div className="min-h-0 flex-1 overflow-auto">
-                <table className="w-full text-xs">
-                  <thead className="border-b border-border bg-surface text-left text-muted">
-                    <tr>
-                      {value.columns.map((c) => (
-                        <th key={c} className="px-3 py-1.5 font-medium">
-                          {c}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="text-text">
-                    {value.rows.map((r, i) => (
-                      <tr key={i} className="border-t border-border hover:bg-surface-2">
-                        {r.map((cell, j) => (
-                          <td key={j} className="px-3 py-1 font-mono">
-                            {cell}
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          ) : (
-            <div className="flex h-full items-center justify-center text-sm text-muted">
-              Select a key to view its value.
-            </div>
-          )}
-          <StatusBar
-            left={
-              <>
-                <StatusDot tone="ok" />
-                <span>Connected · redis</span>
-              </>
-            }
-            center={keys.length > 0 ? <span>{keys.length} keys</span> : null}
-            right={<span>Press Enter in the search box to re-scan</span>}
+          <Tabs
+            tabs={[
+              { key: "key", label: "Key" },
+              { key: "console", label: "Console" },
+            ]}
+            active={pane}
+            onSelect={(k) => setPane(k as Pane)}
           />
+          {/* Both stay mounted: switching panes must not drop staged edits or the console's output. */}
+          <div className="min-h-0 flex-1">
+            {selected ? (
+              <KvKey
+                key={`${id}.${database}.${selected}`}
+                connId={id}
+                keyName={selected}
+                visible={pane === "key"}
+                format={prefs.stringFormat}
+                onFormat={(stringFormat: StringFormat) => patch({ stringFormat })}
+                onGone={gone}
+              />
+            ) : (
+              pane === "key" && <div className="flex h-full items-center justify-center text-sm text-muted">Select a key to view its value.</div>
+            )}
+            <KvConsole key={`c.${id}`} connId={id} database={database} visible={pane === "console"} />
+          </div>
+          {(!selected || pane === "console") && (
+            <StatusBar
+              left={
+                <>
+                  <StatusDot tone="ok" />
+                  <span>Connected · redis</span>
+                </>
+              }
+              center={
+                <span className="tabular-nums">
+                  {loadedLabel(status.loaded, status.more)} keys loaded{status.dbsize !== null ? ` of ${status.dbsize.toLocaleString("en-US")}` : ""}
+                </span>
+              }
+              right={<span>Enter in the pattern box re-scans</span>}
+            />
+          )}
         </main>
       </div>
+
+      {dbPicker && (
+        <DatabasePicker
+          databases={dbPicker.items}
+          activeDatabase={database}
+          busy={dbPicker.loading}
+          error={dbPicker.error}
+          onPick={(db) => void pickDatabase(db)}
+          onClose={() => setDbPicker(null)}
+        />
+      )}
     </div>
   );
 }

@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.8.6 — 2026-10-07
+
+Redis is now a full browser. You can scan keys as a folder tree, edit every data type, run commands in a console, connect with a user name and over TLS, and share a Redis connection with agents read-only.
+
+### Added
+- **Key tree:** SCAN-based and paged (100 to 1000 keys at a time, never the whole keyspace), folded by `:`, with a match pattern, type and TTL chips, per-folder counts, the database size and a database picker.
+- **Editors for every type:** string, hash, list, set, zset, stream and RedisJSON, each paged, with size and TTL in the header. Edits are staged and reviewed as the equivalent Redis commands, then committed in one `MULTI`/`EXEC` with a `WATCH` on every key: a value that changed since it was loaded stops the commit. Truncated (over 1 MiB) and binary values are read-only; binary strings open in hex.
+- **TTL, rename and delete** from the key header, with confirmation.
+- **Console:** redis-cli style, with history. Dangerous commands (`FLUSHALL`, `CONFIG`, `DEBUG`, `SHUTDOWN`, scripting, replication, module admin, blocking commands) are refused; commands that delete data (`DEL`, `EXPIRE`, `LTRIM`, `RENAME`, …) ask first.
+- **Connections:** a user name (ACL) and `rediss://` (TLS, certificate and host name verified). A password in a pasted or typed URL moves to the keychain; secrets in the query string are refused. Cluster and Sentinel are not supported yet.
+- **MCP tools, read-only:** `redis_scan`, `redis_get` and `redis_dbsize`, with a fail-closed guard on key, pattern, cursor, count and JSON path (about 180 hostile inputs, with an oracle that checks the server ran no write). There is no command tool, and the share's writes toggle does nothing for Redis. Share through a restricted ACL user such as `~agent:* +@read`.
+- **Live tests and CI:** Redis Stack, an ACL server, a TLS server and a scratch server in `docker/redis/`, with `redis_browse` and `redis_mcp_live` required to run in CI.
+
+### Changed
+- The Redis key listing used to read each key's type and TTL one round trip at a time; it now pages.
+- CI: drop a `format!` that Rust 1.99's clippy flags.
+
 ## 0.8.5 — 2026-10-07
 
 MongoDB is now a full browser, not a read-only list. You can query, edit, index and aggregate, and a read-only share lets agents read a collection without being able to write.

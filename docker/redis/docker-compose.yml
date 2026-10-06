@@ -1,0 +1,127 @@
+# Redis for tests/redis_browse.rs (and the Redis QA). Three servers:
+#   redis      Redis Stack (RedisJSON) on 56379, no auth    TIQ_REDIS_URL=redis://127.0.0.1:56379/0
+#   redis-acl  plain Redis 7.4 on 56380: `default` needs a password, and the ACL user `agent`
+#              (password `agentpw`) may only touch `agent:*` and has no dangerous commands
+#              TIQ_REDIS_ACL_URL=redis://agent:agentpw@127.0.0.1:56380/0
+#              TIQ_REDIS_ADMIN_URL=redis://:tableiq@127.0.0.1:56380/0
+#   redis-attack  plain Redis 7.4 on 56383, empty and used by tests/redis_mcp_live.rs ALONE: its
+#              INFO commandstats counters are the oracle that no agent call ran a write, which a
+#              server others also use cannot give. TIQ_REDIS_ATTACK_URL=redis://127.0.0.1:56383/0
+#   redis-tls  (profile `tls`) TLS-only Redis on 56381, certificate from `./gen-certs.sh`
+#              TIQ_REDIS_TLS_URL=rediss://127.0.0.1:56381/0, trust it with SSL_CERT_FILE=docker/redis/tls/ca.crt
+#              (and `redis-tls-wrong` on 56382: the same CA's certificate, but for another name)
+# The healthcheck (seed.sh / seed-acl.sh) seeds each server exactly once (a `tiq:seeded` marker,
+# written last), so `up -d --wait` returns only when the data is there and later edits to it are
+# never undone. `down` resets (no volumes). Ports bind to 127.0.0.1 only.
+# Images are pinned by their multi-architecture index digest, like docker/profiles.
+services:
+  redis:
+    image: redis/redis-stack-server:7.4.0-v3@sha256:7d8e657d60d525534d6abe96e7645ab30ef1b4f1ffedc6eeb2d4d4283b3a49b9
+    container_name: tableiq-redis
+    ports:
+      - "127.0.0.1:56379:6379"
+    volumes:
+      - ./seed.sh:/seed.sh:ro
+    healthcheck:
+      test: ["CMD", "sh", "/seed.sh"]
+      interval: 3s
+      timeout: 20s
+      retries: 40
+      start_period: 3s
+  redis-acl:
+    image: redis:7.4@sha256:4fa24486b8bcca8eec45ee0eb166edc674795e53a2b53d1a9ef263eecebaac85
+    container_name: tableiq-redis-acl
+    command:
+      - redis-server
+      - --requirepass
+      - tableiq
+      - --user
+      - agent
+      - "on"
+      - ">agentpw"
+      - "~agent:*"
+      - "+@read"
+      - "+@write"
+      - "+@transaction"
+      - "-@dangerous"
+      - "+ping"
+      - "+select"
+    ports:
+      - "127.0.0.1:56380:6379"
+    environment:
+      REDISCLI_AUTH: tableiq
+    volumes:
+      - ./seed-acl.sh:/seed.sh:ro
+    healthcheck:
+      test: ["CMD", "sh", "/seed.sh"]
+      interval: 3s
+      timeout: 10s
+      retries: 40
+      start_period: 3s
+  redis-attack:
+    image: redis:7.4@sha256:4fa24486b8bcca8eec45ee0eb166edc674795e53a2b53d1a9ef263eecebaac85
+    container_name: tableiq-redis-attack
+    ports:
+      - "127.0.0.1:56383:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "PING"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 2s
+  redis-tls:
+    profiles: ["tls"]
+    image: redis:7.4@sha256:4fa24486b8bcca8eec45ee0eb166edc674795e53a2b53d1a9ef263eecebaac85
+    container_name: tableiq-redis-tls
+    command:
+      - redis-server
+      - --port
+      - "0"
+      - --tls-port
+      - "6379"
+      - --tls-cert-file
+      - /tls/server.crt
+      - --tls-key-file
+      - /tls/server.key
+      - --tls-ca-cert-file
+      - /tls/ca.crt
+      - --tls-auth-clients
+      - "no"
+    ports:
+      - "127.0.0.1:56381:6379"
+    volumes:
+      - ./tls:/tls:ro
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --tls --cacert /tls/ca.crt SETNX tls:1 secure && redis-cli --tls --cacert /tls/ca.crt PING | grep -q PONG"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 3s
+  redis-tls-wrong:
+    profiles: ["tls"]
+    image: redis:7.4@sha256:4fa24486b8bcca8eec45ee0eb166edc674795e53a2b53d1a9ef263eecebaac85
+    container_name: tableiq-redis-tls-wrong
+    command:
+      - redis-server
+      - --port
+      - "0"
+      - --tls-port
+      - "6379"
+      - --tls-cert-file
+      - /tls/wrong.crt
+      - --tls-key-file
+      - /tls/wrong.key
+      - --tls-ca-cert-file
+      - /tls/ca.crt
+      - --tls-auth-clients
+      - "no"
+    ports:
+      - "127.0.0.1:56382:6379"
+    volumes:
+      - ./tls:/tls:ro
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --tls --cacert /tls/ca.crt --insecure PING | grep -q PONG"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 3s

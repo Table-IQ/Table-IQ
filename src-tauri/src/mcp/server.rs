@@ -26,7 +26,7 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use super::guard::{guard_sql, read_only_stmts};
-use super::{mongo, record, Activity, McpConfig, McpConn};
+use super::{mongo, record, redis, Activity, McpConfig, McpConn};
 use crate::connections::ConnConfig;
 use crate::drivers::{DriverError, SqlDriver};
 use crate::profiles;
@@ -179,6 +179,10 @@ const NOTHING_TO_STOP: &str = "Nothing was running on the database.";
 /// (its own `maxTimeMS` is 30 s from when it started).
 const MONGO_TIMEOUT: &str = "The read was not stopped by TableIQ; MongoDB ends it at its own 30 second limit, and it keeps its query slot until then.";
 
+/// A Redis read is not abandoned at the tool timeout either: it only reads, and keeps its slot until
+/// the server answers.
+const REDIS_TIMEOUT: &str = "The read was not stopped by TableIQ; it only reads, and keeps its query slot until Redis answers.";
+
 // ── Tools ─────────────────────────────────────────────────────────────────
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -265,8 +269,8 @@ impl TiqMcp {
         on_timeout: impl FnOnce(&tokio::task::AbortHandle) -> String,
     ) -> Result<String, String> {
         let t0 = Instant::now();
-        // The tools that can run long on the database, MongoDB's reads included, take query slots.
-        let long = matches!(tool, "run_query" | "mongo_find" | "mongo_count" | "mongo_aggregate");
+        // The tools that can run long on the database, MongoDB's and Redis's reads included, take query slots.
+        let long = matches!(tool, "run_query" | "mongo_find" | "mongo_count" | "mongo_aggregate" | "redis_scan" | "redis_get");
         let sem = if long { &self.slots.query } else { &self.slots.meta };
         let res = bounded(sem, self.timeout, work, on_timeout).await.and_then(|(s, n)| {
             if s.len() > MAX_RESPONSE_BYTES {
@@ -319,7 +323,11 @@ pub(super) fn shared(host: &dyn Host, cfg: &McpConfig, id: &str) -> Result<(Conn
 fn allowed(host: &dyn Host, cfg: &McpConfig, id: &str) -> Result<(ConnConfig, McpConn), String> {
     let (conn, entry) = shared(host, cfg, id)?;
     if !SQL_ENGINES.contains(&conn.engine.as_str()) {
-        let hint = if conn.engine == "mongodb" { " Use the mongo_* tools for it." } else { "" };
+        let hint = match conn.engine.as_str() {
+            "mongodb" => " Use the mongo_* tools for it.",
+            "redis" => " Use the redis_* tools for it.",
+            _ => "",
+        };
         return Err(format!("Connection `{id}` is not a SQL connection.{hint}"));
     }
     // The saved profile, before anything connects; the live session is checked in `session`.
@@ -414,6 +422,9 @@ fn list_connections_body(host: &dyn Host, cfg: &McpConfig) -> Done {
             let Some(a) = cfg.connections.iter().find(|a| a.id == c.id) else { return false };
             if c.engine == "mongodb" {
                 return profiles::mongodb_reconfirm_block(a.rev).is_none();
+            }
+            if c.engine == "redis" {
+                return profiles::redis_reconfirm_block(a.rev).is_none();
             }
             profiles::reconfirm_block(c.profile.as_deref(), None, a.rev).is_none()
                 && SQL_ENGINES.contains(&c.engine.as_str())
@@ -626,8 +637,8 @@ impl TiqMcp {
     #[tool(
         description = "List the database connections the TableIQ user has shared with you: id, name, engine and database. \
                        Use list_databases, list_tables, describe_table and run_query on the SQL engines \
-                       (postgres, mysql, sqlite, duckdb, sqlserver) and the mongo_* tools on engine mongodb, \
-                       which is read-only.",
+                       (postgres, mysql, sqlite, duckdb, sqlserver), the mongo_* tools on engine mongodb and \
+                       the redis_* tools on engine redis; MongoDB and Redis are read-only.",
         annotations(read_only_hint = true)
     )]
     async fn list_connections(&self, ext: Extensions) -> Result<String, String> {
@@ -810,6 +821,72 @@ impl TiqMcp {
         let work = mongo::aggregate_body(self.host.clone(), self.cfg.clone(), a);
         self.call(&ext, "mongo_aggregate", Some(&id), Some(&act), work, |_| MONGO_TIMEOUT.into()).await
     }
+
+    #[tool(
+        description = "List the keys of a shared Redis connection's database (the one it is connected to; there is no \
+                       way to choose another), each with its type and time to live. Read-only: TableIQ exposes no Redis \
+                       writes and no way to run a Redis command to agents, whatever the user's writes setting. pattern \
+                       is a Redis glob of at most 256 bytes with at most 4 `*` (e.g. `user:*`); omit it for every key. \
+                       Returns {keys: [{key, type, ttl}], next_cursor}: pass next_cursor back as cursor for the next \
+                       page, until it is null. A page holds about `count` keys (1 to 1000, never more than the user's \
+                       row cap): a few more or fewer, even none, with a next_cursor to go on. A key that is not UTF-8 is \
+                       shown lossily with binary: true and cannot be read. Refused: an empty pattern, control \
+                       characters (newlines, NUL), a cursor that is not a number. If the connection signs in as a Redis \
+                       ACL user limited to some keys, a pattern that reaches other keys fails with NOPERM: use its prefix. \
+                       A call that takes longer than 30 seconds times out.",
+        annotations(read_only_hint = true)
+    )]
+    async fn redis_scan(&self, ext: Extensions, Parameters(a): Parameters<redis::RedisScanArgs>) -> Result<String, String> {
+        let id = a.connection_id.clone();
+        let act = redis::activity_text(&[
+            ("pattern", a.pattern.clone()),
+            ("cursor", a.cursor.clone()),
+            ("count", a.count.map(|n| n.to_string())),
+        ]);
+        let work = redis::scan_body(self.host.clone(), self.cfg.clone(), a);
+        self.call(&ext, "redis_scan", Some(&id), Some(&act), work, |_| REDIS_TIMEOUT.into()).await
+    }
+
+    #[tool(
+        description = "Read one key of a shared Redis connection, whatever its type: string, list, set, hash, sorted \
+                       set, stream or RedisJSON document. Read-only (no writes, no commands, whatever the user's writes \
+                       setting). Returns {key, type, ttl, size, items, next, truncated}. type is none and ttl -2 when \
+                       there is no such key; ttl -1 means it never expires. items by type: string and JSON, one \
+                       {value}; list {index, value}; set {value}; hash {field, value}; sorted set {value (the member), \
+                       score}; stream {id, fields: [{field, value}]}. A value is text, or {binary: true, b64} when its \
+                       bytes are not UTF-8. A page holds up to `count` items (1 to 1000, never more than the user's row \
+                       cap; a set or hash page may hold a few more or fewer): pass `next` back as cursor for the next \
+                       page, until next is absent. A string or JSON document over 1 MiB comes back cut (truncated: true) \
+                       and cannot be paged. path (RedisJSON keys only; e.g. $.user.name) reads part of a JSON document: \
+                       letters, digits and _ . $ [ ] ' \" * - only. A response is at most 4 MiB: items that do not fit \
+                       are dropped, truncated is true and next continues after the last one returned (list, sorted set, \
+                       stream); a set or hash page that does not fit is an error, so ask for a smaller count. Refused: \
+                       an empty key or one over 512 bytes or with control characters (newlines, NUL), a cursor that is \
+                       not a number, a count outside 1 to 1000. A call that takes longer than 30 seconds times out.",
+        annotations(read_only_hint = true)
+    )]
+    async fn redis_get(&self, ext: Extensions, Parameters(a): Parameters<redis::RedisGetArgs>) -> Result<String, String> {
+        let id = a.connection_id.clone();
+        let act = redis::activity_text(&[
+            ("key", Some(a.key.clone())),
+            ("cursor", a.cursor.clone()),
+            ("count", a.count.map(|n| n.to_string())),
+            ("path", a.path.clone()),
+        ]);
+        let work = redis::get_body(self.host.clone(), self.cfg.clone(), a);
+        self.call(&ext, "redis_get", Some(&id), Some(&act), work, |_| REDIS_TIMEOUT.into()).await
+    }
+
+    #[tool(
+        description = "Count the keys of a shared Redis connection's database. Returns {dbsize}. Read-only. With a \
+                       Redis ACL user limited to some keys the count still includes every key of the database.",
+        annotations(read_only_hint = true)
+    )]
+    async fn redis_dbsize(&self, ext: Extensions, Parameters(a): Parameters<redis::RedisConnArgs>) -> Result<String, String> {
+        let id = a.connection_id.clone();
+        let work = redis::dbsize_body(self.host.clone(), self.cfg.clone(), a);
+        self.call(&ext, "redis_dbsize", Some(&id), None, work, |_| REDIS_TIMEOUT.into()).await
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -820,7 +897,7 @@ impl ServerHandler for TiqMcp {
             .with_instructions(
                 "TableIQ database connections the user chose to share. Every other tool takes a \
                  connection_id returned by list_connections: SQL engines use run_query and the \
-                 table tools, MongoDB (read-only) the mongo_* tools.",
+                 table tools, MongoDB (read-only) the mongo_* tools, Redis (read-only) the redis_* tools.",
             )
     }
 }
@@ -1890,5 +1967,202 @@ mod tests {
             assert_eq!(t.annotations.as_ref().and_then(|a| a.read_only_hint), Some(true), "{}", t.name);
         }
         assert!(tools.iter().all(|t| !t.name.contains("write") && !t.name.contains("insert") && !t.name.contains("update") && !t.name.contains("delete")));
+    }
+
+    // ── Redis ────────────────────────────────────────────────────────────
+
+    use crate::drivers::{KeyInfo, KeyPage, KvChange, KvChangesResult, KvDriver, KvItem, KvRead, KvReadOpts, KvReply, KvValue};
+
+    /// A Redis session that records what reaches it, the calls no tool may ever make (a command, an
+    /// edit) included, and logs like the real driver does.
+    #[derive(Default)]
+    struct FakeKv {
+        calls: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl FakeKv {
+        fn saw(&self, what: String) {
+            crate::sql_log::note(&what);
+            self.calls.lock().unwrap().push(what);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl KvDriver for FakeKv {
+        async fn scan(&self, _: &str, _: usize) -> crate::drivers::DResult<Vec<KeyInfo>> {
+            self.saw("WRITE-PATH scan".into());
+            unimplemented!()
+        }
+        async fn scan_page(&self, pattern: &str, cursor: &str, count: usize) -> crate::drivers::DResult<KeyPage> {
+            self.saw(format!("SCAN {cursor} MATCH {pattern} COUNT {count}"));
+            let keys = ["a", "b", "c"].map(|k| KeyInfo { key: k.into(), kind: "string".into(), ttl: -1, binary: false }).to_vec();
+            Ok(KeyPage { keys, next_cursor: "17".into() })
+        }
+        async fn get(&self, _: &str) -> crate::drivers::DResult<KvValue> {
+            self.saw("WRITE-PATH get".into());
+            unimplemented!()
+        }
+        async fn read(&self, key: &str, o: &KvReadOpts) -> crate::drivers::DResult<KvRead> {
+            self.saw(format!("READ {key} cursor={:?} count={:?} path={:?}", o.cursor, o.count, o.path));
+            let items = (0..3)
+                .map(|i| KvItem {
+                    index: Some(i),
+                    value: Some(crate::drivers::KvBytes::from_bytes(if i == 2 { vec![0xff, 0x00] } else { format!("v{i}").into_bytes() })),
+                    ..Default::default()
+                })
+                .collect();
+            Ok(KvRead { key: key.into(), kind: "list".into(), ttl: -1, size: 3, items, next: None, truncated: false })
+        }
+        async fn apply_changes(&self, _: &[KvChange]) -> crate::drivers::DResult<KvChangesResult> {
+            self.saw("WRITE apply_changes".into());
+            unimplemented!()
+        }
+        async fn command(&self, line: &str, _: bool) -> crate::drivers::DResult<KvReply> {
+            self.saw(format!("WRITE command {line}"));
+            unimplemented!()
+        }
+        async fn dbsize(&self) -> crate::drivers::DResult<u64> {
+            self.saw("DBSIZE".into());
+            Ok(9)
+        }
+    }
+
+    /// A server sharing Redis connection `redis` (and SQLite `lite`, and unshared `private`) at generation
+    /// `rev`, with a recording session installed for `redis`.
+    fn redis_mcp(rev: u32, writes: bool, row_cap: usize) -> (TiqMcp, Arc<FakeKv>, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let rt = tokio::runtime::Handle::current();
+        let lite = tokio::task::block_in_place(|| rt.block_on(sqlite(&tmp, "lite")));
+        let conns = vec![cfg_of("redis", "redis", "0"), cfg_of("private", "redis", "1"), lite];
+        let state = ConnState::with_configs(conns);
+        let fake = Arc::new(FakeKv::default());
+        state.adopt_kv_session("redis", fake.clone());
+        state.adopt_kv_session("private", fake.clone());
+        let allow = ["redis", "lite"].map(|id| McpConn { id: id.into(), writes, rev });
+        let cfg = McpConfig { connections: allow.to_vec(), row_cap, ..McpConfig::default() };
+        (TiqMcp::new(Arc::new(state), Arc::new(cfg), fresh_slots()), fake, tmp)
+    }
+
+    fn scan_args(pattern: Option<&str>) -> redis::RedisScanArgs {
+        redis::RedisScanArgs { connection_id: "redis".into(), pattern: pattern.map(Into::into), cursor: None, count: None }
+    }
+
+    fn get_args(key: &str) -> redis::RedisGetArgs {
+        redis::RedisGetArgs { connection_id: "redis".into(), key: key.into(), cursor: None, count: None, path: None }
+    }
+
+    async fn rscan(m: &TiqMcp, a: redis::RedisScanArgs) -> Result<String, String> {
+        m.redis_scan(Extensions::new(), Parameters(a)).await
+    }
+
+    async fn rget(m: &TiqMcp, a: redis::RedisGetArgs) -> Result<String, String> {
+        m.redis_get(Extensions::new(), Parameters(a)).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_redis_tools_read_log_cap_and_never_write() {
+        let (m, fake, _tmp) = redis_mcp(profiles::agent_rev(), true, 2);
+        let out: serde_json::Value = serde_json::from_str(&rscan(&m, scan_args(Some("user:*"))).await.unwrap()).unwrap();
+        assert_eq!(out["next_cursor"], "17");
+        assert_eq!(out["keys"][0], serde_json::json!({"key": "a", "type": "string", "ttl": -1}));
+        let mut a = scan_args(None);
+        a.cursor = Some("17".into());
+        a.count = Some(900);
+        rscan(&m, a).await.unwrap();
+        let g: serde_json::Value = serde_json::from_str(&rget(&m, get_args("some key")).await.unwrap()).unwrap();
+        assert_eq!(g["type"], "list");
+        assert_eq!(g["items"][0], serde_json::json!({"index": 0, "value": "v0"}));
+        assert_eq!(g["items"][2], serde_json::json!({"index": 2, "value": {"binary": true, "b64": "/wA="}}));
+        let n = m.redis_dbsize(Extensions::new(), Parameters(redis::RedisConnArgs { connection_id: "redis".into() })).await.unwrap();
+        assert_eq!(n, r#"{"dbsize":9}"#);
+
+        let calls = fake.calls.lock().unwrap().clone();
+        assert!(calls.iter().all(|c| !c.starts_with("WRITE")), "{calls:?}");
+        assert_eq!(calls[0], "SCAN 0 MATCH user:* COUNT 2", "the user's row cap is the count when none is asked");
+        assert_eq!(calls[1], "SCAN 17 MATCH * COUNT 2", "an ask over the row cap is cut to it");
+        assert!(calls[2].contains("count=Some(2)") && calls[2].contains("cursor=None"), "{calls:?}");
+        // Inside the connection's log scope: what ran is in the bottom panel too.
+        let logged = m.host.conns().sql_log_for("redis").since(0).len();
+        assert_eq!(logged, calls.len());
+        let act: Vec<_> = activity_since(0).into_iter().filter(|a| a.tool.starts_with("redis_") && a.conn_id.as_deref() == Some("redis")).collect();
+        assert!(act.iter().any(|a| a.tool == "redis_get" && a.ok && a.sql.as_deref() == Some("key=some key") && a.rows == Some(3)), "{act:?}");
+    }
+
+    /// The guard runs before the session is touched: a refused call never reaches the driver.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refused_redis_call_never_reaches_the_driver() {
+        let (m, fake, _tmp) = redis_mcp(profiles::agent_rev(), true, 500);
+        assert!(rget(&m, get_args("foo\r\nFLUSHALL\r\n")).await.unwrap_err().starts_with("key:"));
+        assert!(rget(&m, get_args("")).await.unwrap_err().starts_with("key:"));
+        assert!(rscan(&m, scan_args(Some("k\nCONFIG SET dir /tmp"))).await.unwrap_err().starts_with("pattern:"));
+        let mut a = scan_args(None);
+        a.count = Some(-1);
+        assert!(rscan(&m, a).await.unwrap_err().starts_with("count:"));
+        let mut a = get_args("k");
+        a.path = Some("$.a b".into());
+        assert!(rget(&m, a).await.unwrap_err().starts_with("path:"));
+        assert!(fake.calls.lock().unwrap().is_empty());
+        // …but the attempt is in the Activity view, with its control characters escaped.
+        let act: Vec<_> = activity_since(0).into_iter().filter(|a| a.tool == "redis_get" && !a.ok).collect();
+        assert!(act.iter().any(|a| a.sql.as_deref().is_some_and(|s| s.contains(r"foo\r\nFLUSHALL"))), "{act:?}");
+    }
+
+    /// An entry shared before Redis was open to agents is neither listed nor served.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_redis_entry_from_before_the_opening_is_not_served() {
+        let (stale, fake, _t1) = redis_mcp(profiles::REDIS_AGENT_SINCE - 1, false, 500);
+        let e = rget(&stale, get_args("k")).await.unwrap_err();
+        assert!(e.contains("shared before TableIQ supported Redis over MCP"), "{e}");
+        let listed = |m: &TiqMcp| list_connections_body(m.host.as_ref(), &m.cfg).unwrap().0;
+        assert!(!listed(&stale).contains("redis"), "{}", listed(&stale));
+        assert!(fake.calls.lock().unwrap().is_empty());
+        let (fresh, _f, _t2) = redis_mcp(profiles::REDIS_AGENT_SINCE, false, 500);
+        assert!(listed(&fresh).contains(r#""engine":"redis""#));
+        assert!(rget(&fresh, get_args("k")).await.is_ok());
+        // Mongo's generation does not open Redis.
+        let (mongo_era, _f, _t3) = redis_mcp(profiles::MONGODB_AGENT_SINCE, false, 500);
+        assert!(rget(&mongo_era, get_args("k")).await.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn each_kind_of_tool_refuses_a_redis_connection_and_the_other_way_round() {
+        let (m, _f, _t) = redis_mcp(profiles::agent_rev(), false, 500);
+        let mut a = scan_args(None);
+        a.connection_id = "lite".into();
+        assert!(rscan(&m, a).await.unwrap_err().contains("not a Redis connection"));
+        let e = query(&m, "redis", "SELECT 1").await.unwrap_err();
+        assert!(e.contains("not a SQL connection") && e.contains("redis_* tools"), "{e}");
+        assert!(m.list_databases(Extensions::new(), Parameters(ConnArgs { connection_id: "redis".into() })).await.is_err(), "no database discovery for Redis");
+        let mut a = find_args(None);
+        a.connection_id = "redis".into();
+        assert!(mfind(&m, a).await.unwrap_err().contains("not a MongoDB connection"));
+        for id in ["private", "nope"] {
+            let mut a = scan_args(None);
+            a.connection_id = id.into();
+            assert_eq!(rscan(&m, a).await.unwrap_err(), format!("Connection `{id}` is not shared over MCP. The user can allow it in TableIQ → Settings → MCP."));
+        }
+    }
+
+    #[test]
+    fn redis_tool_descriptions_are_accurate() {
+        let tools = TiqMcp::tool_router().list_all();
+        let desc = |n: &str| tools.iter().find(|t| t.name == n).and_then(|t| t.description.as_deref()).unwrap_or_else(|| panic!("no tool {n}")).to_string();
+        for n in ["redis_scan", "redis_get"] {
+            assert!(desc(n).contains(&format!("{} seconds", TOOL_TIMEOUT.as_secs())), "{n}");
+            assert!(desc(n).contains("1 to 1000"), "{n}");
+        }
+        assert!(desc("redis_scan").contains("at most 4 `*`") && desc("redis_scan").contains("whatever the user's writes setting"));
+        assert!(desc("redis_get").contains("at most 4 MiB") && desc("redis_get").contains("512 bytes") && desc("redis_get").contains("over 1 MiB"));
+        assert!(desc("list_connections").contains("redis_* tools on engine redis"));
+        let (guard_cap, tool_cap) = (redis::MAX_RESPONSE_BYTES >> 20, 4);
+        assert_eq!(guard_cap, tool_cap, "the descriptions say 4 MiB");
+        // Exactly these three Redis tools, each a read that says so; nothing that runs a command or writes.
+        let mut names: Vec<_> = tools.iter().filter(|t| t.name.starts_with("redis_")).map(|t| t.name.to_string()).collect();
+        names.sort();
+        assert_eq!(names, ["redis_dbsize", "redis_get", "redis_scan"]);
+        for t in tools.iter().filter(|t| t.name.starts_with("redis_")) {
+            assert_eq!(t.annotations.as_ref().and_then(|a| a.read_only_hint), Some(true), "{}", t.name);
+        }
+        assert!(tools.iter().all(|t| !["command", "exec", "eval", "console", "raw"].iter().any(|w| t.name.contains(w))));
     }
 }
