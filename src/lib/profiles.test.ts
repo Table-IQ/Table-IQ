@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ENGINE_COLORS, ENGINE_MONOGRAMS } from "../components/ui/EngineIcon";
 import cases from "./agentAccessCases.json";
-import { AGENT_REV, MONGODB_AGENT_SINCE, PROFILES, applyPreset, capsOf, explainUnavailable, presetFor, profileForUrl, profileOf, profilesFor } from "./profiles";
+import { AGENT_REV, MONGODB_AGENT_SINCE, PROFILES, REDIS_AGENT_SINCE, applyPreset, capsOf, explainUnavailable, presetFor, profileForUrl, profileOf, profilesFor } from "./profiles";
 
 /** WCAG relative luminance of a `#rrggbb` colour. */
 function luminance(hex: string): number {
@@ -133,8 +133,9 @@ describe("agent access", () => {
     for (const [id, p] of Object.entries(PROFILES)) {
       expect((p.agent ?? p.real) && !p.real, id).toBe((p.agentSince ?? 0) > 0);
     }
-    expect(AGENT_REV).toBe(MONGODB_AGENT_SINCE);
+    expect(AGENT_REV).toBe(REDIS_AGENT_SINCE);
     expect(MONGODB_AGENT_SINCE).toBeGreaterThan(PROFILES.cockroachdb.agentSince ?? 0);
+    expect(REDIS_AGENT_SINCE).toBeGreaterThan(MONGODB_AGENT_SINCE);
   });
 });
 

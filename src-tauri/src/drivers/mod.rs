@@ -1081,12 +1081,15 @@ pub trait DocumentDriver: Send + Sync {
     }
 }
 
-/// A Redis key with its type + TTL (seconds; -1 = no expiry).
+/// A Redis key with its type + TTL (seconds; -1 = no expiry). `binary`: the key is not UTF-8,
+/// so `key` is lossy and cannot be addressed by any other call.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeyInfo {
     pub key: String,
     pub kind: String,
     pub ttl: i64,
+    #[serde(default)]
+    pub binary: bool,
 }
 
 /// A key's value rendered as display rows (shape depends on `kind`).
@@ -1097,11 +1100,194 @@ pub struct KvValue {
     pub rows: Vec<Vec<String>>,
 }
 
+/// One page of `SCAN`. `next_cursor` is `"0"` once the keyspace is exhausted.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyPage {
+    pub keys: Vec<KeyInfo>,
+    pub next_cursor: String,
+}
+
+/// The bytes of a Redis value. `text` is always set — the UTF-8 text, or a lossy rendering
+/// (U+FFFD) when `binary`; `b64` is the exact bytes, present only when `binary`. A write accepts
+/// the same shape: `b64` wins when present, else `text` is the bytes.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KvBytes {
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub binary: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub b64: Option<String>,
+}
+
+/// How [`KvDriver::read`] pages. `cursor` is whatever the previous page returned as `next`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct KvReadOpts {
+    /// list/zset: offset of the first item. set/hash: the SSCAN/HSCAN cursor. stream: the last
+    /// entry id already seen. Absent = the first page.
+    pub cursor: Option<String>,
+    /// Items wanted (default 100, max 1000). set/hash may return a few more or fewer.
+    pub count: Option<usize>,
+    /// RedisJSON path (default `.`).
+    pub path: Option<String>,
+}
+
+/// A stream entry's field and its value.
+#[derive(Debug, Clone, Serialize)]
+pub struct KvPair {
+    pub field: KvBytes,
+    pub value: KvBytes,
+}
+
+/// One element of a key's value; which fields are set depends on the key's kind:
+/// string `value` · list `index`, `value` · set `value` (the member) · hash `field`, `value` ·
+/// zset `value` (the member), `score` · stream `id`, `fields` · ReJSON-RL `value` (JSON text).
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KvItem {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub field: Option<KvBytes>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<KvBytes>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fields: Option<Vec<KvPair>>,
+}
+
+/// One page of a key's value plus its metadata.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KvRead {
+    pub key: String,
+    /// `string` `list` `set` `hash` `zset` `stream` `ReJSON-RL`; `none` when the key does not exist;
+    /// any other module type comes back with no items.
+    pub kind: String,
+    /// Seconds; -1 = no expiry, -2 = no such key.
+    pub ttl: i64,
+    /// STRLEN / LLEN / SCARD / HLEN / ZCARD / XLEN, or the JSON text's byte length.
+    pub size: u64,
+    pub items: Vec<KvItem>,
+    /// The `cursor` of the next page; absent on the last.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next: Option<String>,
+    /// A string / JSON document over 1 MiB: `items` holds the first MiB and must not be written back.
+    pub truncated: bool,
+}
+
+/// One staged Redis edit. Every `expect` is the value the editor loaded: the change applies
+/// only while the key still holds it ([`KV_CHANGED`] otherwise).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind")]
+pub enum KvChange {
+    /// `SET key value KEEPTTL`. `expect` = the string as loaded.
+    #[serde(rename = "setString", rename_all = "camelCase")]
+    SetString { key: String, value: KvBytes, #[serde(default)] expect: Option<KvBytes> },
+    /// `expect` = the field's value as loaded; `expect_absent` = a new field, which must still not exist
+    /// (not both).
+    #[serde(rename = "hset", rename_all = "camelCase")]
+    HSet { key: String, field: KvBytes, value: KvBytes, #[serde(default)] expect: Option<KvBytes>, #[serde(default)] expect_absent: bool },
+    #[serde(rename = "hdel", rename_all = "camelCase")]
+    HDel { key: String, field: KvBytes, #[serde(default)] expect: Option<KvBytes> },
+    #[serde(rename = "lpush", rename_all = "camelCase")]
+    LPush { key: String, value: KvBytes },
+    #[serde(rename = "rpush", rename_all = "camelCase")]
+    RPush { key: String, value: KvBytes },
+    /// `expect` = the item at `index` as loaded. Must precede any push / `LRem` on the same list in the batch.
+    #[serde(rename = "lset", rename_all = "camelCase")]
+    LSet { key: String, index: i64, value: KvBytes, #[serde(default)] expect: Option<KvBytes> },
+    /// `LREM key count value`: `count` 0 = every occurrence, n > 0 the first n, n < 0 the last n.
+    #[serde(rename = "lrem", rename_all = "camelCase")]
+    LRem { key: String, value: KvBytes, count: i64 },
+    #[serde(rename = "sadd", rename_all = "camelCase")]
+    SAdd { key: String, member: KvBytes },
+    #[serde(rename = "srem", rename_all = "camelCase")]
+    SRem { key: String, member: KvBytes },
+    /// `expect` = the member's score as loaded (its text, compared as a number); `expect_absent` = a new
+    /// member, which must still not exist (not both).
+    #[serde(rename = "zadd", rename_all = "camelCase")]
+    ZAdd { key: String, member: KvBytes, score: f64, #[serde(default)] expect: Option<KvBytes>, #[serde(default)] expect_absent: bool },
+    #[serde(rename = "zrem", rename_all = "camelCase")]
+    ZRem { key: String, member: KvBytes },
+    /// `XADD`; `id` absent = `*`.
+    #[serde(rename = "xadd", rename_all = "camelCase")]
+    XAdd { key: String, #[serde(default)] id: Option<String>, fields: Vec<KvFieldIn> },
+    #[serde(rename = "xdel", rename_all = "camelCase")]
+    XDel { key: String, id: String },
+    /// `JSON.SET key path value`; `value` is JSON text, `path` defaults to `$`. `expect` = the
+    /// text `JSON.GET key path` returned. Needs the RedisJSON module.
+    #[serde(rename = "jsonSet", rename_all = "camelCase")]
+    JsonSet { key: String, #[serde(default)] path: Option<String>, value: String, #[serde(default)] expect: Option<KvBytes> },
+    /// `EXPIRE key seconds` (seconds > 0).
+    #[serde(rename = "expire", rename_all = "camelCase")]
+    Expire { key: String, seconds: i64 },
+    #[serde(rename = "persist", rename_all = "camelCase")]
+    Persist { key: String },
+    /// `RENAME`, refused when `new_key` exists.
+    #[serde(rename = "rename", rename_all = "camelCase")]
+    Rename { key: String, new_key: String },
+    #[serde(rename = "del", rename_all = "camelCase")]
+    Del { key: String },
+}
+
+/// A stream entry field as sent by a write.
+#[derive(Debug, Clone, Deserialize)]
+pub struct KvFieldIn {
+    pub field: KvBytes,
+    pub value: KvBytes,
+}
+
+/// The write was refused because someone else changed a key after it was loaded.
+pub const KV_CHANGED: &str = "value changed since it was loaded";
+
+#[derive(Debug, Clone, Serialize)]
+pub struct KvChangesResult {
+    pub applied: usize,
+}
+
+/// One reply of the console, nested like the RESP reply it renders.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum KvReply {
+    Nil,
+    Status { value: String },
+    Int { value: i64 },
+    Bulk(KvBytes),
+    Array { items: Vec<KvReply> },
+    /// A reply the server sent as an error (`NOPERM`, `WRONGTYPE` …).
+    Error { message: String },
+}
+
 /// Key-value stores (Redis). The second data-model trait (plan spec #1).
+///
+/// Implementations log the equivalent commands through `sql_log::note`; the caller scopes the
+/// connection's log around the call (`sql_log::CURRENT`).
 #[async_trait]
 pub trait KvDriver: Send + Sync {
+    /// Up to `limit` keys matching `pattern` (the first pages of [`scan_page`](Self::scan_page)).
     async fn scan(&self, pattern: &str, limit: usize) -> DResult<Vec<KeyInfo>>;
+    /// About `count` keys from `cursor` (`"0"` = start), each with its type and TTL.
+    async fn scan_page(&self, pattern: &str, cursor: &str, count: usize) -> DResult<KeyPage>;
+    /// The first 500 items of a key as display rows (the original browse shape; lossy text).
     async fn get(&self, key: &str) -> DResult<KvValue>;
+    /// One bounded page of a key's value, binary-safe.
+    async fn read(&self, key: &str, opts: &KvReadOpts) -> DResult<KvRead>;
+    /// Apply staged edits as one `MULTI`/`EXEC`, `WATCH`ing every key they touch. Every refusal
+    /// is found before anything is written and rejects with `change {i}: {reason}`; nothing is
+    /// written. A command Redis itself fails at `EXEC` is the one case it cannot undo — the
+    /// error then says so.
+    async fn apply_changes(&self, changes: &[KvChange]) -> DResult<KvChangesResult>;
+    /// Run one console command line. Refuses the dangerous ones before sending (see
+    /// `kv_redis::check_command`); `confirmed` allows `DEL` / `UNLINK` / `GETDEL` / `FLUSHDB`.
+    async fn command(&self, line: &str, confirmed: bool) -> DResult<KvReply>;
+    async fn dbsize(&self) -> DResult<u64>;
     /// Enumerate Redis databases. Redis exposes a fixed-count `databases`
     /// config (typically 16); we return them as `"0"`..`"N-1"` strings.
     async fn list_databases(&self) -> DResult<Vec<String>> {

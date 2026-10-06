@@ -67,11 +67,17 @@ impl ConnConfig {
         match self.engine.as_str() {
             // A file path (or DuckDB's `:memory:`); the driver opens it directly.
             "sqlite" | "duckdb" => self.database.clone(),
+            // A pasted connection string kept whole (`rediss://` TLS, a query …): `host`.
+            "redis" if self.host.starts_with("redis://") || self.host.starts_with("rediss://") => {
+                redis_url_with_password(&self.host, &self.username, password, &self.database)
+            }
             "redis" => {
-                let auth = if password.is_empty() {
+                let auth = if self.username.is_empty() && password.is_empty() {
                     String::new()
+                } else if password.is_empty() {
+                    format!("{}@", urlencode(&self.username))
                 } else {
-                    format!(":{}@", urlencode(password))
+                    format!("{}:{}@", urlencode(&self.username), urlencode(password))
                 };
                 let dbn = if self.database.is_empty() { "0" } else { &self.database };
                 format!("redis://{auth}{}:{}/{}", urlencode_host(&self.host), self.port, dbn)
@@ -137,6 +143,26 @@ fn mongo_url_with_password(url: &str, username: &str, password: &str) -> String 
         return url.to_string();
     }
     format!("{scheme}://{user}:{}@{hosts}{tail}", urlencode(password))
+}
+
+/// A Redis connection string with what is saved filled in: the keychain password where the
+/// string has none of its own (`:pw@`, `user:pw@`), and the connection's database (the picker
+/// switches it) over the string's path. Options and a fragment pass through untouched.
+fn redis_url_with_password(url: &str, username: &str, password: &str, database: &str) -> String {
+    let (url, fragment) = url.split_at(url.find('#').unwrap_or(url.len()));
+    let (scheme, rest) = url.split_once("://").unwrap_or(("redis", url));
+    let (authority, tail) = rest.split_at(rest.find(['/', '?']).unwrap_or(rest.len()));
+    let (path, query) = tail.split_at(tail.find('?').unwrap_or(tail.len()));
+    let (user, hosts) = match authority.rsplit_once('@') {
+        Some((u, h)) => (u.to_string(), h),
+        None => (urlencode(username), authority),
+    };
+    // A password of its own wins; else the keychain's goes in (`:pw` when there is no user).
+    let userinfo = if user.contains(':') || password.is_empty() { user } else { format!("{user}:{}", urlencode(password)) };
+    let at = if userinfo.is_empty() { String::new() } else { format!("{userinfo}@") };
+    let db = if database.is_empty() { path.trim_start_matches('/') } else { database };
+    let slash = if db.is_empty() { String::new() } else { format!("/{}", urlencode(db)) };
+    format!("{scheme}://{at}{hosts}{slash}{query}{fragment}")
 }
 
 /// The sqlx `ssl-mode` for a saved SSL mode (libpq or MySQL spelling). Unknown fails closed.
@@ -316,6 +342,27 @@ pub(crate) mod tests {
             engine: engine.into(), host: "h".into(), port: 3306, database: "d".into(),
             username: "u".into(), sslmode: "prefer".into(), ssh: None,
         }
+    }
+
+    #[test]
+    fn redis_connection_urls_carry_user_password_and_database() {
+        let fields = |user: &str, pw: &str, db: &str| {
+            ConnConfig { engine: "redis".into(), host: "cache".into(), port: 6380, username: user.into(), database: db.into(), ..cfg("redis") }
+                .url_with_password(pw)
+        };
+        assert_eq!(fields("", "", ""), "redis://cache:6380/0");
+        assert_eq!(fields("", "pw", "2"), "redis://:pw@cache:6380/2");
+        assert_eq!(fields("agent", "p@ss/1", ""), "redis://agent:p%40ss%2F1@cache:6380/0");
+        let url = |host: &str, user: &str, pw: &str, db: &str| {
+            ConnConfig { engine: "redis".into(), host: host.into(), username: user.into(), database: db.into(), ..cfg("redis") }.url_with_password(pw)
+        };
+        assert_eq!(url("rediss://c.example.com:6380", "", "pw", "2"), "rediss://:pw@c.example.com:6380/2");
+        assert_eq!(url("rediss://agent@c", "agent", "p@ss", ""), "rediss://agent:p%40ss@c");
+        assert_eq!(url("redis://c", "agent", "pw", ""), "redis://agent:pw@c");
+        assert_eq!(url("redis://:own@c/3", "", "other", ""), "redis://:own@c/3", "its own password and database win");
+        assert_eq!(url("redis://:own@c/3", "", "other", "5"), "redis://:own@c/5", "the picked database wins over the path");
+        assert_eq!(url("rediss://c?protocol=resp2", "", "pw", "1"), "rediss://:pw@c/1?protocol=resp2");
+        assert_eq!(url("rediss://c", "", "", ""), "rediss://c", "nothing to add");
     }
 
     /// A pasted Mongo URL (kept whole in `host`) gets the keychain password only where it has none.

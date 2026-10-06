@@ -174,7 +174,7 @@ async fn sqlite_over_http_initialize_list_query_refuse() {
         names,
         [
             "describe_table", "list_connections", "list_databases", "list_tables", "mongo_aggregate", "mongo_count",
-            "mongo_find", "mongo_list_collections", "run_query"
+            "mongo_find", "mongo_list_collections", "redis_dbsize", "redis_get", "redis_scan", "run_query"
         ]
     );
 

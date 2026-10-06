@@ -3,7 +3,7 @@ import type { ConnConfig } from "../lib/commands";
 import { fuzzyFilter } from "../lib/fuzzy";
 import { EngineIcon, engineLabel } from "./ui/EngineIcon";
 import { IconSearch } from "./ui/Icon";
-import { isMongoUrlHost } from "../lib/connUrl";
+import { isUrlHost } from "../lib/connUrl";
 
 /**
  * ⌘O — TablePlus-style Open Connection palette. Search across saved connections,
@@ -121,7 +121,7 @@ export function ConnectionPicker({
                       )}
                     </div>
                     <div className="truncate text-[10.5px] text-muted">
-                      {engineLabel(c.engine, c.profile)} · {c.engine === "mongodb" && isMongoUrlHost(c.host) ? c.host : `${c.host}:${c.port}/${c.database}`}
+                      {engineLabel(c.engine, c.profile)} · {isUrlHost(c.engine, c.host) ? c.host : `${c.host}:${c.port}/${c.database}`}
                     </div>
                   </div>
                 </button>

@@ -60,6 +60,13 @@ jobs:
       # standalone server (best-effort batches) — tests/mongo_browse.rs.
       TIQ_MONGO_URL: mongodb://127.0.0.1:57017/tableiq?directConnection=true
       TIQ_MONGO_STANDALONE_URL: mongodb://127.0.0.1:57018/tableiq
+      # docker/redis/docker-compose.yml: Redis Stack (RedisJSON), and a plain Redis with an ACL
+      # user — tests/redis_browse.rs. (The TLS server's URL is set on its own step, below.)
+      TIQ_REDIS_URL: redis://127.0.0.1:56379/0
+      TIQ_REDIS_ACL_URL: redis://agent:agentpw@127.0.0.1:56380/0
+      TIQ_REDIS_ADMIN_URL: redis://:tableiq@127.0.0.1:56380/0
+      # A plain empty Redis only tests/redis_mcp_live.rs uses: its INFO commandstats are the write oracle.
+      TIQ_REDIS_ATTACK_URL: redis://127.0.0.1:56383/0
       # TIQ_MSSQL_URL is deliberately unset — mssql:2022 is a 1.5GB image for six tests, and
       # tests/sqlserver.rs skips itself when the variable is absent. Same for TIQ_PG_FULL_SEED
       # (see the seed step). Both suites run locally, where the containers are already up.
@@ -120,6 +127,13 @@ jobs:
       - name: Start MongoDB
         run: docker compose -f docker/mongo/docker-compose.yml up -d --wait
 
+      # Compose, not `services:` — the healthcheck seeds each server once. The TLS server needs
+      # its throwaway certificate first (not committed).
+      - name: Start Redis
+        run: |
+          docker/redis/gen-certs.sh
+          docker compose -f docker/redis/docker-compose.yml --profile tls up -d --wait
+
       - uses: dtolnay/rust-toolchain@stable
         with: { components: clippy }
       - uses: swatinem/rust-cache@v2
@@ -133,10 +147,10 @@ jobs:
         run: cargo test --locked
 
       # The suite above skips a live test whose URL is unset. Every binary below talks only to
-      # the databases this job starts (Postgres, MySQL, TiDB, CockroachDB, MariaDB, MongoDB), so a missing
+      # the databases this job starts (Postgres, MySQL, TiDB, CockroachDB, MariaDB, MongoDB, Redis), so a missing
       # URL here fails the job instead. Left out on purpose: sqlserver (no SQL Server in CI), the
       # SQL Server cases inside sql_log/search/mcp_live (they stay skips), backup_live/restore_live
-      # (need TIQ_BACKUP_SHIM and the docker containers) and redis_browse.
+      # (need TIQ_BACKUP_SHIM and the docker containers).
       - name: Live tests that must not skip
         working-directory: src-tauri
         run: |
@@ -145,9 +159,17 @@ jobs:
             --test explain --test fast_open --test foreign_keys --test guard_live \
             --test import --test introspect_browse --test mcp_live --test mysql_browse \
             --test mongo_browse --test mongo_mcp_live --test mysql_ssl_live --test null_pk_guard --test profile --test profile_live \
-            --test query_edit --test search --test sql_log --test structure \
+            --test query_edit --test redis_browse --test redis_mcp_live --test search --test sql_log --test structure \
             --test table_page_live --test table_stats --test transaction --test user_mgmt_live \
             --test window_bound
+
+      # `rediss://` verified against a CA only SSL_CERT_FILE trusts: alone, because that variable
+      # replaces every root certificate of the process.
+      - name: Redis over TLS
+        working-directory: src-tauri
+        env:
+          TIQ_REDIS_TLS_URL: rediss://127.0.0.1:56381/0
+        run: SSL_CERT_FILE="$GITHUB_WORKSPACE/docker/redis/tls/ca.crt" TIQ_REQUIRE_LIVE=1 cargo test --locked --test redis_tls
 
       - name: Clippy
         working-directory: src-tauri

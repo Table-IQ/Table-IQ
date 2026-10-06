@@ -64,3 +64,9 @@ Deferred from the Connected Home plan review (2026-09-27, `docs/superpowers/plan
 ## Completed
 
 - **Confirm `+ Row` inserts in production.** New rows are now staged and go through the production commit confirm. **Completed:** v0.8.0 (2026-09-28)
+- **Redis follow-ups** (2026-10-06, v0.8.6):
+  - Cluster and Sentinel. The driver is built on one `ConnectionManager` plus a per-batch connection for `WATCH`. Cluster (`cluster-async`) has no cross-slot `MULTI`/`WATCH`, so a batch there would have to be per slot; Sentinel (`sentinel`) needs a master lookup and a failover re-dial. Neither is tested without a multi-node compose.
+  - A private CA for `rediss://`. Certificates are verified against the platform store (or `SSL_CERT_FILE`); there is no per-connection CA file or `#insecure` opt-in, deliberately.
+  - Keys that are not UTF-8 are listed (`binary: true`, lossy name) but cannot be opened or edited: every key argument is a string.
+  - A command that Redis fails only at `EXEC` (an explicit stream id that is not greater than the top one) is not rolled back; the error says so. Everything else is refused before `EXEC`.
+  - A string or JSON document over 1 MiB is read whole from the server and then cut; `JSON.DEBUG MEMORY` / `STRLEN` could skip the transfer.

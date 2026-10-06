@@ -151,6 +151,8 @@ export interface KeyInfo {
   key: string;
   kind: string;
   ttl: number;
+  /** The key is not UTF-8: `key` is lossy and no other call can address it. */
+  binary?: boolean;
 }
 export interface KvValue {
   kind: string;
@@ -382,6 +384,145 @@ export async function kvScan(id: string, pattern: string): Promise<KeyInfo[]> {
       { key: "list:a", kind: "list", ttl: -1 },
     ];
   return invoke<KeyInfo[]>("kv_scan", { id, pattern });
+}
+
+export interface KvKeyPage {
+  keys: KeyInfo[];
+  /** Pass back as `cursor` for the next page; `"0"` = no more keys. */
+  nextCursor: string;
+}
+
+/** One page of keys (SCAN): ~`count` keys (default 100, max 1000; a page may hold a few more or, for
+ *  a sparse pattern, fewer) each with its type and TTL. Start with cursor `"0"`. A key can turn up
+ *  on two pages; dedupe by `key`. */
+export async function kvScanPage(id: string, pattern: string, cursor = "0", count = 100): Promise<KvKeyPage> {
+  if (!inTauri()) return { keys: await kvScan(id, pattern), nextCursor: "0" };
+  return invoke<KvKeyPage>("kv_scan_page", { id, pattern, cursor, count });
+}
+
+/** A Redis value's bytes. `text` is always set (lossy, U+FFFD, when `binary`); `b64` is the exact
+ *  bytes and only present when `binary`. Writes take the same shape: `b64` wins when present. */
+export interface KvBytes {
+  text: string;
+  binary?: boolean;
+  b64?: string;
+}
+
+/** `cursor`: list/zset the offset of the first item (the previous page's `next`); set/hash the
+ *  SSCAN/HSCAN cursor; stream the last entry id seen. Absent = the first page. `count` default
+ *  100, max 1000 (set/hash pages are approximate). `path`: RedisJSON path, default `.`. */
+export interface KvReadOpts {
+  cursor?: string;
+  count?: number;
+  path?: string;
+}
+
+/** One element of a key's value. Per kind: string `value` · list `index`,`value` · set `value` (the
+ *  member) · hash `field`,`value` · zset `value` (the member),`score` · stream `id`,`fields` ·
+ *  ReJSON-RL `value` (the JSON text). */
+export interface KvItem {
+  index?: number;
+  id?: string;
+  field?: KvBytes;
+  value?: KvBytes;
+  score?: number;
+  fields?: { field: KvBytes; value: KvBytes }[];
+}
+
+export interface KvRead {
+  key: string;
+  /** `string` `list` `set` `hash` `zset` `stream` `ReJSON-RL`; `none` = no such key; a module type has no items. */
+  kind: string;
+  /** Seconds; -1 = no expiry, -2 = no such key. */
+  ttl: number;
+  /** STRLEN / LLEN / SCARD / HLEN / ZCARD / XLEN, or the JSON text's length in bytes. */
+  size: number;
+  items: KvItem[];
+  /** The `cursor` of the next page; absent on the last. */
+  next?: string;
+  /** A string / JSON over 1 MiB: `items` holds the first MiB only — never write it back. */
+  truncated: boolean;
+}
+
+/** One bounded, binary-safe page of a key's value, with its type, TTL and size. */
+export async function kvRead(id: string, key: string, opts?: KvReadOpts): Promise<KvRead> {
+  if (!inTauri())
+    return {
+      key,
+      kind: "list",
+      ttl: -1,
+      size: 3,
+      items: ["x", "y", "z"].map((v, index) => ({ index, value: { text: v } })),
+      truncated: false,
+    };
+  return invoke<KvRead>("kv_read", { id, key, opts });
+}
+
+/** One staged Redis edit; `expect` is the value as `kvRead` returned it — the change applies only
+ *  while the key still holds it (otherwise the batch is refused with "value changed since it was loaded"). */
+export type KvChange =
+  /** `SET key value KEEPTTL` (an edit keeps the TTL). */
+  | { kind: "setString"; key: string; value: KvBytes; expect?: KvBytes }
+  /** `expect` = the field as loaded; `expectAbsent` = a new field that must still not exist (not both). */
+  | { kind: "hset"; key: string; field: KvBytes; value: KvBytes; expect?: KvBytes; expectAbsent?: boolean }
+  | { kind: "hdel"; key: string; field: KvBytes; expect?: KvBytes }
+  | { kind: "lpush"; key: string; value: KvBytes }
+  | { kind: "rpush"; key: string; value: KvBytes }
+  /** Must come before any push / lrem on the same list in the batch. `expect` = the item at `index`. */
+  | { kind: "lset"; key: string; index: number; value: KvBytes; expect?: KvBytes }
+  /** `count` 0 = every occurrence, n > 0 the first n, n < 0 the last n. */
+  | { kind: "lrem"; key: string; value: KvBytes; count: number }
+  | { kind: "sadd"; key: string; member: KvBytes }
+  | { kind: "srem"; key: string; member: KvBytes }
+  /** `expect` = the loaded score as text (compared as a number); `expectAbsent` = a new member that must still not exist. */
+  | { kind: "zadd"; key: string; member: KvBytes; score: number; expect?: KvBytes; expectAbsent?: boolean }
+  | { kind: "zrem"; key: string; member: KvBytes }
+  /** `id` absent = `*`. */
+  | { kind: "xadd"; key: string; id?: string; fields: { field: KvBytes; value: KvBytes }[] }
+  | { kind: "xdel"; key: string; id: string }
+  /** `value` is JSON text; `path` default `$`; `expect.text` = what `JSON.GET key path` returned. Needs RedisJSON. */
+  | { kind: "jsonSet"; key: string; path?: string; value: string; expect?: KvBytes }
+  /** seconds >= 1 */
+  | { kind: "expire"; key: string; seconds: number }
+  | { kind: "persist"; key: string }
+  /** Refused when `newKey` exists. */
+  | { kind: "rename"; key: string; newKey: string }
+  | { kind: "del"; key: string };
+
+/** Apply staged edits as one MULTI/EXEC (every key WATCHed). Rejects with `change {i}: {reason}` — i is
+ *  the index in `changes`, reason e.g. "WRONGTYPE …", "does not exist", "value changed since it was
+ *  loaded", or the server's own (`NOPERM …`) — and then NOTHING was written. The one exception is
+ *  a command that Redis itself fails at EXEC (e.g. an explicit stream id that is too small): the
+ *  message then ends "(Redis cannot roll a failed command back: the changes before it were applied)". */
+export async function kvApplyChanges(id: string, changes: KvChange[]): Promise<{ applied: number }> {
+  if (!inTauri()) return { applied: changes.length };
+  return invoke<{ applied: number }>("kv_apply_changes", { id, changes });
+}
+
+/** A console reply, nested like the RESP reply. A reply the server sent as an error is `error`
+ *  (redis-cli's `(error) …`); a command the console refuses rejects instead. */
+export type KvReply =
+  | { type: "nil" }
+  | { type: "status"; value: string }
+  | { type: "int"; value: number }
+  | ({ type: "bulk" } & KvBytes)
+  | { type: "array"; items: KvReply[] }
+  | { type: "error"; message: string };
+
+/** Run one console line (redis-cli quoting: `SET "a b" 'c'`, `\xNN` in double quotes). Rejects
+ *  without sending when the command is not allowed: server administration, scripting, modules,
+ *  blocking / subscribing commands and anything that changes the connection (CONFIG, DEBUG,
+ *  FLUSHALL, KEYS, SELECT, EVAL, CLIENT, …) — "X is not available in the console". `DEL`, `UNLINK`,
+ *  `GETDEL` and `FLUSHDB` reject with "X deletes data — confirm it to run it" unless `confirmed`. */
+export async function kvCommand(id: string, line: string, confirmed = false): Promise<KvReply> {
+  if (!inTauri()) return { type: "status", value: "OK" };
+  return invoke<KvReply>("kv_command", { id, line, confirmed });
+}
+
+/** Keys in the connected database (DBSIZE). */
+export async function kvDbsize(id: string): Promise<number> {
+  if (!inTauri()) return 3;
+  return invoke<number>("kv_dbsize", { id });
 }
 
 export async function docCollections(id: string): Promise<string[]> {

@@ -23,7 +23,7 @@ import {
   type Engine,
 } from "../lib/commands";
 import { defaultSshConfig, type SshConfig } from "../lib/ssh";
-import { isMongoUrlHost, normalizeMongoSecrets, toConnUrl, validateConn } from "../lib/connUrl";
+import { isUrlHost, normalizeUrlSecrets, toConnUrl, validateConn } from "../lib/connUrl";
 import { PROFILES, applyPreset, presetFor } from "../lib/profiles";
 import { confirmDialog } from "../lib/confirmDialog";
 import { cancelConnecting, openConnection, useConnections, type ConnectingState } from "../state/connectionStore";
@@ -113,7 +113,7 @@ export function isFileEngine(engine: Engine): boolean {
 
 function hostLineOf(c: ConnConfig): string {
   if (isFileEngine(c.engine)) return c.database || "(no file selected)";
-  if (c.engine === "mongodb" && isMongoUrlHost(c.host)) return c.host;
+  if (isUrlHost(c.engine, c.host)) return c.host;
   return `${c.host}:${c.port}/${c.database || ""}`.replace(/\/$/, "");
 }
 
@@ -284,10 +284,10 @@ export function ConnectionManager() {
     }
   };
 
-  /** A password typed into a Mongo URL host would be saved in plaintext: move it to the password
+  /** A password typed into a Mongo / Redis URL host would be saved in plaintext: move it to the password
    *  field (the keychain path), as a paste does, before anything is tested, saved or connected. */
   const settle = (cfg: ConnConfig, pw: string): { cfg: ConnConfig; pw: string } => {
-    const n = normalizeMongoSecrets(cfg, pw);
+    const n = normalizeUrlSecrets(cfg, pw);
     if (n.host === cfg.host && n.password === pw) return { cfg, pw };
     const next = { ...cfg, host: n.host, username: n.username };
     setForm(next);

@@ -43,7 +43,7 @@ impl Profile {
 /// of any product. An entry from before it (`McpConn::rev` lower) is not served for a product
 /// opened since ([`reconfirm_block`]).
 pub fn agent_rev() -> u32 {
-    PROFILES.values().map(|p| p.agent_since).max().unwrap_or(0).max(MONGODB_AGENT_SINCE)
+    PROFILES.values().map(|p| p.agent_since).max().unwrap_or(0).max(MONGODB_AGENT_SINCE).max(REDIS_AGENT_SINCE)
 }
 
 /// The generation that opened MongoDB to agents (mirrored in `profiles.ts`). MongoDB has no
@@ -56,6 +56,18 @@ pub const MONGODB_AGENT_SINCE: u32 = 2;
 pub fn mongodb_reconfirm_block(rev: u32) -> Option<String> {
     (rev < MONGODB_AGENT_SINCE).then(|| {
         "This connection was shared before TableIQ supported MongoDB over MCP. Turn sharing off and on again for it in TableIQ → Settings → MCP to confirm it (MongoDB is always read-only for agents).".to_string()
+    })
+}
+
+/// The generation that opened Redis to agents (mirrored in `profiles.ts`). A Redis connection could
+/// never be shared before, so no entry for one is older than this unless its id was another engine's
+/// when it was shared (the engine can be edited): such an entry is not served ([`redis_reconfirm_block`]).
+pub const REDIS_AGENT_SINCE: u32 = 3;
+
+/// Why an allowlist entry confirmed under generation `rev` cannot serve a Redis connection.
+pub fn redis_reconfirm_block(rev: u32) -> Option<String> {
+    (rev < REDIS_AGENT_SINCE).then(|| {
+        "This connection was shared before TableIQ supported Redis over MCP. Turn sharing off and on again for it in TableIQ → Settings → MCP to confirm it (Redis is always read-only for agents).".to_string()
     })
 }
 
@@ -313,8 +325,9 @@ mod tests {
         for (id, p) in PROFILES.iter() {
             assert_eq!(p.agent() && !p.real, p.agent_since > 0, "{id}");
         }
-        assert_eq!(agent_rev(), MONGODB_AGENT_SINCE);
+        assert_eq!(agent_rev(), REDIS_AGENT_SINCE);
         assert!(MONGODB_AGENT_SINCE > lookup("cockroachdb").unwrap().agent_since, "a later opening than any product's");
+        const { assert!(REDIS_AGENT_SINCE > MONGODB_AGENT_SINCE, "each opening is a generation of its own") };
     }
 
     #[test]
@@ -336,6 +349,14 @@ mod tests {
         for saved in [None, Some("neon"), Some("mariadb"), Some("from-the-future")] {
             assert!(reconfirm_block(saved, None, 0).is_none(), "{saved:?}");
         }
+    }
+
+    #[test]
+    fn a_redis_entry_older_than_its_opening_is_not_served() {
+        assert!(redis_reconfirm_block(REDIS_AGENT_SINCE - 1).unwrap().contains("Redis over MCP"));
+        assert!(redis_reconfirm_block(0).is_some());
+        assert!(redis_reconfirm_block(REDIS_AGENT_SINCE).is_none());
+        assert!(redis_reconfirm_block(agent_rev()).is_none(), "a share made now is served");
     }
 
     #[test]

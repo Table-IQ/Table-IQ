@@ -234,7 +234,7 @@ async fn the_mongo_tools_list_find_count_and_aggregate() {
         names_,
         [
             "describe_table", "list_connections", "list_databases", "list_tables", "mongo_aggregate", "mongo_count",
-            "mongo_find", "mongo_list_collections", "run_query"
+            "mongo_find", "mongo_list_collections", "redis_dbsize", "redis_get", "redis_scan", "run_query"
         ],
         "no tool writes to MongoDB"
     );
