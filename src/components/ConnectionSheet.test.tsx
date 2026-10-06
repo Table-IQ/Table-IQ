@@ -44,6 +44,24 @@ describe("ConnectionSheet", () => {
     expect(h).toMatch(/<button[^>]*disabled=""[^>]*title="Port: 1–65535"[^>]*>Connect\b/);
   });
 
+  it("a Mongo URL kept in host shows one Connection string field and no port", () => {
+    const host = "mongodb+srv://u@cluster.example.net/app?w=majority";
+    const h = html({ form: { ...base.form, engine: "mongodb", host, port: 27017, database: "app" } });
+    expect(h).toContain("Connection string");
+    expect(h).toContain(host);
+    expect(h).not.toContain(">Host<");
+    expect(h).not.toContain(">Port<");
+    const plain = html({ form: { ...base.form, engine: "mongodb", host: "127.0.0.1", port: 27017 } });
+    expect(plain).toContain(">Host<");
+    expect(plain).toContain(">Port<");
+  });
+
+  it("a secret in a Mongo URL's query string blocks Connect with a reason", () => {
+    const h = html({ form: { ...base.form, engine: "mongodb", host: "mongodb://h/?tlsCertificateKeyFilePassword=x", port: 27017 } });
+    expect(h).toContain("it would be saved in plaintext");
+    expect(h).toMatch(/<button[^>]*disabled=""[^>]*>Connect\b/);
+  });
+
   it("file engines show a Browse… button (when picking is possible) and no host/port", () => {
     const h = html({ form: { ...base.form, engine: "sqlite", host: "", port: 0, database: "" } });
     expect(h).toContain("Browse…");
@@ -170,9 +188,9 @@ describe("readConnUrl (URL paste into the URL field or Host)", () => {
   it("a bad or undecodable URL yields only a note — never the text, so a password can't reach Host", () => {
     expect(readConnUrl("postgres://app:s3cret@[bad/shop")).toEqual({ note: "Not a connection URL we recognise" });
   });
-  it("adds a hint for rediss:// and mongodb+srv://", () => {
+  it("adds a hint for rediss://", () => {
     expect(readConnUrl("rediss://:pw@cache")).toEqual({
-      note: "Not a connection URL we recognise — mongodb+srv:// and rediss:// aren't supported yet",
+      note: "Not a connection URL we recognise — rediss:// isn't supported yet",
     });
   });
   it("in edit mode a URL for another engine leaves the engine alone and says so", () => {

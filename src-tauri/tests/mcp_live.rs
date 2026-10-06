@@ -170,7 +170,13 @@ async fn sqlite_over_http_initialize_list_query_refuse() {
     let v: Value = list.json().await.unwrap();
     let mut names: Vec<&str> = v["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
     names.sort();
-    assert_eq!(names, ["describe_table", "list_connections", "list_databases", "list_tables", "run_query"]);
+    assert_eq!(
+        names,
+        [
+            "describe_table", "list_connections", "list_databases", "list_tables", "mongo_aggregate", "mongo_count",
+            "mongo_find", "mongo_list_collections", "run_query"
+        ]
+    );
 
     let conns = call(&url, 3, "list_connections", json!({})).await;
     let shared: Value = serde_json::from_str(text(&conns)).unwrap();

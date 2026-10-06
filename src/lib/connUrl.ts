@@ -29,8 +29,8 @@ const own = (table: Record<string, string>, key: string): string | undefined =>
 // Managed clouds that refuse a plaintext connection.
 const TLS_HOSTS = [".rds.amazonaws.com", ".database.azure.com", ".database.windows.net"];
 
-// Recognised, but the backend has no SRV lookup / TLS for these yet.
-const UNSUPPORTED_SCHEMES = ["mongodb+srv", "rediss"];
+// Recognised, but the backend has no TLS for Redis yet.
+const UNSUPPORTED_SCHEMES = ["rediss"];
 
 const scheme = (s: string) => /^\s*([a-z+]+):\/\//i.exec(s)?.[1].toLowerCase();
 
@@ -52,6 +52,61 @@ export function isUnsupportedConnUrl(s: string): boolean {
   return UNSUPPORTED_SCHEMES.includes(scheme(s) ?? "");
 }
 
+/** A Mongo URL that host + port cannot express (`+srv`, several hosts, `?authSource=…`): the form
+ *  keeps the whole URL in `host` — minus the password, which goes to the keychain like any other. */
+function parseMongoUrl(scheme: string, rest: string): ParsedConnUrl | null {
+  const end = rest.search(/[/?]/);
+  const authority = end < 0 ? rest : rest.slice(0, end);
+  const tail = end < 0 ? "" : rest.slice(end);
+  const at = authority.lastIndexOf("@");
+  const [user, ...pw] = (at < 0 ? "" : authority.slice(0, at)).split(":");
+  const hosts = authority.slice(at + 1);
+  if (!hosts) return null;
+  return {
+    engine: "mongodb",
+    host: `${scheme}://${user ? `${user}@` : ""}${hosts}${tail}`,
+    port: DEFAULT_PORT.mongodb,
+    username: safeDecode(user),
+    password: safeDecode(pw.join(":")),
+    database: safeDecode(tail.replace(/^\//, "").split("?")[0]),
+  };
+}
+
+/** True when a Mongo connection keeps its whole URL in `host` (see `parseMongoUrl`). */
+export const isMongoUrlHost = (host: string): boolean => /^mongodb(\+srv)?:\/\//i.test(host);
+
+/** Typing (not pasting) a password into a Mongo URL host would save it in plaintext. Move it out the
+ *  way a paste does: `host` loses the `:password`, the form's password takes it, `username` follows the
+ *  URL. Unchanged when the host isn't a Mongo URL or carries no password. */
+export function normalizeMongoSecrets<T extends { engine: string; host: string; username: string }>(
+  cfg: T,
+  password: string,
+): { host: string; username: string; password: string } {
+  const unchanged = { host: cfg.host, username: cfg.username, password };
+  const m = cfg.engine === "mongodb" ? /^(mongodb(?:\+srv)?):\/\/(.*)$/is.exec(cfg.host.trim()) : null;
+  const p = m ? parseMongoUrl(m[1].toLowerCase(), m[2]) : null;
+  return p && p.password ? { host: p.host, username: p.username || cfg.username, password: p.password } : unchanged;
+}
+
+// Secrets a Mongo URL can carry in its query string. The keychain only fills the userinfo password,
+// so these can't be moved: they are refused instead of being saved in plaintext.
+const QUERY_SECRET = /^(tlsCertificateKeyFilePassword|sslClientCertificateKeyPassword|proxyPassword|password|pwd)$/i;
+const MECHANISM_SECRET = /\b(AWS_SESSION_TOKEN|ACCESS_TOKEN|ID_TOKEN|REFRESH_TOKEN|PASSWORD|SECRET)\s*:/i;
+
+/** The name of a secret in a Mongo URL's query string, or null. */
+export function mongoQuerySecret(host: string): string | null {
+  const q = isMongoUrlHost(host) ? host.split("?").slice(1).join("?") : "";
+  for (const pair of q.split("&")) {
+    const [k, ...v] = pair.split("=");
+    const name = safeDecode(k);
+    let val = v.join("=");
+    val = safeDecode(val);
+    if (QUERY_SECRET.test(name) && val !== "") return name;
+    if (/^authMechanismProperties$/i.test(name) && MECHANISM_SECRET.test(val)) return name;
+  }
+  return null;
+}
+
 /** A pasted connection URL → form fields; null when it isn't one we know (or support). Never throws. */
 export function parseConnUrl(input: string): ParsedConnUrl | null {
   const s = input.trim();
@@ -63,6 +118,7 @@ export function parseConnUrl(input: string): ParsedConnUrl | null {
   if (engine === "sqlite" || engine === "duckdb") {
     return { engine, host: "", port: 0, username: "", password: "", database: safeDecode(m[2]) };
   }
+  if (engine === "mongodb" && (sc === "mongodb+srv" || /^[^/?]*,/.test(m[2]) || m[2].includes("?"))) return parseMongoUrl(sc, m[2]);
   let u: URL;
   try {
     // WHATWG URL only fills host/port for "special" schemes; parse as http and keep the rest.
@@ -94,6 +150,7 @@ export function parseConnUrl(input: string): ParsedConnUrl | null {
  *  engine's scheme: a profile scheme is ours, other tools would not know it. */
 export function toConnUrl(cfg: Pick<ConnConfig, "engine" | "profile" | "host" | "port" | "username" | "database" | "sslmode">): string {
   const scheme = ENGINE_SCHEME[cfg.engine];
+  if (cfg.engine === "mongodb" && isMongoUrlHost(cfg.host)) return cfg.host; // already a URL
   if (cfg.engine === "sqlite" || cfg.engine === "duckdb") return `${scheme}://${cfg.database}`;
   const user = cfg.username ? `${encodeURIComponent(cfg.username)}@` : "";
   const q =
@@ -112,6 +169,10 @@ export function validateConn(cfg: Pick<ConnConfig, "engine" | "host" | "port" | 
   }
   const e: ConnFieldErrors = {};
   if (!cfg.host.trim()) e.host = "Required";
+  else if (cfg.engine === "mongodb") {
+    const secret = mongoQuerySecret(cfg.host);
+    if (secret) e.host = `Remove ${secret} from the URL — it would be saved in plaintext`;
+  }
   if (!Number.isInteger(cfg.port) || cfg.port < 1 || cfg.port > 65535) e.port = "1–65535";
   return e;
 }

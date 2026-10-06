@@ -26,7 +26,7 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use super::guard::{guard_sql, read_only_stmts};
-use super::{record, Activity, McpConfig, McpConn};
+use super::{mongo, record, Activity, McpConfig, McpConn};
 use crate::connections::ConnConfig;
 use crate::drivers::{DriverError, SqlDriver};
 use crate::profiles;
@@ -175,6 +175,9 @@ pub(crate) async fn bounded<T: Send + 'static>(
 
 /// What a timeout did to a query that has no way to be stopped.
 const NOTHING_TO_STOP: &str = "Nothing was running on the database.";
+/// A MongoDB read is not abandoned at the tool timeout: it keeps its slot until the server ends it
+/// (its own `maxTimeMS` is 30 s from when it started).
+const MONGO_TIMEOUT: &str = "The read was not stopped by TableIQ; MongoDB ends it at its own 30 second limit, and it keeps its query slot until then.";
 
 // ── Tools ─────────────────────────────────────────────────────────────────
 
@@ -238,9 +241,9 @@ pub(crate) struct TiqMcp {
 }
 
 /// A tool's result and the row count its activity entry shows.
-type Done = Result<(String, Option<usize>), String>;
+pub(super) type Done = Result<(String, Option<usize>), String>;
 
-fn json<T: Serialize>(v: &T) -> Result<String, String> {
+pub(super) fn json<T: Serialize>(v: &T) -> Result<String, String> {
     serde_json::to_string(v).map_err(|e| e.to_string())
 }
 
@@ -262,7 +265,9 @@ impl TiqMcp {
         on_timeout: impl FnOnce(&tokio::task::AbortHandle) -> String,
     ) -> Result<String, String> {
         let t0 = Instant::now();
-        let sem = if tool == "run_query" { &self.slots.query } else { &self.slots.meta };
+        // The tools that can run long on the database, MongoDB's reads included, take query slots.
+        let long = matches!(tool, "run_query" | "mongo_find" | "mongo_count" | "mongo_aggregate");
+        let sem = if long { &self.slots.query } else { &self.slots.meta };
         let res = bounded(sem, self.timeout, work, on_timeout).await.and_then(|(s, n)| {
             if s.len() > MAX_RESPONSE_BYTES {
                 Err(format!("The response is larger than {} MB; narrow the request.", MAX_RESPONSE_BYTES >> 20))
@@ -295,9 +300,9 @@ fn client_name(ext: &Extensions) -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
-/// The allowlisted SQL connection `id` and its allowlist entry. An id that is not on
-/// the allowlist gets the same answer whether or not it exists.
-fn allowed(host: &dyn Host, cfg: &McpConfig, id: &str) -> Result<(ConnConfig, McpConn), String> {
+/// The allowlisted connection `id` (of any engine) and its allowlist entry. An id that is not
+/// on the allowlist gets the same answer whether or not it exists.
+pub(super) fn shared(host: &dyn Host, cfg: &McpConfig, id: &str) -> Result<(ConnConfig, McpConn), String> {
     let entry = cfg.connections.iter().find(|c| c.id == id).ok_or_else(|| {
         format!("Connection `{id}` is not shared over MCP. The user can allow it in TableIQ → Settings → MCP.")
     })?;
@@ -307,8 +312,15 @@ fn allowed(host: &dyn Host, cfg: &McpConfig, id: &str) -> Result<(ConnConfig, Mc
         .into_iter()
         .find(|c| c.id == id)
         .ok_or_else(|| format!("Connection `{id}` no longer exists."))?;
+    Ok((conn, entry.clone()))
+}
+
+/// The allowlisted SQL connection `id` and its allowlist entry.
+fn allowed(host: &dyn Host, cfg: &McpConfig, id: &str) -> Result<(ConnConfig, McpConn), String> {
+    let (conn, entry) = shared(host, cfg, id)?;
     if !SQL_ENGINES.contains(&conn.engine.as_str()) {
-        return Err(format!("Connection `{id}` is not a SQL connection."));
+        let hint = if conn.engine == "mongodb" { " Use the mongo_* tools for it." } else { "" };
+        return Err(format!("Connection `{id}` is not a SQL connection.{hint}"));
     }
     // The saved profile, before anything connects; the live session is checked in `session`.
     if let Some(reason) = profiles::agent_block(&conn.engine, conn.profile.as_deref(), None, true)
@@ -316,7 +328,7 @@ fn allowed(host: &dyn Host, cfg: &McpConfig, id: &str) -> Result<(ConnConfig, Mc
     {
         return Err(reason);
     }
-    Ok((conn, entry.clone()))
+    Ok((conn, entry))
 }
 
 /// The live session for `conn`, connecting on demand. A DuckDB one is hardened first.
@@ -342,7 +354,7 @@ async fn session(host: &dyn Host, conn: &ConnConfig, rev: u32) -> Result<Arc<dyn
 }
 
 /// The per-connection lock [`connect_once`] takes (one entry per shared connection).
-fn connect_gate(id: &str) -> Arc<tokio::sync::Mutex<()>> {
+pub(super) fn connect_gate(id: &str) -> Arc<tokio::sync::Mutex<()>> {
     static GATES: LazyLock<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
         LazyLock::new(Default::default);
     crate::lk(&GATES).entry(id.to_string()).or_default().clone()
@@ -399,9 +411,11 @@ fn list_connections_body(host: &dyn Host, cfg: &McpConfig) -> Done {
         .configs()
         .into_iter()
         .filter(|c| {
-            cfg.connections
-                .iter()
-                .any(|a| a.id == c.id && profiles::reconfirm_block(c.profile.as_deref(), None, a.rev).is_none())
+            let Some(a) = cfg.connections.iter().find(|a| a.id == c.id) else { return false };
+            if c.engine == "mongodb" {
+                return profiles::mongodb_reconfirm_block(a.rev).is_none();
+            }
+            profiles::reconfirm_block(c.profile.as_deref(), None, a.rev).is_none()
                 && SQL_ENGINES.contains(&c.engine.as_str())
                 && profiles::agent_block(&c.engine, c.profile.as_deref(), None, true).is_none()
         })
@@ -610,7 +624,10 @@ fn same_driver(a: &Arc<dyn SqlDriver>, b: &Arc<dyn SqlDriver>) -> bool {
 #[tool_router]
 impl TiqMcp {
     #[tool(
-        description = "List the database connections the TableIQ user has shared with you: id, name, engine and database.",
+        description = "List the database connections the TableIQ user has shared with you: id, name, engine and database. \
+                       Use list_databases, list_tables, describe_table and run_query on the SQL engines \
+                       (postgres, mysql, sqlite, duckdb, sqlserver) and the mongo_* tools on engine mongodb, \
+                       which is read-only.",
         annotations(read_only_hint = true)
     )]
     async fn list_connections(&self, ext: Extensions) -> Result<String, String> {
@@ -618,7 +635,7 @@ impl TiqMcp {
         self.call(&ext, "list_connections", None, None, async move { done }, |_| NOTHING_TO_STOP.into()).await
     }
 
-    #[tool(description = "List the databases on a shared connection's server.", annotations(read_only_hint = true))]
+    #[tool(description = "List the databases on a shared SQL connection's server.", annotations(read_only_hint = true))]
     async fn list_databases(&self, ext: Extensions, Parameters(a): Parameters<ConnArgs>) -> Result<String, String> {
         let id = a.connection_id;
         let work = list_databases_body(self.host.clone(), self.cfg.clone(), id.clone());
@@ -626,7 +643,7 @@ impl TiqMcp {
     }
 
     #[tool(
-        description = "List the tables and views of a shared connection (optionally one schema's).",
+        description = "List the tables and views of a shared SQL connection (optionally one schema's).",
         annotations(read_only_hint = true)
     )]
     async fn list_tables(&self, ext: Extensions, Parameters(a): Parameters<ListTablesArgs>) -> Result<String, String> {
@@ -647,7 +664,7 @@ impl TiqMcp {
         self.call(&ext, "describe_table", Some(&id), None, work, |_| NOTHING_TO_STOP.into()).await
     }
 
-    #[tool(description = "Run exactly one SQL statement on a shared connection and return its rows as JSON \
+    #[tool(description = "Run exactly one SQL statement on a shared SQL connection and return its rows as JSON \
                           ({columns, rows, truncated}). Read-only unless the user allowed writes for that \
                           connection: reads run inside a read-only transaction, and writes, DDL and \
                           transaction control are refused. Returns at most max_rows rows (never more than \
@@ -709,6 +726,90 @@ impl TiqMcp {
         };
         self.call(&ext, "run_query", Some(&conn_id), Some(&sql), work, on_timeout).await
     }
+
+    #[tool(
+        description = "List the collections of a shared MongoDB connection's database (the one it is connected to; \
+                       there is no way to choose another). System collections are not listed and cannot be read.",
+        annotations(read_only_hint = true)
+    )]
+    async fn mongo_list_collections(
+        &self,
+        ext: Extensions,
+        Parameters(a): Parameters<mongo::MongoConnArgs>,
+    ) -> Result<String, String> {
+        let id = a.connection_id.clone();
+        let work = mongo::list_collections_body(self.host.clone(), self.cfg.clone(), a);
+        self.call(&ext, "mongo_list_collections", Some(&id), None, work, |_| NOTHING_TO_STOP.into()).await
+    }
+
+    #[tool(
+        description = "Find documents in one collection of a shared MongoDB connection. Read-only: TableIQ exposes no \
+                       MongoDB writes to agents, whatever the user's writes setting. filter, projection and sort are \
+                       MongoDB Extended JSON objects given as text, e.g. filter '{\"age\": {\"$gt\": 30}}' and sort \
+                       '{\"age\": -1}'. Returns {docs, truncated} with documents as relaxed Extended JSON, at most \
+                       `limit` of them (never more than the user's row cap, or 4999). `truncated` is true when more \
+                       matched or the response size limit cut the list: the result is then partial, so narrow the \
+                       filter or add a projection rather than treating it as complete. Refused: JavaScript \
+                       ($where, $function, $accumulator), system.* collections, duplicate keys, text over 1 MiB or \
+                       nested deeper than 32 levels. A call that takes longer than 30 seconds times out.",
+        annotations(read_only_hint = true)
+    )]
+    async fn mongo_find(&self, ext: Extensions, Parameters(a): Parameters<mongo::MongoFindArgs>) -> Result<String, String> {
+        let id = a.connection_id.clone();
+        let act = mongo::activity_text(
+            &a.collection,
+            &[
+                ("filter", a.filter.clone()),
+                ("projection", a.projection.clone()),
+                ("sort", a.sort.clone()),
+                ("skip", a.skip.map(|n| n.to_string())),
+                ("limit", a.limit.map(|n| n.to_string())),
+            ],
+        );
+        let work = mongo::find_body(self.host.clone(), self.cfg.clone(), a);
+        self.call(&ext, "mongo_find", Some(&id), Some(&act), work, |_| MONGO_TIMEOUT.into()).await
+    }
+
+    #[tool(
+        description = "Count the documents of a shared MongoDB collection that match a filter (an Extended JSON \
+                       object given as text; all of them when omitted, answered from collection metadata, which can \
+                       be approximate). Returns {count}. Read-only, with the same refusals as mongo_find. A call that \
+                       takes longer than 30 seconds times out.",
+        annotations(read_only_hint = true)
+    )]
+    async fn mongo_count(&self, ext: Extensions, Parameters(a): Parameters<mongo::MongoCountArgs>) -> Result<String, String> {
+        let id = a.connection_id.clone();
+        let act = mongo::activity_text(&a.collection, &[("filter", a.filter.clone())]);
+        let work = mongo::count_body(self.host.clone(), self.cfg.clone(), a);
+        self.call(&ext, "mongo_count", Some(&id), Some(&act), work, |_| MONGO_TIMEOUT.into()).await
+    }
+
+    #[tool(
+        description = "Run a read-only aggregation pipeline on one collection of a shared MongoDB connection. pipeline \
+                       is a JSON array of stages given as text. Allowed stages: $match, $project, $group, $sort, \
+                       $limit, $skip, $unwind, $addFields, $set, $unset, $replaceRoot, $replaceWith, $count, $sample, \
+                       $bucket, $bucketAuto, $facet, $sortByCount, $geoNear, $redact, $setWindowFields, $densify, $fill, \
+                       and $lookup, $graphLookup and $unionWith on other collections of the same database only. \
+                       Every other stage is refused: $out and $merge (writes), $collStats, $indexStats, $currentOp, \
+                       $listSessions, $changeStream and the Atlas search stages, as are JavaScript operators \
+                       ($function, $accumulator, $where) and system.* collections. Returns {docs, truncated} like \
+                       mongo_find, with at most `limit` documents (never more than the user's row cap, or 1000). A \
+                       call that takes longer than 30 seconds times out.",
+        annotations(read_only_hint = true)
+    )]
+    async fn mongo_aggregate(
+        &self,
+        ext: Extensions,
+        Parameters(a): Parameters<mongo::MongoAggregateArgs>,
+    ) -> Result<String, String> {
+        let id = a.connection_id.clone();
+        let act = mongo::activity_text(
+            &a.collection,
+            &[("pipeline", Some(a.pipeline.clone())), ("limit", a.limit.map(|n| n.to_string()))],
+        );
+        let work = mongo::aggregate_body(self.host.clone(), self.cfg.clone(), a);
+        self.call(&ext, "mongo_aggregate", Some(&id), Some(&act), work, |_| MONGO_TIMEOUT.into()).await
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -718,7 +819,8 @@ impl ServerHandler for TiqMcp {
             .with_server_info(Implementation::new("tableiq", env!("CARGO_PKG_VERSION")))
             .with_instructions(
                 "TableIQ database connections the user chose to share. Every other tool takes a \
-                 connection_id returned by list_connections.",
+                 connection_id returned by list_connections: SQL engines use run_query and the \
+                 table tools, MongoDB (read-only) the mongo_* tools.",
             )
     }
 }
@@ -1606,5 +1708,187 @@ mod tests {
         d.run_script("SET lock_configuration = true").await.unwrap();
         let e = harden_duckdb(&d).await.unwrap_err();
         assert!(e.contains("locked"), "{e}");
+    }
+
+    // ── MongoDB ──────────────────────────────────────────────────────────
+
+    use crate::drivers::{AggResult, DResult, DocChange, DocChangesResult, DocIndex, DocumentDriver, FindOpts};
+
+    /// A MongoDB session that records what reaches it, writes (which no tool may ever send)
+    /// included, and logs like the real driver does.
+    #[derive(Default)]
+    struct FakeMongo {
+        calls: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl FakeMongo {
+        fn saw(&self, what: String) {
+            crate::sql_log::note(&what);
+            self.calls.lock().unwrap().push(what);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl DocumentDriver for FakeMongo {
+        async fn list_collections(&self) -> DResult<Vec<String>> {
+            self.saw("list".into());
+            Ok(["users", "system.js", "orders", "system.views", "a$b"].map(String::from).to_vec())
+        }
+        async fn find(&self, c: &str, o: &FindOpts) -> DResult<Vec<String>> {
+            self.saw(format!("find {c} filter={} sort={} projection={} skip={} limit={}", o.filter, o.sort, o.projection, o.skip, o.limit));
+            Ok((0..o.limit.min(3)).map(|i| format!(r#"{{"_id":{{"$numberInt":"{i}"}},"n":{{"$numberLong":"{i}"}}}}"#)).collect())
+        }
+        async fn count(&self, c: &str, f: &str) -> DResult<u64> {
+            self.saw(format!("count {c} {f}"));
+            Ok(7)
+        }
+        async fn apply_changes(&self, _: &str, _: &[DocChange]) -> DResult<DocChangesResult> {
+            self.saw("WRITE apply_changes".into());
+            unimplemented!()
+        }
+        async fn list_indexes(&self, _: &str) -> DResult<Vec<DocIndex>> {
+            unimplemented!()
+        }
+        async fn create_index(&self, _: &str, _: &str, _: bool, _: Option<&str>) -> DResult<String> {
+            self.saw("WRITE create_index".into());
+            unimplemented!()
+        }
+        async fn drop_index(&self, _: &str, _: &str) -> DResult<()> {
+            self.saw("WRITE drop_index".into());
+            unimplemented!()
+        }
+        async fn aggregate(&self, c: &str, p: &str, limit: i64) -> DResult<AggResult> {
+            self.saw(format!("aggregate {c} {p} limit={limit}"));
+            Ok(AggResult { docs: vec![r#"{"n":{"$numberInt":"1"}}"#.into()], truncated: false })
+        }
+    }
+
+    /// A server sharing MongoDB connection `mongo` (and SQLite `lite`, and unshared `private`) at
+    /// generation `rev`, with a recording session installed for `mongo`.
+    fn mongo_mcp(rev: u32, writes: bool, row_cap: usize) -> (TiqMcp, Arc<FakeMongo>, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let rt = tokio::runtime::Handle::current();
+        let lite = tokio::task::block_in_place(|| rt.block_on(sqlite(&tmp, "lite")));
+        let conns = vec![cfg_of("mongo", "mongodb", "shop"), cfg_of("private", "mongodb", "hr"), lite];
+        let state = ConnState::with_configs(conns);
+        let fake = Arc::new(FakeMongo::default());
+        state.adopt_doc_session("mongo", fake.clone());
+        state.adopt_doc_session("private", fake.clone());
+        let allow = ["mongo", "lite"].map(|id| McpConn { id: id.into(), writes, rev });
+        let cfg = McpConfig { connections: allow.to_vec(), row_cap, ..McpConfig::default() };
+        (TiqMcp::new(Arc::new(state), Arc::new(cfg), fresh_slots()), fake, tmp)
+    }
+
+    fn find_args(filter: Option<&str>) -> mongo::MongoFindArgs {
+        mongo::MongoFindArgs {
+            connection_id: "mongo".into(),
+            collection: "users".into(),
+            filter: filter.map(Into::into),
+            projection: None,
+            sort: None,
+            skip: None,
+            limit: None,
+        }
+    }
+
+    async fn mfind(m: &TiqMcp, a: mongo::MongoFindArgs) -> Result<String, String> {
+        m.mongo_find(Extensions::new(), Parameters(a)).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_mongo_tools_read_log_cap_and_never_write() {
+        let (m, fake, _tmp) = mongo_mcp(profiles::agent_rev(), true, 2);
+        // limit: the row cap (2) plus one to tell a cut page from a full one; 3 come back.
+        let out = mfind(&m, find_args(Some(r#"{"n":{"$gt":0}}"#))).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["truncated"], true, "{out}");
+        assert_eq!(v["docs"].as_array().unwrap().len(), 2);
+        assert_eq!(v["docs"][1], serde_json::json!({"_id": 1, "n": 1}), "relaxed Extended JSON: plain numbers");
+        let c = m.mongo_count(Extensions::new(), Parameters(mongo::MongoCountArgs { connection_id: "mongo".into(), collection: "users".into(), filter: None })).await.unwrap();
+        assert_eq!(c, r#"{"count":7}"#);
+        let agg = mongo::MongoAggregateArgs { connection_id: "mongo".into(), collection: "users".into(), pipeline: r#"[{"$count":"n"}]"#.into(), limit: Some(5) };
+        let a: serde_json::Value = serde_json::from_str(&m.mongo_aggregate(Extensions::new(), Parameters(agg)).await.unwrap()).unwrap();
+        assert_eq!((a["docs"][0]["n"].clone(), a["truncated"].clone()), (serde_json::json!(1), serde_json::json!(false)));
+
+        let names = m.mongo_list_collections(Extensions::new(), Parameters(mongo::MongoConnArgs { connection_id: "mongo".into() })).await.unwrap();
+        assert_eq!(names, r#"["orders","users"]"#, "system and `$` collections are not named");
+
+        let calls = fake.calls.lock().unwrap().clone();
+        assert!(calls.iter().all(|c| !c.starts_with("WRITE")), "{calls:?}");
+        assert!(calls.iter().any(|c| c.contains("limit=3") && c.contains(r#"filter={"n":{"$gt":0}}"#)), "{calls:?}");
+        assert!(calls.iter().any(|c| c.contains("limit=2") && c.starts_with("aggregate")), "{calls:?}");
+        // Inside the connection's log scope: what ran is in the bottom panel too.
+        let logged: Vec<String> = m.host.conns().sql_log_for("mongo").since(0).into_iter().map(|e| e.sql).collect();
+        assert_eq!(logged.len(), calls.len(), "{logged:?}");
+
+        let act: Vec<_> = activity_since(0).into_iter().filter(|a| a.tool.starts_with("mongo_") && a.conn_id.as_deref() == Some("mongo")).collect();
+        assert!(act.iter().any(|a| a.tool == "mongo_find" && a.ok && a.sql.as_deref().is_some_and(|s| s.starts_with("users filter="))), "{act:?}");
+    }
+
+    /// The guard runs before the session is touched: a refused call never reaches the driver.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refused_mongo_call_never_reaches_the_driver() {
+        let (m, fake, _tmp) = mongo_mcp(profiles::agent_rev(), true, 500);
+        let e = mfind(&m, find_args(Some(r#"{"$where":"1"}"#))).await.unwrap_err();
+        assert!(e.contains("$where"), "{e}");
+        let mut a = find_args(None);
+        a.collection = "system.users".into();
+        assert!(mfind(&m, a).await.unwrap_err().contains("system collections"));
+        let agg = mongo::MongoAggregateArgs { connection_id: "mongo".into(), collection: "users".into(), pipeline: r#"[{"$out":"x"}]"#.into(), limit: None };
+        assert!(m.mongo_aggregate(Extensions::new(), Parameters(agg)).await.unwrap_err().contains("$out"));
+        assert!(fake.calls.lock().unwrap().is_empty());
+        // …but the attempt is in the Activity view, with its text as typed.
+        let act: Vec<_> = activity_since(0).into_iter().filter(|a| a.tool == "mongo_aggregate" && !a.ok).collect();
+        assert!(act.iter().any(|a| a.sql.as_deref().is_some_and(|s| s.contains("$out"))), "{act:?}");
+    }
+
+    /// An entry shared before MongoDB was open to agents (an id that was SQL then, its engine edited since)
+    /// is neither listed nor served; sharing it again records the current generation.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_mongo_entry_from_before_the_opening_is_not_served() {
+        let (stale, fake, _t1) = mongo_mcp(profiles::MONGODB_AGENT_SINCE - 1, false, 500);
+        let e = mfind(&stale, find_args(None)).await.unwrap_err();
+        assert!(e.contains("shared before TableIQ supported MongoDB over MCP"), "{e}");
+        let listed = |m: &TiqMcp| list_connections_body(m.host.as_ref(), &m.cfg).unwrap().0;
+        assert!(!listed(&stale).contains("mongo"), "{}", listed(&stale));
+        assert!(fake.calls.lock().unwrap().is_empty());
+        let (fresh, _f, _t2) = mongo_mcp(profiles::MONGODB_AGENT_SINCE, false, 500);
+        assert!(listed(&fresh).contains(r#""engine":"mongodb""#));
+        assert!(mfind(&fresh, find_args(None)).await.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn each_kind_of_tool_refuses_the_other_kinds_connection() {
+        let (m, _f, _t) = mongo_mcp(profiles::agent_rev(), false, 500);
+        let mut a = find_args(None);
+        a.connection_id = "lite".into();
+        assert!(mfind(&m, a).await.unwrap_err().contains("not a MongoDB connection"));
+        let e = query(&m, "mongo", "SELECT 1").await.unwrap_err();
+        assert!(e.contains("not a SQL connection") && e.contains("mongo_* tools"), "{e}");
+        assert!(m.list_databases(Extensions::new(), Parameters(ConnArgs { connection_id: "mongo".into() })).await.is_err(), "no database discovery for MongoDB");
+        // Not shared reads the same as not existing.
+        for id in ["private", "nope"] {
+            let mut a = find_args(None);
+            a.connection_id = id.into();
+            assert_eq!(mfind(&m, a).await.unwrap_err(), format!("Connection `{id}` is not shared over MCP. The user can allow it in TableIQ → Settings → MCP."));
+        }
+    }
+
+    #[test]
+    fn mongo_tool_descriptions_are_accurate() {
+        let tools = TiqMcp::tool_router().list_all();
+        let desc = |n: &str| tools.iter().find(|t| t.name == n).and_then(|t| t.description.as_deref()).unwrap_or_else(|| panic!("no tool {n}")).to_string();
+        for n in ["mongo_find", "mongo_count", "mongo_aggregate"] {
+            assert!(desc(n).contains(&format!("{} seconds", TOOL_TIMEOUT.as_secs())), "{n}");
+        }
+        assert!(desc("mongo_find").contains("whatever the user's writes setting") && desc("mongo_find").contains("4999"));
+        assert!(desc("mongo_aggregate").contains("$out and $merge (writes)") && desc("mongo_aggregate").contains("or 1000"));
+        assert!(desc("list_connections").contains("mongo_* tools on engine mongodb"));
+        assert!(desc("run_query").contains("shared SQL connection"));
+        // Every mongo tool is a read, and says so to the client.
+        for t in tools.iter().filter(|t| t.name.starts_with("mongo_")) {
+            assert_eq!(t.annotations.as_ref().and_then(|a| a.read_only_hint), Some(true), "{}", t.name);
+        }
+        assert!(tools.iter().all(|t| !t.name.contains("write") && !t.name.contains("insert") && !t.name.contains("update") && !t.name.contains("delete")));
     }
 }

@@ -14,7 +14,8 @@ import {
   claudeCodeCommand,
   claudeDesktopConfig,
   DUCKDB_SHARING_NOTE,
-  isSqlEngine,
+  MONGODB_SHARING_NOTE,
+  isMcpEngine,
   maskToken,
   mcpRowState,
   mcpUrl,
@@ -99,7 +100,7 @@ export function McpSettings() {
       .then(([c, s, list]) => {
         setCfg(c);
         setStatus(s);
-        setConns(list.filter((x) => isSqlEngine(x.engine)));
+        setConns(list.filter((x) => isMcpEngine(x.engine)));
         // An entry for a connection that can no longer be shared is dropped, and saved.
         if (pruneUnshareable(c, list) !== c) void apply(c, list);
       })
@@ -198,7 +199,7 @@ export function McpSettings() {
         <p className="text-xs text-muted">
           Agents see only the connections checked here, read-only unless you allow writes.
         </p>
-        {conns.length === 0 && <p className="text-xs text-muted">No SQL connections saved yet.</p>}
+        {conns.length === 0 && <p className="text-xs text-muted">No connections saved yet.</p>}
         <ul className="space-y-0.5">
           {conns.map((c) => {
             // From the saved profile: a compatible product is listed, but cannot be shared.
@@ -224,7 +225,7 @@ export function McpSettings() {
                     {engineLabel(c.engine, c.profile)} · {c.database}
                   </span>
                 </label>
-                {s.shared && (
+                {s.shared && s.writable && (
                   <label className={`flex shrink-0 items-center gap-1.5 text-xs ${s.writes ? "text-warn" : "text-muted"}`}>
                     <input
                       type="checkbox"
@@ -240,6 +241,7 @@ export function McpSettings() {
                     {s.note}
                   </p>
                 )}
+                {c.engine === "mongodb" && <p className="basis-full text-xs text-muted">{MONGODB_SHARING_NOTE}</p>}
                 {c.engine === "duckdb" && (
                   <p className="basis-full text-xs text-muted">{DUCKDB_SHARING_NOTE}</p>
                 )}

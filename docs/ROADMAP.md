@@ -1,6 +1,6 @@
 # TableIQ Roadmap
 
-_Last updated 2026-10-06 · current version v0.8.4 · companion doc: [GTM.md](GTM.md)_
+_Last updated 2026-10-07 · current version v0.8.5 · companion doc: [GTM.md](GTM.md)_
 
 We are aiming for engine parity with [dbx](https://github.com/t8y2/dbx) (100+ database profiles, 22k★ in five months) while keeping the product TablePlus-grade and agent-safe. Each phase ships as one `/rudys-workflow` slice and one PR, and each merged phase gets its own release announcement (see GTM.md).
 
@@ -74,15 +74,16 @@ A **profile** is a base driver plus default port and URL scheme, dialect quirks,
 
 ## P2 · Full Mongo and Redis browsers
 
-- **MongoDB:**
-  - Support `mongodb+srv://`.
-  - Document edit, insert and delete through the staged-edits flow.
-  - Index management, aggregation pipeline runner, JSON/table/tree views.
+- **MongoDB (done in v0.8.5):**
+  - [x] Support `mongodb+srv://` and full connection strings.
+  - [x] Document edit, insert and delete through the staged-edits flow (one transaction on a replica set, best-effort on a standalone server).
+  - [x] Index management, aggregation pipeline runner, JSON/table/tree views.
+  - [x] Read-only MCP tools (`mongo_find`, `mongo_count`, `mongo_aggregate`, `mongo_list_collections`) behind a fail-closed guard. No write tools.
 - **Redis:**
   - Support `rediss://` (TLS), Cluster and Sentinel.
   - Editors for every type, including hash, list, set, zset, stream, JSON and TTL.
   - A command console and SCAN-based key tree with the `:` separator.
-- **MCP:** Mongo and Redis tools behind the same fail-closed guard (read-only by default).
+- **MCP:** Redis tools behind the same fail-closed guard (read-only by default). Mongo is done.
 
 **Done** = parity with dbx's Mongo and Redis browsers, and live tests for `TIQ_MONGO_URL` and `TIQ_REDIS_URL` run in CI.
 

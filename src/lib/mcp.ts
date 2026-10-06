@@ -4,13 +4,18 @@
  * enforces in Rust.
  */
 import type { ConnConfig, McpConfig, McpConn } from "./commands";
-import { AGENT_NOTE, AGENT_REV, capsOf, profileOf } from "./profiles";
+import { AGENT_NOTE, AGENT_REV, MONGODB_AGENT_SINCE, capsOf, profileOf } from "./profiles";
 
 /** Shown under every DuckDB connection in Settings → MCP: the first agent call turns
  *  external access off and locks the instance's configuration (`harden_duckdb` in
  *  `mcp/server.rs`); a reconnect or restore opens a fresh, unlocked instance. */
 export const DUCKDB_SHARING_NOTE =
   "From the first agent call, file and HTTP functions (read_csv, read_parquet, …), COPY/EXPORT and Backup Database stop working on this connection. Reconnecting or restoring it lifts that until the next agent call.";
+
+/** Shown under every MongoDB connection in Settings → MCP: agents get find, count and aggregate through a
+ *  guard (`mcp/mongo_guard.rs`), never a write, so "allow writes" is not offered. */
+export const MONGODB_SHARING_NOTE =
+  "Read-only for agents, always: they can list collections, find, count and aggregate. JavaScript ($where, $function), $out/$merge, other databases and system collections are refused. Share it through a database user that can read only what agents should see.";
 
 export function mcpUrl(port: number): string {
   return `http://127.0.0.1:${port}/mcp`;
@@ -60,6 +65,8 @@ export interface McpRowState {
   shareable: boolean;
   shared: boolean;
   writes: boolean;
+  /** Whether "allow writes" means anything: not for MongoDB, whose agent tools only read. */
+  writable: boolean;
   /** Why it cannot be shared; null when it can. */
   note: string | null;
 }
@@ -72,19 +79,21 @@ export function mcpRowState(conn: Pick<ConnConfig, "engine" | "profile">, shared
   if (capsOf(conn.engine, conn.profile).agents) {
     // An entry from before the product opened to agents reads unshared: sharing it again confirms it.
     const live = shared && !entryStale(conn, shared);
-    return { shareable: true, shared: !!live, writes: !!live && !!shared?.writes, note: null };
+    const writable = conn.engine !== "mongodb";
+    return { shareable: true, shared: !!live, writes: writable && !!live && !!shared?.writes, writable, note: null };
   }
   const p = profileOf(conn.engine, conn.profile);
   const note = p
     ? `Not available over MCP yet: ${p.agentNote ?? AGENT_NOTE}`
     : `Not available over MCP: this connection's profile (${conn.profile}) was saved by a newer TableIQ. Update TableIQ to manage it.`;
-  return { shareable: false, shared: false, writes: false, note };
+  return { shareable: false, shared: false, writes: false, writable: false, note };
 }
 
 /** The entry was confirmed before the saved profile's product opened to agents (`reconfirm_block`
  *  in `profiles.rs`). A product the server only reveals at connect is caught there, not here. */
 function entryStale(conn: Pick<ConnConfig, "engine" | "profile">, entry: McpConn): boolean {
-  return (profileOf(conn.engine, conn.profile)?.agentSince ?? 0) > (entry.rev ?? 0);
+  const since = conn.engine === "mongodb" ? MONGODB_AGENT_SINCE : (profileOf(conn.engine, conn.profile)?.agentSince ?? 0);
+  return since > (entry.rev ?? 0);
 }
 
 /** `cfg` without the allowlist entries of saved connections that can no longer be shared (a
@@ -110,9 +119,9 @@ export function validRowCap(n: number): boolean {
   return Number.isInteger(n) && n >= 1 && n <= 10000;
 }
 
-const SQL_ENGINES = new Set(["postgres", "mysql", "sqlite", "duckdb", "sqlserver"]);
+const MCP_ENGINES = new Set(["postgres", "mysql", "sqlite", "duckdb", "sqlserver", "mongodb"]);
 
-/** MCP serves SQL connections only (the tools are SQL tools). */
-export function isSqlEngine(engine: string): boolean {
-  return SQL_ENGINES.has(engine);
+/** MCP serves SQL connections (the SQL tools) and MongoDB ones (the read-only mongo_* tools). */
+export function isMcpEngine(engine: string): boolean {
+  return MCP_ENGINES.has(engine);
 }

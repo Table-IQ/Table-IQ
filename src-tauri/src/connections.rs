@@ -76,6 +76,10 @@ impl ConnConfig {
                 let dbn = if self.database.is_empty() { "0" } else { &self.database };
                 format!("redis://{auth}{}:{}/{}", urlencode_host(&self.host), self.port, dbn)
             }
+            // A pasted connection string kept whole (SRV, authSource, replicaSet, TLS …): `host`.
+            "mongodb" if self.host.starts_with("mongodb://") || self.host.starts_with("mongodb+srv://") => {
+                mongo_url_with_password(&self.host, &self.username, password)
+            }
             "mongodb" => {
                 let auth = if self.username.is_empty() {
                     String::new()
@@ -115,6 +119,24 @@ impl ConnConfig {
             }
         }
     }
+}
+
+/// A MongoDB connection string with the keychain password filled in — only where the string has
+/// none of its own: `user@h` becomes `user:pw@h`, `h` becomes `username:pw@h` when a username
+/// is saved. Everything else (options, several hosts, `+srv`) passes through untouched.
+fn mongo_url_with_password(url: &str, username: &str, password: &str) -> String {
+    let (scheme, rest) = url.split_once("://").unwrap_or(("mongodb", url));
+    let end = rest.find(['/', '?']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(end);
+    let (user, hosts) = match authority.rsplit_once('@') {
+        Some((u, _)) if u.contains(':') => return url.to_string(), // carries its own password
+        Some((u, h)) => (u.to_string(), h),
+        None => (urlencode(username), authority),
+    };
+    if password.is_empty() || user.is_empty() {
+        return url.to_string();
+    }
+    format!("{scheme}://{user}:{}@{hosts}{tail}", urlencode(password))
 }
 
 /// The sqlx `ssl-mode` for a saved SSL mode (libpq or MySQL spelling). Unknown fails closed.
@@ -294,6 +316,22 @@ pub(crate) mod tests {
             engine: engine.into(), host: "h".into(), port: 3306, database: "d".into(),
             username: "u".into(), sslmode: "prefer".into(), ssh: None,
         }
+    }
+
+    /// A pasted Mongo URL (kept whole in `host`) gets the keychain password only where it has none.
+    #[test]
+    fn mongo_url_host_takes_the_keychain_password_only_when_absent() {
+        let url = |host: &str, user: &str, pw: &str| {
+            ConnConfig { engine: "mongodb".into(), host: host.into(), username: user.into(), ..cfg("mongodb") }.url_with_password(pw)
+        };
+        let srv = "mongodb+srv://u@c.example.net/app?authSource=admin&w=majority";
+        assert_eq!(url(srv, "u", "p@ss/1"), "mongodb+srv://u:p%40ss%2F1@c.example.net/app?authSource=admin&w=majority");
+        assert_eq!(url("mongodb://a:1,b:2/?replicaSet=rs0", "u", "pw"), "mongodb://u:pw@a:1,b:2/?replicaSet=rs0");
+        assert_eq!(url("mongodb://u:own@h/app", "u", "other"), "mongodb://u:own@h/app", "its own password wins");
+        assert_eq!(url(srv, "u", ""), srv, "no saved password: untouched");
+        assert_eq!(url("mongodb://h?tls=true", "", "pw"), "mongodb://h?tls=true", "no user, no credentials");
+        // Without a scheme in `host` the field-built URL is unchanged.
+        assert_eq!(url("h", "u", "pw"), "mongodb://u:pw@h:3306");
     }
 
     #[test]

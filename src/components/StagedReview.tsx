@@ -7,6 +7,11 @@ import { highlightSql } from "../lib/sqlHighlightHtml";
 export function StagedReview({
   sql,
   total,
+  html,
+  copyLabel = "Copy SQL",
+  summary = "one transaction",
+  align = "left",
+  footnote = "Each UPDATE also checks the row still holds the value it was loaded with. If any row changed, nothing is committed.",
   committing,
   onCommit,
   onDiscard,
@@ -14,6 +19,13 @@ export function StagedReview({
 }: {
   sql: string;
   total: number;
+  /** Pre-escaped highlighted `sql` for a non-SQL script (mongo shell); default is the SQL highlighter. */
+  html?: string;
+  copyLabel?: string;
+  summary?: string;
+  footnote?: string;
+  /** Which edge of its wrapper the popover hangs from (default left). */
+  align?: "left" | "right";
   committing: boolean;
   onCommit: () => void;
   onDiscard: () => void;
@@ -51,26 +63,26 @@ export function StagedReview({
       ref={ref}
       role="dialog"
       aria-label="Staged changes"
-      className="tiq-no-drag tiq-slide-in absolute left-0 top-full z-50 mt-2 w-[520px] rounded-lg border border-border bg-bg text-xs text-text shadow-[var(--shadow-pop)]"
+      className={`tiq-no-drag tiq-slide-in absolute ${align === "right" ? "right-0" : "left-0"} top-full z-50 mt-2 w-[520px] rounded-lg border border-border bg-bg text-xs text-text shadow-[var(--shadow-pop)]`}
     >
       <div className="flex items-center gap-2 border-b border-border px-3 py-2">
-        <span className="font-medium">{`Review ${total} change${total === 1 ? "" : "s"} · one transaction`}</span>
+        <span className="font-medium">{`Review ${total} change${total === 1 ? "" : "s"} · ${summary}`}</span>
         <span className="flex-1" />
         <button
           type="button"
           onClick={copy}
           className="rounded-md border border-border px-2 py-0.5 text-[11px] text-muted transition-colors hover:text-text"
         >
-          {copied ? "Copied" : "Copy SQL"}
+          {copied ? "Copied" : copyLabel}
         </button>
       </div>
       {/* highlightSql escapes every text run (see sqlHighlightHtml.test.ts). */}
       <pre
         className="max-h-[360px] overflow-auto whitespace-pre-wrap break-words px-3 py-2 font-mono text-[11.5px] leading-[1.5]"
-        dangerouslySetInnerHTML={{ __html: highlightSql(sql) }}
+        dangerouslySetInnerHTML={{ __html: html ?? highlightSql(sql) }}
       />
       <div className="border-t border-border px-3 py-1.5 text-[10.5px] text-muted">
-        Each UPDATE also checks the row still holds the value it was loaded with. If any row changed, nothing is committed.
+        {footnote}
       </div>
       <div className="flex items-center justify-end gap-2 border-t border-border px-3 py-2">
         <button

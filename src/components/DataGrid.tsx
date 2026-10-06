@@ -181,6 +181,8 @@ interface Props {
    *  route through `commitPending`); resolving false leaves every edit staged. Set
    *  for production connections. */
   confirmCommit?: () => Promise<boolean>;
+  /** Rows tinted as edited without a staged cell (a whole-document edit staged outside the grid). */
+  markedRows?: ReadonlySet<number>;
 }
 
 /** Row-marker column width for the widest number it will show (~8px a digit). */
@@ -216,6 +218,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     highlight = "",
     pk,
     confirmCommit,
+    markedRows,
   },
   ref,
 ) {
@@ -625,6 +628,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
           saveBg = mixHex(rowBg(row), tints[fade.tint], fadeOutAlpha(now - fade.start, fade.dur, fade.hold));
         }
       }
+      if (saveBg === undefined && markedRows?.has(row)) saveBg = editTints(resolved).staged;
       // A search hit gets the accent tint, looked up in the page's precomputed
       // hit set (see `searchHits`) — O(1) per cell, whatever the cell's length.
       if (saveBg === undefined && highlight !== "" && !isNull && ov === undefined) {
@@ -660,7 +664,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
         themeOverride,
       };
     },
-    [ensurePage, editable, fkByColumn, rightAlignColumns, resolved, rowBg, highlight, fkText, source.totalRows],
+    [ensurePage, editable, fkByColumn, rightAlignColumns, resolved, rowBg, highlight, fkText, source.totalRows, markedRows],
   );
 
   /** Build the full {col → value} map for `row` by walking columns through the

@@ -23,7 +23,7 @@ import {
   type Engine,
 } from "../lib/commands";
 import { defaultSshConfig, type SshConfig } from "../lib/ssh";
-import { toConnUrl, validateConn } from "../lib/connUrl";
+import { isMongoUrlHost, normalizeMongoSecrets, toConnUrl, validateConn } from "../lib/connUrl";
 import { PROFILES, applyPreset, presetFor } from "../lib/profiles";
 import { confirmDialog } from "../lib/confirmDialog";
 import { cancelConnecting, openConnection, useConnections, type ConnectingState } from "../state/connectionStore";
@@ -113,6 +113,7 @@ export function isFileEngine(engine: Engine): boolean {
 
 function hostLineOf(c: ConnConfig): string {
   if (isFileEngine(c.engine)) return c.database || "(no file selected)";
+  if (c.engine === "mongodb" && isMongoUrlHost(c.host)) return c.host;
   return `${c.host}:${c.port}/${c.database || ""}`.replace(/\/$/, "");
 }
 
@@ -283,11 +284,23 @@ export function ConnectionManager() {
     }
   };
 
+  /** A password typed into a Mongo URL host would be saved in plaintext: move it to the password
+   *  field (the keychain path), as a paste does, before anything is tested, saved or connected. */
+  const settle = (cfg: ConnConfig, pw: string): { cfg: ConnConfig; pw: string } => {
+    const n = normalizeMongoSecrets(cfg, pw);
+    if (n.host === cfg.host && n.password === pw) return { cfg, pw };
+    const next = { ...cfg, host: n.host, username: n.username };
+    setForm(next);
+    setPassword(n.password);
+    return { cfg: next, pw: n.password };
+  };
+
   const doTest = async () => {
     setStatus({ kind: "busy", msg: "Testing…" });
     try {
       const t0 = performance.now();
-      await testConnection(form, password);
+      const { cfg, pw } = settle(form, password);
+      await testConnection(cfg, pw);
       setStatus({ kind: "ok", msg: "Connection OK", ms: Math.round(performance.now() - t0) });
     } catch (e) {
       setStatus({ kind: "err", msg: String(e) });
@@ -297,21 +310,23 @@ export function ConnectionManager() {
   const doSave = async () => {
     setStatus({ kind: "busy", msg: "Saving…" });
     try {
-      await saveConnection(form, password || undefined, effectiveSshSecret || undefined);
+      const { cfg, pw } = settle(form, password);
+      await saveConnection(cfg, pw || undefined, effectiveSshSecret || undefined);
       await refresh();
       // Keep the secrets typed: Test sends them and has no keychain fallback.
-      setInitial(form);
-      setSavedSecrets({ password, sshPassword, sshKeyPass });
+      setInitial(cfg);
+      setSavedSecrets({ password: pw, sshPassword, sshKeyPass });
       setStatus({ kind: "ok", msg: "Saved" });
     } catch (e) {
       setStatus({ kind: "err", msg: String(e) });
     }
   };
 
-  const doConnect = async (cfg: ConnConfig, pw?: string) => {
+  const doConnect = async (cfg0: ConnConfig, pw0?: string) => {
     if (connecting) return; // one connect at a time — ConnRow disables other rows too
     setStatus({ kind: "busy", msg: "Connecting…" });
     try {
+      const { cfg, pw } = pw0 === undefined ? { cfg: cfg0, pw: undefined } : settle(cfg0, pw0);
       if (pw !== undefined) {
         await saveConnection(cfg, pw || undefined, effectiveSshSecret || undefined);
         // Saved even if the connect below fails, so the sheet reads clean.
