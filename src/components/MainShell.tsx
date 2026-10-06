@@ -642,10 +642,10 @@ export function MainShell() {
     if (engine !== "sqlite") {
       items.push({
         id: "n-schema",
-        label: engine === "mysql" ? "New Database…" : "New Schema…",
+        label: engine === "mysql" || engine === "clickhouse" ? "New Database…" : "New Schema…",
         onSelect: () =>
           void tabGuard.openQuery(
-            engine === "mysql"
+            engine === "mysql" || engine === "clickhouse"
               ? `CREATE DATABASE ${q("new_database")};`
               : `CREATE SCHEMA ${q("new_schema")};`,
           ),
@@ -1384,7 +1384,10 @@ export function MainShell() {
                     : engine === "sqlserver"
                       ? // T-SQL has no CREATE TABLE … AS SELECT; SELECT … INTO is the idiom.
                         `SELECT * INTO ${q(s)}.${q(`${obj.name}_copy`)} FROM ${qualified};`
-                      : `CREATE TABLE ${q(s)}.${q(`${obj.name}_copy`)} AS SELECT * FROM ${qualified};`,
+                      : engine === "clickhouse"
+                        ? // `AS <table>` copies the structure with its engine; `AS SELECT` needs an ENGINE.
+                          `CREATE TABLE ${q(s)}.${q(`${obj.name}_copy`)} AS ${qualified};`
+                        : `CREATE TABLE ${q(s)}.${q(`${obj.name}_copy`)} AS SELECT * FROM ${qualified};`,
                 ),
             },
             {

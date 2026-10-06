@@ -158,3 +158,14 @@ describe("buildDeleteStatement", () => {
     );
   });
 });
+
+describe("ClickHouse scripts", () => {
+  it("quotes with backticks, escaping with a backslash", () => {
+    expect(quoteIdent("a`b\\c", "clickhouse")).toBe("`a\\`b\\\\c`");
+    expect(quoteLiteral("it's \\", "clickhouse")).toBe("'it''s \\\\'");
+  });
+  it("CREATE asks the server (the engine and key are not in the columns), SELECT is a plain LIMIT", () => {
+    expect(buildTableScript("create", "db", "t", cols, "clickhouse")).toBe("SHOW CREATE TABLE `db`.`t`;");
+    expect(buildTableScript("select", "db", "t", cols, "clickhouse")).toBe("SELECT * FROM `db`.`t` LIMIT 300;");
+  });
+});

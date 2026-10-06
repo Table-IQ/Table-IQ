@@ -22,6 +22,7 @@ export const ENGINE_COLORS: Record<Engine, string> = {
   redis: "#dc382d",
   mongodb: "#13aa52",
   sqlserver: "#cc2927",
+  clickhouse: "#946c00",
 };
 
 export const ENGINE_MONOGRAMS: Record<Engine, string> = {
@@ -32,6 +33,7 @@ export const ENGINE_MONOGRAMS: Record<Engine, string> = {
   redis: "Re",
   mongodb: "Mo",
   sqlserver: "Ms",
+  clickhouse: "Ch",
 };
 
 export const ENGINE_LABELS: Record<Engine, string> = {
@@ -42,6 +44,7 @@ export const ENGINE_LABELS: Record<Engine, string> = {
   redis: "Redis",
   mongodb: "MongoDB",
   sqlserver: "SQL Server",
+  clickhouse: "ClickHouse",
 };
 
 export function EngineIcon({

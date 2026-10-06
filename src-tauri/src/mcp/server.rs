@@ -1934,6 +1934,18 @@ mod tests {
         assert!(mfind(&fresh, find_args(None)).await.is_ok());
     }
 
+    /// ClickHouse is never reachable by an agent, even allowlisted by hand into the config
+    /// file: the SQL tools refuse its engine before anything connects, and it is not listed.
+    #[tokio::test]
+    async fn a_clickhouse_connection_is_refused_and_unlisted() {
+        let m = mcp(vec![cfg_of("ch", "clickhouse", "tableiq")], &[("ch", true)]);
+        let e = query(&m, "ch", "SELECT 1").await.unwrap_err();
+        assert!(e.contains("not a SQL connection"), "{e}");
+        assert!(m.list_databases(Extensions::new(), Parameters(ConnArgs { connection_id: "ch".into() })).await.is_err());
+        let listed = m.list_connections(Extensions::new()).await.unwrap();
+        assert!(!listed.contains("clickhouse"), "{listed}");
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn each_kind_of_tool_refuses_the_other_kinds_connection() {
         let (m, _f, _t) = mongo_mcp(profiles::agent_rev(), false, 500);

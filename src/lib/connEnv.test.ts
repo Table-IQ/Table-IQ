@@ -14,6 +14,7 @@ describe("connEnv", () => {
   it("marks SSL only for engines that honour sslmode", () => {
     expect(pillSegments({ ...base, engine: "mysql" as const, sslmode: "require" }, null).ssl).toBe(true);
     expect(pillSegments({ ...base, engine: "sqlserver" as const, sslmode: "require" }, null).ssl).toBe(true);
+    expect(pillSegments({ ...base, engine: "clickhouse" as const, sslmode: "require" }, null).ssl).toBe(true);
     expect(pillSegments({ ...base, engine: "redis" as const, sslmode: "require" }, null).ssl).toBe(false);
   });
 

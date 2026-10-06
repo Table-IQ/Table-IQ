@@ -221,3 +221,25 @@ describe("looksLikeConnUrl", () => {
     expect(looksLikeConnUrl("db.example.com")).toBe(false);
   });
 });
+
+describe("ClickHouse URLs", () => {
+  it("parses clickhouse:// and the HTTP interface's own ports, and https asks for TLS", () => {
+    expect(parseConnUrl("clickhouse://default:p%40ss@ch.example/events")).toEqual({
+      engine: "clickhouse", host: "ch.example", port: 8123, username: "default", password: "p@ss", database: "events",
+    });
+    expect(parseConnUrl("http://default:tableiq@127.0.0.1:58123/tableiq")).toBeNull(); // any other port is not claimed
+    expect(parseConnUrl("http://u@h:8123/d")).toMatchObject({ engine: "clickhouse", port: 8123, database: "d" });
+    expect(parseConnUrl("http://u@h:8123/d")!.sslmode).toBeUndefined();
+    expect(parseConnUrl("https://u:pw@h:8443/d")).toMatchObject({ engine: "clickhouse", port: 8443, sslmode: "require" });
+    expect(parseConnUrl("https://example.com/path")).toBeNull();
+    expect(looksLikeConnUrl("clickhouse://h")).toBe(true);
+    expect(looksLikeConnUrl("https://h:8443/d")).toBe(true);
+    expect(looksLikeConnUrl("https://example.com")).toBe(false);
+  });
+  it("copies as the URL its HTTP port speaks, without the password", () => {
+    const cfg = { engine: "clickhouse" as const, host: "h", port: 8123, username: "u", database: "d", sslmode: "prefer" };
+    expect(toConnUrl(cfg)).toBe("http://u@h:8123/d");
+    expect(toConnUrl({ ...cfg, port: 8443, sslmode: "require" })).toBe("https://u@h:8443/d");
+    expect(parseConnUrl(toConnUrl({ ...cfg, port: 8443, sslmode: "require" }))).toMatchObject({ engine: "clickhouse", host: "h", port: 8443, sslmode: "require" });
+  });
+});

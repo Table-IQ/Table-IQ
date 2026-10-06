@@ -162,7 +162,7 @@ pub fn infer_type(values: &[Option<String>]) -> &'static str {
 fn sql_literal(v: &Option<String>, d: Dialect) -> String {
     let Some(s) = v else { return "NULL".to_string() };
     match d {
-        Dialect::MySql => format!("'{}'", s.replace('\\', r"\\").replace('\'', "''")),
+        Dialect::MySql | Dialect::ClickHouse => format!("'{}'", s.replace('\\', r"\\").replace('\'', "''")),
         Dialect::SqlServer => format!("N'{}'", s.replace('\'', "''")),
         // Postgres (with standard_conforming_strings on, which PgDriver pins; `import_rows`
         // refuses a session where the server rejected it), SQLite and DuckDB treat a

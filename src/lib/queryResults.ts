@@ -119,14 +119,14 @@ export function transactionKeywords(engine: Engine): { begin: string; commit: st
 }
 
 /**
- * The statement that makes an engine return its plan *as a result set*. Postgres
- * keeps the richer `explain_query` + PlanView path and SQL Server has no
+ * The statement that makes an engine return its plan *as a result set* (ClickHouse's is text
+ * rows). Postgres keeps the richer `explain_query` + PlanView path and SQL Server has no
  * grid-shaped equivalent we support, so both return `null` (no grid path).
  */
 export function explainStatement(sql: string, engine: Engine): string | null {
   const body = sql.trim().replace(/;+\s*$/, "");
   if (!body) return null;
-  if (engine === "mysql") return `EXPLAIN ${body}`;
+  if (engine === "mysql" || engine === "clickhouse") return `EXPLAIN ${body}`;
   if (engine === "sqlite") return `EXPLAIN QUERY PLAN ${body}`;
   return null;
 }

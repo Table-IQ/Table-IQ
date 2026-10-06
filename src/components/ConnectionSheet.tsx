@@ -55,6 +55,7 @@ const ENGINES: { id: Engine; short: string; title?: string }[] = [
   { id: "duckdb", short: "DuckDB" },
   { id: "redis", short: "Redis" },
   { id: "mongodb", short: "MongoDB" },
+  { id: "clickhouse", short: "ClickHouse" },
 ];
 const ENV_SEGMENTS: { env: ConnEnv | null; label: string }[] = [
   { env: null, label: "None" },
@@ -156,7 +157,7 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
     !caps.agents && "agent access",
   ].filter(Boolean);
   const capsNote = [
-    missing.length > 0 && `Not available for ${product?.label ?? form.profile}: ${missing.join(", ")}.`,
+    missing.length > 0 && `Not available for ${product?.label ?? (form.profile || engineLabel(form.engine))}: ${missing.join(", ")}.`,
     beta && "Beta: not yet verified against a live server.",
   ]
     .filter(Boolean)
@@ -321,7 +322,7 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
         {urlNote && <div className="mt-1 text-[11px] text-danger">{urlNote}</div>}
 
         {mode === "new" && (
-          <div className="mt-3 grid grid-cols-7 gap-[5px]">
+          <div className="mt-3 grid grid-cols-4 gap-[5px]">
             {ENGINES.map(({ id, short, title }) => {
               // A picked product presses the select below instead of its base engine's tile.
               const on = form.engine === id && !form.profile;
@@ -388,6 +389,8 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
             )}
           </>
         )}
+
+        {mode === "edit" && !wireBase && capsNote && <div className="mt-3 text-[11px] text-muted">{capsNote}</div>}
 
         <Field id={`${uid}name`} label="Name" className="mt-3 mb-[9px]">
           <input {...ids("name")} className={field()} value={form.name} onChange={(e) => p.onField("name", e.target.value)} placeholder="e.g. Orders (staging)" />
@@ -484,9 +487,22 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
                   {passwordField("Password")}
                 </div>
                 <div className="mb-[9px] grid grid-cols-2 gap-[9px]">
-                  <Field id={`${uid}db`} label="Database" className={wireBase ? "" : "col-span-2"}>
+                  <Field id={`${uid}db`} label="Database" className={wireBase || form.engine === "clickhouse" ? "" : "col-span-2"}>
                     <input {...ids("db")} className={field()} value={form.database} onChange={(e) => p.onField("database", e.target.value)} />
                   </Field>
+                  {form.engine === "clickhouse" && (
+                    <Field id={`${uid}ssl`} label="Protocol">
+                      <select
+                        {...ids("ssl")}
+                        className={field()}
+                        value={/^(require|verify)/.test(form.sslmode) ? "require" : "disable"}
+                        onChange={(e) => p.onField("sslmode", e.target.value)}
+                      >
+                        <option value="disable">HTTP</option>
+                        <option value="require">HTTPS (verified certificate)</option>
+                      </select>
+                    </Field>
+                  )}
                   {wireBase && (
                     <Field id={`${uid}ssl`} label="SSL mode">
                       <select {...ids("ssl")} className={field()} value={form.sslmode} onChange={(e) => p.onField("sslmode", e.target.value)}>

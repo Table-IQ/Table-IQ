@@ -94,6 +94,16 @@ impl ConnConfig {
                 };
                 format!("mongodb://{auth}{}:{}", urlencode_host(&self.host), self.port)
             }
+            // The HTTP interface: TLS (https, verified) for every SSL mode that asks for it.
+            "clickhouse" => format!(
+                "{}://{}:{}@{}:{}/{}",
+                if matches!(self.sslmode.as_str(), "require" | "verify-ca" | "verify-full") { "https" } else { "http" },
+                urlencode(&self.username),
+                urlencode(password),
+                urlencode_host(&self.host),
+                self.port,
+                urlencode(&self.database),
+            ),
             "mysql" => format!(
                 "mysql://{}:{}@{}:{}/{}?ssl-mode={}",
                 urlencode(&self.username),
@@ -500,6 +510,30 @@ pub(crate) mod tests {
         let url = cfg.url_with_password("p@ss/word");
         assert!(url.contains("p%40ss%2Fword"));
         assert!(url.contains("sslmode=require"));
+    }
+
+    #[test]
+    fn clickhouse_url_is_http_unless_the_ssl_mode_asks_for_tls() {
+        let mut cfg = ConnConfig {
+            env: None,
+            profile: None,
+            id: "x".into(),
+            name: "x".into(),
+            color: None,
+            engine: "clickhouse".into(),
+            host: "ch.example".into(),
+            port: 8123,
+            database: "my db".into(),
+            username: "u@x".into(),
+            sslmode: "prefer".into(),
+            ssh: None,
+        };
+        assert_eq!(cfg.url_with_password("p@ss/word"), "http://u%40x:p%40ss%2Fword@ch.example:8123/my%20db");
+        cfg.port = 8443;
+        for (mode, scheme) in [("disable", "http"), ("require", "https"), ("verify-full", "https")] {
+            cfg.sslmode = mode.into();
+            assert!(cfg.url_with_password("p").starts_with(&format!("{scheme}://u%40x:p@ch.example:8443/")), "{mode}");
+        }
     }
 
     #[test]

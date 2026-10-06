@@ -4,11 +4,11 @@ import { DEFAULT_PORT, PROFILES, profileForUrl } from "./profiles";
 const SCHEME_ENGINE: Record<string, Engine> = {
   postgres: "postgres", postgresql: "postgres", mysql: "mysql",
   sqlserver: "sqlserver", mssql: "sqlserver", redis: "redis", rediss: "redis",
-  mongodb: "mongodb", "mongodb+srv": "mongodb", sqlite: "sqlite", duckdb: "duckdb",
+  mongodb: "mongodb", "mongodb+srv": "mongodb", sqlite: "sqlite", duckdb: "duckdb", clickhouse: "clickhouse",
 };
 const ENGINE_SCHEME: Record<Engine, string> = {
   postgres: "postgres", mysql: "mysql", sqlserver: "sqlserver", redis: "redis",
-  mongodb: "mongodb", sqlite: "sqlite", duckdb: "duckdb",
+  mongodb: "mongodb", sqlite: "sqlite", duckdb: "duckdb", clickhouse: "http",
 };
 
 export interface ParsedConnUrl {
@@ -40,9 +40,13 @@ function safeDecode(s: string): string {
   }
 }
 
+/** `http(s)://host:8123|8443/…`: ClickHouse's HTTP interface. Any other http URL is not ours to claim. */
+const isClickHouseHttp = (sc: string | undefined, rest: string): boolean =>
+  (sc === "http" || sc === "https") && /^[^/?@]*@?[^/?@]*:(8123|8443)(?:[/?]|$)/.test(rest);
+
 export function looksLikeConnUrl(s: string): boolean {
   const sc = scheme(s);
-  return !!sc && (sc in SCHEME_ENGINE || profileForUrl(sc, "", null) !== null);
+  return !!sc && (sc in SCHEME_ENGINE || profileForUrl(sc, "", null) !== null || isClickHouseHttp(sc, s.trim().replace(/^[a-z+]+:\/\//i, "")));
 }
 
 /** Engines whose connection can keep its whole URL in `host`. */
@@ -116,7 +120,7 @@ export function parseConnUrl(input: string): ParsedConnUrl | null {
   const m = /^([a-z+]+):\/\/(.*)$/i.exec(s);
   if (!m) return null;
   const sc = m[1].toLowerCase();
-  const engine = SCHEME_ENGINE[sc] ?? PROFILES[profileForUrl(sc, "", null) ?? ""]?.base;
+  const engine = SCHEME_ENGINE[sc] ?? (isClickHouseHttp(sc, m[2]) ? "clickhouse" : undefined) ?? PROFILES[profileForUrl(sc, "", null) ?? ""]?.base;
   if (!engine) return null;
   if (engine === "sqlite" || engine === "duckdb") {
     return { engine, host: "", port: 0, username: "", password: "", database: safeDecode(m[2]) };
@@ -136,6 +140,7 @@ export function parseConnUrl(input: string): ParsedConnUrl | null {
   const sslmode =
     // MySQL has no `allow`: the backend connects it as PREFERRED, so the form says `prefer`.
     (engine === "mysql" && mode === "allow" ? "prefer" : mode) ??
+    (engine === "clickhouse" && (sc === "https" || u.searchParams.get("secure") === "true") ? "require" : undefined) ??
     (profile && PROFILES[profile].ssl) ??
     (TLS_HOSTS.some((s) => u.hostname.endsWith(s)) ? "require" : undefined);
   return {
@@ -153,7 +158,8 @@ export function parseConnUrl(input: string): ParsedConnUrl | null {
 /** The connection as a URL, for "Copy as URL". Never includes the password. Always the base
  *  engine's scheme: a profile scheme is ours, other tools would not know it. */
 export function toConnUrl(cfg: Pick<ConnConfig, "engine" | "profile" | "host" | "port" | "username" | "database" | "sslmode">): string {
-  const scheme = ENGINE_SCHEME[cfg.engine];
+  // ClickHouse's HTTP interface: https when the form asks for TLS.
+  const scheme = cfg.engine === "clickhouse" && /^(require|verify)/.test(cfg.sslmode) ? "https" : ENGINE_SCHEME[cfg.engine];
   if (isUrlHost(cfg.engine, cfg.host)) return cfg.host; // already a URL
   if (cfg.engine === "sqlite" || cfg.engine === "duckdb") return `${scheme}://${cfg.database}`;
   const user = cfg.username ? `${encodeURIComponent(cfg.username)}@` : "";

@@ -153,6 +153,11 @@ describe("capsOf", () => {
     expect(capsOf("mysql", "from-the-future")).toEqual({ transactions: true, backup: true, userMgmt: true, agents: false });
   });
 
+  it("ClickHouse is a read-only browser: no transactions, backup, users or agents", () => {
+    expect(capsOf("clickhouse")).toEqual({ transactions: false, backup: false, userMgmt: false, agents: false });
+    expect(presetFor("clickhouse", null)).toEqual({ port: 8123, username: "default", database: "", sslmode: "prefer" });
+  });
+
   it("agrees with the shared agent-access case table", () => {
     for (const c of cases) expect(capsOf(c.engine, c.profile).agents, `${c.engine}/${c.profile}`).toBe(c.allowed);
   });

@@ -97,6 +97,16 @@ describe("mcpRowState (a connection's row in Settings → MCP)", () => {
     expect(mcpRowState({ engine: "postgres", profile: "neon" }, { id: "c1", writes: true })).toMatchObject({ shared: true });
   });
 
+  it("ClickHouse is never shareable, never listed, and its note names it", () => {
+    expect(isMcpEngine("clickhouse")).toBe(false);
+    const row = mcpRowState({ engine: "clickhouse" }, { id: "c1", writes: true, rev: AGENT_REV });
+    expect(row).toMatchObject({ shareable: false, shared: false, writes: false, writable: false });
+    expect(row.note).toBe("Not available over MCP yet: TableIQ's agent guard has not been reviewed for ClickHouse.");
+    // Hand-edited into the allowlist, it is pruned like any unshareable one.
+    const cfg = { port: 1, token: "t", connections: [{ id: "c1", writes: true, rev: AGENT_REV }] } as unknown as McpConfig;
+    expect(pruneUnshareable(cfg, [{ id: "c1", engine: "clickhouse", profile: null }]).connections).toEqual([]);
+  });
+
   it("the base engines and their vendor-named selves stay shareable and mirror the allowlist", () => {
     expect(mcpRowState({ engine: "postgres" }, undefined)).toEqual({ shareable: true, shared: false, writes: false, writable: true, note: null });
     expect(mcpRowState({ engine: "postgres", profile: null }, on)).toEqual({ shareable: true, shared: true, writes: true, writable: true, note: null });

@@ -11,7 +11,7 @@ export const BACKUP_TOOL_DIR_KEY = "tiq:backup:toolDir";
 
 /** `caps` is the live session's: a product whose dump tool does not fit (TiDB) turns it off. */
 export function supportsBackup(engine: Engine, caps?: SessionCaps): boolean {
-  return engine !== "redis" && engine !== "mongodb" && (caps?.backup ?? true);
+  return engine !== "redis" && engine !== "mongodb" && engine !== "clickhouse" && (caps?.backup ?? true);
 }
 
 /** Only `pg_dump` / `mysqldump` run as a child process that Cancel can kill; the SQL-only

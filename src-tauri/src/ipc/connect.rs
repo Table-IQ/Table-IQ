@@ -16,7 +16,7 @@ use crate::connections::{self, ConnConfig, ConnStore};
 use crate::lk;
 use crate::profiles;
 use crate::drivers::{
-    doc_mongo::MongoDriver, duckdb::DuckDriver, kv_redis::RedisDriver, logged::Logged, mysql::MySqlDriver,
+    clickhouse::ClickHouseDriver, doc_mongo::MongoDriver, duckdb::DuckDriver, kv_redis::RedisDriver, logged::Logged, mysql::MySqlDriver,
     postgres::PgDriver, sqlite::SqliteDriver, sqlserver::SqlServerDriver, CancelToken, Change,
     AggResult, ChangesResult, ColumnFilter, DocChange, DocChangesResult, DocIndex, DocumentDriver, DriverError, EditSpec, FindOpts,
     KeyInfo, KeyPage, KvChange, KvChangesResult, KvDriver, KvRead, KvReadOpts, KvReply, KvValue, SchemaModel,
@@ -166,6 +166,7 @@ async fn open_driver(cfg: &ConnConfig, pw: &str) -> Result<Arc<dyn SqlDriver>, S
     let drv: Arc<dyn SqlDriver> = match cfg.engine.as_str() {
         "sqlite" => Arc::new(SqliteDriver::connect(&url).await.map_err(|e| e.to_string())?),
         "duckdb" => Arc::new(DuckDriver::connect(&url).await.map_err(|e| e.to_string())?),
+        "clickhouse" => Arc::new(ClickHouseDriver::connect(&url).await.map_err(|e| e.to_string())?),
         "mysql" => Arc::new(MySqlDriver::connect_as(&url, cfg.profile.as_deref()).await.map_err(|e| {
             let e = e.to_string();
             match mysql_tls_hint(&cfg.sslmode, &e) {
@@ -1164,6 +1165,15 @@ fn refuse_unsafe_literals(safe: bool) -> Result<(), String> {
     Err("Import is not available on this connection: the server did not turn on standard_conforming_strings, so TableIQ cannot quote text safely. Load the data with the server's own import tool.".to_string())
 }
 
+/// ClickHouse is a read-only browser here: a MergeTree has no transactions to make a partial
+/// import safe to roll back, and CREATE TABLE needs an ENGINE the importer does not choose.
+fn refuse_import(engine: &str) -> Result<(), String> {
+    if engine == "clickhouse" {
+        return Err("Import is not supported for ClickHouse: load the data with INSERT ... SELECT or clickhouse-client".to_string());
+    }
+    Ok(())
+}
+
 /// Apply a batch of staged changes to one table in ONE transaction (updates → deletes →
 /// inserts). Any failure rolls the batch back; the error names the 0-based change
 /// (`change {i}: {reason}`). Returns what was written.
@@ -1889,6 +1899,7 @@ async fn import_rows_inner(
     columns: Vec<String>,
     rows: Vec<Vec<Option<String>>>,
 ) -> Result<ImportResult, String> {
+    refuse_import(&engine)?;
     let drv = state.session(&id)?;
     refuse_unsafe_literals(drv.literals_safe())?;
     let dialect = crate::query::ddl::Dialect::from_engine(&engine);
@@ -1953,6 +1964,7 @@ pub async fn parse_parquet_preview(
     engine: String,
     bytes: Vec<u8>,
 ) -> Result<ParquetPreview, String> {
+    refuse_import(&engine)?;
     if bytes.len() > PARQUET_MAX_BYTES {
         return Err(format!(
             "parquet file is {} MB — over the 500 MB cap. Split the file or use chunked upload.",
@@ -2022,6 +2034,7 @@ async fn apply_parquet_import_inner(
     // so a bad table/column name never reaches the engine via quoted-but-trusted
     // interpolation. (Quoting catches it, but explicit is better than implicit.)
     validate_target_idents(schema.as_deref(), &table, &column_mapping)?;
+    refuse_import(&engine)?;
     let drv = state.session(&id)?;
     // The rows go through the same literal builder as `import_rows`.
     refuse_unsafe_literals(drv.literals_safe())?;
@@ -2445,6 +2458,7 @@ async fn backup_inner(
             let engine = cfg.engine.clone();
             Ok(backup::spawn_future(async move { backup::sql_backup(drv, &engine, &db, &path).await }))
         }
+        "clickhouse" => Err("ClickHouse backup is not supported".into()),
         _ => Err("Backup is not supported for this engine".into()),
     }
 }
@@ -2593,6 +2607,7 @@ async fn restore_inner(
             };
             Ok(backup::spawn_future(async move { res }))
         }
+        "clickhouse" => Err("ClickHouse restore is not supported".into()),
         _ => Err("Restore is not supported for this engine".into()),
     }
 }

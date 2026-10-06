@@ -67,6 +67,8 @@ jobs:
       TIQ_REDIS_ADMIN_URL: redis://:tableiq@127.0.0.1:56380/0
       # A plain empty Redis only tests/redis_mcp_live.rs uses: its INFO commandstats are the write oracle.
       TIQ_REDIS_ATTACK_URL: redis://127.0.0.1:56383/0
+      # docker/clickhouse/docker-compose.yml: the HTTP interface — tests/clickhouse_live.rs.
+      TIQ_CLICKHOUSE_URL: http://default:tableiq@127.0.0.1:58123/tableiq
       # TIQ_MSSQL_URL is deliberately unset — mssql:2022 is a 1.5GB image for six tests, and
       # tests/sqlserver.rs skips itself when the variable is absent. Same for TIQ_PG_FULL_SEED
       # (see the seed step). Both suites run locally, where the containers are already up.
@@ -134,6 +136,11 @@ jobs:
           docker/redis/gen-certs.sh
           docker compose -f docker/redis/docker-compose.yml --profile tls up -d --wait
 
+      # Compose, not `services:` — the healthcheck waits for the seed (a 200k-row table). After
+      # "Free runner disk": the image is ~600 MB.
+      - name: Start ClickHouse
+        run: docker compose -f docker/clickhouse/docker-compose.yml up -d --wait
+
       - uses: dtolnay/rust-toolchain@stable
         with: { components: clippy }
       - uses: swatinem/rust-cache@v2
@@ -147,7 +154,7 @@ jobs:
         run: cargo test --locked
 
       # The suite above skips a live test whose URL is unset. Every binary below talks only to
-      # the databases this job starts (Postgres, MySQL, TiDB, CockroachDB, MariaDB, MongoDB, Redis), so a missing
+      # the databases this job starts (Postgres, MySQL, TiDB, CockroachDB, MariaDB, MongoDB, Redis, ClickHouse), so a missing
       # URL here fails the job instead. Left out on purpose: sqlserver (no SQL Server in CI), the
       # SQL Server cases inside sql_log/search/mcp_live (they stay skips), backup_live/restore_live
       # (need TIQ_BACKUP_SHIM and the docker containers).
@@ -155,7 +162,7 @@ jobs:
         working-directory: src-tauri
         run: |
           TIQ_REQUIRE_LIVE=1 cargo test --locked \
-            --test apply_changes --test browse_non_utf8 --test cancel --test exec_live \
+            --test apply_changes --test browse_non_utf8 --test cancel --test clickhouse_live --test exec_live \
             --test explain --test fast_open --test foreign_keys --test guard_live \
             --test import --test introspect_browse --test mcp_live --test mysql_browse \
             --test mongo_browse --test mongo_mcp_live --test mysql_ssl_live --test null_pk_guard --test profile --test profile_live \
