@@ -986,12 +986,95 @@ pub trait SqlDriver: Send + Sync {
     }
 }
 
+/// What a document `find` asks for. Every JSON field is a MongoDB Extended JSON *object*
+/// (`{"age": {"$gt": 30}}`, `{"_id": {"$oid": "..."}}`); empty means "none". `limit` 0 is the
+/// default (200); more than 5000 is refused.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct FindOpts {
+    pub filter: String,
+    pub sort: String,
+    pub projection: String,
+    pub skip: u64,
+    pub limit: i64,
+}
+
+/// One staged document edit. `_id` and every value are canonical Extended JSON, as `find`
+/// returned them, so a round trip keeps each type (`{"$numberLong": "5"}` stays an Int64).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum DocChange {
+    /// `$set` / `$unset` on the document with this `_id`, matched only while every `expect`
+    /// field (dotted paths allowed) still holds its loaded value. 0 matches = the document
+    /// changed or went away since it was loaded ([`CHANGED_SINCE_LOADED`]).
+    Update {
+        #[serde(rename = "_id")]
+        id: serde_json::Value,
+        #[serde(default)]
+        set: serde_json::Map<String, serde_json::Value>,
+        #[serde(default)]
+        unset: Vec<String>,
+        #[serde(default)]
+        expect: serde_json::Map<String, serde_json::Value>,
+    },
+    Delete {
+        #[serde(rename = "_id")]
+        id: serde_json::Value,
+    },
+    /// A new document; no `_id` gets a server-side ObjectId.
+    Insert { doc: serde_json::Value },
+}
+
+/// What one [`DocumentDriver::apply_changes`] batch did. On a replica set / mongos the batch
+/// is one transaction: any failure is an `Err("change {i}: {reason}")` and nothing is
+/// written. On a standalone server (`transactional == false`) every change is attempted;
+/// `errors[i]` is the reason change `i` failed (`None` = applied) and the others stay written.
+#[derive(Debug, Clone, Serialize)]
+pub struct DocChangesResult {
+    pub transactional: bool,
+    #[serde(flatten)]
+    pub counts: ChangesResult,
+    pub errors: Vec<Option<String>>,
+}
+
+/// One index of a collection. `keys` is the key document as Extended JSON (field order kept).
+#[derive(Debug, Clone, Serialize)]
+pub struct DocIndex {
+    pub name: String,
+    pub keys: String,
+    pub unique: bool,
+    pub expire_after_seconds: Option<u64>,
+}
+
+/// An aggregation's documents (Extended JSON) — at most the row cap; `truncated` when more existed.
+#[derive(Debug, Clone, Serialize)]
+pub struct AggResult {
+    pub docs: Vec<String>,
+    pub truncated: bool,
+}
+
 /// Document stores (MongoDB). The third data-model trait (plan spec #1).
+///
+/// Documents are returned as **canonical** Extended JSON (every number, date and ObjectId is
+/// tagged: `{"$numberLong": "5"}`, `{"$oid": "..."}`) because a value the editor cannot name
+/// the type of cannot be written back unchanged. Field order is preserved.
+///
+/// Implementations log the equivalent mongo-shell command through `sql_log::note`; the
+/// caller scopes the connection's log around the call (`sql_log::CURRENT`).
 #[async_trait]
 pub trait DocumentDriver: Send + Sync {
     async fn list_collections(&self) -> DResult<Vec<String>>;
-    /// Return up to `limit` documents from a collection as pretty JSON strings.
-    async fn find(&self, collection: &str, limit: i64) -> DResult<Vec<String>>;
+    async fn find(&self, collection: &str, opts: &FindOpts) -> DResult<Vec<String>>;
+    /// Documents matching `filter` (JSON object; empty = all, answered from metadata).
+    async fn count(&self, collection: &str, filter: &str) -> DResult<u64>;
+    async fn apply_changes(&self, collection: &str, changes: &[DocChange]) -> DResult<DocChangesResult>;
+    async fn list_indexes(&self, collection: &str) -> DResult<Vec<DocIndex>>;
+    /// `keys` like `{"email": 1}`; returns the index name (generated when `name` is None).
+    async fn create_index(&self, collection: &str, keys: &str, unique: bool, name: Option<&str>) -> DResult<String>;
+    async fn drop_index(&self, collection: &str, name: &str) -> DResult<()>;
+    /// Run a read-only pipeline (a JSON array of stages). A `$out` / `$merge` anywhere in it is
+    /// refused. At most `limit` (1..=1000, 0 = 1000) documents come back.
+    async fn aggregate(&self, collection: &str, pipeline: &str, limit: i64) -> DResult<AggResult>;
     /// Server-side enumeration of databases (for the post-connection picker).
     async fn list_databases(&self) -> DResult<Vec<String>> {
         Err(DriverError::NotImplemented)

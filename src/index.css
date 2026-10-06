@@ -255,6 +255,12 @@ body {
   line-height: 1;
 }
 
+/* Mongo JSON view: monochrome with restraint — keys in text, strings in ok, numbers in primary. */
+.tiq-j-key { color: var(--text); }
+.tiq-j-str { color: var(--ok); }
+.tiq-j-num { color: var(--primary); }
+.tiq-j-bool, .tiq-j-null { color: var(--muted); font-style: italic; }
+
 /* Dim the page behind the welcome card. */
 .tiq-overlay {
   position: fixed;

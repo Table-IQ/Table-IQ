@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   claudeCodeCommand,
   claudeDesktopConfig,
-  isSqlEngine,
+  isMcpEngine,
   maskToken,
   mcpRowState,
   pruneUnshareable,
@@ -12,7 +12,7 @@ import {
   validRowCap,
 } from "./mcp";
 import type { McpConfig } from "./commands";
-import { AGENT_NOTE, AGENT_REV, PROFILES } from "./profiles";
+import { AGENT_NOTE, AGENT_REV, MONGODB_AGENT_SINCE, PROFILES } from "./profiles";
 
 const base: McpConfig = { enabled: true, port: 7431, row_cap: 500, connections: [] };
 
@@ -88,7 +88,7 @@ describe("mcpRowState (a connection's row in Settings → MCP)", () => {
 
   it("CockroachDB is shareable, and an entry from before it opened reads unshared until it is shared again", () => {
     const crdb = { engine: "postgres", profile: "cockroachdb" } as const;
-    expect(mcpRowState(crdb, undefined)).toEqual({ shareable: true, shared: false, writes: false, note: null });
+    expect(mcpRowState(crdb, undefined)).toEqual({ shareable: true, shared: false, writes: false, writable: true, note: null });
     expect(mcpRowState(crdb, { id: "c1", writes: true })).toMatchObject({ shareable: true, shared: false, writes: false });
     expect(mcpRowState(crdb, { id: "c1", writes: true, rev: 0 })).toMatchObject({ shared: false, writes: false });
     expect(mcpRowState(crdb, { id: "c1", writes: true, rev: AGENT_REV })).toMatchObject({ shared: true, writes: true });
@@ -97,10 +97,10 @@ describe("mcpRowState (a connection's row in Settings → MCP)", () => {
   });
 
   it("the base engines and their vendor-named selves stay shareable and mirror the allowlist", () => {
-    expect(mcpRowState({ engine: "postgres" }, undefined)).toEqual({ shareable: true, shared: false, writes: false, note: null });
-    expect(mcpRowState({ engine: "postgres", profile: null }, on)).toEqual({ shareable: true, shared: true, writes: true, note: null });
+    expect(mcpRowState({ engine: "postgres" }, undefined)).toEqual({ shareable: true, shared: false, writes: false, writable: true, note: null });
+    expect(mcpRowState({ engine: "postgres", profile: null }, on)).toEqual({ shareable: true, shared: true, writes: true, writable: true, note: null });
     expect(mcpRowState({ engine: "postgres", profile: "neon" }, { id: "c1", writes: false })).toEqual({
-      shareable: true, shared: true, writes: false, note: null,
+      shareable: true, shared: true, writes: false, writable: true, note: null,
     });
     expect(mcpRowState({ engine: "sqlite" }, undefined).shareable).toBe(true);
   });
@@ -158,10 +158,33 @@ describe("validation", () => {
     expect(validRowCap(10001)).toBe(false);
   });
 
-  it("only SQL engines can be shared", () => {
-    expect(isSqlEngine("postgres")).toBe(true);
-    expect(isSqlEngine("duckdb")).toBe(true);
-    expect(isSqlEngine("redis")).toBe(false);
-    expect(isSqlEngine("mongodb")).toBe(false);
+  it("SQL engines and MongoDB can be shared; the key-value store cannot", () => {
+    expect(isMcpEngine("postgres")).toBe(true);
+    expect(isMcpEngine("duckdb")).toBe(true);
+    expect(isMcpEngine("mongodb")).toBe(true);
+    expect(isMcpEngine("redis")).toBe(false);
+  });
+});
+
+describe("MongoDB over MCP", () => {
+  const mongo = { engine: "mongodb", profile: null } as const;
+
+  it("is shareable but never writable, whatever the allowlist entry says", () => {
+    expect(mcpRowState(mongo, undefined)).toEqual({ shareable: true, shared: false, writes: false, writable: false, note: null });
+    const row = mcpRowState(mongo, { id: "m", writes: true, rev: AGENT_REV });
+    expect(row).toMatchObject({ shared: true, writes: false, writable: false });
+  });
+
+  it("an entry from before MongoDB opened reads unshared and is pruned, so sharing it again confirms it", () => {
+    for (const rev of [undefined, 0, MONGODB_AGENT_SINCE - 1]) {
+      expect(mcpRowState(mongo, { id: "m", writes: true, rev })).toMatchObject({ shared: false, writes: false });
+    }
+    const old: McpConfig = { ...base, connections: [{ id: "m", writes: true, rev: 1 }] };
+    const saved = [{ id: "m", engine: "mongodb", profile: null }] as const;
+    expect(pruneUnshareable(old, saved).connections).toEqual([]);
+    const again = setShared(pruneUnshareable(old, saved), "m", true);
+    expect(again.connections).toEqual([{ id: "m", writes: false, rev: AGENT_REV }]);
+    expect(pruneUnshareable(again, saved)).toBe(again);
+    expect(AGENT_REV).toBeGreaterThanOrEqual(MONGODB_AGENT_SINCE);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isUnsupportedConnUrl, looksLikeConnUrl, parseConnUrl, toConnUrl, validateConn } from "./connUrl";
+import { isMongoUrlHost, isUnsupportedConnUrl, looksLikeConnUrl, mongoQuerySecret, normalizeMongoSecrets, parseConnUrl, toConnUrl, validateConn } from "./connUrl";
 
 describe("parseConnUrl", () => {
   it("parses a Postgres URL with an encoded password and sslmode", () => {
@@ -21,13 +21,30 @@ describe("parseConnUrl", () => {
     expect(parseConnUrl("redis://:secret@cache:6380/2")).toMatchObject({ engine: "redis", port: 6380, password: "secret", database: "2" });
     expect(parseConnUrl("mongodb://u:p@m:27018/app")).toMatchObject({ engine: "mongodb", port: 27018, database: "app" });
   });
-  it("rejects rediss:// and mongodb+srv:// (no TLS / SRV on the backend yet) but still spots them as URLs", () => {
+  it("rejects rediss:// (no TLS for Redis on the backend yet) but still spots it as a URL", () => {
     expect(parseConnUrl("rediss://:secret@cache")).toBeNull();
-    expect(parseConnUrl("mongodb+srv://u:p@cluster.example.net/app")).toBeNull();
     expect(looksLikeConnUrl("rediss://cache")).toBe(true);
-    expect(isUnsupportedConnUrl(" MongoDB+SRV://u@c/app")).toBe(true);
     expect(isUnsupportedConnUrl("rediss://cache")).toBe(true);
     expect(isUnsupportedConnUrl("redis://cache")).toBe(false);
+    expect(isUnsupportedConnUrl("mongodb+srv://u@c/app")).toBe(false);
+  });
+  it("keeps a Mongo URL that host + port cannot express whole in `host`, password moved out", () => {
+    expect(parseConnUrl("mongodb+srv://u:p%40ss@cluster.example.net/app?retryWrites=true&w=majority")).toEqual({
+      engine: "mongodb", host: "mongodb+srv://u@cluster.example.net/app?retryWrites=true&w=majority", port: 27017,
+      username: "u", password: "p@ss", database: "app",
+    });
+    expect(parseConnUrl("mongodb://a:1,b:2,c:3/?replicaSet=rs0")).toMatchObject({
+      host: "mongodb://a:1,b:2,c:3/?replicaSet=rs0", username: "", password: "", database: "",
+    });
+    expect(parseConnUrl("mongodb://u:p:q@h:27017/app?authSource=admin")).toMatchObject({
+      host: "mongodb://u@h:27017/app?authSource=admin", password: "p:q",
+    });
+    expect(parseConnUrl("mongodb://h?tls=true")).toMatchObject({ host: "mongodb://h?tls=true", database: "" });
+    expect(parseConnUrl("mongodb+srv://u@/app")).toBeNull();
+    // The saved config never carries a password.
+    expect(parseConnUrl("mongodb+srv://u:secret@c.example.net/app")!.host).not.toContain("secret");
+    // A plain one still fills the form's fields.
+    expect(parseConnUrl("mongodb://u:p@m:27018/app")).toMatchObject({ host: "m", port: 27018 });
   });
   it("reads a profile from the scheme or the host, with the profile's default port", () => {
     expect(parseConnUrl("cockroachdb://root@h/defaultdb")).toMatchObject({ engine: "postgres", profile: "cockroachdb", port: 26257 });
@@ -90,7 +107,49 @@ describe("parseConnUrl", () => {
   });
 });
 
+describe("isMongoUrlHost", () => {
+  it("tells a URL kept in host from a plain host", () => {
+    expect(isMongoUrlHost("mongodb+srv://u@c.example.net/app")).toBe(true);
+    expect(isMongoUrlHost("MongoDB://a,b/")).toBe(true);
+    expect(isMongoUrlHost("127.0.0.1")).toBe(false);
+  });
+});
+
+describe("a Mongo password typed (not pasted) into Host", () => {
+  const cfg = (host: string, username = "") => ({ engine: "mongodb", host, username });
+  it("moves the userinfo password out of host, like a paste does", () => {
+    expect(normalizeMongoSecrets(cfg("mongodb+srv://u:p%40ss@c.example.net/app?w=majority"), "")).toEqual({
+      host: "mongodb+srv://u@c.example.net/app?w=majority", username: "u", password: "p@ss",
+    });
+    expect(normalizeMongoSecrets(cfg("mongodb://a:1,b:2/?replicaSet=rs0", "keep"), "old")).toEqual({
+      host: "mongodb://a:1,b:2/?replicaSet=rs0", username: "keep", password: "old",
+    });
+    expect(normalizeMongoSecrets(cfg("mongodb://u:p:q@h:27017/app"), "x")).toMatchObject({ host: "mongodb://u@h:27017/app", password: "p:q" });
+    // a password containing @ and a leading space
+    expect(normalizeMongoSecrets(cfg(" mongodb://u:a@b@h/app"), "")).toMatchObject({ host: "mongodb://u@h/app", password: "a@b" });
+  });
+  it("leaves everything else alone", () => {
+    expect(normalizeMongoSecrets(cfg("127.0.0.1"), "pw")).toEqual({ host: "127.0.0.1", username: "", password: "pw" });
+    expect(normalizeMongoSecrets({ engine: "postgres", host: "mongodb://u:p@h", username: "" }, "")).toMatchObject({ host: "mongodb://u:p@h" });
+    expect(normalizeMongoSecrets(cfg("mongodb://u@h/app"), "pw")).toMatchObject({ host: "mongodb://u@h/app", password: "pw" });
+  });
+  it("spots secrets in the query string, which the keychain can't take, and blocks saving them", () => {
+    expect(mongoQuerySecret("mongodb://h/?tlsCertificateKeyFilePassword=hunter2")).toBe("tlsCertificateKeyFilePassword");
+    expect(mongoQuerySecret("mongodb://h/?tls=true&authMechanismProperties=AWS_SESSION_TOKEN:abc")).toBe("authMechanismProperties");
+    expect(mongoQuerySecret("mongodb://h/?authMechanismProperties=ENVIRONMENT:azure,TOKEN_RESOURCE:https://x")).toBeNull();
+    expect(mongoQuerySecret("mongodb://h/?tlsCertificateKeyFilePassword=")).toBeNull();
+    expect(mongoQuerySecret("mongodb://h/?replicaSet=rs0")).toBeNull();
+    expect(mongoQuerySecret("127.0.0.1")).toBeNull();
+    expect(validateConn({ engine: "mongodb", host: "mongodb://h/?tlsCertificateKeyFilePassword=x", port: 27017, database: "" }).host).toMatch(/plaintext/);
+    expect(validateConn({ engine: "mongodb", host: "mongodb://h/?tls=true", port: 27017, database: "" })).toEqual({});
+  });
+});
+
 describe("toConnUrl", () => {
+  it("returns a Mongo URL kept in host as is", () => {
+    const host = "mongodb+srv://u@c.example.net/app?w=majority";
+    expect(toConnUrl({ engine: "mongodb", host, port: 27017, username: "u", database: "app", sslmode: "prefer" })).toBe(host);
+  });
   it("never includes a password and only adds non-default sslmode", () => {
     const u = toConnUrl({ engine: "postgres", host: "db", port: 5432, username: "app", database: "shop", sslmode: "require" });
     expect(u).toBe("postgres://app@db:5432/shop?sslmode=require");

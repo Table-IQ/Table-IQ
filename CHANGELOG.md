@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.8.5 — 2026-10-07
+
+MongoDB is now a full browser, not a read-only list. You can query, edit, index and aggregate, and a read-only share lets agents read a collection without being able to write.
+
+### Added
+- **Query bar:** filter, sort, projection and skip, all as Extended JSON, with a page size of 100 to 5000, a total count, and click-to-sort headers.
+- **Three views:** Table (the existing grid), JSON and Tree, remembered per connection and collection.
+- **Editing through the staged-changes flow:** edit a cell, edit a whole document as JSON, delete, insert, and review the equivalent mongo shell script before committing. Types survive the round trip (Int32, Int64, Double, Date, ObjectId, Decimal128). A commit is one transaction on a replica set; on a standalone server changes apply one by one, the notice names each failure, and the failed ones stay staged.
+- **Indexes and aggregation:** list, create and drop indexes; run a pipeline in the same three views. `$out` and `$merge` are refused.
+- **`mongodb+srv://` and full connection strings** (authSource, replicaSet, TLS). A password in the string moves to the keychain. Secrets in the query string are refused rather than saved in plaintext.
+- **MCP tools for MongoDB, read-only:** `mongo_list_collections`, `mongo_find`, `mongo_count` and `mongo_aggregate`. A fail-closed guard refuses server-side JavaScript (`$where`, `$function`, `$accumulator`, every `$_internal*` operator), writing stages, `system.*` collections and any cross-database access, and runs against an adversarial table of about 160 cases. There are no write tools, and the share's writes toggle does nothing for MongoDB.
+- **Live tests and CI:** a MongoDB replica set and a standalone server in `docker/mongo/`, with `mongo_browse` and `mongo_mcp_live` required to run in CI.
+
+### Changed
+- Test connection for MongoDB now contacts the server. It used to succeed without connecting.
+- CI: allow `clippy::double_must_use`, which Rust 1.99 raises on every `#[async_trait]` method.
+
 ## 0.8.4 — 2026-10-06
 
 CockroachDB can now be shared with agents over MCP. TiDB stays closed, because its read-only transaction is a no-op unless a server flag is set. The remaining P1 engine-profile follow-ups ship alongside.

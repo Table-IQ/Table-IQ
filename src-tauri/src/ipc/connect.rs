@@ -18,7 +18,8 @@ use crate::profiles;
 use crate::drivers::{
     doc_mongo::MongoDriver, duckdb::DuckDriver, kv_redis::RedisDriver, logged::Logged, mysql::MySqlDriver,
     postgres::PgDriver, sqlite::SqliteDriver, sqlserver::SqlServerDriver, CancelToken, Change,
-    ChangesResult, ColumnFilter, DocumentDriver, DriverError, EditSpec, KeyInfo, KvDriver, KvValue, SchemaModel,
+    AggResult, ChangesResult, ColumnFilter, DocChange, DocChangesResult, DocIndex, DocumentDriver, DriverError, EditSpec, FindOpts,
+    KeyInfo, KvDriver, KvValue, SchemaModel,
     SortKey, SqlDriver, validate_filters,
 };
 use crate::sql_log::SqlLog;
@@ -103,6 +104,9 @@ async fn maybe_open_tunnel(
         Some(s) if s.enabled && !cfg.is_file_engine() => s,
         _ => return Ok((cfg.clone(), None)),
     };
+    if cfg.engine == "mongodb" && cfg.host.contains("://") {
+        return Err("A MongoDB connection URL can't be combined with an SSH tunnel — enter host and port instead".into());
+    }
     // Agent auth needs no stored secret; password/keyfile read the keychain (may be empty).
     let secret = match ssh.auth {
         SshAuth::Agent => String::new(),
@@ -238,6 +242,12 @@ impl ConnState {
         lk(&self.sessions).insert(id.to_string(), drv);
     }
 
+    /// [`adopt_session`](Self::adopt_session) for a document (MongoDB) session.
+    #[doc(hidden)]
+    pub fn adopt_doc_session(&self, id: &str, drv: Arc<dyn DocumentDriver>) {
+        lk(&self.doc_sessions).insert(id.to_string(), drv);
+    }
+
     /// Every saved connection's config (a snapshot).
     pub(crate) fn configs(&self) -> Vec<ConnConfig> {
         lk(&self.store).connections.clone()
@@ -257,7 +267,7 @@ impl ConnState {
             .ok_or_else(|| "not connected (or not a key-value connection)".to_string())
     }
 
-    fn doc_session(&self, id: &str) -> Result<Arc<dyn DocumentDriver>, String> {
+    pub(crate) fn doc_session(&self, id: &str) -> Result<Arc<dyn DocumentDriver>, String> {
         lk(&self.doc_sessions)
             .get(id)
             .cloned()
@@ -747,14 +757,90 @@ pub async fn doc_collections(state: State<'_, ConnState>, id: String) -> Result<
     drv.list_collections().await.map_err(|e| e.to_string())
 }
 
+/// Runs a document call with `id`'s SQL log in scope, so the mongo-shell command the driver
+/// notes shows up in the bottom panel like a SQL statement does.
+pub(crate) async fn doc_logged<T>(state: &ConnState, id: &str, f: impl std::future::Future<Output = T>) -> T {
+    crate::sql_log::CURRENT.scope(state.sql_log_for(id), f).await
+}
+
 #[tauri::command]
 pub async fn doc_find(
     state: State<'_, ConnState>,
     id: String,
     collection: String,
+    opts: Option<FindOpts>,
 ) -> Result<Vec<String>, String> {
     let drv = state.doc_session(&id)?;
-    drv.find(&collection, 200).await.map_err(|e| e.to_string())
+    let opts = opts.unwrap_or_default();
+    doc_logged(&state, &id, drv.find(&collection, &opts)).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn doc_count(
+    state: State<'_, ConnState>,
+    id: String,
+    collection: String,
+    filter: Option<String>,
+) -> Result<u64, String> {
+    let drv = state.doc_session(&id)?;
+    doc_logged(&state, &id, drv.count(&collection, &filter.unwrap_or_default())).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn doc_apply_changes(
+    state: State<'_, ConnState>,
+    id: String,
+    collection: String,
+    changes: Vec<DocChange>,
+) -> Result<DocChangesResult, String> {
+    let drv = state.doc_session(&id)?;
+    doc_logged(&state, &id, drv.apply_changes(&collection, &changes)).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn doc_indexes(state: State<'_, ConnState>, id: String, collection: String) -> Result<Vec<DocIndex>, String> {
+    let drv = state.doc_session(&id)?;
+    doc_logged(&state, &id, drv.list_indexes(&collection)).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn doc_create_index(
+    state: State<'_, ConnState>,
+    id: String,
+    collection: String,
+    keys: String,
+    unique: bool,
+    name: Option<String>,
+) -> Result<String, String> {
+    let drv = state.doc_session(&id)?;
+    doc_logged(&state, &id, drv.create_index(&collection, &keys, unique, name.as_deref()))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn doc_drop_index(
+    state: State<'_, ConnState>,
+    id: String,
+    collection: String,
+    name: String,
+) -> Result<(), String> {
+    let drv = state.doc_session(&id)?;
+    doc_logged(&state, &id, drv.drop_index(&collection, &name)).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn doc_aggregate(
+    state: State<'_, ConnState>,
+    id: String,
+    collection: String,
+    pipeline: String,
+    limit: Option<i64>,
+) -> Result<AggResult, String> {
+    let drv = state.doc_session(&id)?;
+    doc_logged(&state, &id, drv.aggregate(&collection, &pipeline, limit.unwrap_or(0)))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 // ── Redis key browse ───────────────────────────────────────────────────────

@@ -2,7 +2,7 @@ import { useEffect, useId, useState, type ClipboardEvent, type ReactNode } from 
 import type { ConnConfig, Engine } from "../lib/commands";
 import { defaultSshConfig, type SshConfig } from "../lib/ssh";
 import { CONN_ENVS, envTone, type ConnEnv } from "../lib/connEnv";
-import { isUnsupportedConnUrl, looksLikeConnUrl, parseConnUrl, validateConn, type ConnFieldErrors, type ParsedConnUrl } from "../lib/connUrl";
+import { isMongoUrlHost, isUnsupportedConnUrl, looksLikeConnUrl, parseConnUrl, validateConn, type ConnFieldErrors, type ParsedConnUrl } from "../lib/connUrl";
 import { capsOf, profileOf, profilesFor } from "../lib/profiles";
 import { EngineIcon, engineLabel } from "./ui/EngineIcon";
 import { ContextMenu } from "./ui/ContextMenu";
@@ -77,7 +77,7 @@ const BAD_URL = "Not a connection URL we recognise";
  *  (edit mode) refuses a URL for another engine rather than switching engines. */
 export function readConnUrl(text: string, lockedEngine?: Engine): { parsed: ParsedConnUrl } | { note: string } {
   const parsed = parseConnUrl(text);
-  if (!parsed) return { note: isUnsupportedConnUrl(text) ? `${BAD_URL} — mongodb+srv:// and rediss:// aren't supported yet` : BAD_URL };
+  if (!parsed) return { note: isUnsupportedConnUrl(text) ? `${BAD_URL} — rediss:// isn't supported yet` : BAD_URL };
   if (lockedEngine && parsed.engine !== lockedEngine) return { note: `URL is for ${engineLabel(parsed.engine, parsed.profile)}; engine unchanged` };
   return { parsed };
 }
@@ -228,7 +228,16 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
       </span>
     </Field>
   );
-  const hostPort = (
+  // A Mongo URL host+port can't express (mongodb+srv://, several hosts, ?options) lives whole in Host:
+  // shown as one "Connection string" field (it never carries the password), with no port beside it.
+  const hostIsUrl = form.engine === "mongodb" && isMongoUrlHost(form.host);
+  const hostPort = hostIsUrl ? (
+    <div className="mb-[9px]">
+      <Field id={`${uid}host`} label="Connection string" error={shown.host}>
+        <input {...ids("host", shown.host)} className={`${field(shown.host)} font-mono`} value={form.host} onChange={(e) => p.onField("host", e.target.value)} onBlur={touch("host")} onPaste={onHostPaste} spellCheck={false} />
+      </Field>
+    </div>
+  ) : (
     <div className="mb-[9px] grid grid-cols-[1fr_80px] gap-[9px]">
       <Field id={`${uid}host`} label="Host" error={shown.host}>
         <input {...ids("host", shown.host)} className={field(shown.host)} value={form.host} onChange={(e) => p.onField("host", e.target.value)} onBlur={touch("host")} onPaste={onHostPaste} />

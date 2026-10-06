@@ -1,0 +1,44 @@
+# MongoDB for tests/mongo_browse.rs (and the Mongo QA). Two servers:
+#   mongo             single-node replica set `rs0` on 57017 — transactions work
+#   mongo-standalone  plain mongod on 57018 — no transactions (best-effort change batches)
+# Both listen on their published port INSIDE the container and the replica set member is named
+# 127.0.0.1:57017, so a client that discovers members (no directConnection) still reaches it.
+# The healthcheck (seed.js, one mongosh call) initiates the replica set and seeds `tableiq`
+# exactly once (a `_tiq_meta` marker), so `up -d --wait` returns only when the data is there
+# and later edits to it are never undone. `down -v` resets.
+#   TIQ_MONGO_URL=mongodb://127.0.0.1:57017/tableiq?directConnection=true
+#   TIQ_MONGO_STANDALONE_URL=mongodb://127.0.0.1:57018/tableiq
+# `mongo:7` is pinned by its multi-architecture index digest, like docker/profiles.
+services:
+  mongo:
+    image: mongo:7@sha256:1f995ad6fdb93244a1addab1b58f934a0bc2f5643c38e02f5e9d7f0c7d227a7b
+    container_name: tableiq-mongo
+    command: ["mongod", "--replSet", "rs0", "--port", "57017", "--bind_ip_all"]
+    ports:
+      - "57017:57017"
+    environment:
+      PORT: "57017"
+    volumes:
+      - ./seed.js:/seed.js:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--port", "57017", "--quiet", "--file", "/seed.js"]
+      interval: 3s
+      timeout: 10s
+      retries: 40
+      start_period: 3s
+  mongo-standalone:
+    image: mongo:7@sha256:1f995ad6fdb93244a1addab1b58f934a0bc2f5643c38e02f5e9d7f0c7d227a7b
+    container_name: tableiq-mongo-standalone
+    command: ["mongod", "--port", "57018", "--bind_ip_all"]
+    ports:
+      - "57018:57018"
+    environment:
+      PORT: "57018"
+    volumes:
+      - ./seed.js:/seed.js:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--port", "57018", "--quiet", "--file", "/seed.js"]
+      interval: 3s
+      timeout: 10s
+      retries: 40
+      start_period: 3s

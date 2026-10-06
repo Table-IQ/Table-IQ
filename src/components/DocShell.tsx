@@ -1,42 +1,76 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ConnectionRail } from "./ConnectionRail";
 import { Wordmark } from "./Brand";
 import { ThemeToggle } from "./ThemeToggle";
-import { docCollections, docFind } from "../lib/commands";
-import { closeConnection, useConnections } from "../state/connectionStore";
+import { docCollections, docCount } from "../lib/commands";
+import { canLeaveSession, closeConnection, TAB_GUARD_LABELS, useConnections } from "../state/connectionStore";
 import { StatusBar, StatusDot } from "./ui/StatusBar";
 import { ColorDot } from "./ui/Chip";
 import { Section } from "./ui/Section";
 import { IconButton } from "./ui/IconButton";
+import { Tabs } from "./ui/Panel";
 import { IconRefresh, IconSearch, IconView } from "./ui/Icon";
+import { DocCollection } from "./DocCollection";
+import { DocIndexes } from "./DocIndexes";
+import { DocAggregate } from "./DocAggregate";
 
-/** Mongo / DocumentDB shell — same chrome treatment as MainShell / KvShell. */
+const COMPACT = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
+type Pane = "documents" | "indexes" | "aggregate";
+
+/** Mongo / DocumentDB shell — same chrome treatment as MainShell / KvShell: a collection sidebar
+ *  (filter, doc counts), and for the open collection Documents / Indexes / Aggregate panes. */
 export function DocShell() {
   const { active, saved } = useConnections();
-  const activeColor = active ? saved.find((c) => c.id === active.id)?.color ?? null : null;
+  const cfg = active ? saved.find((c) => c.id === active.id) : undefined;
+  const activeColor = cfg?.color ?? null;
   const [collections, setCollections] = useState<string[]>([]);
+  const [counts, setCounts] = useState<Record<string, number>>({});
   const [filter, setFilter] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
-  const [docs, setDocs] = useState<string[]>([]);
+  const [pane, setPane] = useState<Pane>("documents");
+  const [listError, setListError] = useState<string | null>(null);
 
   const id = active?.id;
+  // A URL connection (mongodb+srv://, several hosts) may report no database; the saved config has it.
+  const database = active?.database || cfg?.database || "";
 
-  useEffect(() => {
+  const load = useCallback(() => {
     if (!id) return;
-    docCollections(id).then(setCollections).catch(() => setCollections([]));
+    docCollections(id)
+      .then((names) => {
+        const sorted = [...names].sort((a, b) => a.localeCompare(b));
+        setCollections(sorted);
+        setListError(null);
+        // Counts come from collection metadata (cheap, estimated); fetched a few at a time.
+        const queue = [...sorted];
+        const worker = async () => {
+          for (let c = queue.shift(); c !== undefined; c = queue.shift()) {
+            const name = c;
+            await docCount(id, name)
+              .then((n) => setCounts((m) => ({ ...m, [name]: n })))
+              .catch(() => {});
+          }
+        };
+        void Promise.all([worker(), worker(), worker(), worker()]);
+      })
+      .catch((e) => {
+        setCollections([]);
+        setListError(String(e));
+      });
   }, [id]);
+  useEffect(load, [load]);
 
-  const open = (c: string) => {
-    if (!id) return;
+  const open = async (c: string) => {
+    if (c === selected) return;
+    // Leaving the collection drops its staged changes; ask first (same prompt as the SQL tab guard).
+    if (!(await canLeaveSession("This collection has unsaved changes. Discard them and switch collections?", TAB_GUARD_LABELS))) return;
     setSelected(c);
-    docFind(id, c).then(setDocs).catch(() => setDocs([]));
+    setPane("documents");
   };
 
-  if (!active) return null;
+  if (!active || !id) return null;
 
-  const filtered = filter
-    ? collections.filter((c) => c.toLowerCase().includes(filter.toLowerCase()))
-    : collections;
+  const filtered = filter ? collections.filter((c) => c.toLowerCase().includes(filter.toLowerCase())) : collections;
 
   return (
     <div className="flex h-full flex-col">
@@ -49,13 +83,9 @@ export function DocShell() {
           {activeColor && <ColorDot color={activeColor} />}
           <span className="text-[11px] font-medium text-text">{active.name}</span>
         </span>
-        <span className="font-mono text-[11px] text-muted">mongo · {active.database}</span>
+        <span className="font-mono text-[11px] text-muted">mongo{database ? ` · ${database}` : ""}</span>
         <div className="ml-auto flex items-center gap-1">
-          <IconButton
-            icon={<IconRefresh />}
-            label="Reload collections"
-            onClick={() => id && docCollections(id).then(setCollections)}
-          />
+          <IconButton icon={<IconRefresh />} label="Reload collections" onClick={load} />
           <ThemeToggle />
           <button
             onClick={async () => {
@@ -70,10 +100,7 @@ export function DocShell() {
 
       <div className="flex min-h-0 flex-1">
         <ConnectionRail />
-        <aside
-          className="flex shrink-0 flex-col border-r border-border bg-surface"
-          style={{ width: "var(--sidebar-w)" }}
-        >
+        <aside className="flex shrink-0 flex-col border-r border-border bg-surface" style={{ width: "var(--sidebar-w)" }}>
           <div className="border-b border-border p-2">
             <label className="flex items-center gap-1.5 rounded-md border border-border bg-bg px-2 focus-within:border-primary">
               <IconSearch size={12} className="text-muted" />
@@ -90,19 +117,24 @@ export function DocShell() {
               {filtered.map((c) => (
                 <button
                   key={c}
-                  onClick={() => open(c)}
+                  onClick={() => void open(c)}
                   className={`flex h-[var(--row-h)] w-full items-center gap-2 rounded-md px-2 text-left font-mono text-[12.5px] ${
-                    selected === c
-                      ? "bg-selection-bg text-text"
-                      : "text-text hover:bg-surface-2"
+                    selected === c ? "bg-selection-bg text-text" : "text-text hover:bg-surface-2"
                   }`}
                 >
                   <IconView size={12} className="text-muted" />
                   <span className="min-w-0 flex-1 truncate font-mono">{c}</span>
+                  {counts[c] !== undefined && (
+                    <span className="shrink-0 rounded bg-bg px-1 text-[10px] tabular-nums text-muted" title={`~${counts[c].toLocaleString("en-US")} documents (estimated)`}>
+                      {COMPACT.format(counts[c])}
+                    </span>
+                  )}
                 </button>
               ))}
               {filtered.length === 0 && (
-                <div className="px-3 py-2 text-[11px] text-muted">No collections.</div>
+                <div className={`px-3 py-2 text-[11px] ${listError ? "text-danger" : "text-muted"}`} role={listError ? "alert" : undefined}>
+                  {listError ?? "No collections."}
+                </div>
               )}
             </Section>
           </div>
@@ -111,36 +143,42 @@ export function DocShell() {
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
           {selected ? (
             <>
-              <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border bg-bg px-3 text-xs">
-                <span className="font-mono font-semibold text-text">{selected}</span>
-                <span className="text-muted">· {docs.length} docs</span>
+              <div className="flex shrink-0 items-center border-b border-border bg-surface">
+                <span className="px-3 font-mono text-xs font-semibold text-text">{selected}</span>
+                <div className="flex-1">
+                  <Tabs
+                    tabs={[
+                      { key: "documents", label: "Documents" },
+                      { key: "indexes", label: "Indexes" },
+                      { key: "aggregate", label: "Aggregate" },
+                    ]}
+                    active={pane}
+                    onSelect={(k) => setPane(k as Pane)}
+                  />
+                </div>
               </div>
-              <div className="min-h-0 flex-1 space-y-2 overflow-auto p-3">
-                {docs.map((d, i) => (
-                  <pre
-                    key={i}
-                    className="overflow-auto rounded-md border border-border bg-surface p-3 font-mono text-[11px] text-text shadow-[var(--shadow-soft)]"
-                  >
-                    {d}
-                  </pre>
-                ))}
+              {/* All three stay mounted: switching panes must not drop staged edits or a typed pipeline. */}
+              <div className="min-h-0 flex-1">
+                <DocCollection key={`${id}.${selected}`} connId={id} collection={selected} visible={pane === "documents"} />
+                <DocIndexes key={`i.${id}.${selected}`} connId={id} collection={selected} active={pane === "indexes"} />
+                <DocAggregate key={`a.${id}.${selected}`} connId={id} collection={selected} active={pane === "aggregate"} />
               </div>
             </>
           ) : (
-            <div className="flex h-full items-center justify-center text-sm text-muted">
-              Select a collection to view documents.
-            </div>
+            <>
+              <div className="flex flex-1 items-center justify-center text-sm text-muted">Select a collection to view documents.</div>
+              <StatusBar
+                left={
+                  <>
+                    <StatusDot tone="ok" />
+                    <span>Connected · mongodb</span>
+                  </>
+                }
+                center={collections.length > 0 ? <span>{collections.length} collections</span> : null}
+                right={<span>Reload collections in the header to re-list</span>}
+              />
+            </>
           )}
-          <StatusBar
-            left={
-              <>
-                <StatusDot tone="ok" />
-                <span>Connected · mongodb</span>
-              </>
-            }
-            center={collections.length > 0 ? <span>{collections.length} collections</span> : null}
-            right={<span>Refresh in the header to re-list</span>}
-          />
         </main>
       </div>
     </div>

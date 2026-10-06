@@ -389,12 +389,97 @@ export async function docCollections(id: string): Promise<string[]> {
   return invoke<string[]>("doc_collections", { id });
 }
 
-export async function docFind(id: string, collection: string): Promise<string[]> {
+/** What `docFind` asks for. Every JSON field is a MongoDB Extended JSON *object* as text
+ *  (`{"age":{"$gt":30}}`); empty/omitted means none. `limit` 0/omitted = 200; max 5000. */
+export interface DocFindOpts {
+  filter?: string;
+  sort?: string;
+  projection?: string;
+  skip?: number;
+  limit?: number;
+}
+
+/** Documents come back as canonical Extended JSON text (`{"$oid":…}`, `{"$numberLong":"5"}`,
+ *  `{"$date":{"$numberLong":"…"}}`), keys in document order — so a value read here can be
+ *  written back (`DocChange`) without changing its type. */
+export async function docFind(id: string, collection: string, opts?: DocFindOpts): Promise<string[]> {
   if (!inTauri())
     return collection === "orders"
       ? ['{\n  "_id": "65f…",\n  "total": 99.5\n}']
       : ['{\n  "_id": "65a…",\n  "name": "Ada",\n  "age": 36\n}', '{\n  "_id": "65b…",\n  "name": "Linus",\n  "age": 54\n}'];
-  return invoke<string[]>("doc_find", { id, collection });
+  return invoke<string[]>("doc_find", { id, collection, opts });
+}
+
+/** Documents matching `filter` (Extended JSON object; empty = whole collection, from metadata). */
+export async function docCount(id: string, collection: string, filter?: string): Promise<number> {
+  if (!inTauri()) return 2;
+  return invoke<number>("doc_count", { id, collection, filter });
+}
+
+/** One staged document edit. `_id`, `set` values, `expect` values and `doc` are canonical
+ *  Extended JSON *values* (parsed JSON, not text), exactly as `docFind` returned them. */
+export type DocChange =
+  /** `$set`/`$unset` (dotted paths ok) on `_id`, only while every `expect` field still holds its loaded value. */
+  | { kind: "update"; _id: unknown; set?: Record<string, unknown>; unset?: string[]; expect?: Record<string, unknown> }
+  | { kind: "delete"; _id: unknown }
+  | { kind: "insert"; doc: Record<string, unknown> };
+
+export interface DocChangesResult {
+  /** True on a replica set / mongos: the batch was one transaction (a failure rejects, nothing written).
+   *  False on a standalone server: every change was attempted and `errors[i]` says why change i failed. */
+  transactional: boolean;
+  updated: number;
+  deleted: number;
+  inserted: number;
+  /** One per change, in order sent; null = applied. Only ever non-null when `transactional` is false. */
+  errors: (string | null)[];
+}
+
+/** Apply staged edits to one collection. Rejects with `change {i}: {reason}` (reason
+ *  `CHANGED_SINCE_LOADED` / `ROW_GONE` text, or the server's) when a transaction was rolled back. */
+export async function docApplyChanges(id: string, collection: string, changes: DocChange[]): Promise<DocChangesResult> {
+  if (!inTauri()) {
+    const n = (k: DocChange["kind"]) => changes.filter((c) => c.kind === k).length;
+    return { transactional: true, updated: n("update"), deleted: n("delete"), inserted: n("insert"), errors: changes.map(() => null) };
+  }
+  return invoke<DocChangesResult>("doc_apply_changes", { id, collection, changes });
+}
+
+export interface DocIndex {
+  name: string;
+  /** The key document as Extended JSON text, field order kept (`{"email":{"$numberInt":"1"}}`). */
+  keys: string;
+  unique: boolean;
+  expire_after_seconds: number | null;
+}
+
+export async function docIndexes(id: string, collection: string): Promise<DocIndex[]> {
+  if (!inTauri()) return [{ name: "_id_", keys: '{"_id":{"$numberInt":"1"}}', unique: false, expire_after_seconds: null }];
+  return invoke<DocIndex[]>("doc_indexes", { id, collection });
+}
+
+/** `keys` like `{"email":1}` (Extended JSON text). Resolves to the index name. */
+export async function docCreateIndex(id: string, collection: string, keys: string, unique: boolean, name?: string): Promise<string> {
+  if (!inTauri()) return name ?? "mock_1";
+  return invoke<string>("doc_create_index", { id, collection, keys, unique, name });
+}
+
+export async function docDropIndex(id: string, collection: string, name: string): Promise<void> {
+  if (!inTauri()) return;
+  return invoke<void>("doc_drop_index", { id, collection, name });
+}
+
+export interface DocAggResult {
+  docs: string[];
+  /** More documents existed than the row cap (1000). */
+  truncated: boolean;
+}
+
+/** Run a read-only aggregation: `pipeline` is a JSON array of stages (text). `$out`/`$merge`
+ *  are refused. `limit` 1..1000, default 1000. */
+export async function docAggregate(id: string, collection: string, pipeline: string, limit?: number): Promise<DocAggResult> {
+  if (!inTauri()) return { docs: [], truncated: false };
+  return invoke<DocAggResult>("doc_aggregate", { id, collection, pipeline, limit });
 }
 
 export async function kvGet(id: string, key: string): Promise<KvValue> {

@@ -72,6 +72,40 @@ describe("IPC bridge invoke", () => {
     expect(JSON.parse(init.body)).toEqual({ id: "c1", sql: "SELECT 1" });
   });
 
+  it("sends the document commands' arguments under the names the Rust handlers take", async () => {
+    reply("[]", 200, "application/json");
+    await cmds.docFind("c1", "users", { filter: '{"a":1}', sort: '{"a":-1}', skip: 20, limit: 10 });
+    expect(fetchMock.mock.calls[0][0]).toBe("/__ipc/doc_find");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      id: "c1", collection: "users", opts: { filter: '{"a":1}', sort: '{"a":-1}', skip: 20, limit: 10 },
+    });
+
+    const changes: import("./commands").DocChange[] = [
+      { kind: "update", _id: { $oid: "65f1c2a4e4b0a1b2c3d4e5f6" }, set: { age: { $numberInt: "37" } }, expect: { age: { $numberInt: "36" } } },
+      { kind: "delete", _id: "x" },
+      { kind: "insert", doc: { name: "new" } },
+    ];
+    reply(JSON.stringify({ transactional: true, updated: 1, deleted: 1, inserted: 1, errors: [null, null, null] }), 200, "application/json");
+    await expect(cmds.docApplyChanges("c1", "users", changes)).resolves.toMatchObject({ transactional: true, updated: 1 });
+    expect(fetchMock.mock.calls[1][0]).toBe("/__ipc/doc_apply_changes");
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ id: "c1", collection: "users", changes });
+
+    reply("3", 200, "application/json");
+    await expect(cmds.docCount("c1", "users", '{"a":1}')).resolves.toBe(3);
+    reply('"email_1"', 200, "application/json");
+    await expect(cmds.docCreateIndex("c1", "users", '{"email":1}', true)).resolves.toBe("email_1");
+    expect(JSON.parse(fetchMock.mock.calls[3][1].body)).toEqual({ id: "c1", collection: "users", keys: '{"email":1}', unique: true });
+    reply("null", 200, "application/json");
+    await cmds.docDropIndex("c1", "users", "email_1");
+    expect(fetchMock.mock.calls[4][0]).toBe("/__ipc/doc_drop_index");
+    reply("[]", 200, "application/json");
+    await cmds.docIndexes("c1", "users");
+    expect(fetchMock.mock.calls[5][0]).toBe("/__ipc/doc_indexes");
+    reply('{"docs":[],"truncated":false}', 200, "application/json");
+    await cmds.docAggregate("c1", "users", "[]", 5);
+    expect(JSON.parse(fetchMock.mock.calls[6][1].body)).toEqual({ id: "c1", collection: "users", pipeline: "[]", limit: 5 });
+  });
+
   it("throws the parsed body on a non-ok response, so Rust Err(String) arrives as that string", async () => {
     reply(JSON.stringify("unknown connection"), 400, "application/json");
     await expect(cmds.connect("nope")).rejects.toBe("unknown connection");

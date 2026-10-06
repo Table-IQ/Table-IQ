@@ -170,7 +170,13 @@ async fn sqlite_over_http_initialize_list_query_refuse() {
     let v: Value = list.json().await.unwrap();
     let mut names: Vec<&str> = v["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
     names.sort();
-    assert_eq!(names, ["describe_table", "list_connections", "list_databases", "list_tables", "run_query"]);
+    assert_eq!(
+        names,
+        [
+            "describe_table", "list_connections", "list_databases", "list_tables", "mongo_aggregate", "mongo_count",
+            "mongo_find", "mongo_list_collections", "run_query"
+        ]
+    );
 
     let conns = call(&url, 3, "list_connections", json!({})).await;
     let shared: Value = serde_json::from_str(text(&conns)).unwrap();
@@ -470,10 +476,10 @@ async fn cockroachdb_read_only_transaction_refuses_dml_and_ddl_escapes_it() {
 /// SQL a read-only CockroachDB share must refuse, each with what it would have done.
 fn crdb_read_only_attacks(t: &str) -> Vec<String> {
     vec![
-        format!("SELECT 1; SELECT 2"),
+        "SELECT 1; SELECT 2".to_string(),
         format!("SELECT 1; COMMIT; DELETE FROM {t}"),
         format!("SELECT 1 -- x\r; DELETE FROM {t}"),
-        format!("/*! SELECT 2; */ SELECT 1"),
+        "/*! SELECT 2; */ SELECT 1".to_string(),
         format!("DELETE FROM {t}"),
         format!("INSERT INTO {t} VALUES (99)"),
         format!("UPDATE {t} SET n = n + 10"),

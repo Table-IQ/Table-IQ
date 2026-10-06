@@ -43,7 +43,20 @@ impl Profile {
 /// of any product. An entry from before it (`McpConn::rev` lower) is not served for a product
 /// opened since ([`reconfirm_block`]).
 pub fn agent_rev() -> u32 {
-    PROFILES.values().map(|p| p.agent_since).max().unwrap_or(0)
+    PROFILES.values().map(|p| p.agent_since).max().unwrap_or(0).max(MONGODB_AGENT_SINCE)
+}
+
+/// The generation that opened MongoDB to agents (mirrored in `profiles.ts`). MongoDB has no
+/// profile to carry an `agentSince`, so an allowlist entry for a `mongodb` connection is served
+/// only from this generation on ([`mongodb_reconfirm_block`]): an id that was SQL when it was
+/// shared (the engine can be edited) must not turn into a served MongoDB silently.
+pub const MONGODB_AGENT_SINCE: u32 = 2;
+
+/// Why an allowlist entry confirmed under generation `rev` cannot serve a MongoDB connection.
+pub fn mongodb_reconfirm_block(rev: u32) -> Option<String> {
+    (rev < MONGODB_AGENT_SINCE).then(|| {
+        "This connection was shared before TableIQ supported MongoDB over MCP. Turn sharing off and on again for it in TableIQ → Settings → MCP to confirm it (MongoDB is always read-only for agents).".to_string()
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -300,7 +313,8 @@ mod tests {
         for (id, p) in PROFILES.iter() {
             assert_eq!(p.agent() && !p.real, p.agent_since > 0, "{id}");
         }
-        assert_eq!(agent_rev(), lookup("cockroachdb").unwrap().agent_since);
+        assert_eq!(agent_rev(), MONGODB_AGENT_SINCE);
+        assert!(MONGODB_AGENT_SINCE > lookup("cockroachdb").unwrap().agent_since, "a later opening than any product's");
     }
 
     #[test]
