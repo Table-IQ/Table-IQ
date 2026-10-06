@@ -53,3 +53,11 @@ describe("connEnv", () => {
     expect(s).toMatchObject({ env: "DEVELOPMENT", engine: "PostgreSQL", connection: "storefront", object: "public.orders" });
   });
 });
+
+describe("Elasticsearch pill", () => {
+  it("is TLS by its URL: elasticsearch:// and a bare host are, unless this machine", () => {
+    const es = (host: string) => pillSegments({ ...base, engine: "elasticsearch" as const, host }, null);
+    expect(["https://h:9200", "elasticsearch://es.example.com", "es.example.com", "http://h", "http://127.0.0.1:9200", "elasticsearch://localhost", "localhost"].map((h) => es(h).ssl)).toEqual([true, true, true, false, false, false, false]);
+    expect(es("http://h").engine).toBe("Elasticsearch");
+  });
+});

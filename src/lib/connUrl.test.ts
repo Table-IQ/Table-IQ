@@ -276,3 +276,35 @@ describe("Turso / libSQL URLs", () => {
     expect(toConnUrl({ ...cfg, host: "db-org.turso.io" })).toBe("https://db-org.turso.io");
   });
 });
+
+describe("Elasticsearch URLs", () => {
+  it("claims elasticsearch:// and http(s) on 9200 only", () => {
+    expect(looksLikeConnUrl("elasticsearch://h:9200")).toBe(true);
+    expect(looksLikeConnUrl("http://127.0.0.1:9200")).toBe(true);
+    expect(looksLikeConnUrl("https://u:p@es.example.com:9200/")).toBe(true);
+    expect(looksLikeConnUrl("https://es.example.com:9243")).toBe(false); // plain https is not ours to claim
+    expect(looksLikeConnUrl("http://localhost:8080")).toBe(false);
+    expect(looksLikeConnUrl("http://localhost:8123")).toBe(true); // still ClickHouse's
+    expect(parseConnUrl("http://localhost:8123")?.engine).toBe("clickhouse");
+  });
+  it("a pasted URL keeps its host as typed and moves user and password to their fields", () => {
+    expect(parseConnUrl("https://elastic:p%40ss@es.example.com:9200")).toEqual({
+      engine: "elasticsearch", host: "https://es.example.com:9200", port: 9200, username: "elastic", password: "p@ss", database: "",
+    });
+    expect(parseConnUrl("elasticsearch://h:9200")).toMatchObject({ engine: "elasticsearch", host: "elasticsearch://h:9200", username: "", password: "" });
+  });
+  it("a password typed into the URL host is moved out before it can be saved", () => {
+    const cfg = (host: string, username = "") => ({ engine: "elasticsearch", host, username });
+    expect(normalizeUrlSecrets(cfg("https://bob:s3cret@h:9200"), "")).toEqual({ host: "https://h:9200", username: "bob", password: "s3cret" });
+    expect(normalizeUrlSecrets(cfg("http://127.0.0.1:9200", "u"), "kept")).toEqual({ host: "http://127.0.0.1:9200", username: "u", password: "kept" });
+  });
+  it("needs no port, refuses a secret in the query, and copies as a URL without credentials", () => {
+    const cfg = { engine: "elasticsearch" as const, host: "http://127.0.0.1:9200", port: 0, database: "" };
+    expect(validateConn(cfg)).toEqual({});
+    expect(validateConn({ ...cfg, host: " " })).toEqual({ host: "Required" });
+    expect(validateConn({ ...cfg, host: "h?apiKey=x&password=y" }).host).toContain("password");
+    expect(isUrlHost("elasticsearch", "localhost")).toBe(true);
+    expect(toConnUrl({ ...cfg, port: 9200, username: "u", sslmode: "prefer" })).toBe("http://127.0.0.1:9200");
+    expect(toConnUrl({ ...cfg, host: "es.example.com", port: 9200, username: "", sslmode: "prefer" })).toBe("https://es.example.com");
+  });
+});

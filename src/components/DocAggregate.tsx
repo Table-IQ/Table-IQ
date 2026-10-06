@@ -1,17 +1,19 @@
 import { useState } from "react";
 import { docAggregate, type DocAggResult } from "../lib/commands";
-import { parseArray, parseDocs, readableError } from "../lib/docJson";
+import { parseArray, parseDocs, parseObject, readableError } from "../lib/docJson";
 import { loadDocView, type DocViewKind } from "../lib/docView";
 import { DocTable, JsonDocs, TreeDocs, ViewToggle } from "./DocViews";
 import { StatusBar } from "./ui/StatusBar";
 import { IconPlay } from "./ui/Icon";
 
 const SAMPLE = '[\n  { "$match": {} },\n  { "$limit": 20 }\n]';
+const ES_SAMPLE = '{\n  "by_level": { "terms": { "field": "level" } }\n}';
 
 /** Aggregation runner: a pipeline JSON editor, Run, and the results in the same JSON / Table / Tree
- *  views (read-only). `$out` / `$merge` are refused by the backend and say so here. */
-export function DocAggregate({ connId, collection, active }: { connId: string; collection: string; active: boolean }) {
-  const [text, setText] = useState(SAMPLE);
+ *  views (read-only). `$out` / `$merge` are refused by the backend and say so here. For Elasticsearch (`elastic`)
+ *  the text is the `aggs` object instead of a pipeline, and each bucket of a result is a row. */
+export function DocAggregate({ connId, collection, active, elastic = false }: { connId: string; collection: string; active: boolean; elastic?: boolean }) {
+  const [text, setText] = useState(elastic ? ES_SAMPLE : SAMPLE);
   const [res, setRes] = useState<{ docs: ReturnType<typeof parseDocs>; truncated: boolean } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -19,7 +21,7 @@ export function DocAggregate({ connId, collection, active }: { connId: string; c
   const [view, setView] = useState<DocViewKind>(() => loadDocView(connId, collection));
 
   const run = async () => {
-    const p = parseArray(text);
+    const p = elastic ? parseObject(text) : parseArray(text);
     if (!p.ok) return setError(p.error);
     setBusy(true);
     setError(null);
@@ -39,7 +41,7 @@ export function DocAggregate({ connId, collection, active }: { connId: string; c
     <div className={`${active ? "flex" : "hidden"} h-full min-h-0 flex-col`} data-testid="doc-aggregate">
       <div className="tiq-rail flex flex-col gap-1.5 border-b border-border bg-bg px-3 py-2">
         <textarea
-          aria-label="Aggregation pipeline"
+          aria-label={elastic ? "Aggregations" : "Aggregation pipeline"}
           spellCheck={false}
           value={text}
           onChange={(e) => {
@@ -62,7 +64,9 @@ export function DocAggregate({ connId, collection, active }: { connId: string; c
           >
             <IconPlay size={10} /> Run <span className="opacity-70">⌘↵</span>
           </button>
-          <span className="text-[11px] text-muted">Read-only: $out and $merge are refused.</span>
+          <span className="text-[11px] text-muted">
+            {elastic ? "Aggregations over the whole index (size 0): one row per bucket or metric." : "Read-only: $out and $merge are refused."}
+          </span>
         </div>
       </div>
       {error && (
@@ -72,7 +76,7 @@ export function DocAggregate({ connId, collection, active }: { connId: string; c
       )}
       {res?.truncated && (
         <div role="status" className="border-b border-border bg-warn/10 px-3 py-1.5 text-[11px] text-warn">
-          Showing the first {res.docs.length.toLocaleString("en-US")} results — there are more. Add a $limit or a narrower $match.
+          Showing the first {res.docs.length.toLocaleString("en-US")} results — there are more. {elastic ? "Narrow the aggregation." : "Add a $limit or a narrower $match."}
         </div>
       )}
       <div className="relative flex min-h-0 flex-1 flex-col">

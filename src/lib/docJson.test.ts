@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { tableFromIPC } from "apache-arrow";
-import { cellText, columnsOf, docsToIpc, field, put, idKey, keysText, parseArray, parseDocs, parseObject, parseTyped, readableError, sameValue, typeOf } from "./docJson";
+import { cellText, columnsOf, docsToIpc, field, put, idKey, keysText, parseArray, parseDocs, parseObject, parseSearchText, parseTyped, readableError, sameValue, typeOf } from "./docJson";
 
 const int = (n: number | string) => ({ $numberInt: String(n) });
 const long = (n: string) => ({ $numberLong: n });
@@ -150,5 +150,14 @@ describe("prototype-safe field access", () => {
     const t = tableFromIPC(docsToIpc(columnsOf(docs), docs));
     expect(t.getChild("__proto__")!.get(0)).toBe("v");
     expect(t.getChild("constructor")!.get(1)).toBeNull();
+  });
+});
+
+describe("parseSearchText (Elasticsearch's filter, sort and projection)", () => {
+  it("leaves plain text to the server, and parses what starts like JSON", () => {
+    expect(parseSearchText("title:quiet AND year:>1990")).toBeNull();
+    expect(parseSearchText('{"match": {"title": "x"}}')).toEqual({ ok: true, value: { match: { title: "x" } } });
+    expect(parseSearchText('[{"year": "desc"}]')).toMatchObject({ ok: true });
+    expect(parseSearchText('{"match": ')).toMatchObject({ ok: false });
   });
 });

@@ -16,7 +16,7 @@ use crate::connections::{self, ConnConfig, ConnStore};
 use crate::lk;
 use crate::profiles;
 use crate::drivers::{
-    clickhouse::ClickHouseDriver, doc_mongo::MongoDriver, duckdb::DuckDriver, kv_redis::RedisDriver, libsql::LibsqlDriver, logged::Logged, mysql::MySqlDriver,
+    clickhouse::ClickHouseDriver, doc_elastic::ElasticDriver, doc_mongo::MongoDriver, duckdb::DuckDriver, kv_redis::RedisDriver, libsql::LibsqlDriver, logged::Logged, mysql::MySqlDriver,
     postgres::PgDriver, sqlite::SqliteDriver, sqlserver::SqlServerDriver, CancelToken, Change,
     AggResult, ChangesResult, ColumnFilter, DocChange, DocChangesResult, DocIndex, DocumentDriver, DriverError, EditSpec, FindOpts,
     KeyInfo, KeyPage, KvChange, KvChangesResult, KvDriver, KvRead, KvReadOpts, KvReply, KvValue, SchemaModel,
@@ -105,8 +105,11 @@ async fn maybe_open_tunnel(
         _ => return Ok((cfg.clone(), None)),
     };
     // The tunnel's local end is plain TCP to a URL's host, which TLS would then not match.
-    if cfg.engine == "libsql" {
-        return Err("A Turso connection can't be combined with an SSH tunnel".into());
+    if matches!(cfg.engine.as_str(), "libsql" | "elasticsearch") {
+        return Err(format!(
+            "A {} connection can't be combined with an SSH tunnel",
+            if cfg.engine == "libsql" { "Turso" } else { "Elasticsearch" }
+        ));
     }
     if matches!(cfg.engine.as_str(), "mongodb" | "redis") && cfg.host.contains("://") {
         return Err(format!(
@@ -339,6 +342,8 @@ pub struct ConnectedInfo {
     pub profile: Option<String>,
     /// What the session supports ([`SqlDriver::caps`]).
     pub caps: crate::profiles::Caps,
+    /// A document session that cannot be edited ([`DocumentDriver::read_only`]): the shell offers no edit.
+    pub read_only: bool,
 }
 
 /// What the grid needs to size its scrollbar. `count: null` means the engine could not
@@ -458,6 +463,8 @@ pub async fn test_connection(cfg: ConnConfig, password: String) -> Result<(), St
             .await
             .map(|_| ())
             .map_err(|e| e.to_string())
+    } else if cfg.engine == "elasticsearch" {
+        ElasticDriver::connect(&cfg.host, &cfg.username, &password).await.map(|_| ()).map_err(|e| e.to_string())
     } else {
         open_driver(&cfg, &password).await.map(|_| ())
     }
@@ -505,6 +512,7 @@ pub(crate) async fn connect_session(
 
     // Redis and MongoDB sessions have no profile: none, and every capability.
     let mut session = (None, crate::profiles::effective_caps(None, None));
+    let mut read_only = false;
     let result: Result<(), String> = async {
         if eff.engine == "redis" {
             let drv = RedisDriver::connect(&eff.url_with_password(&password))
@@ -515,6 +523,10 @@ pub(crate) async fn connect_session(
             let drv = MongoDriver::connect(&eff.url_with_password(&password), &eff.database)
                 .await
                 .map_err(|e| e.to_string())?;
+            lk(&state.doc_sessions).insert(id.clone(), Arc::new(drv));
+        } else if eff.engine == "elasticsearch" {
+            let drv = ElasticDriver::connect(&eff.host, &eff.username, &password).await.map_err(|e| e.to_string())?;
+            (session.0, read_only) = (drv.product(), drv.read_only());
             lk(&state.doc_sessions).insert(id.clone(), Arc::new(drv));
         } else {
             let drv = open_driver(&eff, &password).await?;
@@ -547,6 +559,7 @@ pub(crate) async fn connect_session(
         engine: cfg.engine,
         profile: session.0,
         caps: session.1,
+        read_only,
     })
 }
 
@@ -722,6 +735,7 @@ pub(crate) async fn switch_inner(state: &ConnState, id: String, database: String
     }
     // Redis and MongoDB sessions have no profile: none, and every capability.
     let mut profile = (None, crate::profiles::effective_caps(None, None));
+    let mut read_only = false;
     let session = if eff.engine == "redis" {
         NewSession::Kv(Arc::new(
             RedisDriver::connect(&eff.url_with_password(&password))
@@ -734,6 +748,10 @@ pub(crate) async fn switch_inner(state: &ConnState, id: String, database: String
                 .await
                 .map_err(|e| e.to_string())?,
         ))
+    } else if eff.engine == "elasticsearch" {
+        let drv = ElasticDriver::connect(&eff.host, &eff.username, &password).await.map_err(|e| e.to_string())?;
+        (profile.0, read_only) = (drv.product(), drv.read_only());
+        NewSession::Doc(Arc::new(drv))
     } else {
         let drv = open_driver(&eff, &password).await?;
         profile = (drv.product(), drv.caps());
@@ -765,6 +783,7 @@ pub(crate) async fn switch_inner(state: &ConnState, id: String, database: String
         engine: new_cfg.engine,
         profile: profile.0,
         caps: profile.1,
+        read_only,
     })
 }
 
@@ -812,7 +831,23 @@ pub async fn doc_apply_changes(
     changes: Vec<DocChange>,
 ) -> Result<DocChangesResult, String> {
     let drv = state.doc_session(&id)?;
+    refuse_read_only_doc(drv.as_ref())?;
     doc_logged(&state, &id, drv.apply_changes(&collection, &changes)).await.map_err(|e| e.to_string())
+}
+
+/// The clear refusal for an edit the connection cannot take (the driver's own is a bare `NotImplemented`).
+fn refuse_read_only_doc(drv: &dyn DocumentDriver) -> Result<(), String> {
+    if drv.read_only() {
+        return Err("This connection is read-only: Elasticsearch indices can't be edited in TableIQ".into());
+    }
+    Ok(())
+}
+
+/// A collection's field mapping as JSON text (Elasticsearch).
+#[tauri::command]
+pub async fn doc_mapping(state: State<'_, ConnState>, id: String, collection: String) -> Result<String, String> {
+    let drv = state.doc_session(&id)?;
+    doc_logged(&state, &id, drv.mapping(&collection)).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -831,6 +866,7 @@ pub async fn doc_create_index(
     name: Option<String>,
 ) -> Result<String, String> {
     let drv = state.doc_session(&id)?;
+    refuse_read_only_doc(drv.as_ref())?;
     doc_logged(&state, &id, drv.create_index(&collection, &keys, unique, name.as_deref()))
         .await
         .map_err(|e| e.to_string())
@@ -844,6 +880,7 @@ pub async fn doc_drop_index(
     name: String,
 ) -> Result<(), String> {
     let drv = state.doc_session(&id)?;
+    refuse_read_only_doc(drv.as_ref())?;
     doc_logged(&state, &id, drv.drop_index(&collection, &name)).await.map_err(|e| e.to_string())
 }
 
@@ -1738,7 +1775,7 @@ async fn introspect_any(state: &ConnState, id: &str) -> Result<SchemaModel, Stri
         .find(|c| c.id == id)
         .cloned()
         .ok_or_else(|| "unknown connection".to_string())?;
-    if matches!(cfg.engine.as_str(), "redis" | "mongodb") {
+    if matches!(cfg.engine.as_str(), "redis" | "mongodb" | "elasticsearch") {
         return Err("schema diff supports SQL connections only".into());
     }
     let pw = if cfg.is_file_engine() {

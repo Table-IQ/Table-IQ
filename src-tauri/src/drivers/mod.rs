@@ -2,7 +2,7 @@
 //!
 //! Split by data model (plan spec #1): SQL engines (Postgres, MySQL/MariaDB, SQLite,
 //! SQL Server, DuckDB) stream Arrow via [`SqlDriver`], the document store (MongoDB) returns
-//! JSON/tree via [`DocumentDriver`], and the key-value store (Redis) returns typed
+//! JSON/tree via [`DocumentDriver`] (also Elasticsearch, read-only), and the key-value store (Redis) returns typed
 //! values via [`KvDriver`]. All six engines are real implementations.
 
 use std::sync::{Arc, Mutex};
@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 pub mod clickhouse;
+pub mod doc_elastic;
 pub mod doc_mongo;
 pub mod duckdb;
 pub mod exec;
@@ -1097,6 +1098,20 @@ pub trait DocumentDriver: Send + Sync {
     async fn aggregate(&self, collection: &str, pipeline: &str, limit: i64) -> DResult<AggResult>;
     /// Server-side enumeration of databases (for the post-connection picker).
     async fn list_databases(&self) -> DResult<Vec<String>> {
+        Err(DriverError::NotImplemented)
+    }
+    /// A read-only store (Elasticsearch): `apply_changes` and the index calls are refused with
+    /// `NotImplemented`, and the shell offers none of them.
+    fn read_only(&self) -> bool {
+        false
+    }
+    /// The product a server says it is, when it is a compatible one (`opensearch`); `None` for
+    /// the base engine.
+    fn product(&self) -> Option<String> {
+        None
+    }
+    /// The collection's field mapping as JSON text (Elasticsearch).
+    async fn mapping(&self, _collection: &str) -> DResult<String> {
         Err(DriverError::NotImplemented)
     }
 }

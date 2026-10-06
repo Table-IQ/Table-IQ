@@ -57,6 +57,7 @@ const ENGINES: { id: Engine; short: string; title?: string }[] = [
   { id: "mongodb", short: "MongoDB" },
   { id: "clickhouse", short: "ClickHouse" },
   { id: "libsql", short: "Turso", title: "Turso / libSQL" },
+  { id: "elasticsearch", short: "Elastic", title: "Elasticsearch / OpenSearch" },
 ];
 const ENV_SEGMENTS: { env: ConnEnv | null; label: string }[] = [
   { env: null, label: "None" },
@@ -235,8 +236,8 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
   const hostIsUrl = isUrlHost(form.engine, form.host);
   const hostPort = hostIsUrl ? (
     <div className="mb-[9px]">
-      <Field id={`${uid}host`} label={form.engine === "libsql" ? "Server URL" : "Connection string"} error={shown.host}>
-        <input {...ids("host", shown.host)} className={`${field(shown.host)} font-mono`} value={form.host} onChange={(e) => p.onField("host", e.target.value)} onBlur={touch("host")} onPaste={onHostPaste} placeholder={form.engine === "libsql" ? "libsql://my-db-org.turso.io" : undefined} spellCheck={false} />
+      <Field id={`${uid}host`} label={form.engine === "libsql" || form.engine === "elasticsearch" ? "Server URL" : "Connection string"} error={shown.host}>
+        <input {...ids("host", shown.host)} className={`${field(shown.host)} font-mono`} value={form.host} onChange={(e) => p.onField("host", e.target.value)} onBlur={touch("host")} onPaste={onHostPaste} placeholder={form.engine === "libsql" ? "libsql://my-db-org.turso.io" : form.engine === "elasticsearch" ? "https://my-deployment.es.io:9243 or http://localhost:9200" : undefined} spellCheck={false} />
       </Field>
     </div>
   ) : (
@@ -467,6 +468,18 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
             {hostPort}
             {form.engine === "libsql" ? (
               <div className="mb-[9px]">{passwordField("Auth token", "auth token")}</div>
+            ) : form.engine === "elasticsearch" ? (
+              <>
+                <div className="mb-[9px] grid grid-cols-2 gap-[9px]">
+                  <Field id={`${uid}user`} label="User (optional)">
+                    <input {...ids("user")} className={field()} value={form.username} onChange={(e) => p.onField("username", e.target.value)} placeholder="elastic" />
+                  </Field>
+                  {passwordField("Password or API key", "password or API key")}
+                </div>
+                <p className="mb-[9px] text-[11px] leading-snug text-muted">
+                  Leave User empty to sign in with an API key (paste the encoded key as the password). The connection is read-only.
+                </p>
+              </>
             ) : form.engine === "redis" ? (
               <>
                 <div className="mb-[9px] grid grid-cols-2 gap-[9px]">
@@ -521,7 +534,7 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
               </>
             )}
 
-            {form.engine !== "libsql" && (
+            {form.engine !== "libsql" && form.engine !== "elasticsearch" && (
               <>
                 <Section>Advanced</Section>
                 <div className="rounded-lg border border-border">

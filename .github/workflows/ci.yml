@@ -72,6 +72,8 @@ jobs:
       # docker/libsql/docker-compose.yml: Turso's sqld over Hrana-HTTP (open, and one that wants a JWT) — tests/libsql_live.rs.
       TIQ_LIBSQL_URL: http://127.0.0.1:58080
       TIQ_LIBSQL_AUTH_URL: http://127.0.0.1:58081
+      # docker/elasticsearch/docker-compose.yml: one single-node server, security off — tests/elasticsearch_live.rs.
+      TIQ_ES_URL: http://127.0.0.1:59200
       # TIQ_MSSQL_URL is deliberately unset — mssql:2022 is a 1.5GB image for six tests, and
       # tests/sqlserver.rs skips itself when the variable is absent. Same for TIQ_PG_FULL_SEED
       # (see the seed step). Both suites run locally, where the containers are already up.
@@ -148,6 +150,12 @@ jobs:
       - name: Start Turso (libSQL)
         run: docker compose -f docker/libsql/docker-compose.yml up -d --wait
 
+      # Its own step, last, with a long wait: the image is ~1.2 GB and the JVM (heap pinned to
+      # 512 MB) is the slowest thing here to come up, next to everything above on a 7 GB runner.
+      # The healthcheck seeds the indices, so "healthy" means the data is there.
+      - name: Start Elasticsearch
+        run: docker compose -f docker/elasticsearch/docker-compose.yml up -d --wait --wait-timeout 420
+
       - uses: dtolnay/rust-toolchain@stable
         with: { components: clippy }
       - uses: swatinem/rust-cache@v2
@@ -161,7 +169,7 @@ jobs:
         run: cargo test --locked
 
       # The suite above skips a live test whose URL is unset. Every binary below talks only to
-      # the databases this job starts (Postgres, MySQL, TiDB, CockroachDB, MariaDB, MongoDB, Redis, ClickHouse, libSQL), so a missing
+      # the databases this job starts (Postgres, MySQL, TiDB, CockroachDB, MariaDB, MongoDB, Redis, ClickHouse, libSQL, Elasticsearch), so a missing
       # URL here fails the job instead. Left out on purpose: sqlserver (no SQL Server in CI), the
       # SQL Server cases inside sql_log/search/mcp_live (they stay skips), backup_live/restore_live
       # (need TIQ_BACKUP_SHIM and the docker containers).
@@ -169,7 +177,7 @@ jobs:
         working-directory: src-tauri
         run: |
           TIQ_REQUIRE_LIVE=1 cargo test --locked \
-            --test apply_changes --test browse_non_utf8 --test cancel --test clickhouse_live --test exec_live \
+            --test apply_changes --test browse_non_utf8 --test cancel --test clickhouse_live --test elasticsearch_live --test exec_live \
             --test explain --test fast_open --test foreign_keys --test guard_live \
             --test import --test introspect_browse --test libsql_live --test mcp_live --test mysql_browse \
             --test mongo_browse --test mongo_mcp_live --test mysql_ssl_live --test null_pk_guard --test profile --test profile_live \

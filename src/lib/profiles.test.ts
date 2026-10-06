@@ -201,3 +201,15 @@ describe("Turso / libSQL", () => {
     expect(contrast(ENGINE_COLORS.libsql, "#15171c")).toBeGreaterThanOrEqual(2);
   });
 });
+
+describe("Elasticsearch", () => {
+  it("is a read-only browser: no transactions, backup, users or agents, and port 9200", () => {
+    expect(capsOf("elasticsearch")).toEqual({ transactions: false, backup: false, userMgmt: false, agents: false });
+    expect(presetFor("elasticsearch", null)).toEqual({ port: 9200, username: "", database: "", sslmode: "prefer" });
+  });
+  it("draws a blue fill that is legible under its white monogram and visible on the dark surface", () => {
+    expect(ENGINE_MONOGRAMS.elasticsearch).toBe("Es");
+    expect(contrast("#ffffff", ENGINE_COLORS.elasticsearch)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(ENGINE_COLORS.elasticsearch, "#15171c")).toBeGreaterThanOrEqual(2);
+  });
+});

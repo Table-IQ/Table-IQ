@@ -95,7 +95,8 @@ export type Engine =
   | "mongodb"
   | "sqlserver"
   | "clickhouse"
-  | "libsql";
+  | "libsql"
+  | "elasticsearch";
 export interface ConnConfig {
   id: string;
   name: string;
@@ -147,6 +148,8 @@ export interface ConnectedInfo {
   /** The saved profile when this build knows it, else the product detected at connect; null for a plain base engine. */
   profile?: string | null;
   caps?: SessionCaps;
+  /** A document session that cannot be edited (Elasticsearch): the shell offers no edit, insert, delete or index change. */
+  read_only?: boolean;
 }
 
 export interface KeyInfo {
@@ -612,6 +615,12 @@ export async function docDropIndex(id: string, collection: string, name: string)
   return invoke<void>("doc_drop_index", { id, collection, name });
 }
 
+/** An index's field mapping as pretty JSON text (Elasticsearch). */
+export async function docMapping(id: string, collection: string): Promise<string> {
+  if (!inTauri()) return '{\n  "mappings": {}\n}';
+  return invoke<string>("doc_mapping", { id, collection });
+}
+
 export interface DocAggResult {
   docs: string[];
   /** More documents existed than the row cap (1000). */
@@ -665,6 +674,8 @@ export async function listDatabases(id: string): Promise<string[]> {
         return ["admin", "tableiq", "local"];
       case "clickhouse":
         return ["default", "tableiq"];
+      case "elasticsearch":
+        return [];
       default:
         return [];
     }

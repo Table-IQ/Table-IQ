@@ -147,7 +147,7 @@ fn tsv_cell(raw: &str) -> Option<String> {
 }
 
 /// `%XX` decoded (a URL's user and password).
-fn pct_decode(s: &str) -> String {
+pub(super) fn pct_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
