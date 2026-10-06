@@ -92,7 +92,9 @@ export function mcpRowState(conn: Pick<ConnConfig, "engine" | "profile">, shared
     ? `Not available over MCP yet: ${p.agentNote ?? AGENT_NOTE}`
     : conn.engine === "clickhouse"
       ? "Not available over MCP yet: TableIQ's agent guard has not been reviewed for ClickHouse."
-      : `Not available over MCP: this connection's profile (${conn.profile}) was saved by a newer TableIQ. Update TableIQ to manage it.`;
+      : conn.engine === "libsql"
+        ? "Not available over MCP yet: TableIQ's agent guard has not been reviewed for Turso / libSQL."
+        : `Not available over MCP: this connection's profile (${conn.profile}) was saved by a newer TableIQ. Update TableIQ to manage it.`;
   return { shareable: false, shared: false, writes: false, writable: false, note };
 }
 

@@ -56,6 +56,7 @@ const ENGINES: { id: Engine; short: string; title?: string }[] = [
   { id: "redis", short: "Redis" },
   { id: "mongodb", short: "MongoDB" },
   { id: "clickhouse", short: "ClickHouse" },
+  { id: "libsql", short: "Turso", title: "Turso / libSQL" },
 ];
 const ENV_SEGMENTS: { env: ConnEnv | null; label: string }[] = [
   { env: null, label: "None" },
@@ -207,7 +208,7 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
     applyUrl(text);
   };
 
-  const passwordField = (label: string) => (
+  const passwordField = (label: string, hint?: string) => (
     <Field id={`${uid}pw`} label={label}>
       <span className="relative block">
         <input
@@ -216,7 +217,7 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
           type={showPw ? "text" : "password"}
           value={p.password}
           onChange={(e) => p.onPassword(e.target.value)}
-          placeholder={mode === "edit" ? "Keep saved password" : "Password"}
+          placeholder={mode === "edit" ? `Keep saved ${hint ?? "password"}` : (hint ?? "Password")}
         />
         <button
           type="button"
@@ -234,8 +235,8 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
   const hostIsUrl = isUrlHost(form.engine, form.host);
   const hostPort = hostIsUrl ? (
     <div className="mb-[9px]">
-      <Field id={`${uid}host`} label="Connection string" error={shown.host}>
-        <input {...ids("host", shown.host)} className={`${field(shown.host)} font-mono`} value={form.host} onChange={(e) => p.onField("host", e.target.value)} onBlur={touch("host")} onPaste={onHostPaste} spellCheck={false} />
+      <Field id={`${uid}host`} label={form.engine === "libsql" ? "Server URL" : "Connection string"} error={shown.host}>
+        <input {...ids("host", shown.host)} className={`${field(shown.host)} font-mono`} value={form.host} onChange={(e) => p.onField("host", e.target.value)} onBlur={touch("host")} onPaste={onHostPaste} placeholder={form.engine === "libsql" ? "libsql://my-db-org.turso.io" : undefined} spellCheck={false} />
       </Field>
     </div>
   ) : (
@@ -322,7 +323,7 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
         {urlNote && <div className="mt-1 text-[11px] text-danger">{urlNote}</div>}
 
         {mode === "new" && (
-          <div className="mt-3 grid grid-cols-4 gap-[5px]">
+          <div className="mt-3 grid grid-cols-5 gap-[5px]">
             {ENGINES.map(({ id, short, title }) => {
               // A picked product presses the select below instead of its base engine's tile.
               const on = form.engine === id && !form.profile;
@@ -464,7 +465,9 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
           <>
             <Section>Server</Section>
             {hostPort}
-            {form.engine === "redis" ? (
+            {form.engine === "libsql" ? (
+              <div className="mb-[9px]">{passwordField("Auth token", "auth token")}</div>
+            ) : form.engine === "redis" ? (
               <>
                 <div className="mb-[9px] grid grid-cols-2 gap-[9px]">
                   <Field id={`${uid}user`} label="User (ACL, optional)">
@@ -518,123 +521,127 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
               </>
             )}
 
-            <Section>Advanced</Section>
-            <div className="rounded-lg border border-border">
-              <div className="flex items-center gap-[9px] px-[11px] py-[9px]">
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={ssh.enabled}
-                  aria-label="SSH tunnel"
-                  onClick={() => p.onSsh({ enabled: !ssh.enabled })}
-                  className={`relative h-[17px] w-[28px] shrink-0 rounded-full transition-colors ${focusRing} ${ssh.enabled ? "bg-primary" : "bg-border-strong"}`}
-                >
-                  <span
-                    className={`absolute top-[2px] left-[2px] h-[13px] w-[13px] rounded-full bg-white shadow-sm transition-transform ${
-                      ssh.enabled ? "translate-x-[11px]" : ""
-                    }`}
-                  />
-                </button>
-                <span className="text-[12.5px] font-medium text-text">SSH tunnel</span>
-                <span className="ml-auto text-[11px] text-muted">Reach a database behind a bastion</span>
-              </div>
-              {ssh.enabled && (
-                <div className="border-t border-border px-[11px] pt-[9px] pb-[11px]">
-                  <div className="mb-[9px] grid grid-cols-[1fr_80px] gap-[9px]">
-                    <Field id={`${uid}sshhost`} label="Server">
-                      <input
-                        {...ids("sshhost")}
-                        className={field()}
-                        value={ssh.host}
-                        onChange={(e) => p.onSsh({ host: e.target.value })}
-                        placeholder="bastion.example.com or ~/.ssh/config alias"
+            {form.engine !== "libsql" && (
+              <>
+                <Section>Advanced</Section>
+                <div className="rounded-lg border border-border">
+                  <div className="flex items-center gap-[9px] px-[11px] py-[9px]">
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={ssh.enabled}
+                      aria-label="SSH tunnel"
+                      onClick={() => p.onSsh({ enabled: !ssh.enabled })}
+                      className={`relative h-[17px] w-[28px] shrink-0 rounded-full transition-colors ${focusRing} ${ssh.enabled ? "bg-primary" : "bg-border-strong"}`}
+                    >
+                      <span
+                        className={`absolute top-[2px] left-[2px] h-[13px] w-[13px] rounded-full bg-white shadow-sm transition-transform ${
+                          ssh.enabled ? "translate-x-[11px]" : ""
+                        }`}
                       />
-                    </Field>
-                    <Field id={`${uid}sshport`} label="Port">
-                      <input {...ids("sshport")} className={field()} inputMode="numeric" value={ssh.port || ""} onChange={(e) => p.onSsh({ port: toPort(e.target.value) })} />
-                    </Field>
+                    </button>
+                    <span className="text-[12.5px] font-medium text-text">SSH tunnel</span>
+                    <span className="ml-auto text-[11px] text-muted">Reach a database behind a bastion</span>
                   </div>
-                  <Field id={`${uid}sshuser`} label="User" className="mb-[9px]">
-                    <input {...ids("sshuser")} className={field()} value={ssh.username} onChange={(e) => p.onSsh({ username: e.target.value })} placeholder="ubuntu" />
-                  </Field>
-                  <div role="group" aria-label="SSH authentication" className="mb-[9px] flex h-[28px] overflow-hidden rounded-[7px] border border-border">
-                    {[
-                      { key: false, label: "Password / agent" },
-                      { key: true, label: "Key file" },
-                    ].map((s) => (
-                      <button
-                        key={s.label}
-                        type="button"
-                        aria-pressed={useKey === s.key}
-                        onClick={() => p.onSsh({ auth: s.key ? { mode: "keyfile", path: keyPath } : { mode: "password" } })}
-                        className={`${segBase} ${useKey === s.key ? "bg-surface-2 font-medium text-text" : "text-muted hover:bg-surface"}`}
-                      >
-                        {s.label}
-                      </button>
-                    ))}
-                  </div>
-                  {useKey ? (
-                    <>
-                      <Field id={`${uid}key`} label="Private key path" className="mb-[9px]">
-                        <span className="flex gap-2">
+                  {ssh.enabled && (
+                    <div className="border-t border-border px-[11px] pt-[9px] pb-[11px]">
+                      <div className="mb-[9px] grid grid-cols-[1fr_80px] gap-[9px]">
+                        <Field id={`${uid}sshhost`} label="Server">
                           <input
-                            {...ids("key")}
+                            {...ids("sshhost")}
                             className={field()}
-                            value={keyPath}
-                            onChange={(e) => p.onSsh({ auth: { mode: "keyfile", path: e.target.value } })}
-                            placeholder="~/.ssh/id_ed25519"
+                            value={ssh.host}
+                            onChange={(e) => p.onSsh({ host: e.target.value })}
+                            placeholder="bastion.example.com or ~/.ssh/config alias"
                           />
-                          {p.canPickFiles && (
-                            <button type="button" onClick={p.onPickKey} title="Choose a key file" className={`${btn} h-[32px] shrink-0 font-normal`}>
-                              <IconKey size={12} className="text-muted" />
-                              Browse…
-                            </button>
-                          )}
-                          {keyPath && (
-                            <button
-                              type="button"
-                              onClick={() => p.onSsh({ auth: { mode: "keyfile", path: "" } })}
-                              aria-label="Clear key"
-                              title="Clear key"
-                              className={`${btn} h-[32px] w-[32px] shrink-0 justify-center px-0 text-muted`}
-                            >
-                              <IconClose size={13} />
-                            </button>
-                          )}
-                        </span>
+                        </Field>
+                        <Field id={`${uid}sshport`} label="Port">
+                          <input {...ids("sshport")} className={field()} inputMode="numeric" value={ssh.port || ""} onChange={(e) => p.onSsh({ port: toPort(e.target.value) })} />
+                        </Field>
+                      </div>
+                      <Field id={`${uid}sshuser`} label="User" className="mb-[9px]">
+                        <input {...ids("sshuser")} className={field()} value={ssh.username} onChange={(e) => p.onSsh({ username: e.target.value })} placeholder="ubuntu" />
                       </Field>
-                      <Field id={`${uid}keypass`} label="Passphrase" className="mb-[9px]">
-                        <input
-                          {...ids("keypass")}
-                          className={field()}
-                          type="password"
-                          value={p.sshKeyPass}
-                          onChange={(e) => p.onSshKeyPass(e.target.value)}
-                          placeholder="Optional"
-                        />
-                      </Field>
-                    </>
-                  ) : (
-                    <Field id={`${uid}sshpw`} label="Password" className="mb-[9px]">
-                      <input
-                        {...ids("sshpw")}
-                        className={field()}
-                        type="password"
-                        value={p.sshPassword}
-                        onChange={(e) => {
-                          p.onSshPassword(e.target.value);
-                          // Typing a password moves agent auth to password auth, as before;
-                          // an empty password still falls back to the agent on the backend.
-                          if (ssh.auth.mode !== "password") p.onSsh({ auth: { mode: "password" } });
-                        }}
-                        placeholder="Leave blank to use ssh-agent"
-                      />
-                    </Field>
+                      <div role="group" aria-label="SSH authentication" className="mb-[9px] flex h-[28px] overflow-hidden rounded-[7px] border border-border">
+                        {[
+                          { key: false, label: "Password / agent" },
+                          { key: true, label: "Key file" },
+                        ].map((s) => (
+                          <button
+                            key={s.label}
+                            type="button"
+                            aria-pressed={useKey === s.key}
+                            onClick={() => p.onSsh({ auth: s.key ? { mode: "keyfile", path: keyPath } : { mode: "password" } })}
+                            className={`${segBase} ${useKey === s.key ? "bg-surface-2 font-medium text-text" : "text-muted hover:bg-surface"}`}
+                          >
+                            {s.label}
+                          </button>
+                        ))}
+                      </div>
+                      {useKey ? (
+                        <>
+                          <Field id={`${uid}key`} label="Private key path" className="mb-[9px]">
+                            <span className="flex gap-2">
+                              <input
+                                {...ids("key")}
+                                className={field()}
+                                value={keyPath}
+                                onChange={(e) => p.onSsh({ auth: { mode: "keyfile", path: e.target.value } })}
+                                placeholder="~/.ssh/id_ed25519"
+                              />
+                              {p.canPickFiles && (
+                                <button type="button" onClick={p.onPickKey} title="Choose a key file" className={`${btn} h-[32px] shrink-0 font-normal`}>
+                                  <IconKey size={12} className="text-muted" />
+                                  Browse…
+                                </button>
+                              )}
+                              {keyPath && (
+                                <button
+                                  type="button"
+                                  onClick={() => p.onSsh({ auth: { mode: "keyfile", path: "" } })}
+                                  aria-label="Clear key"
+                                  title="Clear key"
+                                  className={`${btn} h-[32px] w-[32px] shrink-0 justify-center px-0 text-muted`}
+                                >
+                                  <IconClose size={13} />
+                                </button>
+                              )}
+                            </span>
+                          </Field>
+                          <Field id={`${uid}keypass`} label="Passphrase" className="mb-[9px]">
+                            <input
+                              {...ids("keypass")}
+                              className={field()}
+                              type="password"
+                              value={p.sshKeyPass}
+                              onChange={(e) => p.onSshKeyPass(e.target.value)}
+                              placeholder="Optional"
+                            />
+                          </Field>
+                        </>
+                      ) : (
+                        <Field id={`${uid}sshpw`} label="Password" className="mb-[9px]">
+                          <input
+                            {...ids("sshpw")}
+                            className={field()}
+                            type="password"
+                            value={p.sshPassword}
+                            onChange={(e) => {
+                              p.onSshPassword(e.target.value);
+                              // Typing a password moves agent auth to password auth, as before;
+                              // an empty password still falls back to the agent on the backend.
+                              if (ssh.auth.mode !== "password") p.onSsh({ auth: { mode: "password" } });
+                            }}
+                            placeholder="Leave blank to use ssh-agent"
+                          />
+                        </Field>
+                      )}
+                      <div className="text-[11px] text-muted">Host keys are accepted on first use and pinned.</div>
+                    </div>
                   )}
-                  <div className="text-[11px] text-muted">Host keys are accepted on first use and pinned.</div>
                 </div>
-              )}
-            </div>
+              </>
+            )}
           </>
         )}
       </div>

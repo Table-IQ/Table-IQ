@@ -23,6 +23,7 @@ export const ENGINE_COLORS: Record<Engine, string> = {
   mongodb: "#13aa52",
   sqlserver: "#cc2927",
   clickhouse: "#946c00",
+  libsql: "#0f766e",
 };
 
 export const ENGINE_MONOGRAMS: Record<Engine, string> = {
@@ -34,6 +35,7 @@ export const ENGINE_MONOGRAMS: Record<Engine, string> = {
   mongodb: "Mo",
   sqlserver: "Ms",
   clickhouse: "Ch",
+  libsql: "Tu",
 };
 
 export const ENGINE_LABELS: Record<Engine, string> = {
@@ -45,6 +47,7 @@ export const ENGINE_LABELS: Record<Engine, string> = {
   mongodb: "MongoDB",
   sqlserver: "SQL Server",
   clickhouse: "ClickHouse",
+  libsql: "Turso / libSQL",
 };
 
 export function EngineIcon({

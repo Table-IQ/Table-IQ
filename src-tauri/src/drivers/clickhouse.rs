@@ -223,7 +223,7 @@ fn parse_tsv(body: &str) -> Table {
 }
 
 /// A transport failure, with no URL (and so no query parameter) in it.
-fn net_err(e: reqwest::Error, host: &str) -> DriverError {
+pub(super) fn net_err(e: reqwest::Error, host: &str) -> DriverError {
     use std::error::Error;
     let e = e.without_url();
     if e.is_timeout() {

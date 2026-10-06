@@ -32,10 +32,14 @@ export interface PillSegments {
 const FILE_ENGINES = new Set(["sqlite", "duckdb"]);
 const SSL_ENGINES = new Set(["postgres", "mysql", "sqlserver", "clickhouse"]);
 
+/** Whether a Turso URL is TLS: its scheme says so, and a bare host is unless it is this machine. */
+const tursoTls = (host: string): boolean =>
+  /^[a-z+]+:\/\//i.test(host) ? /^(libsql|https|wss):/i.test(host) : !/^(localhost|127\.|\[::1\])/i.test(host);
+
 /** The status pill's pieces. SSL/SSH reflect the saved config — the only thing we know;
  *  no TLS version or traffic is measured, so none is shown. */
 export function pillSegments(
-  cfg: Pick<ConnConfig, "engine" | "profile" | "sslmode" | "ssh" | "database" | "name"> & { env?: ConnEnv | null },
+  cfg: Pick<ConnConfig, "engine" | "profile" | "sslmode" | "ssh" | "database" | "name"> & { env?: ConnEnv | null; host?: string },
   activeObject: string | null,
 ): PillSegments {
   const file = FILE_ENGINES.has(cfg.engine);
@@ -43,7 +47,11 @@ export function pillSegments(
     env: envLabel(cfg.env),
     engine: engineLabel(cfg.engine, cfg.profile),
     // Only Postgres, MySQL, SQL Server and ClickHouse (https) read sslmode; showing "SSL" elsewhere would be a lie.
-    ssl: SSL_ENGINES.has(cfg.engine) && /^(require|verify)/.test(cfg.sslmode ?? ""),
+    // Turso's TLS is its URL's scheme (a bare host is https unless it is this machine).
+    ssl:
+      cfg.engine === "libsql"
+        ? tursoTls(cfg.host ?? "")
+        : SSL_ENGINES.has(cfg.engine) && /^(require|verify)/.test(cfg.sslmode ?? ""),
     ssh: !!cfg.ssh?.enabled,
     connection: cfg.name,
     database: file ? (cfg.database.split(/[\\/]/).pop() || cfg.database) : cfg.database,

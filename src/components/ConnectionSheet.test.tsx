@@ -62,6 +62,20 @@ describe("ConnectionSheet", () => {
     expect(h).toMatch(/<button[^>]*disabled=""[^>]*>Connect\b/);
   });
 
+  it("Turso takes one Server URL and an Auth token: no host, port, user, database or SSH tunnel", () => {
+    const form = { ...base.form, engine: "libsql" as const, host: "libsql://db-org.turso.io", port: 8080, database: "", username: "" };
+    const h = html({ form });
+    expect(h).toContain("Server URL");
+    expect(h).toContain("libsql://db-org.turso.io");
+    expect(h).toContain("Auth token");
+    expect(h).toContain('placeholder="auth token"');
+    expect(html({ form, mode: "edit" })).toContain('placeholder="Keep saved auth token"');
+    for (const gone of [">Host<", ">Port<", ">User<", ">Database<", "SSH tunnel", "Connection string"]) expect(h).not.toContain(gone);
+    expect(h).toMatch(/title="Turso \/ libSQL"/);
+    // A token left in the URL blocks Connect: it would be saved in plaintext.
+    expect(html({ form: { ...form, host: "libsql://h?authToken=x" } })).toContain("it would be saved in plaintext");
+  });
+
   it("file engines show a Browse… button (when picking is possible) and no host/port", () => {
     const h = html({ form: { ...base.form, engine: "sqlite", host: "", port: 0, database: "" } });
     expect(h).toContain("Browse…");

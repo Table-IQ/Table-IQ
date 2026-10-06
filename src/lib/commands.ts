@@ -94,7 +94,8 @@ export type Engine =
   | "redis"
   | "mongodb"
   | "sqlserver"
-  | "clickhouse";
+  | "clickhouse"
+  | "libsql";
 export interface ConnConfig {
   id: string;
   name: string;
@@ -656,6 +657,7 @@ export async function listDatabases(id: string): Promise<string[]> {
         return ["master", "tableiq"];
       case "sqlite":
       case "duckdb":
+      case "libsql":
         return ["main"];
       case "redis":
         return Array.from({ length: 16 }, (_, i) => String(i));

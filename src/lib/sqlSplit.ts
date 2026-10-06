@@ -14,6 +14,7 @@ export type SqlDialect = "postgres" | "mysql" | "sqlite" | "sqlserver";
  *  splits like MySQL: `#` comments, backslash escapes in strings, backtick identifiers. */
 export function dialectFor(engine: string | undefined): SqlDialect {
   if (engine === "clickhouse") return "mysql";
+  if (engine === "libsql") return "sqlite";
   return engine === "mysql" || engine === "sqlite" || engine === "sqlserver" ? engine : "postgres";
 }
 

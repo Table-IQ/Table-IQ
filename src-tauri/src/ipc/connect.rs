@@ -16,7 +16,7 @@ use crate::connections::{self, ConnConfig, ConnStore};
 use crate::lk;
 use crate::profiles;
 use crate::drivers::{
-    clickhouse::ClickHouseDriver, doc_mongo::MongoDriver, duckdb::DuckDriver, kv_redis::RedisDriver, logged::Logged, mysql::MySqlDriver,
+    clickhouse::ClickHouseDriver, doc_mongo::MongoDriver, duckdb::DuckDriver, kv_redis::RedisDriver, libsql::LibsqlDriver, logged::Logged, mysql::MySqlDriver,
     postgres::PgDriver, sqlite::SqliteDriver, sqlserver::SqlServerDriver, CancelToken, Change,
     AggResult, ChangesResult, ColumnFilter, DocChange, DocChangesResult, DocIndex, DocumentDriver, DriverError, EditSpec, FindOpts,
     KeyInfo, KeyPage, KvChange, KvChangesResult, KvDriver, KvRead, KvReadOpts, KvReply, KvValue, SchemaModel,
@@ -104,6 +104,10 @@ async fn maybe_open_tunnel(
         Some(s) if s.enabled && !cfg.is_file_engine() => s,
         _ => return Ok((cfg.clone(), None)),
     };
+    // The tunnel's local end is plain TCP to a URL's host, which TLS would then not match.
+    if cfg.engine == "libsql" {
+        return Err("A Turso connection can't be combined with an SSH tunnel".into());
+    }
     if matches!(cfg.engine.as_str(), "mongodb" | "redis") && cfg.host.contains("://") {
         return Err(format!(
             "A {} connection URL can't be combined with an SSH tunnel — enter host and port instead",
@@ -161,6 +165,10 @@ async fn open_driver(cfg: &ConnConfig, pw: &str) -> Result<Arc<dyn SqlDriver>, S
                 .await
                 .map_err(|e| e.to_string())?;
         return Ok(Arc::new(drv));
+    }
+    // Turso takes the token apart from the URL: it never goes into a URL string.
+    if cfg.engine == "libsql" {
+        return Ok(Arc::new(LibsqlDriver::connect(&cfg.host, pw).await.map_err(|e| e.to_string())?));
     }
     let url = cfg.url_with_password(pw);
     let drv: Arc<dyn SqlDriver> = match cfg.engine.as_str() {
@@ -1165,13 +1173,15 @@ fn refuse_unsafe_literals(safe: bool) -> Result<(), String> {
     Err("Import is not available on this connection: the server did not turn on standard_conforming_strings, so TableIQ cannot quote text safely. Load the data with the server's own import tool.".to_string())
 }
 
-/// ClickHouse is a read-only browser here: a MergeTree has no transactions to make a partial
-/// import safe to roll back, and CREATE TABLE needs an ENGINE the importer does not choose.
+/// ClickHouse and Turso are read-only browsers here. ClickHouse: a MergeTree has no transactions
+/// to make a partial import safe to roll back, and CREATE TABLE needs an ENGINE the importer does
+/// not choose. Turso: its driver refuses every write, and an HTTP session holds no transaction.
 fn refuse_import(engine: &str) -> Result<(), String> {
-    if engine == "clickhouse" {
-        return Err("Import is not supported for ClickHouse: load the data with INSERT ... SELECT or clickhouse-client".to_string());
+    match engine {
+        "clickhouse" => Err("Import is not supported for ClickHouse: load the data with INSERT ... SELECT or clickhouse-client".to_string()),
+        "libsql" => Err("Import is not supported for Turso: load the data with the turso CLI or INSERT statements in a query tab".to_string()),
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 /// Apply a batch of staged changes to one table in ONE transaction (updates → deletes →
@@ -2459,6 +2469,7 @@ async fn backup_inner(
             Ok(backup::spawn_future(async move { backup::sql_backup(drv, &engine, &db, &path).await }))
         }
         "clickhouse" => Err("ClickHouse backup is not supported".into()),
+        "libsql" => Err("Turso backup is not supported: use `turso db shell … .dump`".into()),
         _ => Err("Backup is not supported for this engine".into()),
     }
 }
@@ -2608,6 +2619,7 @@ async fn restore_inner(
             Ok(backup::spawn_future(async move { res }))
         }
         "clickhouse" => Err("ClickHouse restore is not supported".into()),
+        "libsql" => Err("Turso restore is not supported".into()),
         _ => Err("Restore is not supported for this engine".into()),
     }
 }

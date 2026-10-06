@@ -200,3 +200,9 @@ describe("runAllTargets", () => {
     ]);
   });
 });
+
+describe("explainStatement on Turso", () => {
+  it("is SQLite's QUERY PLAN", () => {
+    expect(explainStatement("SELECT 1;", "libsql")).toBe("EXPLAIN QUERY PLAN SELECT 1");
+  });
+});

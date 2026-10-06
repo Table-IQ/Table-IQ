@@ -189,3 +189,15 @@ describe("presets", () => {
     expect(form).toMatchObject({ username: "alice", port: 26257, database: "defaultdb" });
   });
 });
+
+describe("Turso / libSQL", () => {
+  it("is a read-only browser: no transactions, backup, users or agents, and a port its URL carries", () => {
+    expect(capsOf("libsql")).toEqual({ transactions: false, backup: false, userMgmt: false, agents: false });
+    expect(presetFor("libsql", null)).toEqual({ port: 8080, username: "", database: "", sslmode: "prefer" });
+  });
+  it("draws a teal fill that is legible under its white monogram and visible on the dark surface", () => {
+    expect(ENGINE_MONOGRAMS.libsql).toBe("Tu");
+    expect(contrast("#ffffff", ENGINE_COLORS.libsql)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(ENGINE_COLORS.libsql, "#15171c")).toBeGreaterThanOrEqual(2);
+  });
+});

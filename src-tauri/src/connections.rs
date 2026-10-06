@@ -94,6 +94,8 @@ impl ConnConfig {
                 };
                 format!("mongodb://{auth}{}:{}", urlencode_host(&self.host), self.port)
             }
+            // The server URL as typed (`libsql://…`, `https://…`, a host): the token is never in it.
+            "libsql" => self.host.clone(),
             // The HTTP interface: TLS (https, verified) for every SSL mode that asks for it.
             "clickhouse" => format!(
                 "{}://{}:{}@{}:{}/{}",
@@ -534,6 +536,27 @@ pub(crate) mod tests {
             cfg.sslmode = mode.into();
             assert!(cfg.url_with_password("p").starts_with(&format!("{scheme}://u%40x:p@ch.example:8443/")), "{mode}");
         }
+    }
+
+    #[test]
+    fn libsql_url_is_the_host_as_typed_and_never_carries_the_token() {
+        let mut cfg = ConnConfig {
+            env: None,
+            profile: None,
+            id: "x".into(),
+            name: "x".into(),
+            color: None,
+            engine: "libsql".into(),
+            host: "libsql://db-org.turso.io".into(),
+            port: 0,
+            database: String::new(),
+            username: String::new(),
+            sslmode: "prefer".into(),
+            ssh: None,
+        };
+        assert_eq!(cfg.url_with_password("s3cret-token"), "libsql://db-org.turso.io");
+        cfg.host = "http://127.0.0.1:8080".into();
+        assert!(!cfg.url_with_password("s3cret-token").contains("s3cret"));
     }
 
     #[test]

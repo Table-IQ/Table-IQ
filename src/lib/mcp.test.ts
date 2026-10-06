@@ -225,3 +225,12 @@ describe("Redis over MCP", () => {
     expect(REDIS_SHARING_NOTE).toContain("ACL user");
   });
 });
+
+describe("Turso / libSQL over MCP", () => {
+  it("is never shareable, never listed, and its note names it", () => {
+    expect(isMcpEngine("libsql")).toBe(false);
+    const row = mcpRowState({ engine: "libsql" }, { id: "c1", writes: true, rev: AGENT_REV });
+    expect(row).toMatchObject({ shareable: false, shared: false, writes: false, writable: false });
+    expect(row.note).toBe("Not available over MCP yet: TableIQ's agent guard has not been reviewed for Turso / libSQL.");
+  });
+});

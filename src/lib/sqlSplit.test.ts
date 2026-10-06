@@ -279,3 +279,9 @@ describe("dialectFor", () => {
     expect(dialectFor(undefined)).toBe("postgres");
   });
 });
+
+describe("Turso / libSQL splitting", () => {
+  it("splits like SQLite", () => {
+    expect(dialectFor("libsql")).toBe("sqlite");
+  });
+});

@@ -42,7 +42,7 @@ export const PROFILES = raw as Record<string, Profile>;
 
 /** Default port per engine (0 = file engine, no port). */
 export const DEFAULT_PORT: Record<Engine, number> = {
-  postgres: 5432, mysql: 3306, sqlite: 0, duckdb: 0, redis: 6379, mongodb: 27017, sqlserver: 1433, clickhouse: 8123,
+  postgres: 5432, mysql: 3306, sqlite: 0, duckdb: 0, redis: 6379, mongodb: 27017, sqlserver: 1433, clickhouse: 8123, libsql: 8080,
 };
 
 /** The profile saved on a connection, or null: none saved, an id this build lacks, or one of another base. */
@@ -97,8 +97,8 @@ export interface SheetCaps { transactions: boolean; backup: boolean; userMgmt: b
 export function capsOf(engine: string, profile?: string | null): SheetCaps {
   const p = profileOf(engine, profile);
   if (p) return { transactions: p.transactions, backup: p.backup, userMgmt: p.userMgmt, agents: p.agent ?? p.real };
-  // ClickHouse is a read-only browser with no MCP guard: the backend's `caps()` and `agent_access()`.
-  if (engine === "clickhouse") return { transactions: false, backup: false, userMgmt: false, agents: false };
+  // ClickHouse and Turso are read-only browsers with no MCP guard: the backend's `caps()` and `agent_access()`.
+  if (engine === "clickhouse" || engine === "libsql") return { transactions: false, backup: false, userMgmt: false, agents: false };
   return { transactions: true, backup: true, userMgmt: true, agents: !profile };
 }
 
