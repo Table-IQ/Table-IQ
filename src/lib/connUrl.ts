@@ -27,7 +27,7 @@ const MYSQL_SSL: Record<string, string> = { disable: "DISABLED", require: "REQUI
 const own = (table: Record<string, string>, key: string): string | undefined =>
   Object.prototype.hasOwnProperty.call(table, key) ? table[key] : undefined;
 // Managed clouds that refuse a plaintext connection.
-const TLS_HOSTS = [".rds.amazonaws.com", ".database.azure.com"];
+const TLS_HOSTS = [".rds.amazonaws.com", ".database.azure.com", ".database.windows.net"];
 
 // Recognised, but the backend has no SRV lookup / TLS for these yet.
 const UNSUPPORTED_SCHEMES = ["mongodb+srv", "rediss"];

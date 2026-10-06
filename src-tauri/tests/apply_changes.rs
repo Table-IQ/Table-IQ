@@ -2,16 +2,16 @@
 //!   TIQ_PG_URL=postgres://postgres:tableiq@127.0.0.1:55432/tableiq \
 //!   TIQ_MYSQL_URL=mysql://root:tableiq@127.0.0.1:53306/tableiq cargo test --test apply_changes
 //! SQL Server runs the same scenarios from tests/sqlserver.rs.
+mod common;
+use common::live_url;
+
 #[allow(dead_code)]
 mod changes_common;
 use changes_common::*;
 use tableiq_lib::drivers::{postgres::PgDriver, SqlDriver};
 
 async fn pg() -> Option<PgDriver> {
-    let Ok(url) = std::env::var("TIQ_PG_URL") else {
-        eprintln!("SKIP: TIQ_PG_URL unset");
-        return None;
-    };
+    let url = live_url("TIQ_PG_URL")?;
     Some(PgDriver::connect(&url).await.expect("connect"))
 }
 
@@ -31,8 +31,7 @@ use tableiq_lib::drivers::{mysql::MySqlDriver, sqlite::SqliteDriver};
 
 #[tokio::test]
 async fn mysql_apply_changes() {
-    let Ok(url) = std::env::var("TIQ_MYSQL_URL") else {
-        eprintln!("SKIP: TIQ_MYSQL_URL unset");
+    let Some(url) = live_url("TIQ_MYSQL_URL") else {
         return;
     };
     // Schema = database: the URL's path segment.

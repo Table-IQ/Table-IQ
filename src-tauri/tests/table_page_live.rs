@@ -5,13 +5,16 @@
 //!   TIQ_MYSQL_URL=mysql://root:tableiq@127.0.0.1:53306/tableiq \
 //!     cargo test --test table_page_live -- --nocapture
 
+mod common;
+use common::live_url;
+
 use tableiq_lib::drivers::{
     mysql::MySqlDriver, postgres::PgDriver, sqlite::SqliteDriver, ColumnFilter, FilterOp,
     ObjectKind, SortKey, SqlDriver,
 };
 
 fn pg() -> Option<String> {
-    std::env::var("TIQ_PG_URL").ok()
+    live_url("TIQ_PG_URL")
 }
 
 fn col_text(b: &arrow::record_batch::RecordBatch, c: &str, r: usize) -> String {
@@ -239,8 +242,7 @@ async fn pg_introspect_covers_matviews_empty_schemas_and_types() {
 /// whole introspect call. The count also has to decode `TABLE_ROWS` (BIGINT UNSIGNED).
 #[tokio::test]
 async fn mysql_introspect_and_count() {
-    let Ok(url) = std::env::var("TIQ_MYSQL_URL") else {
-        eprintln!("skip: no TIQ_MYSQL_URL");
+    let Some(url) = live_url("TIQ_MYSQL_URL") else {
         return;
     };
     let drv = MySqlDriver::connect(&url).await.unwrap();

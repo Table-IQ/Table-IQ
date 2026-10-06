@@ -15,6 +15,9 @@
 //!   TIQ_MSSQL_URL="Server=tcp:127.0.0.1,51433;User Id=sa;Password=TableIQ_pw1;Database=master;TrustServerCertificate=true;Encrypt=false" \
 //!   TIQ_BACKUP_SHIM=1 cargo test --test backup_live -- --nocapture
 
+mod common;
+use common::live_url;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -179,8 +182,7 @@ fn major(version: &str) -> Option<u32> {
 
 #[tokio::test]
 async fn pg_dump_custom_format_real_tool() {
-    let Ok(url) = std::env::var("TIQ_PG_URL") else {
-        eprintln!("skip: no TIQ_PG_URL");
+    let Some(url) = live_url("TIQ_PG_URL") else {
         return;
     };
     let Some(bin) = backup::resolve_tool("pg_dump", None) else {
@@ -208,8 +210,7 @@ async fn pg_dump_custom_format_real_tool() {
 
 #[tokio::test]
 async fn mysqldump_real_tool() {
-    let Ok(url) = std::env::var("TIQ_MYSQL_URL") else {
-        eprintln!("skip: no TIQ_MYSQL_URL");
+    let Some(url) = live_url("TIQ_MYSQL_URL") else {
         return;
     };
     if backup::resolve_tool("mysqldump", None).or_else(|| backup::resolve_tool("mariadb-dump", None)).is_none() {
@@ -240,10 +241,7 @@ fn shim_gate(url_var: &str, container: &str) -> Option<String> {
         eprintln!("skip: TIQ_BACKUP_SHIM!=1");
         return None;
     }
-    let Ok(url) = std::env::var(url_var) else {
-        eprintln!("skip: no {url_var}");
-        return None;
-    };
+    let url = live_url(url_var)?;
     if !container_running(container) {
         eprintln!("skip: container {container} is not running");
         return None;

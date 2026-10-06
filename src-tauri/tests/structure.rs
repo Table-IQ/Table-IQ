@@ -4,12 +4,14 @@
 //! their own tables — the seed already carries a composite PK, a unique index, a
 //! trigger, a column default and a column comment.
 
+mod common;
+use common::live_url;
+
 use tableiq_lib::drivers::{postgres::PgDriver, SqlDriver};
 
 #[tokio::test]
 async fn pg_structure_of_the_qa_seed() {
-    let Ok(url) = std::env::var("TIQ_PG_URL") else {
-        eprintln!("skip: no TIQ_PG_URL");
+    let Some(url) = live_url("TIQ_PG_URL") else {
         return;
     };
     let drv = PgDriver::connect(&url).await.unwrap();
@@ -78,8 +80,7 @@ async fn pg_structure_of_the_qa_seed() {
 /// trigger/index/column lists are per (schema, table), not per table name.
 #[tokio::test]
 async fn pg_structure_is_scoped_to_the_schema() {
-    let Ok(url) = std::env::var("TIQ_PG_URL") else {
-        eprintln!("skip: no TIQ_PG_URL");
+    let Some(url) = live_url("TIQ_PG_URL") else {
         return;
     };
     let pool = sqlx::postgres::PgPoolOptions::new().connect(&url).await.unwrap();
@@ -100,8 +101,7 @@ async fn pg_structure_is_scoped_to_the_schema() {
 
 #[tokio::test]
 async fn mysql_structure_of_the_qa_seed() {
-    let Ok(url) = std::env::var("TIQ_MYSQL_URL") else {
-        eprintln!("skip: no TIQ_MYSQL_URL");
+    let Some(url) = live_url("TIQ_MYSQL_URL") else {
         return;
     };
     let drv = tableiq_lib::drivers::mysql::MySqlDriver::connect(&url).await.unwrap();

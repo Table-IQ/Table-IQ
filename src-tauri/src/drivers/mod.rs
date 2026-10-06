@@ -151,6 +151,19 @@ pub(crate) fn compat_session(detect_ok: bool, saved: Option<&str>, detected: Opt
         || saved.is_some_and(|id| !id.is_empty() && lookup(id).is_none_or(|p| !p.real))
 }
 
+/// What the connect-time `BEGIN` probe says about transactions: `Some(true)` it ran,
+/// `Some(false)` the server answered with an error, `None` no answer (deadline, broken link).
+/// A server that accepts `BEGIN` as a no-op reads as `Some(true)`; that cannot be told apart.
+pub(crate) fn tx_probe_verdict<T>(
+    r: Result<Result<T, sqlx::Error>, tokio::time::error::Elapsed>,
+) -> Option<bool> {
+    match r {
+        Ok(Ok(_)) => Some(true),
+        Ok(Err(sqlx::Error::Database(_))) => Some(false),
+        _ => None,
+    }
+}
+
 /// A catalog estimate on a compat session: an error becomes "nothing to offer" (`None`, no
 /// tables), so a product without the base engine's catalog still browses. `logged` is the
 /// session's: the first degraded read is logged and the rest are not, since every table
@@ -952,6 +965,12 @@ pub trait SqlDriver: Send + Sync {
     fn product(&self) -> Option<String> {
         None
     }
+    /// The product the server's version text named, whatever was saved (`product()` prefers the
+    /// saved one). The MCP guard needs it: a connection saved as Neon that the server calls
+    /// CockroachDB must be guarded as CockroachDB (`profiles::guard_engine`). A wrapper forwards it.
+    fn detected_product(&self) -> Option<String> {
+        None
+    }
     /// What this session supports beyond its base engine's own rules.
     fn caps(&self) -> crate::profiles::Caps {
         crate::profiles::Caps { transactions: true, backup: true, user_mgmt: true }
@@ -1637,6 +1656,43 @@ mod compat_tests {
         assert!(compat_session(true, Some("neon"), Some("cockroachdb")), "either one decides");
         assert!(compat_session(true, Some("from-the-future"), None), "an unknown saved id");
         assert!(!compat_session(true, Some(""), None), "an empty profile is no profile");
+    }
+
+    /// A server-side error, as `BEGIN` on a product without transactions would return.
+    #[derive(Debug)]
+    struct Refused;
+    impl std::fmt::Display for Refused {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("transactions are not supported")
+        }
+    }
+    impl std::error::Error for Refused {}
+    impl sqlx::error::DatabaseError for Refused {
+        fn message(&self) -> &str {
+            "transactions are not supported"
+        }
+        fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+        fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+        fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+            self
+        }
+        fn kind(&self) -> sqlx::error::ErrorKind {
+            sqlx::error::ErrorKind::Other
+        }
+    }
+
+    #[tokio::test]
+    async fn only_a_server_error_on_begin_says_there_are_no_transactions() {
+        let timed_out = tokio::time::timeout(std::time::Duration::ZERO, std::future::pending::<()>()).await;
+        assert_eq!(tx_probe_verdict(Ok(Ok(()))), Some(true));
+        assert_eq!(tx_probe_verdict::<()>(Ok(Err(sqlx::Error::Database(Box::new(Refused))))), Some(false));
+        // Not an answer about transactions: the link broke, or the deadline ran out.
+        assert_eq!(tx_probe_verdict::<()>(Ok(Err(sqlx::Error::PoolClosed))), None);
+        assert_eq!(tx_probe_verdict::<()>(timed_out.map(Ok)), None);
     }
 
     #[test]

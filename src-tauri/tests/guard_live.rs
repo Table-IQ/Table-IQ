@@ -5,6 +5,9 @@
 //! Side effects on the test databases: Postgres statistics are reset, and MySQL keeps one
 //! uniquely named file in its `secure_file_priv` directory.
 
+mod common;
+use common::live_url;
+
 use std::time::Duration;
 
 use tableiq_lib::drivers::{CancelToken, SqlDriver};
@@ -27,11 +30,7 @@ async fn pg_wrapped(drv: &dyn SqlDriver, sql: &str) -> Result<(), String> {
 /// the regression this test pins.
 #[tokio::test]
 async fn postgres_gaps_were_real_and_are_refused() {
-    let Ok(url) = std::env::var("TIQ_PG_URL") else {
-        assert!(std::env::var("CI").is_err(), "CI must set TIQ_PG_URL: a skipped proof proves nothing");
-        eprintln!("skipping: TIQ_PG_URL not set");
-        return;
-    };
+    let Some(url) = live_url("TIQ_PG_URL") else { return };
     let pg = tableiq_lib::drivers::postgres::PgDriver::connect(&url).await.unwrap();
 
     let key = 7_000_000 + std::process::id() as i64;
@@ -66,12 +65,8 @@ async fn postgres_gaps_were_real_and_are_refused() {
 /// MariaDB runs when `TIQ_MARIADB_URL` is set.
 #[tokio::test]
 async fn mysql_outfile_was_real_and_is_refused() {
-    let Ok(mysql) = std::env::var("TIQ_MYSQL_URL") else {
-        assert!(std::env::var("CI").is_err(), "CI must set TIQ_MYSQL_URL: a skipped proof proves nothing");
-        eprintln!("skipping: TIQ_MYSQL_URL not set");
-        return;
-    };
-    for url in std::iter::once(mysql).chain(std::env::var("TIQ_MARIADB_URL")) {
+    let Some(mysql) = live_url("TIQ_MYSQL_URL") else { return };
+    for url in std::iter::once(mysql).chain(live_url("TIQ_MARIADB_URL")) {
         let my = tableiq_lib::drivers::mysql::MySqlDriver::connect(&url).await.unwrap();
         let mut dir = one(&my, "SELECT @@secure_file_priv").await.unwrap().unwrap_or_default();
         // MariaDB leaves the variable unset (NULL) when files may go anywhere; MySQL's empty

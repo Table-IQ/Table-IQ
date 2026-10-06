@@ -3,6 +3,9 @@
 //!     cargo test --test mysql_ssl_live -- --nocapture
 //! With TIQ_REQUIRE_LIVE=1 a missing URL fails instead of skipping.
 
+mod common;
+use common::live_url;
+
 use tableiq_lib::drivers::{mysql::MySqlDriver, SqlDriver};
 
 /// `Ssl_cipher` of a session opened with `?ssl-mode={mode}`; empty when the link is not encrypted.
@@ -20,9 +23,7 @@ async fn cipher(base: &str, mode: &str) -> String {
 
 #[tokio::test]
 async fn mysql_ssl_mode_is_applied() {
-    let Ok(url) = std::env::var("TIQ_MYSQL_URL") else {
-        assert!(std::env::var("TIQ_REQUIRE_LIVE").as_deref() != Ok("1"), "TIQ_MYSQL_URL unset");
-        eprintln!("SKIP: no TIQ_MYSQL_URL");
+    let Some(url) = live_url("TIQ_MYSQL_URL") else {
         return;
     };
     let base = url.split('?').next().unwrap();

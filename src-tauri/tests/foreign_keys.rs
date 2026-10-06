@@ -1,12 +1,14 @@
 //! ERD foreign-key introspection. Gated on TIQ_PG_URL. Uses isolated tables.
 
+mod common;
+use common::live_url;
+
 use sqlx::postgres::PgPoolOptions;
 use tableiq_lib::drivers::{postgres::PgDriver, SqlDriver};
 
 #[tokio::test]
 async fn foreign_keys_are_discovered() {
-    let Ok(url) = std::env::var("TIQ_PG_URL") else {
-        eprintln!("skip: no TIQ_PG_URL");
+    let Some(url) = live_url("TIQ_PG_URL") else {
         return;
     };
     let pool = PgPoolOptions::new().connect(&url).await.unwrap();
@@ -38,8 +40,7 @@ async fn foreign_keys_are_discovered() {
 /// table's schema on the `to_` side — the UI opens the target tab from it.
 #[tokio::test]
 async fn foreign_keys_cross_schema() {
-    let Ok(url) = std::env::var("TIQ_PG_URL") else {
-        eprintln!("skip: no TIQ_PG_URL");
+    let Some(url) = live_url("TIQ_PG_URL") else {
         return;
     };
     let pool = PgPoolOptions::new().connect(&url).await.unwrap();
@@ -72,8 +73,7 @@ async fn foreign_keys_cross_schema() {
 /// 4-row cartesian product (including two pairings that do not exist).
 #[tokio::test]
 async fn composite_foreign_key_is_one_constraint_with_ordered_pairs() {
-    let Ok(url) = std::env::var("TIQ_PG_URL") else {
-        eprintln!("skip: no TIQ_PG_URL");
+    let Some(url) = live_url("TIQ_PG_URL") else {
         return;
     };
     let pool = PgPoolOptions::new().connect(&url).await.unwrap();
@@ -107,8 +107,7 @@ async fn composite_foreign_key_is_one_constraint_with_ordered_pairs() {
 /// MySQL: the same composite shape, ordered by constraint then ordinal position.
 #[tokio::test]
 async fn mysql_composite_foreign_key_is_ordered() {
-    let Ok(url) = std::env::var("TIQ_MYSQL_URL") else {
-        eprintln!("skip: no TIQ_MYSQL_URL");
+    let Some(url) = live_url("TIQ_MYSQL_URL") else {
         return;
     };
     let pool = sqlx::mysql::MySqlPoolOptions::new().connect(&url).await.unwrap();
@@ -227,8 +226,7 @@ async fn sqlite_implicit_reference_resolves_to_the_parent_pk() {
 /// sees them. Requires `docker/postgres/qa.sql` to have been applied.
 #[tokio::test]
 async fn qa_seed_shapes_are_reported_for_the_erd() {
-    let Ok(url) = std::env::var("TIQ_PG_URL") else {
-        eprintln!("skip: no TIQ_PG_URL");
+    let Some(url) = live_url("TIQ_PG_URL") else {
         return;
     };
     let drv = PgDriver::connect(&url).await.unwrap();

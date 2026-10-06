@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.8.4 — 2026-10-06
+
+CockroachDB can now be shared with agents over MCP. TiDB stays closed, because its read-only transaction is a no-op unless a server flag is set. The remaining P1 engine-profile follow-ups ship alongside.
+
+### Added
+- **CockroachDB over MCP.** It gets its own guard dialect: the PostgreSQL rules plus CockroachDB's file, backup, export, import, changefeed, replication, cluster-setting and job-control statements and its unsafe internal functions. The read-only transaction, the one-statement rule and the guard were each proven live against CockroachDB v26.3.2.
+- **Cloud URL presets** for Amazon RDS / Aurora, Azure Database for PostgreSQL and MySQL, and Google Cloud SQL, plus TLS-by-default for Azure SQL hosts.
+- **Transaction probe at connect.** A `BEGIN`/`ROLLBACK` on the probe connection: a server that refuses `BEGIN` loses staged commits. A timeout leaves the profile's setting alone.
+- **`TIQ_REQUIRE_LIVE` for 25 live test binaries.** CI now fails if a database it should have is missing, instead of passing on skipped tests.
+
+### Changed
+- An MCP allowlist entry now records the generation of agent access it was confirmed under. A product opened to agents in a later release is not served from an older entry until it is shared again.
+- **Metrics widgets** on a product without read-only transactions say so by name instead of showing the driver's error.
+- **Explain** on CockroachDB says it isn't available yet instead of showing a driver error.
+
 ## 0.8.3 — 2026-10-04
 
 TableIQ now names the product behind a PostgreSQL or MySQL connection. 23 engine profiles ship, seven of them verified against the real product: MariaDB, TiDB, CockroachDB, GreatSQL, Dolt, YugabyteDB and TimescaleDB. The other sixteen are Beta.

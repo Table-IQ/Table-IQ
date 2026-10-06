@@ -20,6 +20,30 @@ pub struct Profile {
     #[serde(default)]
     pub detect: Vec<String>,
     pub tested: bool,
+    /// May agents reach it over MCP? Absent: as `real`. Separate from `real`, which also tells
+    /// the drivers to treat the server as the base engine.
+    #[serde(default)]
+    agent: Option<bool>,
+    /// The opening of this product to agents (a build's `agent_rev`): an allowlist entry
+    /// confirmed under an earlier one is not served until the user re-shares the connection.
+    #[serde(default, rename = "agentSince")]
+    pub agent_since: u32,
+    /// Why agents cannot reach it, in the user's words; absent: the general reason.
+    #[serde(default, rename = "agentNote")]
+    pub agent_note: Option<String>,
+}
+
+impl Profile {
+    pub fn agent(&self) -> bool {
+        self.agent.unwrap_or(self.real)
+    }
+}
+
+/// The generation of agent access a new allowlist entry is confirmed under: the latest opening
+/// of any product. An entry from before it (`McpConn::rev` lower) is not served for a product
+/// opened since ([`reconfirm_block`]).
+pub fn agent_rev() -> u32 {
+    PROFILES.values().map(|p| p.agent_since).max().unwrap_or(0)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -73,6 +97,14 @@ pub fn effective_caps(saved: Option<&str>, detected: Option<&str>) -> Caps {
     )
 }
 
+/// [`effective_caps`], further narrowed by the connect-time `BEGIN` probe: only a server that
+/// refused `BEGIN` (`Some(false)`) turns transactions off. A probe that timed out or never ran
+/// (`None`) leaves the profile's flag, and a probe never grants what the profile withholds.
+pub fn caps_with_probe(saved: Option<&str>, detected: Option<&str>, tx_probe: Option<bool>) -> Caps {
+    let c = effective_caps(saved, detected);
+    Caps { transactions: c.transactions && tx_probe != Some(false), ..c }
+}
+
 /// Why a connection cannot be shared over MCP, or None when it can. An empty saved profile
 /// is no profile, as in `capsOf` (`profiles.ts`).
 pub fn agent_block(base: &str, saved: Option<&str>, detected: Option<&str>, detect_ok: bool) -> Option<String> {
@@ -82,15 +114,39 @@ pub fn agent_block(base: &str, saved: Option<&str>, detected: Option<&str>, dete
             "This connection cannot be shared over MCP: its profile ({id}) was saved by a newer TableIQ. Update TableIQ to manage it."
         ));
     }
-    if let Some(p) = [saved, detected].into_iter().flatten().filter_map(lookup).find(|p| !p.real) {
+    if let Some(p) = [saved, detected].into_iter().flatten().filter_map(lookup).find(|p| !p.agent()) {
         return Some(format!(
-            "{} cannot be shared over MCP yet: TableIQ's agent guard has been reviewed for PostgreSQL, MySQL and MariaDB only. Ask the user to run this in a TableIQ query tab.",
-            p.label
+            "{} cannot be shared over MCP yet: {} Ask the user to run this in a TableIQ query tab.",
+            p.label,
+            p.agent_note.as_deref().unwrap_or(AGENT_NOTE)
         ));
     }
     (!detect_ok).then(|| {
         "TableIQ could not identify this server (its version query failed), so it cannot be shared over MCP. Ask the user to reconnect, or to run this in a TableIQ query tab.".to_string()
     })
+}
+
+/// Why a product without an `agentNote` is not shared. Mirrored in `mcp.ts`.
+pub const AGENT_NOTE: &str =
+    "TableIQ's agent guard has been reviewed for PostgreSQL, MySQL, MariaDB and CockroachDB only.";
+
+/// Why an allowlist entry confirmed under generation `rev` cannot be served yet: the product
+/// behind the connection (saved or detected) was opened to agents after it was shared, so
+/// the user never confirmed it for this product. Re-sharing it (off, on) records the current
+/// generation and drops its write access. Checked after [`agent_block`].
+pub fn reconfirm_block(saved: Option<&str>, detected: Option<&str>, rev: u32) -> Option<String> {
+    [saved, detected].into_iter().flatten().filter_map(lookup).find(|p| p.agent() && p.agent_since > rev).map(|p| {
+        format!(
+            "This connection was shared before TableIQ supported {} over MCP. Turn sharing off and on again for it in TableIQ → Settings → MCP to confirm it (writes start off).",
+            p.label
+        )
+    })
+}
+
+/// The engine the MCP guard runs for: `base`, or `"cockroachdb"` when the saved or the detected
+/// profile says so (the guard adds that product's own checks to the Postgres ones).
+pub fn guard_engine<'a>(base: &'a str, saved: Option<&str>, detected: Option<&str>) -> &'a str {
+    if base == "postgres" && [saved, detected].contains(&Some("cockroachdb")) { "cockroachdb" } else { base }
 }
 
 #[cfg(test)]
@@ -175,6 +231,18 @@ mod tests {
     }
 
     #[test]
+    fn only_a_refused_begin_turns_transactions_off() {
+        assert!(caps_with_probe(None, None, Some(true)).transactions);
+        assert!(caps_with_probe(None, None, None).transactions, "unknown keeps the static flag");
+        assert!(!caps_with_probe(None, None, Some(false)).transactions);
+        // The probe never grants: a profile without transactions stays without them.
+        assert!(!caps_with_probe(Some("doris"), None, Some(true)).transactions);
+        assert_eq!(caps_with_probe(Some("tidb"), None, Some(true)), effective_caps(Some("tidb"), None));
+        let c = caps_with_probe(Some("mariadb"), None, Some(false));
+        assert!(!c.transactions && c.backup && !c.user_mgmt);
+    }
+
+    #[test]
     fn agent_block_matches_the_case_table() {
         #[derive(serde::Deserialize)]
         struct Case { engine: String, profile: Option<String>, allowed: bool }
@@ -207,10 +275,62 @@ mod tests {
         assert!(m.contains("TiDB cannot be shared over MCP yet"), "{m}");
         // The detected product alone blocks a connection saved as plain MySQL; MariaDB does not.
         assert!(agent_block("mysql", None, Some("mariadb"), true).is_none());
-        let m = agent_block("postgres", None, Some("cockroachdb"), true).unwrap();
-        assert!(m.contains("CockroachDB cannot be shared over MCP yet"), "{m}");
+        // CockroachDB is open to agents (its guard is reviewed); a profile that is not stays refused.
+        assert!(agent_block("postgres", None, Some("cockroachdb"), true).is_none());
+        assert!(agent_block("postgres", Some("neon"), Some("cockroachdb"), true).is_none());
+        let m = agent_block("postgres", Some("redshift"), None, true).unwrap();
+        assert!(m.contains("Amazon Redshift cannot be shared over MCP yet"), "{m}");
         // An empty saved profile is no profile, and no version failure means nothing to say.
         assert!(agent_block("mysql", Some(""), None, true).is_none());
+    }
+
+    /// `agent` is its own flag: absent it follows `real`, and only CockroachDB differs.
+    #[test]
+    fn agent_follows_real_unless_set() {
+        let differing: Vec<&str> = PROFILES.iter().filter(|(_, p)| p.agent() != p.real).map(|(id, _)| id.as_str()).collect();
+        assert_eq!(differing, ["cockroachdb"]);
+        assert!(!lookup("cockroachdb").unwrap().real, "the drivers still treat it as a compatible product");
+        assert!(lookup("neon").unwrap().agent() && !lookup("tidb").unwrap().agent());
+    }
+
+    /// A product opened to agents without being the base engine says when, so entries older
+    /// than that are re-confirmed; one that is the base engine or closed has no such date.
+    #[test]
+    fn an_opened_compatible_product_has_a_generation() {
+        for (id, p) in PROFILES.iter() {
+            assert_eq!(p.agent() && !p.real, p.agent_since > 0, "{id}");
+        }
+        assert_eq!(agent_rev(), lookup("cockroachdb").unwrap().agent_since);
+    }
+
+    #[test]
+    fn a_closed_product_names_its_own_reason() {
+        let m = agent_block("mysql", Some("tidb"), None, true).unwrap();
+        assert!(m.contains("START TRANSACTION READ ONLY") && m.contains("cannot make an agent's connection read-only"), "{m}");
+        let m = agent_block("mysql", Some("doris"), None, true).unwrap();
+        assert!(m.contains(AGENT_NOTE), "{m}");
+    }
+
+    #[test]
+    fn an_entry_older_than_the_products_opening_is_not_served() {
+        let now = agent_rev();
+        assert!(reconfirm_block(Some("cockroachdb"), None, 0).unwrap().contains("CockroachDB over MCP"));
+        assert!(reconfirm_block(None, Some("cockroachdb"), 0).is_some(), "found by detection alone");
+        assert!(reconfirm_block(Some("neon"), Some("cockroachdb"), 0).is_some(), "a wrong label lifts nothing");
+        assert!(reconfirm_block(Some("cockroachdb"), None, now).is_none(), "re-shared since");
+        // The base engine and real engines under a vendor name were always open.
+        for saved in [None, Some("neon"), Some("mariadb"), Some("from-the-future")] {
+            assert!(reconfirm_block(saved, None, 0).is_none(), "{saved:?}");
+        }
+    }
+
+    #[test]
+    fn the_guard_runs_for_cockroachdb_when_either_side_says_so() {
+        assert_eq!(guard_engine("postgres", Some("cockroachdb"), None), "cockroachdb");
+        assert_eq!(guard_engine("postgres", Some("neon"), Some("cockroachdb")), "cockroachdb");
+        assert_eq!(guard_engine("postgres", None, None), "postgres");
+        assert_eq!(guard_engine("postgres", Some("neon"), None), "postgres");
+        assert_eq!(guard_engine("mysql", Some("cockroachdb"), None), "mysql");
     }
 
     #[test]

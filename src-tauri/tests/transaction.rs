@@ -1,12 +1,14 @@
 //! Slice 4: run_script transaction semantics (BEGIN/COMMIT/ROLLBACK). Gated on TIQ_PG_URL.
 
+mod common;
+use common::live_url;
+
 use sqlx::postgres::PgPoolOptions;
 use tableiq_lib::drivers::{postgres::PgDriver, SqlDriver};
 
 #[tokio::test]
 async fn script_commit_and_rollback() {
-    let Ok(url) = std::env::var("TIQ_PG_URL") else {
-        eprintln!("skip: no TIQ_PG_URL");
+    let Some(url) = live_url("TIQ_PG_URL") else {
         return;
     };
     let pool = PgPoolOptions::new().connect(&url).await.unwrap();

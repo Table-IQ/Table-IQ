@@ -6,6 +6,9 @@
 //!   TIQ_MYSQL_URL=mysql://root:tableiq@127.0.0.1:53306/tableiq \
 //!     cargo test --test fast_open -- --nocapture
 
+mod common;
+use common::live_url;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,11 +18,11 @@ use tableiq_lib::drivers::{
 };
 
 fn pg() -> Option<String> {
-    std::env::var("TIQ_PG_URL").ok()
+    live_url("TIQ_PG_URL")
 }
 
 fn mysql() -> Option<String> {
-    std::env::var("TIQ_MYSQL_URL").ok()
+    live_url("TIQ_MYSQL_URL")
 }
 
 /// A second, plain connection for the DDL a test needs, so nothing goes through (or

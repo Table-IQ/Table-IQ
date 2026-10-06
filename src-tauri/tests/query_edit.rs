@@ -4,6 +4,9 @@
 //!   TIQ_PG_URL=postgres://postgres:tableiq@127.0.0.1:55432/tableiq \
 //!     cargo test --test query_edit -- --nocapture
 
+mod common;
+use common::live_url;
+
 use sqlx::postgres::PgPoolOptions;
 use tableiq_lib::drivers::{postgres::PgDriver, EditSpec, SqlDriver};
 
@@ -20,8 +23,7 @@ fn col_text(batch: &arrow::record_batch::RecordBatch, col: &str, row: usize) -> 
 
 #[tokio::test]
 async fn query_and_edit_roundtrip() {
-    let Ok(url) = std::env::var("TIQ_PG_URL") else {
-        eprintln!("skip: no TIQ_PG_URL");
+    let Some(url) = live_url("TIQ_PG_URL") else {
         return;
     };
 

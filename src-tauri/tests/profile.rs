@@ -1,6 +1,9 @@
 //! Slice 11 integration: profiling SQL runs against live Postgres (seeded `wide` table).
 //! Gated on TIQ_PG_URL.
 
+mod common;
+use common::live_url;
+
 use arrow::array::{Array, StringArray};
 use arrow::record_batch::RecordBatch;
 
@@ -17,8 +20,7 @@ fn i64_cell(batch: &RecordBatch, col: &str) -> i64 {
 
 #[tokio::test]
 async fn profiles_a_column_on_postgres() {
-    let Ok(url) = std::env::var("TIQ_PG_URL") else {
-        eprintln!("skip: no TIQ_PG_URL");
+    let Some(url) = live_url("TIQ_PG_URL") else {
         return;
     };
     let drv = PgDriver::connect(&url).await.expect("connect");

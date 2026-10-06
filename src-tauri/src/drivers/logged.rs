@@ -149,6 +149,9 @@ impl SqlDriver for Logged {
     fn product(&self) -> Option<String> {
         self.inner.product()
     }
+    fn detected_product(&self) -> Option<String> {
+        self.inner.detected_product()
+    }
     fn caps(&self) -> crate::profiles::Caps {
         self.inner.caps()
     }
@@ -312,6 +315,9 @@ mod tests {
         fn product(&self) -> Option<String> {
             Some("tidb".into())
         }
+        fn detected_product(&self) -> Option<String> {
+            Some("cockroachdb".into())
+        }
         fn caps(&self) -> Caps {
             Caps { transactions: false, backup: false, user_mgmt: false }
         }
@@ -385,6 +391,7 @@ mod tests {
     fn profile_answers_are_the_inner_drivers() {
         let d = Logged { inner: Arc::new(Recorder::default()), log: Arc::new(SqlLog::default()) };
         assert_eq!(d.product().as_deref(), Some("tidb"));
+        assert_eq!(d.detected_product().as_deref(), Some("cockroachdb"));
         assert_eq!(d.caps(), Caps { transactions: false, backup: false, user_mgmt: false });
         assert_eq!(d.agent_access(), Err("no".to_string()));
         assert!(!d.literals_safe());

@@ -229,6 +229,8 @@ pub struct PgDriver {
     detected: Option<String>,
     /// `ConnConfig.profile`, as saved.
     saved: Option<String>,
+    /// What a `BEGIN` on the probe connection said: `Some(false)` only if the server refused it.
+    tx_probe: Option<bool>,
     /// A degraded estimate has been logged (see [`super::degrade`]).
     degrade_logged: std::sync::atomic::AtomicBool,
     /// A pooled connection rejected `SET standard_conforming_strings = on`, or did not report
@@ -278,7 +280,7 @@ impl PgDriver {
         // surfaces immediately. `PgPoolOptions::connect` would instead retry in
         // the pool until `acquire_timeout` (default 30s) and return the opaque
         // "pool timed out while waiting for an open connection", hiding the cause.
-        let version = {
+        let (version, tx_probe) = {
             use sqlx::Connection;
             let deadline = tokio::time::Instant::now() + super::CONNECT_TIMEOUT;
             let mut probe = tokio::time::timeout_at(deadline, sqlx::postgres::PgConnection::connect(url))
@@ -290,8 +292,21 @@ impl PgDriver {
             // The version text names the product, inside the same bound. Simple protocol: a
             // wire-compatible server need not support prepared statements.
             let row = tokio::time::timeout_at(deadline, probe.fetch_one(sqlx::raw_sql("SELECT version()"))).await;
+            // A product without transactions may still accept the connection: ask it, inside
+            // the same bound, on the connection about to be closed. Skipped when the version
+            // query left the connection in an unknown state.
+            let tx_probe = if matches!(row, Ok(Ok(_))) {
+                let begin = tokio::time::timeout_at(deadline, probe.execute(sqlx::raw_sql("BEGIN"))).await;
+                let verdict = super::tx_probe_verdict(begin);
+                if verdict == Some(true) {
+                    let _ = tokio::time::timeout_at(deadline, probe.execute(sqlx::raw_sql("ROLLBACK"))).await;
+                }
+                verdict
+            } else {
+                None
+            };
             let _ = probe.close().await;
-            row.ok().and_then(Result::ok).and_then(|r| pg_cell(&r, 0).ok().flatten())
+            (row.ok().and_then(Result::ok).and_then(|r| pg_cell(&r, 0).ok().flatten()), tx_probe)
         };
         let detect_ok = version.is_some();
         if !detect_ok {
@@ -378,6 +393,7 @@ impl PgDriver {
             detect_ok,
             detected,
             saved,
+            tx_probe,
             degrade_logged: Default::default(),
             scs_rejected,
         })
@@ -624,8 +640,11 @@ impl SqlDriver for PgDriver {
     fn product(&self) -> Option<String> {
         crate::profiles::session_profile("postgres", self.saved.as_deref(), self.detected.as_deref())
     }
+    fn detected_product(&self) -> Option<String> {
+        self.detected.clone()
+    }
     fn caps(&self) -> crate::profiles::Caps {
-        crate::profiles::effective_caps(self.saved.as_deref(), self.detected.as_deref())
+        crate::profiles::caps_with_probe(self.saved.as_deref(), self.detected.as_deref(), self.tx_probe)
     }
     fn agent_access(&self) -> Result<(), String> {
         crate::profiles::agent_block("postgres", self.saved.as_deref(), self.detected.as_deref(), self.detect_ok)

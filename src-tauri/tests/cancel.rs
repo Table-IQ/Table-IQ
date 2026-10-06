@@ -5,6 +5,9 @@
 //!   TIQ_PG_URL=postgres://postgres:tableiq@127.0.0.1:55432/tableiq \
 //!     cargo test --test cancel -- --nocapture
 
+mod common;
+use common::live_url;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -16,8 +19,7 @@ use tableiq_lib::ipc::connect::{cancel_all_for, ckey};
 
 #[tokio::test]
 async fn pg_cancel_interrupts_long_query() {
-    let Ok(url) = std::env::var("TIQ_PG_URL") else {
-        eprintln!("skip: no TIQ_PG_URL");
+    let Some(url) = live_url("TIQ_PG_URL") else {
         return;
     };
     let drv = Arc::new(PgDriver::connect(&url).await.expect("connect pg"));
@@ -45,8 +47,7 @@ async fn pg_cancel_interrupts_long_query() {
 
 #[tokio::test]
 async fn mysql_cancel_interrupts_long_query() {
-    let Ok(url) = std::env::var("TIQ_MYSQL_URL") else {
-        eprintln!("skip: no TIQ_MYSQL_URL");
+    let Some(url) = live_url("TIQ_MYSQL_URL") else {
         return;
     };
     let drv = Arc::new(MySqlDriver::connect(&url).await.expect("connect mysql"));
@@ -80,8 +81,7 @@ async fn mysql_cancel_interrupts_long_query() {
 /// stop, proving `cancel_all_for` finds every token for a connection, not just one.
 #[tokio::test]
 async fn pg_cancel_all_stops_two_queries() {
-    let Ok(url) = std::env::var("TIQ_PG_URL") else {
-        eprintln!("skip: no TIQ_PG_URL");
+    let Some(url) = live_url("TIQ_PG_URL") else {
         return;
     };
     let drv: Arc<dyn SqlDriver> = Arc::new(PgDriver::connect(&url).await.expect("connect pg"));

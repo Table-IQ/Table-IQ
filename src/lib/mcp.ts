@@ -4,7 +4,7 @@
  * enforces in Rust.
  */
 import type { ConnConfig, McpConfig, McpConn } from "./commands";
-import { capsOf, profileOf } from "./profiles";
+import { AGENT_NOTE, AGENT_REV, capsOf, profileOf } from "./profiles";
 
 /** Shown under every DuckDB connection in Settings → MCP: the first agent call turns
  *  external access off and locks the instance's configuration (`harden_duckdb` in
@@ -47,7 +47,7 @@ export function maskToken(token: string): string {
 export function setShared(cfg: McpConfig, id: string, shared: boolean): McpConfig {
   const rest = cfg.connections.filter((c) => c.id !== id);
   const had = cfg.connections.find((c) => c.id === id);
-  return { ...cfg, connections: shared ? [...rest, had ?? { id, writes: false }] : rest };
+  return { ...cfg, connections: shared ? [...rest, had ?? { id, writes: false, rev: AGENT_REV }] : rest };
 }
 
 /** Allow or forbid writes on an already-shared connection. */
@@ -70,21 +70,35 @@ export interface McpRowState {
  *  entry (`pruneUnshareable`). */
 export function mcpRowState(conn: Pick<ConnConfig, "engine" | "profile">, shared: McpConn | undefined): McpRowState {
   if (capsOf(conn.engine, conn.profile).agents) {
-    return { shareable: true, shared: !!shared, writes: !!shared?.writes, note: null };
+    // An entry from before the product opened to agents reads unshared: sharing it again confirms it.
+    const live = shared && !entryStale(conn, shared);
+    return { shareable: true, shared: !!live, writes: !!live && !!shared?.writes, note: null };
   }
-  const note = profileOf(conn.engine, conn.profile)
-    ? "Not available over MCP yet: TableIQ's agent guard has been reviewed for PostgreSQL, MySQL and MariaDB only."
+  const p = profileOf(conn.engine, conn.profile);
+  const note = p
+    ? `Not available over MCP yet: ${p.agentNote ?? AGENT_NOTE}`
     : `Not available over MCP: this connection's profile (${conn.profile}) was saved by a newer TableIQ. Update TableIQ to manage it.`;
   return { shareable: false, shared: false, writes: false, note };
 }
 
+/** The entry was confirmed before the saved profile's product opened to agents (`reconfirm_block`
+ *  in `profiles.rs`). A product the server only reveals at connect is caught there, not here. */
+function entryStale(conn: Pick<ConnConfig, "engine" | "profile">, entry: McpConn): boolean {
+  return (profileOf(conn.engine, conn.profile)?.agentSince ?? 0) > (entry.rev ?? 0);
+}
+
 /** `cfg` without the allowlist entries of saved connections that can no longer be shared (a
- *  product detected since, a profile this build lacks). Such a row renders unchecked and
- *  disabled, so the entry could not be removed by hand — and a build that opens the product to
- *  MCP would bring it back, writes included. The same object when nothing is stale. */
+ *  product detected since, a profile this build lacks) and of ones confirmed before their
+ *  product opened to agents. The first renders unchecked and disabled, so it could not be
+ *  removed by hand — and a build that opens the product to MCP would bring it back, writes
+ *  included; the second must be shared again to be confirmed. The same object when nothing is stale. */
 export function pruneUnshareable(cfg: McpConfig, saved: readonly Pick<ConnConfig, "id" | "engine" | "profile">[]): McpConfig {
-  const stale = new Set(saved.filter((c) => !capsOf(c.engine, c.profile).agents).map((c) => c.id));
-  const connections = cfg.connections.filter((c) => !stale.has(c.id));
+  const by = new Map(saved.map((c) => [c.id, c]));
+  const stale = (e: McpConn) => {
+    const c = by.get(e.id);
+    return !!c && (!capsOf(c.engine, c.profile).agents || entryStale(c, e));
+  };
+  const connections = cfg.connections.filter((e) => !stale(e));
   return connections.length === cfg.connections.length ? cfg : { ...cfg, connections };
 }
 

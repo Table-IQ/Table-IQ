@@ -6,12 +6,14 @@
 //!   TIQ_PG_URL=postgres://postgres:tableiq@127.0.0.1:55432/tableiq \
 //!     cargo test --test user_mgmt_live -- --nocapture
 
+mod common;
+use common::live_url;
+
 use tableiq_lib::drivers::{postgres::PgDriver, CancelToken, SqlDriver};
 
 #[tokio::test]
 async fn pg_create_then_drop_a_role_via_the_generated_sql() {
-    let Ok(url) = std::env::var("TIQ_PG_URL") else {
-        eprintln!("skip: no TIQ_PG_URL");
+    let Some(url) = live_url("TIQ_PG_URL") else {
         return;
     };
     let drv = PgDriver::connect(&url).await.expect("connect pg");

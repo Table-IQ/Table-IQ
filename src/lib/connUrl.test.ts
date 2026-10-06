@@ -40,6 +40,16 @@ describe("parseConnUrl", () => {
     expect(parseConnUrl("postgres://u@db.abc.eu-west-1.rds.amazonaws.com/db?sslmode=verify-full")?.sslmode).toBe("verify-full");
     expect(parseConnUrl("postgres://u@localhost/db")?.profile).toBeUndefined();
   });
+  it("names the cloud preset a managed-database host belongs to, and requires TLS", () => {
+    expect(parseConnUrl("postgres://u@db.abc.eu-west-1.rds.amazonaws.com/db")).toMatchObject({ profile: "rds-postgres", port: 5432, sslmode: "require" });
+    expect(parseConnUrl("mysql://u@c.cluster-x.eu-west-1.rds.amazonaws.com/db")).toMatchObject({ profile: "rds-mysql", port: 3306, sslmode: "require" });
+    expect(parseConnUrl("postgres://u@s.postgres.database.azure.com/db")).toMatchObject({ profile: "azure-postgres", sslmode: "require" });
+    expect(parseConnUrl("mysql://u@s.mysql.database.azure.com/db")).toMatchObject({ profile: "azure-mysql", sslmode: "require" });
+    // Another wire protocol on the same host family is not that preset.
+    expect(parseConnUrl("postgres://u@s.mysql.database.azure.com/db")?.profile).toBeUndefined();
+    // Azure SQL speaks neither wire protocol (no profile), but still refuses plaintext.
+    expect(parseConnUrl("sqlserver://u@s.database.windows.net/db")).toMatchObject({ engine: "sqlserver", sslmode: "require" });
+  });
   it("spots a profile scheme as a URL", () => {
     expect(looksLikeConnUrl("cockroachdb://root@h/defaultdb")).toBe(true);
   });

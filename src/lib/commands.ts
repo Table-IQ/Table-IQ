@@ -965,6 +965,8 @@ export async function validateWidgetSql(id: string, sql: string): Promise<void> 
 export interface McpConn {
   id: string;
   writes: boolean;
+  /** `AGENT_REV` when the user shared it; 0 (or absent) for an entry from before a product opened to agents. */
+  rev?: number;
 }
 export interface McpConfig {
   enabled: boolean;

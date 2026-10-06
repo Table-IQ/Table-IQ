@@ -3,10 +3,13 @@
 //!   TIQ_PG_URL=postgres://postgres:tableiq@127.0.0.1:55432/tableiq \
 //!     cargo test --test introspect_browse -- --nocapture
 
+mod common;
+use common::live_url;
+
 use tableiq_lib::drivers::{postgres::PgDriver, ObjectKind, SqlDriver};
 
 fn pg() -> Option<String> {
-    std::env::var("TIQ_PG_URL").ok()
+    live_url("TIQ_PG_URL")
 }
 
 #[tokio::test]

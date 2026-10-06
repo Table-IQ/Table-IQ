@@ -32,6 +32,7 @@
       ".tidbcloud.com"
     ],
     "real": false,
+    "agentNote": "TiDB rejects START TRANSACTION READ ONLY unless tidb_enable_noop_functions is on, and then the statement does nothing, so TableIQ cannot make an agent's connection read-only.",
     "transactions": true,
     "backup": false,
     "userMgmt": false,
@@ -242,13 +243,16 @@
       ".cockroachlabs.cloud"
     ],
     "real": false,
+    "agent": true,
+    "agentSince": 1,
     "transactions": true,
     "backup": false,
     "userMgmt": false,
     "detect": [
       "CockroachDB"
     ],
-    "tested": true
+    "tested": true,
+    "explain": false
   },
   "redshift": {
     "base": "postgres",
@@ -458,6 +462,111 @@
     "detect": [
       "RisingWave"
     ],
+    "tested": false
+  },
+  "rds-postgres": {
+    "base": "postgres",
+    "label": "Amazon RDS / Aurora",
+    "monogram": "Rp",
+    "color": "#b45309",
+    "port": 5432,
+    "user": "postgres",
+    "ssl": "require",
+    "schemes": [],
+    "hosts": [
+      ".rds.amazonaws.com"
+    ],
+    "real": true,
+    "transactions": true,
+    "backup": true,
+    "userMgmt": true,
+    "detect": [],
+    "tested": false
+  },
+  "rds-mysql": {
+    "base": "mysql",
+    "label": "Amazon RDS / Aurora",
+    "monogram": "Rm",
+    "color": "#9a4a07",
+    "port": 3306,
+    "ssl": "require",
+    "schemes": [],
+    "hosts": [
+      ".rds.amazonaws.com"
+    ],
+    "real": true,
+    "transactions": true,
+    "backup": true,
+    "userMgmt": true,
+    "detect": [],
+    "tested": false
+  },
+  "azure-postgres": {
+    "base": "postgres",
+    "label": "Azure Database",
+    "monogram": "Zp",
+    "color": "#0f6cbd",
+    "port": 5432,
+    "user": "postgres",
+    "ssl": "require",
+    "schemes": [],
+    "hosts": [
+      ".postgres.database.azure.com"
+    ],
+    "real": true,
+    "transactions": true,
+    "backup": true,
+    "userMgmt": true,
+    "detect": [],
+    "tested": false
+  },
+  "azure-mysql": {
+    "base": "mysql",
+    "label": "Azure Database",
+    "monogram": "Zm",
+    "color": "#0a58a0",
+    "port": 3306,
+    "ssl": "require",
+    "schemes": [],
+    "hosts": [
+      ".mysql.database.azure.com"
+    ],
+    "real": true,
+    "transactions": true,
+    "backup": true,
+    "userMgmt": true,
+    "detect": [],
+    "tested": false
+  },
+  "cloudsql-postgres": {
+    "base": "postgres",
+    "label": "Google Cloud SQL",
+    "monogram": "Gp",
+    "color": "#1a73e8",
+    "port": 5432,
+    "user": "postgres",
+    "schemes": [],
+    "hosts": [],
+    "real": true,
+    "transactions": true,
+    "backup": true,
+    "userMgmt": true,
+    "detect": [],
+    "tested": false
+  },
+  "cloudsql-mysql": {
+    "base": "mysql",
+    "label": "Google Cloud SQL",
+    "monogram": "Gm",
+    "color": "#1558b0",
+    "port": 3306,
+    "schemes": [],
+    "hosts": [],
+    "real": true,
+    "transactions": true,
+    "backup": true,
+    "userMgmt": true,
+    "detect": [],
     "tested": false
   }
 }

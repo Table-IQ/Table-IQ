@@ -6,6 +6,9 @@
 //!   TIQ_MYSQL_URL=mysql://root:tableiq@127.0.0.1:53306/tableiq \
 //!     cargo test --test exec_live -- --nocapture
 
+mod common;
+use common::live_url;
+
 use arrow::array::{Array, StringArray};
 use tableiq_lib::drivers::{
     duckdb::DuckDriver, mysql::MySqlDriver, postgres::PgDriver, sqlite::SqliteDriver, CancelToken,
@@ -217,8 +220,7 @@ async fn duckdb_run_statements() {
 
 #[tokio::test]
 async fn pg_run_statements() {
-    let Ok(url) = std::env::var("TIQ_PG_URL") else {
-        eprintln!("skip: no TIQ_PG_URL");
+    let Some(url) = live_url("TIQ_PG_URL") else {
         return;
     };
     let drv = PgDriver::connect(&url).await.expect("connect pg");
@@ -286,8 +288,7 @@ async fn pg_run_statements() {
 
 #[tokio::test]
 async fn mysql_run_statements() {
-    let Ok(url) = std::env::var("TIQ_MYSQL_URL") else {
-        eprintln!("skip: no TIQ_MYSQL_URL");
+    let Some(url) = live_url("TIQ_MYSQL_URL") else {
         return;
     };
     let drv = MySqlDriver::connect(&url).await.expect("connect mysql");

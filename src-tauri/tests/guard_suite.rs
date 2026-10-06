@@ -14,7 +14,7 @@
 
 use tableiq_lib::mcp::guard::{guard_sql, read_only_stmts, widget_stmts};
 
-const ENGINES: [&str; 5] = ["postgres", "mysql", "sqlite", "duckdb", "sqlserver"];
+const ENGINES: [&str; 6] = ["postgres", "cockroachdb", "mysql", "sqlite", "duckdb", "sqlserver"];
 
 /// Refused on a read-only connection; a writes-allowed one may run it.
 const RO_ONLY: bool = false;
@@ -162,6 +162,54 @@ const REFUSE: &[(&str, &str, bool, &str)] = &[
     // --- a bare escape word as a name: the fail-closed trade-off (quoting it works) ---
     ("bare-escape-word", "postgres", ALWAYS, "UPDATE servers SET load = 1"),
     ("bare-escape-word", "sqlserver", ALWAYS, "UPDATE users SET language = 'en'"),
+    // --- CockroachDB's own: functions, storage, cluster state, other sessions and jobs ---
+    ("cte-write", "cockroachdb", RO_ONLY, "UPSERT INTO t VALUES (1)"),
+    ("cte-write", "cockroachdb", RO_ONLY, "SELECT * FROM [UPSERT INTO t VALUES (1) RETURNING *]"),
+    ("cte-write", "cockroachdb", RO_ONLY, "WITH u AS (UPSERT INTO t VALUES (1) RETURNING a) SELECT * FROM u"),
+    ("side-effect-fn", "cockroachdb", ALWAYS, "SELECT crdb_internal.force_panic('x')"),
+    ("side-effect-fn", "cockroachdb", ALWAYS, "SELECT crdb_internal.force_log_fatal('x')"),
+    ("side-effect-fn", "cockroachdb", ALWAYS, "SELECT crdb_internal.force_delete_table_data(1)"),
+    ("side-effect-fn", "cockroachdb", ALWAYS, "SELECT \"crdb_internal\".\"force_error\"('XX000', 'x')"),
+    ("side-effect-fn", "cockroachdb", ALWAYS, "SELECT crdb_internal . /* c */ reset_sql_stats()"),
+    ("side-effect-fn", "cockroachdb", ALWAYS, "SELECT reset_activity_tables()"),
+    ("side-effect-fn", "cockroachdb", ALWAYS, "SELECT crdb_internal.generate_test_objects('{}'::jsonb)"),
+    ("side-effect-fn", "cockroachdb", ALWAYS, "SELECT crdb_internal.request_statement_bundle('SELECT 1', 0, '0s', '0s')"),
+    ("side-effect-fn", "cockroachdb", ALWAYS, "SELECT crdb_internal.set_vmodule('x=1')"),
+    ("side-effect-fn", "cockroachdb", ALWAYS, "SELECT crdb_internal.unsafe_upsert_descriptor(1, 'x'::bytes)"),
+    ("side-effect-fn", "cockroachdb", ALWAYS, "SELECT crdb_internal.deserialize_session('x'::bytes)"),
+    ("side-effect-fn", "cockroachdb", ALWAYS, "SELECT crdb_pin_plan_gist('x', 'y')"),
+    ("side-effect-fn", "cockroachdb", ALWAYS, "EXPLAIN ANALYZE (DEBUG) SELECT 1"),
+    ("side-effect-fn", "cockroachdb", ALWAYS, "EXPLAIN /* c */ ANALYZE (VERBOSE, DEBUG) SELECT 1"),
+    ("file-os", "cockroachdb", ALWAYS, "SELECT crdb_internal.read_file('nodelocal://1/x')"),
+    ("file-os", "cockroachdb", ALWAYS, "SELECT crdb_internal.write_file('x'::bytes, 'nodelocal://1/x')"),
+    ("file-os", "cockroachdb", ALWAYS, "SET allow_unsafe_internals = true"),
+    ("file-os", "cockroachdb", ALWAYS, "SELECT set_config('allow_unsafe_internals', 'true', false)"),
+    ("file-os", "cockroachdb", ALWAYS, "SHOW BACKUPS IN 'nodelocal://1/x'"),
+    ("file-os", "cockroachdb", ALWAYS, "SHOW BACKUP FROM LATEST IN 's3://b/x'"),
+    ("file-os", "cockroachdb", ALWAYS, "SELECT * FROM [SHOW BACKUPS IN 'nodelocal://1/x']"),
+    ("file-os", "cockroachdb", ALWAYS, "EXPORT INTO CSV 'nodelocal://1/x' FROM SELECT 1"),
+    ("file-os", "cockroachdb", ALWAYS, "IMPORT INTO t CSV DATA ('nodelocal://1/x.csv')"),
+    ("file-os", "cockroachdb", ALWAYS, "BACKUP INTO 'nodelocal://1/x'"),
+    ("file-os", "cockroachdb", ALWAYS, "RESTORE FROM LATEST IN 'nodelocal://1/x'"),
+    ("file-os", "cockroachdb", ALWAYS, "CREATE CHANGEFEED FOR TABLE t INTO 'kafka://h'"),
+    ("file-os", "cockroachdb", ALWAYS, "EXPERIMENTAL CHANGEFEED FOR t"),
+    ("file-os", "cockroachdb", ALWAYS, "CREATE SCHEDULE s FOR BACKUP INTO 'nodelocal://1/x' RECURRING '@daily'"),
+    ("file-os", "cockroachdb", ALWAYS, "SET CLUSTER SETTING sql.defaults.statement_timeout = '0s'"),
+    ("file-os", "cockroachdb", ALWAYS, "SET /* c */ CLUSTER SETTING x = 1"),
+    ("file-os", "cockroachdb", ALWAYS, "RESET CLUSTER SETTING x"),
+    ("file-os", "cockroachdb", ALWAYS, "CREATE EXTERNAL CONNECTION c AS 's3://x'"),
+    ("file-os", "cockroachdb", ALWAYS, "CREATE LOGICAL REPLICATION STREAM FROM TABLE t ON 'postgres://h' INTO TABLE t"),
+    ("file-os", "cockroachdb", ALWAYS, "CREATE VIRTUAL CLUSTER x FROM REPLICATION OF src ON 'postgres://h'"),
+    ("file-os", "cockroachdb", ALWAYS, "CREATE TENANT x FROM REPLICATION OF src ON 'postgres://h'"),
+    ("file-os", "cockroachdb", ALWAYS, "ALTER VIRTUAL CLUSTER x START REPLICATION OF src ON 'postgres://h'"),
+    ("other-sessions", "cockroachdb", ALWAYS, "CANCEL JOBS SELECT 1"),
+    ("other-sessions", "cockroachdb", ALWAYS, "PAUSE JOBS SELECT 1"),
+    ("other-sessions", "cockroachdb", ALWAYS, "RESUME JOBS SELECT 1"),
+    ("other-sessions", "cockroachdb", ALWAYS, "CANCEL SESSION '1'"),
+    ("other-sessions", "cockroachdb", ALWAYS, "CANCEL QUERIES SELECT 1"),
+    ("other-sessions", "cockroachdb", ALWAYS, "/* c */ cancel jobs SELECT 1"),
+    // A bare escape word as a name: quote it.
+    ("bare-escape-word", "cockroachdb", ALWAYS, "UPDATE t SET import = 1"),
     // --- encodings ---
     ("encoding", "*", RO_ONLY, "dElEtE FROM t"),
     ("encoding", "*", ALWAYS, "SELECT 1;\u{0}SELECT 2"),
@@ -190,6 +238,12 @@ const ALLOW: &[(&str, &str)] = &[
     ("sqlserver", "SELECT * FROM backups_log"),
     ("sqlite", "SELECT extension_name FROM t"),
     ("duckdb", "SELECT * FROM t JOIN u USING (k)"),
+    ("cockroachdb", "SELECT resume, pause, cancel_at, reset_at FROM candidates"),
+    ("cockroachdb", "SHOW CLUSTER SETTING version"),
+    ("cockroachdb", "SHOW TABLES"),
+    ("cockroachdb", "EXPLAIN ANALYZE SELECT 1"),
+    ("cockroachdb", "SELECT cluster_logical_timestamp(), gen_random_uuid()"),
+    ("cockroachdb", "SELECT * FROM t@{FORCE_INDEX=idx} AS OF SYSTEM TIME '-1s'"),
 ];
 
 /// Reads a read-only connection and a widget run as before, but a writes-allowed connection
@@ -230,10 +284,20 @@ const ALLOW_WRITES: &[(&str, &str)] = &[
     ("sqlserver", "EXEC dbo.sp_configure_log"),
     ("sqlserver", "UPDATE t SET reconfigured = 1, setuser_id = 2, ansi_defaults_on = 0"),
     ("mysql", "UPDATE t SET dumpfile_path = 'x', uninstalled = 1, shutdown_at = NULL, flushed = 1"),
+    ("cockroachdb", "UPSERT INTO t VALUES (1)"),
+    ("cockroachdb", "UPDATE t SET resume = 'x', pause = 1 WHERE id = 2"),
+    ("cockroachdb", "INSERT INTO notes VALUES ('backup, import, export, restore, changefeed, set cluster setting, cancel jobs')"),
+    ("cockroachdb", "UPDATE t SET \"import\" = 1"),
+    ("cockroachdb", "CREATE TABLE \"export\" (a int)"),
 ];
 
 fn engines(e: &str) -> Vec<&str> {
-    if e == "*" { ENGINES.to_vec() } else { vec![e] }
+    match e {
+        "*" => ENGINES.to_vec(),
+        // CockroachDB is Postgres plus lists of its own: every Postgres case holds for it too.
+        "postgres" => vec!["postgres", "cockroachdb"],
+        _ => vec![e],
+    }
 }
 
 #[test]

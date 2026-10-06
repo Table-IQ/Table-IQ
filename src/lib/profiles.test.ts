@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ENGINE_COLORS, ENGINE_MONOGRAMS } from "../components/ui/EngineIcon";
 import cases from "./agentAccessCases.json";
-import { PROFILES, applyPreset, capsOf, presetFor, profileForUrl, profileOf, profilesFor } from "./profiles";
+import { AGENT_REV, PROFILES, applyPreset, capsOf, explainUnavailable, presetFor, profileForUrl, profileOf, profilesFor } from "./profiles";
 
 /** WCAG relative luminance of a `#rrggbb` colour. */
 function luminance(hex: string): number {
@@ -27,6 +27,7 @@ describe("profile table", () => {
       for (const k of ["real", "transactions", "backup", "userMgmt", "tested"] as const) expect(typeof p[k], `${id}.${k}`).toBe("boolean");
       for (const k of ["schemes", "hosts", "detect"] as const) expect(Array.isArray(p[k]), `${id}.${k}`).toBe(true);
       for (const k of ["user", "database", "ssl"] as const) expect(["undefined", "string"], `${id}.${k}`).toContain(typeof p[k]);
+      expect(["undefined", "boolean"], id).toContain(typeof p.explain);
       expect(p.monogram, id).toHaveLength(2);
       expect(p.color, id).toMatch(/^#[0-9a-f]{6}$/);
     }
@@ -83,6 +84,57 @@ describe("profileForUrl", () => {
     expect(profileForUrl("postgres", "localhost", "postgres")).toBeNull();
     expect(profileForUrl("postgres", "evilneon.tech", "postgres")).toBeNull();
   });
+
+  it("maps a managed cloud host to its preset on the matching base only", () => {
+    expect(profileForUrl("postgres", "d.x.us-east-1.rds.amazonaws.com", "postgres")).toBe("rds-postgres");
+    expect(profileForUrl("mysql", "d.x.us-east-1.rds.amazonaws.com", "mysql")).toBe("rds-mysql");
+    expect(profileForUrl("postgres", "s.postgres.database.azure.com", "postgres")).toBe("azure-postgres");
+    expect(profileForUrl("mysql", "s.mysql.database.azure.com", "mysql")).toBe("azure-mysql");
+    expect(profileForUrl("postgres", "s.mysql.database.azure.com", "postgres")).toBeNull();
+    // Redshift keeps its own, longer suffix.
+    expect(profileForUrl("postgres", "c.x.redshift.amazonaws.com", "postgres")).toBe("redshift");
+  });
+
+  it("every cloud preset is the base engine itself: agents may reach it, TLS is on", () => {
+    for (const id of ["rds-postgres", "rds-mysql", "azure-postgres", "azure-mysql"]) {
+      expect(PROFILES[id], id).toMatchObject({ real: true, tested: false, ssl: "require", detect: [] });
+      expect(capsOf(PROFILES[id].base, id).agents, id).toBe(true);
+    }
+    for (const id of ["cloudsql-postgres", "cloudsql-mysql"]) {
+      expect(PROFILES[id], id).toMatchObject({ real: true, tested: false, hosts: [], detect: [] });
+    }
+  });
+});
+
+describe("explainUnavailable", () => {
+  it("names a product whose soft check documents Explain as failing (docs/ENGINES.md)", () => {
+    expect(explainUnavailable("postgres", "cockroachdb")).toBe("Explain isn't available on CockroachDB yet.");
+  });
+
+  it("is null for the base engines, products that explain, and unknown or foreign ids", () => {
+    expect(explainUnavailable("postgres")).toBeNull();
+    expect(explainUnavailable("postgres", null)).toBeNull();
+    expect(explainUnavailable("postgres", "yugabytedb")).toBeNull();
+    // MySQL products explain as a result set, not through the JSON plan the soft check runs.
+    expect(explainUnavailable("mysql", "tidb")).toBeNull();
+    expect(explainUnavailable("mysql", "cockroachdb")).toBeNull();
+    expect(explainUnavailable("postgres", "from-the-future")).toBeNull();
+  });
+});
+
+describe("agent access", () => {
+  it("follows `real` unless a profile sets `agent`, and only CockroachDB does", () => {
+    const differing = Object.entries(PROFILES).filter(([, p]) => (p.agent ?? p.real) !== p.real).map(([id]) => id);
+    expect(differing).toEqual(["cockroachdb"]);
+    expect(PROFILES.cockroachdb.real).toBe(false);
+  });
+
+  it("a compatible product open to agents dates its opening, which AGENT_REV is the latest of", () => {
+    for (const [id, p] of Object.entries(PROFILES)) {
+      expect((p.agent ?? p.real) && !p.real, id).toBe((p.agentSince ?? 0) > 0);
+    }
+    expect(AGENT_REV).toBe(PROFILES.cockroachdb.agentSince);
+  });
 });
 
 describe("capsOf", () => {
@@ -91,6 +143,8 @@ describe("capsOf", () => {
     expect(capsOf("mysql", "doris")).toEqual({ transactions: false, backup: false, userMgmt: false, agents: false });
     expect(capsOf("postgres", "neon").agents).toBe(true);
     expect(capsOf("mysql", "tidb").agents).toBe(false);
+    expect(capsOf("postgres", "cockroachdb").agents).toBe(true);
+    expect(capsOf("postgres", "cockroachdb").backup).toBe(false); // agent access is its own flag
   });
 
   it("treats an unknown profile as the base engine, without agents", () => {

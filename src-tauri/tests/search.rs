@@ -6,6 +6,9 @@
 //!   TIQ_MYSQL_URL=mysql://root:tableiq@127.0.0.1:53306/tableiq \
 //!     cargo test --test search -- --nocapture
 
+mod common;
+use common::live_url;
+
 use arrow::array::{Array, StringArray};
 use arrow::record_batch::RecordBatch;
 use tableiq_lib::drivers::{
@@ -96,8 +99,7 @@ async fn sqlite_search() {
 
 #[tokio::test]
 async fn pg_search() {
-    let Ok(url) = std::env::var("TIQ_PG_URL") else {
-        eprintln!("skip: no TIQ_PG_URL");
+    let Some(url) = live_url("TIQ_PG_URL") else {
         return;
     };
     let drv = PgDriver::connect(&url).await.unwrap();
@@ -119,8 +121,7 @@ async fn pg_search() {
 
 #[tokio::test]
 async fn mysql_search() {
-    let Ok(url) = std::env::var("TIQ_MYSQL_URL") else {
-        eprintln!("skip: no TIQ_MYSQL_URL");
+    let Some(url) = live_url("TIQ_MYSQL_URL") else {
         return;
     };
     let drv = MySqlDriver::connect(&url).await.unwrap();
@@ -148,7 +149,7 @@ async fn mysql_search() {
 /// A non-text column still matches through the CAST, and Search stays case-insensitive.
 #[tokio::test]
 async fn mysql_like_keeps_the_text_column_collation() {
-    let Ok(url) = std::env::var("TIQ_MYSQL_URL") else {
+    let Some(url) = live_url("TIQ_MYSQL_URL") else {
         return;
     };
     let drv = MySqlDriver::connect(&url).await.unwrap();
