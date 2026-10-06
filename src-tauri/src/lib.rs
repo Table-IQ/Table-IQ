@@ -1,4 +1,7 @@
 // TableIQ — Tauri entry.
+// `#[async_trait]` puts its own `#[must_use]` on every async method; Rust 1.99's clippy reads that as a
+// duplicate. Drop once async_trait stops emitting it.
+#![allow(clippy::double_must_use)]
 pub mod ai;
 pub mod appdir;
 pub mod applog;
