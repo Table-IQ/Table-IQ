@@ -20,8 +20,8 @@ type Pane = "documents" | "indexes" | "mapping" | "aggregate";
 
 /** Mongo / DocumentDB shell — same chrome treatment as MainShell / KvShell: a collection sidebar
  *  (filter, doc counts), and for the open collection Documents / Indexes / Aggregate panes.
- *  Elasticsearch / OpenSearch use it too, read-only (the session's `read_only`): indices are the collections,
- *  and Mapping replaces Indexes. */
+ *  Elasticsearch / OpenSearch and Meilisearch use it too, read-only (the session's `read_only`): indices are the
+ *  collections, and Mapping (Settings, for Meilisearch) replaces Indexes. */
 export function DocShell() {
   const { active, saved } = useConnections();
   const cfg = active ? saved.find((c) => c.id === active.id) : undefined;
@@ -34,11 +34,13 @@ export function DocShell() {
   const [listError, setListError] = useState<string | null>(null);
 
   const id = active?.id;
-  const elastic = active?.engine === "elasticsearch";
+  // Elasticsearch / OpenSearch and Meilisearch: indices to search, read-only.
+  const search = active?.engine === "elasticsearch" || active?.engine === "meilisearch";
+  const meili = active?.engine === "meilisearch";
   const readOnly = !!active?.read_only;
-  const kind = elastic ? "indices" : "collections";
+  const kind = search ? "indices" : "collections";
   // The product the server reported at connect (OpenSearch speaks the same API).
-  const engineName = active?.profile === "opensearch" ? "opensearch" : elastic ? "elasticsearch" : "mongo";
+  const engineName = active?.profile === "opensearch" ? "opensearch" : search ? (active?.engine ?? "") : "mongo";
   // A URL connection (mongodb+srv://, several hosts) may report no database; the saved config has it.
   const database = active?.database || cfg?.database || "";
 
@@ -93,7 +95,7 @@ export function DocShell() {
         </span>
         <span className="font-mono text-[11px] text-muted">
           {engineName}
-          {!elastic && database ? ` · ${database}` : ""}
+          {!search && database ? ` · ${database}` : ""}
         </span>
         <div className="ml-auto flex items-center gap-1">
           <IconButton icon={<IconRefresh />} label={`Reload ${kind}`} onClick={load} />
@@ -124,7 +126,7 @@ export function DocShell() {
             </label>
           </div>
           <div className="min-h-0 flex-1 overflow-auto px-1.5 py-1">
-            <Section label={elastic ? "Indices" : "Collections"} count={filtered.length}>
+            <Section label={search ? "Indices" : "Collections"} count={filtered.length}>
               {filtered.map((c) => (
                 <button
                   key={c}
@@ -136,7 +138,7 @@ export function DocShell() {
                   <IconView size={12} className="text-muted" />
                   <span className="min-w-0 flex-1 truncate font-mono">{c}</span>
                   {counts[c] !== undefined && (
-                    <span className="shrink-0 rounded bg-bg px-1 text-[10px] tabular-nums text-muted" title={`${elastic ? "" : "~"}${counts[c].toLocaleString("en-US")} documents${elastic ? "" : " (estimated)"}`}>
+                    <span className="shrink-0 rounded bg-bg px-1 text-[10px] tabular-nums text-muted" title={`${search ? "" : "~"}${counts[c].toLocaleString("en-US")} documents${search ? "" : " (estimated)"}`}>
                       {COMPACT.format(counts[c])}
                     </span>
                   )}
@@ -160,7 +162,7 @@ export function DocShell() {
                   <Tabs
                     tabs={[
                       { key: "documents", label: "Documents" },
-                      elastic ? { key: "mapping", label: "Mapping" } : { key: "indexes", label: "Indexes" },
+                      search ? { key: "mapping", label: meili ? "Settings" : "Mapping" } : { key: "indexes", label: "Indexes" },
                       { key: "aggregate", label: "Aggregate" },
                     ]}
                     active={pane}
@@ -170,18 +172,18 @@ export function DocShell() {
               </div>
               {/* All three stay mounted: switching panes must not drop staged edits or a typed pipeline. */}
               <div className="min-h-0 flex-1">
-                <DocCollection key={`${id}.${selected}`} connId={id} collection={selected} visible={pane === "documents"} readOnly={readOnly} />
-                {elastic ? (
+                <DocCollection key={`${id}.${selected}`} connId={id} collection={selected} visible={pane === "documents"} readOnly={readOnly} engine={active.engine} />
+                {search ? (
                   <DocMapping key={`m.${id}.${selected}`} connId={id} collection={selected} active={pane === "mapping"} />
                 ) : (
                   <DocIndexes key={`i.${id}.${selected}`} connId={id} collection={selected} active={pane === "indexes"} />
                 )}
-                <DocAggregate key={`a.${id}.${selected}`} connId={id} collection={selected} active={pane === "aggregate"} elastic={elastic} />
+                <DocAggregate key={`a.${id}.${selected}`} connId={id} collection={selected} active={pane === "aggregate"} engine={active.engine} />
               </div>
             </>
           ) : (
             <>
-              <div className="flex flex-1 items-center justify-center text-sm text-muted">{`Select ${elastic ? "an index" : "a collection"} to view documents.`}</div>
+              <div className="flex flex-1 items-center justify-center text-sm text-muted">{`Select ${search ? "an index" : "a collection"} to view documents.`}</div>
               <StatusBar
                 left={
                   <>

@@ -16,7 +16,7 @@ use crate::connections::{self, ConnConfig, ConnStore};
 use crate::lk;
 use crate::profiles;
 use crate::drivers::{
-    clickhouse::ClickHouseDriver, doc_elastic::ElasticDriver, doc_mongo::MongoDriver, duckdb::DuckDriver, kv_redis::RedisDriver, libsql::LibsqlDriver, logged::Logged, mysql::MySqlDriver, rqlite::RqliteDriver,
+    clickhouse::ClickHouseDriver, doc_elastic::ElasticDriver, doc_meili::MeiliDriver, doc_mongo::MongoDriver, duckdb::DuckDriver, kv_redis::RedisDriver, libsql::LibsqlDriver, logged::Logged, mysql::MySqlDriver, rqlite::RqliteDriver,
     postgres::PgDriver, sqlite::SqliteDriver, sqlserver::SqlServerDriver, CancelToken, Change,
     AggResult, ChangesResult, ColumnFilter, DocChange, DocChangesResult, DocIndex, DocumentDriver, DriverError, EditSpec, FindOpts,
     KeyInfo, KeyPage, KvChange, KvChangesResult, KvDriver, KvRead, KvReadOpts, KvReply, KvValue, SchemaModel,
@@ -105,12 +105,13 @@ async fn maybe_open_tunnel(
         _ => return Ok((cfg.clone(), None)),
     };
     // The tunnel's local end is plain TCP to a URL's host, which TLS would then not match.
-    if matches!(cfg.engine.as_str(), "libsql" | "elasticsearch" | "rqlite") {
+    if matches!(cfg.engine.as_str(), "libsql" | "elasticsearch" | "rqlite" | "meilisearch") {
         return Err(format!(
             "A {} connection can't be combined with an SSH tunnel",
             match cfg.engine.as_str() {
                 "libsql" => "Turso",
                 "rqlite" => "rqlite",
+                "meilisearch" => "Meilisearch",
                 _ => "Elasticsearch",
             }
         ));
@@ -473,6 +474,8 @@ pub async fn test_connection(cfg: ConnConfig, password: String) -> Result<(), St
             .map_err(|e| e.to_string())
     } else if cfg.engine == "elasticsearch" {
         ElasticDriver::connect(&cfg.host, &cfg.username, &password).await.map(|_| ()).map_err(|e| e.to_string())
+    } else if cfg.engine == "meilisearch" {
+        MeiliDriver::connect(&cfg.host, &password).await.map(|_| ()).map_err(|e| e.to_string())
     } else {
         open_driver(&cfg, &password).await.map(|_| ())
     }
@@ -535,6 +538,10 @@ pub(crate) async fn connect_session(
         } else if eff.engine == "elasticsearch" {
             let drv = ElasticDriver::connect(&eff.host, &eff.username, &password).await.map_err(|e| e.to_string())?;
             (session.0, read_only) = (drv.product(), drv.read_only());
+            lk(&state.doc_sessions).insert(id.clone(), Arc::new(drv));
+        } else if eff.engine == "meilisearch" {
+            let drv = MeiliDriver::connect(&eff.host, &password).await.map_err(|e| e.to_string())?;
+            read_only = drv.read_only();
             lk(&state.doc_sessions).insert(id.clone(), Arc::new(drv));
         } else {
             let drv = open_driver(&eff, &password).await?;
@@ -760,6 +767,10 @@ pub(crate) async fn switch_inner(state: &ConnState, id: String, database: String
         let drv = ElasticDriver::connect(&eff.host, &eff.username, &password).await.map_err(|e| e.to_string())?;
         (profile.0, read_only) = (drv.product(), drv.read_only());
         NewSession::Doc(Arc::new(drv))
+    } else if eff.engine == "meilisearch" {
+        let drv = MeiliDriver::connect(&eff.host, &password).await.map_err(|e| e.to_string())?;
+        read_only = drv.read_only();
+        NewSession::Doc(Arc::new(drv))
     } else {
         let drv = open_driver(&eff, &password).await?;
         profile = (drv.product(), drv.caps());
@@ -846,12 +857,12 @@ pub async fn doc_apply_changes(
 /// The clear refusal for an edit the connection cannot take (the driver's own is a bare `NotImplemented`).
 fn refuse_read_only_doc(drv: &dyn DocumentDriver) -> Result<(), String> {
     if drv.read_only() {
-        return Err("This connection is read-only: Elasticsearch indices can't be edited in TableIQ".into());
+        return Err("This connection is read-only: its indices can't be edited in TableIQ".into());
     }
     Ok(())
 }
 
-/// A collection's field mapping as JSON text (Elasticsearch).
+/// A collection's field mapping as JSON text (Elasticsearch; Meilisearch's settings).
 #[tauri::command]
 pub async fn doc_mapping(state: State<'_, ConnState>, id: String, collection: String) -> Result<String, String> {
     let drv = state.doc_session(&id)?;
@@ -1784,7 +1795,7 @@ async fn introspect_any(state: &ConnState, id: &str) -> Result<SchemaModel, Stri
         .find(|c| c.id == id)
         .cloned()
         .ok_or_else(|| "unknown connection".to_string())?;
-    if matches!(cfg.engine.as_str(), "redis" | "mongodb" | "elasticsearch") {
+    if matches!(cfg.engine.as_str(), "redis" | "mongodb" | "elasticsearch" | "meilisearch") {
         return Err("schema diff supports SQL connections only".into());
     }
     let pw = if cfg.is_file_engine() {

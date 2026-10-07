@@ -370,3 +370,39 @@ describe("rqlite URLs", () => {
     expect(toConnUrl({ ...cfg, host: "db.example.com:4001", port: 4001, username: "", sslmode: "prefer" })).toBe("rqlite://db.example.com:4001");
   });
 });
+
+describe("Meilisearch URLs", () => {
+  it("claims meilisearch:// and http(s) on 7700 only", () => {
+    expect(looksLikeConnUrl("meilisearch://h:7700")).toBe(true);
+    expect(looksLikeConnUrl("http://127.0.0.1:7700")).toBe(true);
+    expect(looksLikeConnUrl("https://:key@ms.example.com:7700/")).toBe(true);
+    expect(looksLikeConnUrl("https://ms.example.com")).toBe(false); // plain https is not ours to claim
+    expect(looksLikeConnUrl("http://localhost:7701")).toBe(false);
+    expect(parseConnUrl("http://localhost:9200")?.engine).toBe("elasticsearch"); // still Elasticsearch's
+    expect(parseConnUrl("http://localhost:4001")?.engine).toBe("rqlite"); // still rqlite's
+  });
+  it("a pasted URL keeps its host as typed and moves the API key to the password, never to the user", () => {
+    expect(parseConnUrl("http://:k%40y@127.0.0.1:7700")).toEqual({
+      engine: "meilisearch", host: "http://127.0.0.1:7700", port: 7700, username: "", password: "k@y", database: "",
+    });
+    expect(parseConnUrl("https://abc123@ms.example.com:7700")).toMatchObject({ host: "https://ms.example.com:7700", username: "", password: "abc123" });
+    expect(parseConnUrl("meilisearch://h:7700")).toMatchObject({ engine: "meilisearch", host: "meilisearch://h:7700", username: "", password: "" });
+  });
+  it("a key typed into the URL host is moved out before it can be saved", () => {
+    const cfg = (host: string, username = "") => ({ engine: "meilisearch", host, username });
+    expect(normalizeUrlSecrets(cfg("meilisearch://:s3cret@h:7700"), "")).toEqual({ host: "meilisearch://h:7700", username: "", password: "s3cret" });
+    expect(normalizeUrlSecrets(cfg("s3cret@h:7700"), "")).toEqual({ host: "h:7700", username: "", password: "s3cret" });
+    expect(normalizeUrlSecrets(cfg("http://127.0.0.1:7700", "u"), "kept")).toEqual({ host: "http://127.0.0.1:7700", username: "u", password: "kept" });
+  });
+  it("needs no port, refuses a key in the query, and copies as a URL without credentials", () => {
+    const cfg = { engine: "meilisearch" as const, host: "http://127.0.0.1:7700", port: 0, database: "" };
+    expect(validateConn(cfg)).toEqual({});
+    expect(validateConn({ ...cfg, host: " " })).toEqual({ host: "Required" });
+    for (const name of ["api_key", "apiKey", "token", "master-key", "key"]) expect(validateConn({ ...cfg, host: `meilisearch://h?${name}=x` }).host).toContain(name);
+    expect(validateConn({ ...cfg, host: "h:7700?token=x" }).host).toContain("token");
+    expect(urlQuerySecret("meilisearch://h?lang=en")).toBeNull();
+    expect(isUrlHost("meilisearch", "localhost")).toBe(true);
+    expect(toConnUrl({ ...cfg, port: 7700, username: "", sslmode: "prefer" })).toBe("http://127.0.0.1:7700");
+    expect(toConnUrl({ ...cfg, host: "ms.example.com:7700", port: 7700, username: "", sslmode: "prefer" })).toBe("meilisearch://ms.example.com:7700");
+  });
+});

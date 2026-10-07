@@ -7,7 +7,7 @@ import { gatedCommit, productionCommitMessage } from "../lib/stagedEdits";
 import { NO_STAGED, stagedLock, totalStaged, type StagedCounts, type StagedSnapshot } from "../lib/stagedChanges";
 import { cycleSort } from "../lib/tableSort";
 import { buildDocChanges, commitOutcome, failedChanges, type Batch, diffDoc, docCommitError, docStagedCounts, shellScript } from "../lib/docChanges";
-import { cellText, field, has, idKey, parseDocs, parseObject, parseSearchText, readableError, sameValue, type Doc } from "../lib/docJson";
+import { cellText, field, has, idKey, isEstimatedSearch, parseDocs, parseObject, parseSearchText, readableError, sameValue, type Doc } from "../lib/docJson";
 import { docPagerLabel, loadDocView, saveDocView, sortKeyOf, sortText, type DocViewKind } from "../lib/docView";
 import { escapeHtml } from "../lib/sqlHighlightHtml";
 import { type DataGridHandle } from "./DataGrid";
@@ -41,10 +41,11 @@ const input =
 
 /** One collection's Documents tab: query bar, JSON / Table / Tree views, and TablePlus-style staged
  *  editing (cells, whole documents, deletes, new documents) with Review → Commit / Discard.
- *  `readOnly` (the session's `read_only`, today Elasticsearch only) turns all of the editing off — no edit, insert,
+ *  `readOnly` (the session's `read_only`: Elasticsearch, Meilisearch) turns all of the editing off — no edit, insert,
  *  delete or staged-changes bar — and reads the query bar as a search: the filter is Query DSL JSON or a
- *  `query_string`, sort and projection may be JSON lists, and counts are exact. */
-export function DocCollection({ connId, collection, visible, readOnly = false }: { connId: string; collection: string; visible: boolean; readOnly?: boolean }) {
+ *  `query_string` (Meilisearch: a full-text query, or an object with `q` and `filter`), sort and projection may be
+ *  JSON lists, and counts are exact (Meilisearch's under a full-text query are estimates). */
+export function DocCollection({ connId, collection, visible, readOnly = false, engine }: { connId: string; collection: string; visible: boolean; readOnly?: boolean; engine?: string }) {
   const [draft, setDraft] = useState({ filter: "", sort: "", projection: "", skip: "0" });
   const [q, setQ] = useState<Query>(EMPTY_QUERY);
   const [queryError, setQueryError] = useState<string | null>(null);
@@ -128,7 +129,7 @@ export function DocCollection({ connId, collection, visible, readOnly = false }:
   useEffect(() => {
     let live = true;
     docCount(connId, collection, q.filter)
-      .then((n) => live && setTotal({ n, exact: readOnly || q.filter.trim() !== "" }))
+      .then((n) => live && setTotal({ n, exact: readOnly ? !isEstimatedSearch(engine, q.filter) : q.filter.trim() !== "" }))
       .catch(() => live && setTotal(null));
     return () => {
       live = false;
@@ -352,7 +353,7 @@ export function DocCollection({ connId, collection, visible, readOnly = false }:
       >
         {(
           [
-            ["filter", "Filter", readOnly ? `title:quiet  or  {"match": {"title": "quiet"}}` : `{"age": {"$gt": 30}}`, "min-w-[200px] flex-1"],
+            ["filter", "Filter", readOnly ? (engine === "meilisearch" ? `quiet river  or  {"q": "river", "filter": "year > 2000"}` : `title:quiet  or  {"match": {"title": "quiet"}}`) : `{"age": {"$gt": 30}}`, "min-w-[200px] flex-1"],
             ["sort", "Sort", readOnly ? `{"year": -1}` : `{"age": -1}`, "w-36"],
             ["projection", "Projection", readOnly ? `{"title": 1}` : `{"name": 1}`, "w-36"],
           ] as const
@@ -545,7 +546,7 @@ export function DocCollection({ connId, collection, visible, readOnly = false }:
               </StatusBarButton>
               <span
                 className="whitespace-nowrap tabular-nums text-text"
-                title={total && !total.exact ? "Estimated from collection metadata. Add a filter for an exact count." : undefined}
+                title={total && !total.exact ? (readOnly ? "Meilisearch estimates the hits of a full-text query. Use a filter alone for an exact count." : "Estimated from collection metadata. Add a filter for an exact count.") : undefined}
               >
                 {page ? docPagerLabel(skip, docs.length, total?.n ?? null, total?.exact ?? false) : "Opening…"}
               </span>
@@ -578,7 +579,7 @@ export function DocCollection({ connId, collection, visible, readOnly = false }:
         }
         right={
           readOnly ? (
-            <span className="inline-flex items-center gap-1 text-muted" title="Elasticsearch indices can't be edited in TableIQ">
+            <span className="inline-flex items-center gap-1 text-muted" title="This connection is read-only: its indices can't be edited in TableIQ">
               <StatusDot tone="muted" />
               <span>read-only</span>
             </span>

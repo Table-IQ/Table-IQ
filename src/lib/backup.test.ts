@@ -33,6 +33,7 @@ describe("backup engine rules", () => {
     expect(supportsBackup("clickhouse")).toBe(false);
     expect(supportsBackup("libsql")).toBe(false);
     expect(supportsBackup("rqlite")).toBe(false);
+    expect(supportsBackup("meilisearch")).toBe(false);
     expect(supportsBackup("elasticsearch")).toBe(false);
   });
 

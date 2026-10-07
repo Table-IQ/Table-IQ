@@ -97,7 +97,8 @@ export type Engine =
   | "clickhouse"
   | "libsql"
   | "elasticsearch"
-  | "rqlite";
+  | "rqlite"
+  | "meilisearch";
 export interface ConnConfig {
   id: string;
   name: string;
@@ -149,7 +150,7 @@ export interface ConnectedInfo {
   /** The saved profile when this build knows it, else the product detected at connect; null for a plain base engine. */
   profile?: string | null;
   caps?: SessionCaps;
-  /** A document session that cannot be edited (Elasticsearch): the shell offers no edit, insert, delete or index change. */
+  /** A document session that cannot be edited (Elasticsearch, Meilisearch): the shell offers no edit, insert, delete or index change. */
   read_only?: boolean;
 }
 
@@ -616,7 +617,7 @@ export async function docDropIndex(id: string, collection: string, name: string)
   return invoke<void>("doc_drop_index", { id, collection, name });
 }
 
-/** An index's field mapping as pretty JSON text (Elasticsearch). */
+/** An index's field mapping as pretty JSON text (Elasticsearch), or its settings and field counts (Meilisearch). */
 export async function docMapping(id: string, collection: string): Promise<string> {
   if (!inTauri()) return '{\n  "mappings": {}\n}';
   return invoke<string>("doc_mapping", { id, collection });
@@ -677,6 +678,7 @@ export async function listDatabases(id: string): Promise<string[]> {
       case "clickhouse":
         return ["default", "tableiq"];
       case "elasticsearch":
+      case "meilisearch":
         return [];
       default:
         return [];

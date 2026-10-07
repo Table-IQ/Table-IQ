@@ -71,3 +71,13 @@ describe("rqlite pill", () => {
     expect(rq("http://h").engine).toBe("rqlite");
   });
 });
+
+describe("Meilisearch pill", () => {
+  it("is TLS by its URL: meilisearch:// and a bare host are, unless this machine", () => {
+    const ms = (host: string) => pillSegments({ ...base, engine: "meilisearch" as const, host }, null);
+    expect(["https://h:7700", "meilisearch://ms.example.com", "ms.example.com:7700", "http://h", "http://127.0.0.1:57700", "meilisearch://localhost", "localhost:7700", "[::1]:7700"].map((h) => ms(h).ssl)).toEqual([true, true, true, false, false, false, false, false]);
+    // A name that merely starts like a loopback address is not one.
+    expect(["meilisearch://127.evil.example", "127.0.0.1.evil.com", "localhostfoo.com", "meilisearch://localhost.evil.com"].map((h) => ms(h).ssl)).toEqual([true, true, true, true]);
+    expect(ms("http://h").engine).toBe("Meilisearch");
+  });
+});

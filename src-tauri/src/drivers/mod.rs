@@ -2,7 +2,7 @@
 //!
 //! Split by data model (plan spec #1): SQL engines (Postgres, MySQL/MariaDB, SQLite,
 //! SQL Server, DuckDB) stream Arrow via [`SqlDriver`], the document store (MongoDB) returns
-//! JSON/tree via [`DocumentDriver`] (also Elasticsearch, read-only), and the key-value store (Redis) returns typed
+//! JSON/tree via [`DocumentDriver`] (also Elasticsearch and Meilisearch, read-only), and the key-value store (Redis) returns typed
 //! values via [`KvDriver`]. All six engines are real implementations.
 
 use std::sync::{Arc, Mutex};
@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod clickhouse;
 pub mod doc_elastic;
+pub mod doc_meili;
 pub mod doc_mongo;
 pub mod duckdb;
 pub mod exec;
@@ -1101,7 +1102,7 @@ pub trait DocumentDriver: Send + Sync {
     async fn list_databases(&self) -> DResult<Vec<String>> {
         Err(DriverError::NotImplemented)
     }
-    /// A read-only store (Elasticsearch): `apply_changes` and the index calls are refused with
+    /// A read-only store (Elasticsearch, Meilisearch): `apply_changes` and the index calls are refused with
     /// `NotImplemented`, and the shell offers none of them.
     fn read_only(&self) -> bool {
         false
@@ -1111,7 +1112,7 @@ pub trait DocumentDriver: Send + Sync {
     fn product(&self) -> Option<String> {
         None
     }
-    /// The collection's field mapping as JSON text (Elasticsearch).
+    /// The collection's field mapping as JSON text (Elasticsearch; Meilisearch's settings and fields).
     async fn mapping(&self, _collection: &str) -> DResult<String> {
         Err(DriverError::NotImplemented)
     }

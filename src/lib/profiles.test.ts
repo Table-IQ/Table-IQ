@@ -225,3 +225,15 @@ describe("rqlite", () => {
     expect(contrast(ENGINE_COLORS.rqlite, "#15171c")).toBeGreaterThanOrEqual(2);
   });
 });
+
+describe("Meilisearch", () => {
+  it("is a read-only browser: no transactions, backup, users or agents, and port 7700", () => {
+    expect(capsOf("meilisearch")).toEqual({ transactions: false, backup: false, userMgmt: false, agents: false });
+    expect(presetFor("meilisearch", null)).toEqual({ port: 7700, username: "", database: "", sslmode: "prefer" });
+  });
+  it("draws a violet fill that is legible under its white monogram and visible on the dark surface", () => {
+    expect(ENGINE_MONOGRAMS.meilisearch).toBe("Me");
+    expect(contrast("#ffffff", ENGINE_COLORS.meilisearch)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(ENGINE_COLORS.meilisearch, "#15171c")).toBeGreaterThanOrEqual(2);
+  });
+});

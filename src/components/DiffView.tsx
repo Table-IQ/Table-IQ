@@ -31,7 +31,7 @@ export function DiffView({
       .then((all) =>
         setOthers(
           all.filter(
-            (c) => c.id !== connId && c.engine !== "redis" && c.engine !== "mongodb" && c.engine !== "elasticsearch",
+            (c) => c.id !== connId && c.engine !== "redis" && c.engine !== "mongodb" && c.engine !== "elasticsearch" && c.engine !== "meilisearch",
           ),
         ),
       )

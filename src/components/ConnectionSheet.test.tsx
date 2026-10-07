@@ -88,6 +88,20 @@ describe("ConnectionSheet", () => {
     expect(html({ form: { ...form, host: "rqlite://h?password=x" } })).toContain("it would be saved in plaintext");
   });
 
+  it("Meilisearch takes one Server URL and an API key: no host, port, user, database or SSH tunnel", () => {
+    const form = { ...base.form, engine: "meilisearch" as const, host: "http://127.0.0.1:7700", port: 7700, database: "", username: "" };
+    const h = html({ form });
+    expect(h).toContain("Server URL");
+    expect(h).toContain("http://127.0.0.1:7700");
+    expect(h).toContain("API key");
+    expect(h).toContain('placeholder="API key"');
+    expect(html({ form, mode: "edit" })).toContain('placeholder="Keep saved API key"');
+    expect(h).toContain("documents.get");
+    for (const gone of [">Host<", ">Port<", ">User<", ">User (optional)<", ">Database<", "SSH tunnel", "Connection string"]) expect(h).not.toContain(gone);
+    expect(h).toMatch(/title="Meilisearch"/);
+    expect(html({ form: { ...form, host: "http://h:7700?api_key=x" } })).toContain("it would be saved in plaintext");
+  });
+
   it("Turso takes one Server URL and an Auth token: no host, port, user, database or SSH tunnel", () => {
     const form = { ...base.form, engine: "libsql" as const, host: "libsql://db-org.turso.io", port: 8080, database: "", username: "" };
     const h = html({ form });

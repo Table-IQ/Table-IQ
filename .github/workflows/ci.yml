@@ -180,7 +180,7 @@ jobs:
         working-directory: src-tauri
         run: cargo build --features ipc-bridge --example ipc_bridge --locked
 
-  # ClickHouse, Turso (libSQL), Elasticsearch and rqlite run in a job of their own: started next to the
+  # ClickHouse, Turso (libSQL), Elasticsearch, rqlite and Meilisearch run in a job of their own: started next to the
   # ten servers of `rust` they take ~2 GB more of a 7 GB runner, which the DuckDB link also needs.
   http-engines:
     runs-on: ubuntu-22.04
@@ -195,6 +195,9 @@ jobs:
       # docker/rqlite/docker-compose.yml: rqlite over HTTP (open, and one with Basic auth) — tests/rqlite_live.rs.
       TIQ_RQLITE_URL: http://127.0.0.1:54001
       TIQ_RQLITE_AUTH_URL: http://127.0.0.1:54002
+      # docker/meilisearch/docker-compose.yml: production mode, so the (throwaway) master key is really needed — tests/meilisearch_live.rs.
+      TIQ_MEILI_URL: http://127.0.0.1:57700
+      TIQ_MEILI_KEY: tableiq-fixture-master-key-0001
       # Same disk and debug-info settings as `rust` (the bundled DuckDB build fills the runner).
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: "0"
@@ -215,11 +218,12 @@ jobs:
 
       # Compose, not `services:` — the healthchecks seed each server once. The ClickHouse image
       # is ~1 GB, Elasticsearch ~1.2 GB (heap pinned to 512 MB) and the slowest to come up.
-      - name: Start ClickHouse, Turso (libSQL), Elasticsearch and rqlite
+      - name: Start ClickHouse, Turso (libSQL), Elasticsearch, rqlite and Meilisearch
         run: |
           docker compose -f docker/clickhouse/docker-compose.yml up -d --wait
           docker compose -f docker/libsql/docker-compose.yml up -d --wait
           docker compose -f docker/rqlite/docker-compose.yml up -d --wait
+          docker compose -f docker/meilisearch/docker-compose.yml up -d --wait
           docker compose -f docker/elasticsearch/docker-compose.yml up -d --wait --wait-timeout 420
 
       - uses: dtolnay/rust-toolchain@stable
@@ -230,4 +234,4 @@ jobs:
 
       - name: Live tests that must not skip
         working-directory: src-tauri
-        run: TIQ_REQUIRE_LIVE=1 cargo test --locked --test clickhouse_live --test libsql_live --test elasticsearch_live --test rqlite_live
+        run: TIQ_REQUIRE_LIVE=1 cargo test --locked --test clickhouse_live --test libsql_live --test elasticsearch_live --test rqlite_live --test meilisearch_live

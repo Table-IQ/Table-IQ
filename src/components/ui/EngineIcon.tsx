@@ -26,6 +26,7 @@ export const ENGINE_COLORS: Record<Engine, string> = {
   libsql: "#0f766e",
   elasticsearch: "#0b6e99",
   rqlite: "#be185d",
+  meilisearch: "#6d28d9",
 };
 
 export const ENGINE_MONOGRAMS: Record<Engine, string> = {
@@ -40,6 +41,7 @@ export const ENGINE_MONOGRAMS: Record<Engine, string> = {
   libsql: "Tu",
   elasticsearch: "Es",
   rqlite: "Rq",
+  meilisearch: "Me",
 };
 
 export const ENGINE_LABELS: Record<Engine, string> = {
@@ -54,6 +56,7 @@ export const ENGINE_LABELS: Record<Engine, string> = {
   libsql: "Turso / libSQL",
   elasticsearch: "Elasticsearch",
   rqlite: "rqlite",
+  meilisearch: "Meilisearch",
 };
 
 export function EngineIcon({

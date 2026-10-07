@@ -1,0 +1,29 @@
+# Meilisearch for tests/meilisearch_live.rs (and the Meilisearch QA): one server in production
+# mode, so the master key is really required, on 57700 (HTTP only).
+#   TIQ_MEILI_URL=http://127.0.0.1:57700  TIQ_MEILI_KEY=tableiq-fixture-master-key-0001
+# The key below is a throwaway for this file alone. The healthcheck (seed.sh; the image has sh,
+# curl and awk) waits for the server, seeds `movies` (500 documents), `logs` (5000) and an
+# empty index exactly once, and passes only once the marker is there, so `up -d --wait`
+# returns when the data is there and later edits to it are never undone. The marker is an API
+# key (`tiq-reader`, search + read actions) rather than an index, so no index shows up that is
+# not data. `down -v` resets.
+# The image is pinned (v1.54.3) by its multi-architecture index digest (amd64 and arm64),
+# like docker/mongo. The port binds to 127.0.0.1 only.
+services:
+  meilisearch:
+    image: getmeili/meilisearch:v1.54.3@sha256:e68913ab7d6f5b159529e472cfd362ce3c741fafd3c127961b2142abbe41b3c9
+    container_name: tableiq-meili
+    environment:
+      MEILI_ENV: production
+      MEILI_MASTER_KEY: tableiq-fixture-master-key-0001
+      MEILI_NO_ANALYTICS: "true"
+    ports:
+      - "127.0.0.1:57700:7700"
+    volumes:
+      - ./seed.sh:/seed.sh:ro
+    healthcheck:
+      test: ["CMD", "sh", "/seed.sh"]
+      interval: 3s
+      timeout: 90s
+      retries: 60
+      start_period: 3s

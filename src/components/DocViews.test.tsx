@@ -50,6 +50,22 @@ describe("StagedReview (shell script mode)", () => {
   });
 });
 
+describe("the documents pane on a read-only (Meilisearch) session", () => {
+  it("shows Meilisearch's query hint and reads a full-text count as an estimate", async () => {
+    const { DocCollection } = await import("./DocCollection");
+    const { isEstimatedSearch } = await import("../lib/docJson");
+    const ms = renderToStaticMarkup(<DocCollection connId="ms1" collection="movies" visible readOnly engine="meilisearch" />);
+    expect(ms).toContain("read-only");
+    expect(ms).toContain("&quot;q&quot;: &quot;river&quot;");
+    expect(ms).not.toContain("Insert a new document");
+    expect(isEstimatedSearch("meilisearch", "river")).toBe(true);
+    expect(isEstimatedSearch("meilisearch", '{"q": "river", "filter": "a = 1"}')).toBe(true);
+    for (const exact of ["", "  ", '{"filter": "a = 1"}', '{"q": ""}', "{bad", "{}"]) expect(isEstimatedSearch("meilisearch", exact)).toBe(false);
+    expect(isEstimatedSearch("elasticsearch", "river")).toBe(false);
+    expect(isEstimatedSearch(undefined, "river")).toBe(false);
+  });
+});
+
 describe("the documents pane on a read-only (Elasticsearch) session", () => {
   it("offers no insert and no staged changes, and reads the query bar as a search", async () => {
     const { DocCollection } = await import("./DocCollection");
