@@ -18,6 +18,7 @@ import { decodeWindow } from "../lib/arrowWindow";
 import { formatRelative, oneLine } from "../lib/history";
 import { highlightSql } from "../lib/sqlHighlightHtml";
 import { envLabel, envTone } from "../lib/connEnv";
+import { isUrlHost } from "../lib/connUrl";
 import { loadLobbyAutoload } from "../lib/prefs";
 import {
   askErrorMessage,
@@ -569,7 +570,9 @@ function Header(p: LobbyViewProps) {
     ? memory
       ? ":memory:"
       : cfg.database.split(/[\\/]/).pop() || cfg.database
-    : `${cfg.host ?? ""}${cfg.port ? `:${cfg.port}` : ""}`;
+    : isUrlHost(cfg.engine, cfg.host ?? "")
+      ? cfg.host
+      : `${cfg.host ?? ""}${cfg.port ? `:${cfg.port}` : ""}`;
   const env = envLabel(cfg.env);
   const tone = envTone(cfg.env);
   const rel = p.statsAt !== null ? formatRelative(p.statsAt) : null;

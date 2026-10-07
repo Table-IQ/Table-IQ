@@ -153,6 +153,11 @@ describe("capsOf", () => {
     expect(capsOf("mysql", "from-the-future")).toEqual({ transactions: true, backup: true, userMgmt: true, agents: false });
   });
 
+  it("ClickHouse is a read-only browser: no transactions, backup, users or agents", () => {
+    expect(capsOf("clickhouse")).toEqual({ transactions: false, backup: false, userMgmt: false, agents: false });
+    expect(presetFor("clickhouse", null)).toEqual({ port: 8123, username: "default", database: "", sslmode: "prefer" });
+  });
+
   it("agrees with the shared agent-access case table", () => {
     for (const c of cases) expect(capsOf(c.engine, c.profile).agents, `${c.engine}/${c.profile}`).toBe(c.allowed);
   });
@@ -182,5 +187,29 @@ describe("presets", () => {
   it("keeps what the user typed", () => {
     const form = applyPreset({ ...blank, username: "alice" }, presetFor("postgres", null), presetFor("postgres", "cockroachdb"));
     expect(form).toMatchObject({ username: "alice", port: 26257, database: "defaultdb" });
+  });
+});
+
+describe("Turso / libSQL", () => {
+  it("is a read-only browser: no transactions, backup, users or agents, and a port its URL carries", () => {
+    expect(capsOf("libsql")).toEqual({ transactions: false, backup: false, userMgmt: false, agents: false });
+    expect(presetFor("libsql", null)).toEqual({ port: 8080, username: "", database: "", sslmode: "prefer" });
+  });
+  it("draws a teal fill that is legible under its white monogram and visible on the dark surface", () => {
+    expect(ENGINE_MONOGRAMS.libsql).toBe("Tu");
+    expect(contrast("#ffffff", ENGINE_COLORS.libsql)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(ENGINE_COLORS.libsql, "#15171c")).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("Elasticsearch", () => {
+  it("is a read-only browser: no transactions, backup, users or agents, and port 9200", () => {
+    expect(capsOf("elasticsearch")).toEqual({ transactions: false, backup: false, userMgmt: false, agents: false });
+    expect(presetFor("elasticsearch", null)).toEqual({ port: 9200, username: "", database: "", sslmode: "prefer" });
+  });
+  it("draws a blue fill that is legible under its white monogram and visible on the dark surface", () => {
+    expect(ENGINE_MONOGRAMS.elasticsearch).toBe("Es");
+    expect(contrast("#ffffff", ENGINE_COLORS.elasticsearch)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(ENGINE_COLORS.elasticsearch, "#15171c")).toBeGreaterThanOrEqual(2);
   });
 });

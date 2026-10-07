@@ -326,6 +326,7 @@ fn allowed(host: &dyn Host, cfg: &McpConfig, id: &str) -> Result<(ConnConfig, Mc
         let hint = match conn.engine.as_str() {
             "mongodb" => " Use the mongo_* tools for it.",
             "redis" => " Use the redis_* tools for it.",
+            "elasticsearch" => " Elasticsearch is not available over MCP yet: TableIQ's agent guard has not been reviewed for it.",
             _ => "",
         };
         return Err(format!("Connection `{id}` is not a SQL connection.{hint}"));
@@ -1932,6 +1933,44 @@ mod tests {
         let (fresh, _f, _t2) = mongo_mcp(profiles::MONGODB_AGENT_SINCE, false, 500);
         assert!(listed(&fresh).contains(r#""engine":"mongodb""#));
         assert!(mfind(&fresh, find_args(None)).await.is_ok());
+    }
+
+    /// ClickHouse is never reachable by an agent, even allowlisted by hand into the config
+    /// file: the SQL tools refuse its engine before anything connects, and it is not listed.
+    #[tokio::test]
+    async fn a_clickhouse_connection_is_refused_and_unlisted() {
+        let m = mcp(vec![cfg_of("ch", "clickhouse", "tableiq")], &[("ch", true)]);
+        let e = query(&m, "ch", "SELECT 1").await.unwrap_err();
+        assert!(e.contains("not a SQL connection"), "{e}");
+        assert!(m.list_databases(Extensions::new(), Parameters(ConnArgs { connection_id: "ch".into() })).await.is_err());
+        let listed = m.list_connections(Extensions::new()).await.unwrap();
+        assert!(!listed.contains("clickhouse"), "{listed}");
+    }
+
+    /// Turso / libSQL, the same: refused before anything connects, and never listed.
+    #[tokio::test]
+    async fn a_libsql_connection_is_refused_and_unlisted() {
+        let m = mcp(vec![cfg_of("tu", "libsql", "http://127.0.0.1:8080")], &[("tu", true)]);
+        let e = query(&m, "tu", "SELECT 1").await.unwrap_err();
+        assert!(e.contains("not a SQL connection"), "{e}");
+        assert!(m.list_databases(Extensions::new(), Parameters(ConnArgs { connection_id: "tu".into() })).await.is_err());
+        let listed = m.list_connections(Extensions::new()).await.unwrap();
+        assert!(!listed.contains("libsql"), "{listed}");
+    }
+
+    /// Elasticsearch, the same: refused (with a reason an agent can relay) before anything
+    /// connects, by the SQL and the MongoDB tools alike, and never listed.
+    #[tokio::test]
+    async fn an_elasticsearch_connection_is_refused_and_unlisted() {
+        let m = mcp(vec![cfg_of("es", "elasticsearch", "http://127.0.0.1:9200")], &[("es", true)]);
+        let e = query(&m, "es", "SELECT 1").await.unwrap_err();
+        assert!(e.contains("not a SQL connection") && e.contains("not available over MCP"), "{e}");
+        let mut a = find_args(None);
+        a.connection_id = "es".into();
+        assert!(mfind(&m, a).await.unwrap_err().contains("not a MongoDB connection"));
+        assert!(m.list_databases(Extensions::new(), Parameters(ConnArgs { connection_id: "es".into() })).await.is_err());
+        let listed = m.list_connections(Extensions::new()).await.unwrap();
+        assert!(!listed.contains("elasticsearch"), "{listed}");
     }
 
     #[tokio::test(flavor = "multi_thread")]

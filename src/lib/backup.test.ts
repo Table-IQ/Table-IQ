@@ -30,6 +30,9 @@ describe("backup engine rules", () => {
       expect(supportsBackup(e)).toBe(true);
     expect(supportsBackup("redis")).toBe(false);
     expect(supportsBackup("mongodb")).toBe(false);
+    expect(supportsBackup("clickhouse")).toBe(false);
+    expect(supportsBackup("libsql")).toBe(false);
+    expect(supportsBackup("elasticsearch")).toBe(false);
   });
 
   it("only the tool-based engines can be cancelled", () => {

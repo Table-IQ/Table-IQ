@@ -13,6 +13,11 @@ describe("engineLabel", () => {
     // A known product on the other wire protocol is not this connection's product.
     expect(engineLabel("postgres", "tidb")).toBe("PostgreSQL");
   });
+  it("labels an OpenSearch server by what it reported", () => {
+    expect(engineLabel("elasticsearch")).toBe("Elasticsearch");
+    expect(engineLabel("elasticsearch", "opensearch")).toBe("OpenSearch");
+    expect(engineLabel("mysql", "opensearch")).toBe("MySQL");
+  });
 });
 
 describe("EngineIcon", () => {

@@ -184,6 +184,17 @@ export function parseObject(text: string): Parsed<Doc> {
   return isObj(v) ? { ok: true, value: v } : { ok: false, error: "Must be a JSON object, like {\"field\": 1}" };
 }
 
+/** Elasticsearch's filter / sort / projection text: JSON (an object or a list) when it starts like it, and then it must
+ *  parse; anything else is left to the server (a filter that is not JSON is a `query_string`). */
+export function parseSearchText(text: string): Parsed<unknown> | null {
+  if (!/^[{[]/.test(text)) return null;
+  try {
+    return { ok: true, value: JSON.parse(text) };
+  } catch (e) {
+    return { ok: false, error: `Invalid JSON: ${(e as Error).message}` };
+  }
+}
+
 /** Parse text that must be one JSON array (an aggregation pipeline). */
 export function parseArray(text: string): Parsed<unknown[]> {
   let v: unknown;

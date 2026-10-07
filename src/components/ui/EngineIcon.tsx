@@ -22,6 +22,9 @@ export const ENGINE_COLORS: Record<Engine, string> = {
   redis: "#dc382d",
   mongodb: "#13aa52",
   sqlserver: "#cc2927",
+  clickhouse: "#946c00",
+  libsql: "#0f766e",
+  elasticsearch: "#0b6e99",
 };
 
 export const ENGINE_MONOGRAMS: Record<Engine, string> = {
@@ -32,6 +35,9 @@ export const ENGINE_MONOGRAMS: Record<Engine, string> = {
   redis: "Re",
   mongodb: "Mo",
   sqlserver: "Ms",
+  clickhouse: "Ch",
+  libsql: "Tu",
+  elasticsearch: "Es",
 };
 
 export const ENGINE_LABELS: Record<Engine, string> = {
@@ -42,6 +48,9 @@ export const ENGINE_LABELS: Record<Engine, string> = {
   redis: "Redis",
   mongodb: "MongoDB",
   sqlserver: "SQL Server",
+  clickhouse: "ClickHouse",
+  libsql: "Turso / libSQL",
+  elasticsearch: "Elasticsearch",
 };
 
 export function EngineIcon({
@@ -91,5 +100,7 @@ export function EngineIcon({
 
 /** The product's label when the profile is one this build knows, else the engine's. */
 export function engineLabel(engine: Engine, profile?: string | null): string {
+  // OpenSearch is the Elasticsearch engine under the name the server reported at connect (no `profiles.json` entry).
+  if (engine === "elasticsearch" && profile === "opensearch") return "OpenSearch";
   return profileOf(engine, profile)?.label ?? ENGINE_LABELS[engine] ?? engine;
 }

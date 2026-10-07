@@ -48,11 +48,15 @@ function fontSizeTheme(px: number) {
 
 function cmDialectFor(engine: Engine | undefined): SQLDialect {
   switch (engine) {
+    // CodeMirror has no ClickHouse dialect: MySQL's lexing (backtick identifiers, `#` comments,
+    // backslash escapes) is the closest.
     case "mysql":
+    case "clickhouse":
       return MySQL;
     case "sqlserver":
       return MSSQL;
     case "sqlite":
+    case "libsql":
       return SQLite;
     default:
       return PostgreSQL;

@@ -584,11 +584,20 @@ export function ConnectionManager() {
             sshKeyPass={sshKeyPass}
             onField={set}
             onEngine={(eng) => {
-              setForm((f) => ({
-                ...applyPreset(f, presetFor(f.engine, f.profile ?? null), presetFor(eng, null)),
-                engine: eng,
-                profile: null,
-              }));
+              setForm((f) => {
+                // Turso and Elasticsearch take a server URL in the host field: a bare host from another
+                // engine ("127.0.0.1") is not one, and a URL is not a host.
+                const wasUrl = /^[a-z+]+:\/\//i.test(f.host);
+                const urlEngine = eng === "libsql" || eng === "elasticsearch";
+                const wasUrlEngine = f.engine === "libsql" || f.engine === "elasticsearch";
+                const host = urlEngine ? (wasUrl ? f.host : "") : wasUrlEngine && (wasUrl || !f.host) ? "127.0.0.1" : f.host;
+                return {
+                  ...applyPreset(f, presetFor(f.engine, f.profile ?? null), presetFor(eng, null)),
+                  host,
+                  engine: eng,
+                  profile: null,
+                };
+              });
               clearStatus();
             }}
             onProfile={(id) => {

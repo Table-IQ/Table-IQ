@@ -2,7 +2,7 @@
 //!
 //! Split by data model (plan spec #1): SQL engines (Postgres, MySQL/MariaDB, SQLite,
 //! SQL Server, DuckDB) stream Arrow via [`SqlDriver`], the document store (MongoDB) returns
-//! JSON/tree via [`DocumentDriver`], and the key-value store (Redis) returns typed
+//! JSON/tree via [`DocumentDriver`] (also Elasticsearch, read-only), and the key-value store (Redis) returns typed
 //! values via [`KvDriver`]. All six engines are real implementations.
 
 use std::sync::{Arc, Mutex};
@@ -10,10 +10,13 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+pub mod clickhouse;
+pub mod doc_elastic;
 pub mod doc_mongo;
 pub mod duckdb;
 pub mod exec;
 pub mod kv_redis;
+pub mod libsql;
 pub mod logged;
 pub mod mysql;
 pub mod postgres;
@@ -670,6 +673,21 @@ pub fn build_where_clause(
     text_expr: &dyn Fn(&str) -> String,
     start_idx: usize,
 ) -> (String, Vec<Option<String>>) {
+    build_where_clause_esc(filters, columns, quote_ident, placeholder, text_expr, start_idx, true)
+}
+
+/// [`build_where_clause`] for a dialect whose LIKE has no `ESCAPE` clause (ClickHouse):
+/// with `esc_clause: false` a Search term escapes its wildcards with a backslash, LIKE's own
+/// escape there, and the SQL carries no `ESCAPE`.
+pub fn build_where_clause_esc(
+    filters: &[ColumnFilter],
+    columns: &[String],
+    quote_ident: &dyn Fn(&str) -> String,
+    placeholder: &dyn Fn(usize, &str) -> String,
+    text_expr: &dyn Fn(&str) -> String,
+    start_idx: usize,
+    esc_clause: bool,
+) -> (String, Vec<Option<String>>) {
     if filters.is_empty() {
         return (String::new(), Vec::new());
     }
@@ -687,14 +705,15 @@ pub fn build_where_clause(
             },
             FilterOp::Search if columns.is_empty() => parts.push("1 = 0".into()),
             FilterOp::Search => {
-                let pat = format!("%{}%", like_escape(f.value.as_deref().unwrap_or("")));
+                let pat = format!("%{}%", like_escape(f.value.as_deref().unwrap_or(""), esc_clause));
+                let esc = if esc_clause { " ESCAPE '!'" } else { "" };
                 let ors: Vec<String> = columns
                     .iter()
                     .map(|c| {
                         let ph = placeholder(idx, "");
                         idx += 1;
                         binds.push(Some(pat.clone()));
-                        format!("LOWER({}) LIKE LOWER({ph}) ESCAPE '!'", text_expr(c))
+                        format!("LOWER({}) LIKE LOWER({ph}){esc}", text_expr(c))
                     })
                     .collect();
                 parts.push(format!("({})", ors.join(" OR ")));
@@ -741,13 +760,15 @@ pub fn validate_filters(filters: &[ColumnFilter]) -> Result<(), String> {
     Ok(())
 }
 
-/// Escape a term's LIKE metacharacters with `!` so it matches literally: `%`, `_`, the
-/// escape itself, and `[` (a character class in SQL Server).
-fn like_escape(term: &str) -> String {
+/// Escape a term's LIKE metacharacters so it matches literally. With `esc_clause` the escape
+/// is `!` (declared by `ESCAPE '!'`): `%`, `_`, the escape itself, and `[` (a character class
+/// in SQL Server). Without it, ClickHouse's: a backslash before `%`, `_` and itself.
+fn like_escape(term: &str, esc_clause: bool) -> String {
+    let (esc, special): (char, &[char]) = if esc_clause { ('!', &['%', '_', '!', '[']) } else { ('\\', &['%', '_', '\\']) };
     let mut out = String::with_capacity(term.len());
     for ch in term.chars() {
-        if matches!(ch, '%' | '_' | '!' | '[') {
-            out.push('!');
+        if special.contains(&ch) {
+            out.push(esc);
         }
         out.push(ch);
     }
@@ -1077,6 +1098,20 @@ pub trait DocumentDriver: Send + Sync {
     async fn aggregate(&self, collection: &str, pipeline: &str, limit: i64) -> DResult<AggResult>;
     /// Server-side enumeration of databases (for the post-connection picker).
     async fn list_databases(&self) -> DResult<Vec<String>> {
+        Err(DriverError::NotImplemented)
+    }
+    /// A read-only store (Elasticsearch): `apply_changes` and the index calls are refused with
+    /// `NotImplemented`, and the shell offers none of them.
+    fn read_only(&self) -> bool {
+        false
+    }
+    /// The product a server says it is, when it is a compatible one (`opensearch`); `None` for
+    /// the base engine.
+    fn product(&self) -> Option<String> {
+        None
+    }
+    /// The collection's field mapping as JSON text (Elasticsearch).
+    async fn mapping(&self, _collection: &str) -> DResult<String> {
         Err(DriverError::NotImplemented)
     }
 }

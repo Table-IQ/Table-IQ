@@ -101,7 +101,8 @@ import { loadPins, savePins, livePins } from "../lib/pins";
 /** The schema a connection should open on. Every engine has a conventional
  *  "your stuff lives here" schema; alphabetical order picks `auth` over
  *  `public`, which is never what the user meant. */
-function defaultSchema(names: string[]): string | undefined {
+function defaultSchema(names: string[], preferred?: string | null): string | undefined {
+  if (preferred && names.includes(preferred)) return preferred;
   return ["public", "dbo", "main"].find((n) => names.includes(n)) ?? names[0];
 }
 
@@ -293,7 +294,10 @@ export function MainShell() {
   // Keep the sidebar schema selection valid across connection/database switches.
   useEffect(() => {
     const names = schema?.schemas.map((s) => s.name) ?? [];
-    setActiveSchema((cur) => (cur && names.includes(cur) ? cur : defaultSchema(names)));
+    // ClickHouse lists every database on the server; open on the one the connection names.
+    const preferred = active?.engine === "clickhouse" ? active.database : null;
+    setActiveSchema((cur) => (cur && names.includes(cur) ? cur : defaultSchema(names, preferred)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [schema]);
 
   // Hydrate persisted tabs whenever we switch connections. Persist on every tab change
@@ -639,20 +643,20 @@ export function MainShell() {
         },
       );
     }
-    if (engine !== "sqlite") {
+    if (engine !== "sqlite" && engine !== "libsql") {
       items.push({
         id: "n-schema",
-        label: engine === "mysql" ? "New Database…" : "New Schema…",
+        label: engine === "mysql" || engine === "clickhouse" ? "New Database…" : "New Schema…",
         onSelect: () =>
           void tabGuard.openQuery(
-            engine === "mysql"
+            engine === "mysql" || engine === "clickhouse"
               ? `CREATE DATABASE ${q("new_database")};`
               : `CREATE SCHEMA ${q("new_schema")};`,
           ),
       });
     }
-    // DuckDB has schemas but no roles or users.
-    if (engine !== "sqlite" && engine !== "duckdb") {
+    // DuckDB has schemas but no roles or users; Turso has neither schemas nor roles.
+    if (engine !== "sqlite" && engine !== "duckdb" && engine !== "libsql") {
       items.push({
         id: "n-group",
         label: "New Group / Role…",
@@ -1384,7 +1388,10 @@ export function MainShell() {
                     : engine === "sqlserver"
                       ? // T-SQL has no CREATE TABLE … AS SELECT; SELECT … INTO is the idiom.
                         `SELECT * INTO ${q(s)}.${q(`${obj.name}_copy`)} FROM ${qualified};`
-                      : `CREATE TABLE ${q(s)}.${q(`${obj.name}_copy`)} AS SELECT * FROM ${qualified};`,
+                      : engine === "clickhouse"
+                        ? // `AS <table>` copies the structure with its engine; `AS SELECT` needs an ENGINE.
+                          `CREATE TABLE ${q(s)}.${q(`${obj.name}_copy`)} AS ${qualified};`
+                        : `CREATE TABLE ${q(s)}.${q(`${obj.name}_copy`)} AS SELECT * FROM ${qualified};`,
                 ),
             },
             {

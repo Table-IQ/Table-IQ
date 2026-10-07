@@ -4,11 +4,11 @@ import { DEFAULT_PORT, PROFILES, profileForUrl } from "./profiles";
 const SCHEME_ENGINE: Record<string, Engine> = {
   postgres: "postgres", postgresql: "postgres", mysql: "mysql",
   sqlserver: "sqlserver", mssql: "sqlserver", redis: "redis", rediss: "redis",
-  mongodb: "mongodb", "mongodb+srv": "mongodb", sqlite: "sqlite", duckdb: "duckdb",
+  mongodb: "mongodb", "mongodb+srv": "mongodb", sqlite: "sqlite", duckdb: "duckdb", clickhouse: "clickhouse", libsql: "libsql", elasticsearch: "elasticsearch",
 };
 const ENGINE_SCHEME: Record<Engine, string> = {
   postgres: "postgres", mysql: "mysql", sqlserver: "sqlserver", redis: "redis",
-  mongodb: "mongodb", sqlite: "sqlite", duckdb: "duckdb",
+  mongodb: "mongodb", sqlite: "sqlite", duckdb: "duckdb", clickhouse: "http", libsql: "libsql", elasticsearch: "https",
 };
 
 export interface ParsedConnUrl {
@@ -40,9 +40,18 @@ function safeDecode(s: string): string {
   }
 }
 
+/** `http(s)://host:8123|8443/…`: ClickHouse's HTTP interface. Any other http URL is not ours to claim. */
+const isClickHouseHttp = (sc: string | undefined, rest: string): boolean =>
+  (sc === "http" || sc === "https") && /^[^/?@]*@?[^/?@]*:(8123|8443)(?:[/?]|$)/.test(rest);
+
+/** `http(s)://host:9200/…`: Elasticsearch's REST port. Only that port is claimed; any other http URL is not ours. */
+const isElasticHttp = (sc: string | undefined, rest: string): boolean =>
+  (sc === "http" || sc === "https") && /^[^/?@]*@?[^/?@]*:9200(?:[/?]|$)/.test(rest);
+
 export function looksLikeConnUrl(s: string): boolean {
   const sc = scheme(s);
-  return !!sc && (sc in SCHEME_ENGINE || profileForUrl(sc, "", null) !== null);
+  const rest = s.trim().replace(/^[a-z+]+:\/\//i, "");
+  return !!sc && (sc in SCHEME_ENGINE || profileForUrl(sc, "", null) !== null || isClickHouseHttp(sc, rest) || isElasticHttp(sc, rest));
 }
 
 /** Engines whose connection can keep its whole URL in `host`. */
@@ -74,8 +83,37 @@ function parseUrlHost(engine: UrlEngine, scheme: string, rest: string): ParsedCo
 /** True when a Mongo connection keeps its whole URL in `host` (see `parseUrlHost`). */
 export const isMongoUrlHost = (host: string): boolean => URL_HOST.mongodb.test(host);
 
-/** True when `engine`'s connection keeps its whole URL in `host` (Mongo, Redis). */
-export const isUrlHost = (engine: string, host: string): boolean => isUrlEngine(engine) && URL_HOST[engine].test(host);
+/** True when `engine`'s connection keeps its whole URL in `host`: Mongo and Redis when it is one, Turso always
+ *  (`libsql://db-org.turso.io`, `http://127.0.0.1:8080`: the scheme picks TLS, so there is no port beside it),
+ *  Elasticsearch always (`https://my.es.io:9243`, `http://127.0.0.1:9200`). */
+export const isUrlHost = (engine: string, host: string): boolean =>
+  engine === "libsql" || engine === "elasticsearch" || (isUrlEngine(engine) && URL_HOST[engine].test(host));
+
+/** A Turso URL's `?authToken=…`: the token, and the URL without it. */
+function splitAuthToken(url: string): { url: string; token: string } {
+  const i = url.indexOf("?");
+  if (i < 0) return { url, token: "" };
+  let token = "";
+  const kept = url
+    .slice(i + 1)
+    .split("&")
+    .filter((pair) => {
+      const [k, ...v] = pair.split("=");
+      if (safeDecode(k).toLowerCase() !== "authtoken") return true;
+      token = safeDecode(v.join("="));
+      return false;
+    });
+  return { url: url.slice(0, i) + (kept.length ? `?${kept.join("&")}` : ""), token };
+}
+
+/** A server URL's `user:password@` (the scheme is optional: `user:pw@host:9200` is a URL here too): the URL
+ *  without it, and the credentials. Unchanged when there is no userinfo. */
+function splitUserinfo(url: string): { url: string; user: string; password: string } {
+  const m = /^([a-z+]+:\/\/)?([^/?#]*)@(.*)$/is.exec(url.trim());
+  if (!m) return { url, user: "", password: "" };
+  const [user, ...pw] = m[2].split(":");
+  return { url: (m[1] ?? "") + m[3], user: safeDecode(user), password: safeDecode(pw.join(":")) };
+}
 
 /** Typing (not pasting) a password into a URL host would save it in plaintext. Move it out the
  *  way a paste does: `host` loses the `:password`, the form's password takes it, `username` follows the
@@ -86,25 +124,41 @@ export function normalizeUrlSecrets<T extends { engine: string; host: string; us
 ): { host: string; username: string; password: string } {
   const unchanged = { host: cfg.host, username: cfg.username, password };
   const host = cfg.host.trim();
+  if (cfg.engine === "libsql") {
+    // `user:pw@` (a password has no other place in a Turso URL than the token) and `?authToken=` both move out.
+    const u = splitUserinfo(host);
+    const t = splitAuthToken(u.url);
+    if (u.url === host && !t.token) return unchanged;
+    return { host: t.url, username: u.user || cfg.username, password: t.token || u.password || password };
+  }
+  if (cfg.engine === "elasticsearch") {
+    const u = splitUserinfo(host);
+    return u.url === host ? unchanged : { host: u.url, username: u.user || cfg.username, password: u.password || password };
+  }
   const m = isUrlHost(cfg.engine, host) ? /^([a-z+]+):\/\/(.*)$/is.exec(host) : null;
   const p = m ? parseUrlHost(cfg.engine as UrlEngine, m[1].toLowerCase(), m[2]) : null;
   return p && p.password ? { host: p.host, username: p.username || cfg.username, password: p.password } : unchanged;
 }
 
-// Secrets a Mongo / Redis URL can carry in its query string. The keychain only fills the userinfo password,
+// Secrets a Mongo / Redis / Turso URL can carry in its query string. The keychain only fills the userinfo password,
 // so these can't be moved: they are refused instead of being saved in plaintext.
-const QUERY_SECRET = /^(tlsCertificateKeyFilePassword|sslClientCertificateKeyPassword|proxyPassword|password|pass|pwd)$/i;
+const QUERY_SECRET = /^(authToken|tlsCertificateKeyFilePassword|sslClientCertificateKeyPassword|proxyPassword|password|pass|pwd)$/i;
+// Further names a Turso / Elasticsearch URL's query string may carry a secret under (API keys, tokens).
+const SERVER_QUERY_SECRET = /^(api[_-]?key|(access[_-]?|auth[_-]?|bearer[_-]?)?token|secret|apikey)$/i;
 const MECHANISM_SECRET = /\b(AWS_SESSION_TOKEN|ACCESS_TOKEN|ID_TOKEN|REFRESH_TOKEN|PASSWORD|SECRET)\s*:/i;
 
-/** The name of a secret in a Mongo / Redis URL host's query string, or null. */
+const TURSO_URL = /^(libsql|elasticsearch|wss?|https?):\/\//i;
+
+/** The name of a secret in a Mongo / Redis / Turso URL host's query string, or null. */
 export function urlQuerySecret(host: string): string | null {
-  const q = Object.values(URL_HOST).some((r) => r.test(host)) ? host.split("?").slice(1).join("?") : "";
+  const server = TURSO_URL.test(host);
+  const q = Object.values(URL_HOST).some((r) => r.test(host)) || server ? host.split("?").slice(1).join("?") : "";
   for (const pair of q.split("&")) {
     const [k, ...v] = pair.split("=");
     const name = safeDecode(k);
     let val = v.join("=");
     val = safeDecode(val);
-    if (QUERY_SECRET.test(name) && val !== "") return name;
+    if ((QUERY_SECRET.test(name) || (server && SERVER_QUERY_SECRET.test(name))) && val !== "") return name;
     if (/^authMechanismProperties$/i.test(name) && MECHANISM_SECRET.test(val)) return name;
   }
   return null;
@@ -116,10 +170,20 @@ export function parseConnUrl(input: string): ParsedConnUrl | null {
   const m = /^([a-z+]+):\/\/(.*)$/i.exec(s);
   if (!m) return null;
   const sc = m[1].toLowerCase();
-  const engine = SCHEME_ENGINE[sc] ?? PROFILES[profileForUrl(sc, "", null) ?? ""]?.base;
+  const engine = SCHEME_ENGINE[sc] ?? (isClickHouseHttp(sc, m[2]) ? "clickhouse" : isElasticHttp(sc, m[2]) ? "elasticsearch" : undefined) ?? PROFILES[profileForUrl(sc, "", null) ?? ""]?.base;
   if (!engine) return null;
   if (engine === "sqlite" || engine === "duckdb") {
     return { engine, host: "", port: 0, username: "", password: "", database: safeDecode(m[2]) };
+  }
+  if (engine === "elasticsearch") {
+    // The URL as typed, minus any `user:password@`, which go to the form's own fields.
+    const u = splitUserinfo(`${sc}://${m[2]}`);
+    return { engine, host: u.url, port: DEFAULT_PORT.elasticsearch, username: u.user, password: u.password, database: "" };
+  }
+  if (engine === "libsql") {
+    // The token is the password; the URL keeps everything else, as typed.
+    const t = splitAuthToken(`${sc}://${m[2]}`);
+    return { engine, host: t.url, port: DEFAULT_PORT.libsql, username: "", password: t.token, database: "" };
   }
   if (engine === "mongodb" && (sc === "mongodb+srv" || /^[^/?]*,/.test(m[2]) || m[2].includes("?"))) return parseUrlHost("mongodb", sc, m[2]);
   if (engine === "redis" && (sc === "rediss" || m[2].includes("?"))) return parseUrlHost("redis", sc, m[2]);
@@ -136,6 +200,7 @@ export function parseConnUrl(input: string): ParsedConnUrl | null {
   const sslmode =
     // MySQL has no `allow`: the backend connects it as PREFERRED, so the form says `prefer`.
     (engine === "mysql" && mode === "allow" ? "prefer" : mode) ??
+    (engine === "clickhouse" && (sc === "https" || u.searchParams.get("secure") === "true") ? "require" : undefined) ??
     (profile && PROFILES[profile].ssl) ??
     (TLS_HOSTS.some((s) => u.hostname.endsWith(s)) ? "require" : undefined);
   return {
@@ -153,7 +218,9 @@ export function parseConnUrl(input: string): ParsedConnUrl | null {
 /** The connection as a URL, for "Copy as URL". Never includes the password. Always the base
  *  engine's scheme: a profile scheme is ours, other tools would not know it. */
 export function toConnUrl(cfg: Pick<ConnConfig, "engine" | "profile" | "host" | "port" | "username" | "database" | "sslmode">): string {
-  const scheme = ENGINE_SCHEME[cfg.engine];
+  // ClickHouse's HTTP interface: https when the form asks for TLS.
+  const scheme = cfg.engine === "clickhouse" && /^(require|verify)/.test(cfg.sslmode) ? "https" : ENGINE_SCHEME[cfg.engine];
+  if (cfg.engine === "libsql" || cfg.engine === "elasticsearch") return /^[a-z+]+:\/\//i.test(cfg.host) ? cfg.host : `https://${cfg.host}`;
   if (isUrlHost(cfg.engine, cfg.host)) return cfg.host; // already a URL
   if (cfg.engine === "sqlite" || cfg.engine === "duckdb") return `${scheme}://${cfg.database}`;
   const user = cfg.username ? `${encodeURIComponent(cfg.username)}@` : "";
@@ -173,10 +240,12 @@ export function validateConn(cfg: Pick<ConnConfig, "engine" | "host" | "port" | 
   }
   const e: ConnFieldErrors = {};
   if (!cfg.host.trim()) e.host = "Required";
-  else if (isUrlEngine(cfg.engine)) {
-    const secret = urlQuerySecret(cfg.host);
+  else if (isUrlEngine(cfg.engine) || cfg.engine === "libsql" || cfg.engine === "elasticsearch") {
+    const secret = urlQuerySecret(/^[a-z+]+:\/\//i.test(cfg.host) ? cfg.host : `libsql://${cfg.host}`);
     if (secret) e.host = `Remove ${secret} from the URL — it would be saved in plaintext`;
   }
+  // A Turso / Elasticsearch URL carries its port.
+  if (cfg.engine === "libsql" || cfg.engine === "elasticsearch") return e;
   if (!Number.isInteger(cfg.port) || cfg.port < 1 || cfg.port > 65535) e.port = "1–65535";
   return e;
 }

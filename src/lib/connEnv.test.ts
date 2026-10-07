@@ -14,6 +14,10 @@ describe("connEnv", () => {
   it("marks SSL only for engines that honour sslmode", () => {
     expect(pillSegments({ ...base, engine: "mysql" as const, sslmode: "require" }, null).ssl).toBe(true);
     expect(pillSegments({ ...base, engine: "sqlserver" as const, sslmode: "require" }, null).ssl).toBe(true);
+    expect(pillSegments({ ...base, engine: "clickhouse" as const, sslmode: "require" }, null).ssl).toBe(true);
+    // Turso's TLS is its URL's scheme, not sslmode.
+    const tu = (host: string) => pillSegments({ ...base, engine: "libsql" as const, host }, null).ssl;
+    expect([tu("libsql://db-org.turso.io"), tu("https://h"), tu("db-org.turso.io"), tu("http://h"), tu("http://127.0.0.1:8080"), tu("localhost:8080"), tu("127.evil.example"), tu("localhostfoo.com")]).toEqual([true, true, true, false, false, false, true, true]);
     expect(pillSegments({ ...base, engine: "redis" as const, sslmode: "require" }, null).ssl).toBe(false);
   });
 
@@ -47,5 +51,13 @@ describe("connEnv", () => {
   it("carries env label, engine label and the active object", () => {
     const s = pillSegments({ ...base, env: "development" }, "public.orders");
     expect(s).toMatchObject({ env: "DEVELOPMENT", engine: "PostgreSQL", connection: "storefront", object: "public.orders" });
+  });
+});
+
+describe("Elasticsearch pill", () => {
+  it("is TLS by its URL: elasticsearch:// and a bare host are, unless this machine", () => {
+    const es = (host: string) => pillSegments({ ...base, engine: "elasticsearch" as const, host }, null);
+    expect(["https://h:9200", "elasticsearch://es.example.com", "es.example.com", "http://h", "http://127.0.0.1:9200", "elasticsearch://localhost", "localhost"].map((h) => es(h).ssl)).toEqual([true, true, true, false, false, false, false]);
+    expect(es("http://h").engine).toBe("Elasticsearch");
   });
 });

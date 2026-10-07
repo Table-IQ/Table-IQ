@@ -10,8 +10,11 @@
 export type SqlDialect = "postgres" | "mysql" | "sqlite" | "sqlserver";
 
 /** The splitting dialect for a connection's engine. DuckDB (and anything without a
- *  dialect of its own) splits like Postgres — `$$` bodies, nested block comments. */
+ *  dialect of its own) splits like Postgres — `$$` bodies, nested block comments. ClickHouse
+ *  splits like MySQL: `#` comments, backslash escapes in strings, backtick identifiers. */
 export function dialectFor(engine: string | undefined): SqlDialect {
+  if (engine === "clickhouse") return "mysql";
+  if (engine === "libsql") return "sqlite";
   return engine === "mysql" || engine === "sqlite" || engine === "sqlserver" ? engine : "postgres";
 }
 

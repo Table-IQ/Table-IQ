@@ -1,6 +1,6 @@
 [package]
 name = "tableiq"
-version = "0.8.6"
+version = "0.8.7"
 description = "TableIQ — fast, local-first, AI-assisted database client"
 authors = ["Rudresh Narwal"]
 edition = "2021"

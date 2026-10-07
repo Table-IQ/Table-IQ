@@ -1,6 +1,6 @@
 # TableIQ Roadmap
 
-_Last updated 2026-10-07 · current version v0.8.6 · companion doc: [GTM.md](GTM.md)_
+_Last updated 2026-10-07 · current version v0.8.7 · companion doc: [GTM.md](GTM.md)_
 
 We are aiming for engine parity with [dbx](https://github.com/t8y2/dbx) (100+ database profiles, 22k★ in five months) while keeping the product TablePlus-grade and agent-safe. Each phase ships as one `/rudys-workflow` slice and one PR, and each merged phase gets its own release announcement (see GTM.md).
 
@@ -100,6 +100,8 @@ A **profile** is a base driver plus default port and URL scheme, dialect quirks,
 SQL-shaped engines (ClickHouse, Snowflake, BigQuery, Databricks, Turso, D1, rqlite) implement `SqlDriver` and read-only first. Search and vector engines get a document shell modelled on `DocShell`.
 
 **Done** = ClickHouse, Turso and Elasticsearch each have live tests. The rest may ship read-only.
+
+**Status, v0.8.7:** ClickHouse, Turso/libSQL (Hrana over HTTP) and Elasticsearch (also detects OpenSearch) ship read-only, each with live tests that CI must run (their own `http-engines` job). None of them can be shared over MCP. Everything else in the table (Snowflake, BigQuery, Databricks, D1, rqlite, Meilisearch, the vector databases, InfluxDB 3, VictoriaMetrics) is not started. Known gaps: no private CA for HTTPS servers, ClickHouse `OFFSET` paging is unstable on tables without a unique key, no cloud Turso run (local `sqld` only).
 
 ## P4 · Sidecar agent runtime (the dbx trick)
 

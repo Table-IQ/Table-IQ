@@ -151,6 +151,10 @@ describe("explainStatement", () => {
     expect(explainStatement("SELECT 1", "mysql")).toBe("EXPLAIN SELECT 1");
   });
 
+  it("prefixes EXPLAIN on ClickHouse, whose plan is text rows", () => {
+    expect(explainStatement("SELECT 1;", "clickhouse")).toBe("EXPLAIN SELECT 1");
+  });
+
   it("uses EXPLAIN QUERY PLAN on SQLite and drops a trailing semicolon", () => {
     expect(explainStatement("SELECT 1;", "sqlite")).toBe("EXPLAIN QUERY PLAN SELECT 1");
   });
@@ -194,5 +198,11 @@ describe("runAllTargets", () => {
       "SELECT 1",
       "UPDATE t SET a = 1",
     ]);
+  });
+});
+
+describe("explainStatement on Turso", () => {
+  it("is SQLite's QUERY PLAN", () => {
+    expect(explainStatement("SELECT 1;", "libsql")).toBe("EXPLAIN QUERY PLAN SELECT 1");
   });
 });

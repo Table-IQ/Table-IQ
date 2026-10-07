@@ -81,6 +81,9 @@ interface ConnectionState {
   setEditsPending: (editsPending: boolean) => void;
 }
 
+/** Redis, MongoDB and Elasticsearch sessions have no SQL schema to list. */
+const hasSchema = (engine: string): boolean => engine !== "redis" && engine !== "mongodb" && engine !== "elasticsearch";
+
 // The tab list is global and each shell re-hydrates its connection's slice on
 // mount; clearing it whenever the active connection changes keeps the next shell
 // from ever rendering (or persisting over) the previous connection's tabs.
@@ -326,7 +329,7 @@ export async function openConnection(cfg: ConnConfig): Promise<boolean> {
     }
     useConnections.setState({ connecting: { id: cfg.id, name: cfg.name, stage: "schema", since } });
     const schema =
-      info.engine === "redis" || info.engine === "mongodb" ? null : await listObjects(cfg.id);
+      hasSchema(info.engine) ? await listObjects(cfg.id) : null;
     if (my !== gen) {
       discardIfStale(cfg.id);
       return false;
@@ -385,7 +388,7 @@ export async function switchDatabaseFlow(id: string, db: string): Promise<boolea
       if (my === gen) useConnections.setState({ connecting: null });
       return false;
     }
-    const schema = info.engine === "redis" || info.engine === "mongodb" ? null : await listObjects(id);
+    const schema = hasSchema(info.engine) ? await listObjects(id) : null;
     markConnected(id);
     clearMetaCaches(id);
     // The old database's tabs go — live if this connection is still in front,

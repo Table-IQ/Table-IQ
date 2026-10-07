@@ -265,8 +265,23 @@ describe("dialectFor", () => {
     ]);
   });
 
+  it("splits ClickHouse like MySQL: # comments, backslash escapes and backtick names stay whole", () => {
+    expect(dialectFor("clickhouse")).toBe("mysql");
+    const doc = "SELECT 'it\\'s; ok' AS `a;b`; # a; comment\nSELECT 2";
+    expect(splitStatements(doc, dialectFor("clickhouse")).map((s) => s.text)).toEqual([
+      "SELECT 'it\\'s; ok' AS `a;b`",
+      "# a; comment\nSELECT 2",
+    ]);
+  });
+
   it("keeps the engines that have a dialect of their own, and defaults to postgres", () => {
     for (const e of ["mysql", "sqlite", "sqlserver", "postgres"] as const) expect(dialectFor(e)).toBe(e);
     expect(dialectFor(undefined)).toBe("postgres");
+  });
+});
+
+describe("Turso / libSQL splitting", () => {
+  it("splits like SQLite", () => {
+    expect(dialectFor("libsql")).toBe("sqlite");
   });
 });

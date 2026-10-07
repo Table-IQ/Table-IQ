@@ -16,11 +16,13 @@ export interface ScriptColumn {
 
 /**
  * Quote a SQL identifier for `engine`, escaping the embedded delimiter by
- * doubling it: `"…"` on Postgres/SQLite, `` `…` `` on MySQL, `[…]` on SQL Server.
+ * doubling it: `"…"` on Postgres/SQLite, `` `…` `` on MySQL, `[…]` on SQL Server. ClickHouse
+ * is backticks too, but escapes with a backslash (as its Rust `quote_ident` does).
  * Mirrors each driver's Rust `quote_ident`. Defaults to the SQL-standard form.
  */
 export function quoteIdent(name: string, engine?: Engine): string {
   if (engine === "mysql") return `\`${name.replace(/`/g, "``")}\``;
+  if (engine === "clickhouse") return `\`${name.replace(/\\/g, "\\\\").replace(/`/g, "\\`")}\``;
   if (engine === "sqlserver") return `[${name.replace(/]/g, "]]")}]`;
   return `"${name.replace(/"/g, '""')}"`;
 }
@@ -34,7 +36,7 @@ export function quoteIdent(name: string, engine?: Engine): string {
  */
 export function quoteLiteral(value: string, engine?: Engine): string {
   const escaped =
-    engine === "mysql"
+    engine === "mysql" || engine === "clickhouse"
       ? value.replace(/\\/g, "\\\\").replace(/'/g, "''")
       : value.replace(/'/g, "''");
   return `'${escaped}'`;
@@ -67,6 +69,8 @@ export function buildTableScript(
     case "truncate":
       return `TRUNCATE TABLE ${qualified};`;
     case "create": {
+      // ClickHouse's own DDL carries the engine, sorting key and settings a rebuilt one cannot.
+      if (engine === "clickhouse") return `SHOW CREATE TABLE ${qualified};`;
       const lines = columns.map(
         (c) =>
           `  ${quoteIdent(c.name, engine)} ${c.data_type}${c.nullable ? "" : " NOT NULL"}`,

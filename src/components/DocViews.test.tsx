@@ -49,3 +49,17 @@ describe("StagedReview (shell script mode)", () => {
     expect(h).toContain("left-0");
   });
 });
+
+describe("the documents pane on a read-only (Elasticsearch) session", () => {
+  it("offers no insert and no staged changes, and reads the query bar as a search", async () => {
+    const { DocCollection } = await import("./DocCollection");
+    const ro = renderToStaticMarkup(<DocCollection connId="es1" collection="books" visible readOnly />);
+    expect(ro).toContain("read-only");
+    expect(ro).toContain("title:quiet");
+    expect(ro).not.toContain("Insert a new document");
+    expect(ro).not.toContain("editable");
+    const rw = renderToStaticMarkup(<DocCollection connId="m1" collection="users" visible />);
+    expect(rw).toContain("Insert a new document");
+    expect(rw).not.toContain("read-only");
+  });
+});

@@ -50,6 +50,7 @@ pub fn arrow_type_to_sql(dialect: Dialect, dt: &DataType) -> String {
             Dialect::MySql => "tinyint(1)".into(),
             Dialect::Sqlite => "INTEGER".into(),
             Dialect::SqlServer => "bit".into(),
+            Dialect::ClickHouse => "Bool".into(),
         },
         Int8 | Int16 | UInt8 => match dialect {
             Dialect::Sqlite => "INTEGER".into(),
@@ -68,12 +69,14 @@ pub fn arrow_type_to_sql(dialect: Dialect, dt: &DataType) -> String {
             Dialect::MySql => "float".into(),
             Dialect::Sqlite => "REAL".into(),
             Dialect::SqlServer => "real".into(),
+            Dialect::ClickHouse => "Float32".into(),
         },
         Float64 => match dialect {
             Dialect::Postgres | Dialect::DuckDb => "double precision".into(),
             Dialect::MySql => "double".into(),
             Dialect::Sqlite => "REAL".into(),
             Dialect::SqlServer => "float".into(),
+            Dialect::ClickHouse => "Float64".into(),
         },
         Decimal128(p, s) | Decimal256(p, s) => match dialect {
             Dialect::Sqlite => "NUMERIC".into(),
@@ -91,6 +94,7 @@ pub fn arrow_type_to_sql(dialect: Dialect, dt: &DataType) -> String {
             Dialect::MySql => "longblob".into(),
             Dialect::Sqlite => "BLOB".into(),
             Dialect::SqlServer => "varbinary(max)".into(),
+            Dialect::ClickHouse => "String".into(),
         },
         Date32 | Date64 => match dialect {
             Dialect::Sqlite => "TEXT".into(),
@@ -107,6 +111,7 @@ pub fn arrow_type_to_sql(dialect: Dialect, dt: &DataType) -> String {
             (Dialect::Sqlite, _) => "TEXT".into(),
             (Dialect::SqlServer, true) => "datetimeoffset".into(),
             (Dialect::SqlServer, false) => "datetime2".into(),
+            (Dialect::ClickHouse, _) => "DateTime64(6)".into(),
         },
         // Composite / nullable container types collapse to JSON / text.
         Struct(_) | List(_) | LargeList(_) | FixedSizeList(_, _) | Map(_, _) => match dialect {
@@ -116,6 +121,7 @@ pub fn arrow_type_to_sql(dialect: Dialect, dt: &DataType) -> String {
             Dialect::MySql => "json".into(),
             Dialect::Sqlite => "TEXT".into(),
             Dialect::SqlServer => "nvarchar(max)".into(),
+            Dialect::ClickHouse => "String".into(),
         },
         _ => match dialect {
             Dialect::MySql => "longtext".into(),

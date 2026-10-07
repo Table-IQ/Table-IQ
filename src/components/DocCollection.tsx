@@ -7,7 +7,7 @@ import { gatedCommit, productionCommitMessage } from "../lib/stagedEdits";
 import { NO_STAGED, stagedLock, totalStaged, type StagedCounts, type StagedSnapshot } from "../lib/stagedChanges";
 import { cycleSort } from "../lib/tableSort";
 import { buildDocChanges, commitOutcome, failedChanges, type Batch, diffDoc, docCommitError, docStagedCounts, shellScript } from "../lib/docChanges";
-import { cellText, field, has, idKey, parseDocs, parseObject, readableError, sameValue, type Doc } from "../lib/docJson";
+import { cellText, field, has, idKey, parseDocs, parseObject, parseSearchText, readableError, sameValue, type Doc } from "../lib/docJson";
 import { docPagerLabel, loadDocView, saveDocView, sortKeyOf, sortText, type DocViewKind } from "../lib/docView";
 import { escapeHtml } from "../lib/sqlHighlightHtml";
 import { type DataGridHandle } from "./DataGrid";
@@ -40,8 +40,11 @@ const input =
   "h-6 rounded-md border border-border bg-bg px-1.5 font-mono text-[11.5px] text-text placeholder:text-muted-2 focus:border-primary focus:outline-none";
 
 /** One collection's Documents tab: query bar, JSON / Table / Tree views, and TablePlus-style staged
- *  editing (cells, whole documents, deletes, new documents) with Review → Commit / Discard. */
-export function DocCollection({ connId, collection, visible }: { connId: string; collection: string; visible: boolean }) {
+ *  editing (cells, whole documents, deletes, new documents) with Review → Commit / Discard.
+ *  `readOnly` (the session's `read_only`, today Elasticsearch only) turns all of the editing off — no edit, insert,
+ *  delete or staged-changes bar — and reads the query bar as a search: the filter is Query DSL JSON or a
+ *  `query_string`, sort and projection may be JSON lists, and counts are exact. */
+export function DocCollection({ connId, collection, visible, readOnly = false }: { connId: string; collection: string; visible: boolean; readOnly?: boolean }) {
   const [draft, setDraft] = useState({ filter: "", sort: "", projection: "", skip: "0" });
   const [q, setQ] = useState<Query>(EMPTY_QUERY);
   const [queryError, setQueryError] = useState<string | null>(null);
@@ -125,7 +128,7 @@ export function DocCollection({ connId, collection, visible }: { connId: string;
   useEffect(() => {
     let live = true;
     docCount(connId, collection, q.filter)
-      .then((n) => live && setTotal({ n, exact: q.filter.trim() !== "" }))
+      .then((n) => live && setTotal({ n, exact: readOnly || q.filter.trim() !== "" }))
       .catch(() => live && setTotal(null));
     return () => {
       live = false;
@@ -143,7 +146,7 @@ export function DocCollection({ connId, collection, visible }: { connId: string;
     if (blockedByEdits()) return;
     for (const k of ["filter", "sort", "projection"] as const) {
       const t = from[k].trim();
-      const p = t === "" ? null : parseObject(t);
+      const p = t === "" ? null : readOnly ? parseSearchText(t) : parseObject(t);
       if (p && !p.ok) return setQueryError(`${k[0].toUpperCase()}${k.slice(1)}: ${p.error}`);
     }
     // A changed query starts from the first page, unless the user typed a Skip themselves.
@@ -164,7 +167,7 @@ export function DocCollection({ connId, collection, visible }: { connId: string;
   // ── editability ───────────────────────────────────────────────────────────
   const readOnlyReason =
     page?.q.projection ? "projection" : docs.some((d) => d._id === undefined) ? "no _id" : null;
-  const editable = !readOnlyReason && !fetching && !!page;
+  const editable = !readOnly && !readOnlyReason && !fetching && !!page;
 
   const setViewKind = (v: DocViewKind) => {
     if (v === view || blockedByEdits()) return;
@@ -318,12 +321,16 @@ export function DocCollection({ connId, collection, visible }: { connId: string;
   const menuItems = (m: NonNullable<typeof menu>): (ContextMenuItem | "separator")[] => {
     if (m.staged === "inserted")
       return [{ id: "remove-doc", label: "Remove document", onSelect: () => gridRef.current?.removeInsertedRow(m.row) }];
+    const copy: ContextMenuItem[] = [
+      { id: "copy-cell", label: "Copy cell value", onSelect: () => void navigator.clipboard?.writeText(m.value ?? "") },
+      { id: "copy-doc", label: "Copy document as JSON", onSelect: () => void navigator.clipboard?.writeText(JSON.stringify(docs[m.row] ?? {}, null, 2)) },
+    ];
+    if (readOnly) return copy;
     return [
       { id: "edit-doc", label: "Edit document…", disabled: !editable, onSelect: () => setDialog({ kind: "edit", row: m.row }) },
       { id: "add-doc", label: "Add document…", disabled: !editable, onSelect: () => setDialog({ kind: "insert" }) },
       "separator",
-      { id: "copy-cell", label: "Copy cell value", onSelect: () => void navigator.clipboard?.writeText(m.value ?? "") },
-      { id: "copy-doc", label: "Copy document as JSON", onSelect: () => void navigator.clipboard?.writeText(JSON.stringify(docs[m.row] ?? {}, null, 2)) },
+      ...copy,
       "separator",
       m.staged === "deleted"
         ? { id: "undo-delete", label: "Undo delete", onSelect: () => gridRef.current?.undoDelete(m.row) }
@@ -345,9 +352,9 @@ export function DocCollection({ connId, collection, visible }: { connId: string;
       >
         {(
           [
-            ["filter", "Filter", `{"age": {"$gt": 30}}`, "min-w-[200px] flex-1"],
-            ["sort", "Sort", `{"age": -1}`, "w-36"],
-            ["projection", "Projection", `{"name": 1}`, "w-36"],
+            ["filter", "Filter", readOnly ? `title:quiet  or  {"match": {"title": "quiet"}}` : `{"age": {"$gt": 30}}`, "min-w-[200px] flex-1"],
+            ["sort", "Sort", readOnly ? `{"year": -1}` : `{"age": -1}`, "w-36"],
+            ["projection", "Projection", readOnly ? `{"title": 1}` : `{"name": 1}`, "w-36"],
           ] as const
         ).map(([k, label, ph, w]) => (
           <label key={k} className={`flex items-center gap-1 ${w}`}>
@@ -464,7 +471,7 @@ export function DocCollection({ connId, collection, visible }: { connId: string;
         </div>
       )}
 
-      {readOnlyReason && (
+      {!readOnly && readOnlyReason && (
         <div className="flex items-center gap-1.5 border-b border-border bg-bg px-3 py-1 text-[10.5px] text-muted">
           <StatusDot tone="muted" />
           {readOnlyReason === "projection"
@@ -520,10 +527,14 @@ export function DocCollection({ connId, collection, visible }: { connId: string;
         left={
           <>
             <ViewToggle value={view} onChange={setViewKind} />
-            <StatusBarButton onClick={() => setDialog({ kind: "insert" })} disabled={!editable || view !== "table"} title={view === "table" ? "Insert a new document" : "Switch to Table view to stage new documents"}>
-              <IconPlus size={11} strokeWidth={1.5} /> Doc
-            </StatusBarButton>
-            <StagedCountChips counts={shown} />
+            {!readOnly && (
+              <>
+                <StatusBarButton onClick={() => setDialog({ kind: "insert" })} disabled={!editable || view !== "table"} title={view === "table" ? "Insert a new document" : "Switch to Table view to stage new documents"}>
+                  <IconPlus size={11} strokeWidth={1.5} /> Doc
+                </StatusBarButton>
+                <StagedCountChips counts={shown} />
+              </>
+            )}
           </>
         }
         center={
@@ -566,7 +577,12 @@ export function DocCollection({ connId, collection, visible }: { connId: string;
           </>
         }
         right={
-          readOnlyReason ? (
+          readOnly ? (
+            <span className="inline-flex items-center gap-1 text-muted" title="Elasticsearch indices can't be edited in TableIQ">
+              <StatusDot tone="muted" />
+              <span>read-only</span>
+            </span>
+          ) : readOnlyReason ? (
             <span className="inline-flex items-center gap-1 text-muted" title="Documents can't be edited here">
               <StatusDot tone="muted" />
               <span>read-only · {readOnlyReason}</span>

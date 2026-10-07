@@ -1,0 +1,31 @@
+# Elasticsearch for tests/elasticsearch_live.rs (and the Elasticsearch QA): one single-node 8.x
+# server, security off, on 59200 (HTTP only). TIQ_ES_URL=http://127.0.0.1:59200
+# The healthcheck (seed.sh, curl is in the image) waits for the cluster, seeds `books` (500
+# documents), `logs-2026` (5000, bulk-indexed) and an empty index exactly once, and passes only
+# once the marker is there, so `up -d --wait` returns when the data is there and later edits to
+# it are never undone. `down -v` resets.
+# The image is ~1.2 GB; the heap is kept to 512 MB, and ML / the GeoIP downloader are off to
+# save memory. It is pinned (8.19.23) by its multi-architecture index digest (amd64 and arm64),
+# like docker/mongo. The port binds to 127.0.0.1 only.
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.19.23@sha256:4d0724bb8d78d7a2330693623e26ca4d621079d062ecc8a30b3e1fc180ec14c1
+    container_name: tableiq-es
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      xpack.ml.enabled: "false"
+      ingest.geoip.downloader.enabled: "false"
+      # A nearly full disk (a laptop, a CI runner) must not flip the indices read-only.
+      cluster.routing.allocation.disk.threshold_enabled: "false"
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    ports:
+      - "127.0.0.1:59200:9200"
+    volumes:
+      - ./seed.sh:/seed.sh:ro
+    healthcheck:
+      test: ["CMD", "bash", "/seed.sh"]
+      interval: 5s
+      timeout: 90s
+      retries: 60
+      start_period: 15s

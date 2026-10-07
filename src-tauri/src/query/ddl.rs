@@ -15,15 +15,18 @@ pub enum Dialect {
     SqlServer,
     /// Postgres-shaped: `"…"` quoting, schemas, `ALTER COLUMN … TYPE`.
     DuckDb,
+    /// Backtick quoting, schemas are databases.
+    ClickHouse,
 }
 
 impl Dialect {
     pub fn from_engine(engine: &str) -> Self {
         match engine {
             "mysql" => Dialect::MySql,
-            "sqlite" => Dialect::Sqlite,
+            "sqlite" | "libsql" => Dialect::Sqlite,
             "sqlserver" => Dialect::SqlServer,
             "duckdb" => Dialect::DuckDb,
+            "clickhouse" => Dialect::ClickHouse,
             _ => Dialect::Postgres,
         }
     }
@@ -32,6 +35,7 @@ impl Dialect {
     pub fn quote(&self, ident: &str) -> String {
         match self {
             Dialect::MySql => format!("`{}`", ident.replace('`', "``")),
+            Dialect::ClickHouse => format!("`{}`", ident.replace('\\', "\\\\").replace('`', "\\`")),
             Dialect::SqlServer => format!("[{}]", ident.replace(']', "]]")),
             _ => format!("\"{}\"", ident.replace('"', "\"\"")),
         }
@@ -132,6 +136,16 @@ pub fn create_table_sql(spec: &TableSpec, d: Dialect) -> String {
         .filter(|c| c.primary_key)
         .map(|c| d.quote(&c.name))
         .collect();
+    // ClickHouse has no PRIMARY KEY clause in the column list: the sorting key follows the
+    // engine, and a table without one still needs an engine.
+    if d == Dialect::ClickHouse {
+        let order = if pks.is_empty() { "tuple()".to_string() } else { format!("({})", pks.join(", ")) };
+        return format!(
+            "CREATE TABLE {} (\n{}\n)\nENGINE = MergeTree\nORDER BY {order};",
+            d.qualified(spec.schema.as_deref(), &spec.name),
+            lines.join(",\n")
+        );
+    }
     if !pks.is_empty() {
         lines.push(format!("  PRIMARY KEY ({})", pks.join(", ")));
     }
@@ -193,7 +207,7 @@ pub fn alter_column_type_sql(
         Dialect::Postgres | Dialect::DuckDb => {
             format!("ALTER TABLE {} ALTER COLUMN {} TYPE {};", qt, d.quote(column), new_type)
         }
-        Dialect::MySql => {
+        Dialect::MySql | Dialect::ClickHouse => {
             format!("ALTER TABLE {} MODIFY COLUMN {} {};", qt, d.quote(column), new_type)
         }
         // SQLite has no in-place type change — it requires a full table rebuild. Emit a
@@ -384,6 +398,26 @@ mod tests {
         assert_eq!(
             alter_column_type_sql(Some("dbo"), "t", "c", "nvarchar(50)", Dialect::SqlServer),
             "ALTER TABLE [dbo].[t] ALTER COLUMN [c] nvarchar(50);"
+        );
+    }
+
+    #[test]
+    fn clickhouse_create_table_names_an_engine_and_a_sorting_key() {
+        let mut spec = TableSpec {
+            schema: Some("db".into()),
+            name: "t".into(),
+            columns: vec![col("id", "UInt64", false, true), col("note", "Nullable(String)", true, false)],
+        };
+        assert_eq!(
+            create_table_sql(&spec, Dialect::ClickHouse),
+            "CREATE TABLE `db`.`t` (\n  `id` UInt64 NOT NULL,\n  `note` Nullable(String)\n)\nENGINE = MergeTree\nORDER BY (`id`);"
+        );
+        spec.columns[0].primary_key = false;
+        assert!(create_table_sql(&spec, Dialect::ClickHouse).ends_with("ORDER BY tuple();"));
+        assert_eq!(Dialect::ClickHouse.quote("a`b\\c"), "`a\\`b\\\\c`");
+        assert_eq!(
+            alter_column_type_sql(Some("db"), "t", "c", "Int32", Dialect::ClickHouse),
+            "ALTER TABLE `db`.`t` MODIFY COLUMN `c` Int32;"
         );
     }
 

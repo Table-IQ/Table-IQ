@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.7 — 2026-10-08
+
+Three new read-only engines over HTTP, with no new crate: ClickHouse, Turso (libSQL) and Elasticsearch. None of them can be shared with agents over MCP.
+
+### Added
+- **ClickHouse** over its HTTP interface: browse databases, tables and views, page and filter a table, run SQL (several statements, errors, `EXPLAIN`), cancel a running query. Column types render as ClickHouse prints them, with exact `UInt64`, `Decimal` and `DateTime64`. The grid is read-only. A `readonly = 1` user works (settings the server refuses are dropped after the first refusal).
+- **Turso / libSQL** over Hrana-HTTP: a `libsql://`, `https://` or `http://` server URL and an auth token. A token in a pasted URL moves to the password field and is never saved in the host. Browse, page (rowid and `WITHOUT ROWID` keysets), run SQL. Read-only grid.
+- **Elasticsearch** in the document shell: indices as collections, a filter box that takes Query DSL JSON or a plain `query_string`, sort, projection, paging with a readable message at the 10,000-hit window, JSON/Table/Tree views, a Mapping tab and an Aggregation pane. Basic auth and API keys; an OpenSearch server is labelled as such. Read-only: the edit, insert, delete and index controls are hidden.
+- **Connection sheet:** three new tiles, a Protocol select (ClickHouse), and URL-driven fields for Turso and Elasticsearch.
+- **Live tests and CI:** ClickHouse, two `sqld` servers (one wanting a JWT) and Elasticsearch in `docker/`, run by their own CI job.
+
+### Not included
+- A private CA for HTTPS servers (only the system roots are trusted), writes and transactions, and agent access.
+
 ## 0.8.6 — 2026-10-07
 
 Redis is now a full browser. You can scan keys as a folder tree, edit every data type, run commands in a console, connect with a user name and over TLS, and share a Redis connection with agents read-only.
