@@ -19,10 +19,22 @@
 //! **Paging** is OFFSET only (no keyset): a MergeTree's sorting key is not unique, so seeking
 //! past the last row's key would skip its duplicates. `ORDER BY` the sorting key keeps the
 //! pages stable and lets the server read in key order; a deep OFFSET still reads the rows it
-//! skips, bounded by the page's server-side timeout.
+//! skips, bounded by the page's server-side timeout. OFFSET is only stable when the order is
+//! total: a table whose sorting key is non-unique, `ORDER BY tuple()`, or a view (which has no
+//! key at all) can repeat or skip a row across pages while parts merge or the plan changes.
+//! There is no unique tiebreaker to add, so such a page is best-effort; keyset paging would
+//! not fix it either.
+//!
+//! **Settings.** Browse reads send `readonly=2`, `max_execution_time` and `max_result_bytes`,
+//! and statements send the result caps, as URL settings. An account whose profile has
+//! `readonly=1` may not change any setting: its first such request fails with "Cannot modify
+//! … setting in readonly mode", the driver remembers that and resends without settings, and
+//! every later request leaves them out. Only the client-side timeout and body cap remain then.
 //!
 //! The password is sent only as an HTTP Basic header, never in a URL, a log line or an error.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use arrow::record_batch::RecordBatch;
@@ -45,6 +57,10 @@ const CATALOG_TIMEOUT_S: u64 = 30;
 const COUNT_TIMEOUT_MS: u64 = 2_000;
 /// Databases that are the server's own, not the user's.
 const SYSTEM_DBS: &str = "'system', 'INFORMATION_SCHEMA', 'information_schema'";
+/// The most of a reply the client reads. A browse page also asks the server for less
+/// (`max_result_bytes`), so it fails there first with the same advice.
+const MAX_BODY: usize = 128 << 20;
+const BODY_ADVICE: &str = "the result is larger than 128 MB: add a LIMIT or select fewer columns";
 const TSV: &str = "TabSeparatedWithNamesAndTypes";
 const READ_ONLY: &str =
     "ClickHouse tables are read-only in TableIQ's grid: run an ALTER TABLE or INSERT in a query tab instead";
@@ -57,6 +73,8 @@ pub struct ClickHouseDriver {
     password: String,
     database: String,
     meta: MetaCache<ColsPk>,
+    /// False once the server has refused a per-request setting (a `readonly=1` profile).
+    settings_ok: AtomicBool,
 }
 
 /// One HTTP request. `settings` and `params` ride the URL, the SQL the body.
@@ -73,6 +91,15 @@ struct Reply {
     /// `X-ClickHouse-Format`: the format the server answered in (a user's own `FORMAT` clause wins).
     format: Option<String>,
     written_rows: u64,
+}
+
+/// The `query_id` of a token's requests: its label (unique in this process) plus a random
+/// suffix of this process, so another TableIQ, or this one after a restart, never shares an id
+/// (a second query with a running id fails with code 216, and `KILL QUERY` would hit both).
+/// Hex and colons only, so it is safe inside the quotes of `KILL QUERY`.
+fn query_id(label: &str) -> String {
+    static RUN: OnceLock<String> = OnceLock::new();
+    format!("{label}:{}", RUN.get_or_init(|| uuid::Uuid::new_v4().simple().to_string()))
 }
 
 fn quote_ident(name: &str) -> String {
@@ -266,6 +293,7 @@ impl ClickHouseDriver {
             password: pct_decode(u.password().unwrap_or("")),
             database: pct_decode(u.path().trim_start_matches('/')),
             meta: MetaCache::default(),
+            settings_ok: AtomicBool::new(true),
         };
         let probe = Req {
             timeout: Duration::from_secs(super::CONNECT_TIMEOUT.as_secs()),
@@ -290,10 +318,23 @@ impl ClickHouseDriver {
         Req { sql, params, settings, query_id, timeout: Duration::from_secs(CATALOG_TIMEOUT_S + 5) }
     }
 
-    /// POST one statement. A non-200 reply is an error, from the body and the
+    /// POST one statement, resending it without its settings once if the server refuses to let
+    /// this account change them (see the module docs).
+    async fn post(&self, r: Req<'_>) -> DResult<Reply> {
+        let with = !r.settings.is_empty() && self.settings_ok.load(Ordering::Relaxed);
+        match self.send(&r, with).await {
+            Err(DriverError::Db(m)) if with && m.contains("Cannot modify") && m.contains("setting in readonly mode") => {
+                self.settings_ok.store(false, Ordering::Relaxed);
+                self.send(&r, false).await
+            }
+            res => res,
+        }
+    }
+
+    /// One request. A non-200 reply is an error, from the body and the
     /// `X-ClickHouse-Exception-Code` header; `wait_end_of_query` makes that hold for a failure
     /// partway through a result too, instead of a 200 with the error text in the data.
-    async fn post(&self, r: Req<'_>) -> DResult<Reply> {
+    async fn send(&self, r: &Req<'_>, with_settings: bool) -> DResult<Reply> {
         let mut q: Vec<(String, String)> = vec![
             ("default_format".into(), TSV.into()),
             ("wait_end_of_query".into(), "1".into()),
@@ -304,9 +345,11 @@ impl ClickHouseDriver {
         if let Some(id) = r.query_id {
             q.push(("query_id".into(), id.into()));
         }
-        q.extend(r.settings.into_iter().map(|(k, v)| (k.to_string(), v)));
-        q.extend(r.params.into_iter().map(|(k, v)| (format!("param_{k}"), v)));
-        let resp = self
+        if with_settings {
+            q.extend(r.settings.iter().map(|(k, v)| (k.to_string(), v.clone())));
+        }
+        q.extend(r.params.iter().map(|(k, v)| (format!("param_{k}"), v.clone())));
+        let mut resp = self
             .http
             .post(self.base.clone())
             .basic_auth(&self.user, Some(&self.password))
@@ -320,7 +363,16 @@ impl ClickHouseDriver {
         let header = |n: &str| resp.headers().get(n).and_then(|v| v.to_str().ok()).map(str::to_string);
         let (code, format, summary) =
             (header("x-clickhouse-exception-code"), header("x-clickhouse-format"), header("x-clickhouse-summary"));
-        let bytes = resp.bytes().await.map_err(|e| net_err(e, &self.host()))?;
+        // Read it chunk by chunk: a result is bounded here, not only by what the server was asked for.
+        let mut bytes: Vec<u8> = Vec::new();
+        let mut too_big = false;
+        while let Some(chunk) = resp.chunk().await.map_err(|e| net_err(e, &self.host()))? {
+            if bytes.len() + chunk.len() > MAX_BODY {
+                too_big = true;
+                break;
+            }
+            bytes.extend_from_slice(&chunk);
+        }
         let body = String::from_utf8_lossy(&bytes).into_owned();
         if !status.is_success() {
             return Err(match error_code(code.as_deref(), &body) {
@@ -328,6 +380,9 @@ impl ClickHouseDriver {
                 _ if body.trim().is_empty() => DriverError::Db(format!("ClickHouse answered HTTP {status}")),
                 _ => DriverError::Db(clean_error(&body)),
             });
+        }
+        if too_big {
+            return Err(DriverError::Db(BODY_ADVICE.into()));
         }
         let written_rows = summary
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
@@ -340,13 +395,18 @@ impl ClickHouseDriver {
     /// bounded server-side at `ms`.
     async fn rows_table(&self, sql: &str, params: Vec<(String, String)>, ms: u64, id: Option<&str>) -> DResult<Table> {
         note(sql);
-        let settings =
-            vec![("readonly", "2".to_string()), ("max_execution_time", ms.div_ceil(1000).max(1).to_string())];
+        // `throw` (the default) on the byte cap: a page cut short silently would read as the whole page.
+        let settings = vec![
+            ("readonly", "2".to_string()),
+            ("max_execution_time", ms.div_ceil(1000).max(1).to_string()),
+            ("max_result_bytes", (MAX_BODY * 3 / 4).to_string()),
+        ];
         let r = Req { timeout: Duration::from_millis(ms + 5_000), ..self.req(sql, params, settings, id) };
         let reply = self.post(r).await.map_err(|e| match e {
             DriverError::Db(m) if m.contains("(TIMEOUT_EXCEEDED)") => {
                 DriverError::Db(format!("query timed out after {ms} ms"))
             }
+            DriverError::Db(m) if m.contains("(TOO_MANY_ROWS_OR_BYTES)") => DriverError::Db(BODY_ADVICE.into()),
             e => e,
         })?;
         Ok(parse_tsv(&reply.body))
@@ -415,7 +475,7 @@ impl ClickHouseDriver {
         let (ms, id) = match token {
             Some(t) => {
                 let ms = if filters.is_empty() { 2 * WINDOW_TIMEOUT_MS } else { WINDOW_TIMEOUT_MS };
-                (ms, Some(t.label()))
+                (ms, Some(query_id(&t.label())))
             }
             None => (QUERY_TIMEOUT_S * 1000, None),
         };
@@ -488,7 +548,7 @@ impl SqlDriver for ClickHouseDriver {
     }
 
     async fn run_statements(&self, stmts: &[String], cap: usize, token: &CancelToken) -> DResult<Vec<StmtOutput>> {
-        let id = token.label();
+        let id = query_id(&token.label());
         let mut outs: Vec<StmtOutput> = Vec::with_capacity(stmts.len());
         for stmt in stmts {
             // Recorded (the label), then the flag checked: see `CancelToken`.
@@ -530,8 +590,8 @@ impl SqlDriver for ClickHouseDriver {
     /// `KILL QUERY` by the id the request carried, from a second request. No label yet: the
     /// query never reached the server, and its flag stops it.
     async fn cancel(&self, token: &CancelToken) -> DResult<()> {
-        let Some(id) = token.scope() else { return Ok(()) };
-        let sql = format!("KILL QUERY WHERE query_id = '{}' SYNC", id.replace('\'', ""));
+        let Some(label) = token.scope() else { return Ok(()) };
+        let sql = format!("KILL QUERY WHERE query_id = '{}' SYNC", query_id(&label).replace('\'', ""));
         note(&sql);
         let r = Req { timeout: Duration::from_secs(CATALOG_TIMEOUT_S), ..self.req(&sql, vec![], vec![], None) };
         self.post(r).await.map(|_| ())
@@ -636,7 +696,7 @@ impl SqlDriver for ClickHouseDriver {
             if token.is_cancelled() {
                 return Err(DriverError::Cancelled);
             }
-            let id = token.label();
+            let id = query_id(&token.label());
             let r = recheck_cancel(self, token, self.rows(&sql, params, QUERY_TIMEOUT_S * 1000, Some(&id))).await?;
             return Ok(parse(r));
         }
@@ -833,6 +893,18 @@ mod tests {
         let syntax = "Code: 62. DB::Exception: Syntax error: failed at position 1 (SELEC): SELEC 1. Expected one of: Query, SELECT, WITH. (SYNTAX_ERROR) (version 25.8)";
         assert_eq!(clean_error(syntax), "Syntax error: failed at position 1 (SELEC): SELEC 1. (SYNTAX_ERROR)");
         assert_eq!(error_code(Some("394"), "x"), Some(394));
+    }
+
+    #[test]
+    fn query_ids_carry_a_per_process_random_suffix() {
+        let a = query_id("tiq:7");
+        let (head, suffix) = a.rsplit_once(':').unwrap();
+        assert_eq!(head, "tiq:7");
+        assert_eq!(suffix.len(), 32);
+        assert!(suffix.chars().all(|c| c.is_ascii_hexdigit()), "{a}");
+        assert_eq!(a, query_id("tiq:7"), "stable within a process, so cancel can rebuild it");
+        assert_ne!(a, query_id("tiq:8"));
+        assert!(!a.contains('\''));
     }
 
     #[test]

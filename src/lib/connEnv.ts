@@ -35,7 +35,7 @@ const SSL_ENGINES = new Set(["postgres", "mysql", "sqlserver", "clickhouse"]);
 /** Whether a Turso / Elasticsearch URL is TLS: its scheme says so (`elasticsearch://` is, unless the host is this
  *  machine), and a bare host is unless it is this machine. */
 const urlTls = (host: string): boolean => {
-  const local = /^([a-z+]+:\/\/)?(localhost|127\.|\[::1\])/i.test(host);
+  const local = /^([a-z+]+:\/\/)?(localhost|127(\.\d{1,3}){3}|\[::1\])(:\d+)?([/?#]|$)/i.test(host);
   return /^[a-z+]+:\/\//i.test(host) && !/^elasticsearch:/i.test(host) ? /^(libsql|https|wss):/i.test(host) : !local;
 };
 

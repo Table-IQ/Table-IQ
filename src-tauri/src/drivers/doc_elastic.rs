@@ -71,7 +71,9 @@ fn parse_base(input: &str) -> DResult<(reqwest::Url, String, String)> {
         return Err(DriverError::Db("no host in the Elasticsearch URL".into()));
     }
     if matches!(scheme.as_str(), "" | "elasticsearch") {
-        let local = u.host_str().is_some_and(|h| h == "localhost" || h.starts_with("127.") || h == "[::1]");
+        // Exactly `localhost` or a loopback address: `127.evil.example` is a name, not this machine.
+        let h = u.host_str().unwrap_or("").trim_matches(['[', ']']);
+        let local = h.eq_ignore_ascii_case("localhost") || h.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback());
         if !local {
             let _ = u.set_scheme("https");
         }
@@ -248,7 +250,13 @@ fn agg_rows(aggs: &Map<String, Value>) -> Vec<Value> {
             d.insert("key".into(), json!(k));
         }
         match v {
-            Value::Object(m) => d.extend(m.clone()),
+            // A sub-aggregation named like a field of the row (`agg`, or `key` of a keyed bucket) must not replace it.
+            Value::Object(m) => {
+                for (k, x) in m {
+                    let clash = k == "agg" || (key.is_some() && k == "key");
+                    d.insert(if clash { format!("{k}_sub") } else { k.clone() }, x.clone());
+                }
+            }
             other => {
                 d.insert("value".into(), other.clone());
             }
@@ -476,6 +484,14 @@ mod tests {
         assert_eq!(p("es.example.com").0.as_str(), "https://es.example.com:9200/");
         assert_eq!(p("elasticsearch://es.example.com:9243").0.as_str(), "https://es.example.com:9243/");
         assert_eq!(p("elasticsearch://127.0.0.1").0.as_str(), "http://127.0.0.1:9200/");
+        assert_eq!(p("elasticsearch://[::1]").0.as_str(), "http://[::1]:9200/");
+        assert_eq!(p("elasticsearch://LOCALHOST").0.as_str(), "http://localhost:9200/");
+        // Only the machine itself is plain http: a name that merely starts like it is not.
+        for evil in ["127.evil.example", "localhostfoo", "localhost.evil.example", "127.0.0.1.evil.example", "128.0.0.1"] {
+            assert!(p(evil).0.as_str().starts_with("https://"), "{evil}");
+            assert!(p(&format!("elasticsearch://{evil}")).0.as_str().starts_with("https://"), "{evil}");
+        }
+        assert_eq!(p("user:pw@127.evil.example:9200").0.as_str(), "https://127.evil.example:9200/");
         assert_eq!(p("https://my.es.io").0.as_str(), "https://my.es.io/");
         assert_eq!(p("http://es.internal").0.as_str(), "http://es.internal/");
         let (u, user, pw) = p("https://elastic:p%40ss@h:9200/?x=1#f");
@@ -556,5 +572,13 @@ mod tests {
         assert_eq!(rows[2], json!({"agg": "avg_ms", "value": 12.5}));
         assert_eq!(rows[3], json!({"agg": "named", "key": "fast", "doc_count": 3}));
         assert_eq!(rows.len(), 4);
+        // A sub-aggregation named like the row's own fields is kept under another name, not over them.
+        let clash = json!({
+            "a": {"buckets": [{"key": "x", "doc_count": 1, "agg": {"value": 5}}]},
+            "k": {"buckets": {"f": {"doc_count": 2, "key": {"value": 6}, "agg": {"value": 7}}}}
+        });
+        let rows = agg_rows(clash.as_object().unwrap());
+        assert_eq!(rows[0], json!({"agg": "a", "key": "x", "doc_count": 1, "agg_sub": {"value": 5}}));
+        assert_eq!(rows[1], json!({"agg": "k", "key": "f", "doc_count": 2, "key_sub": {"value": 6}, "agg_sub": {"value": 7}}));
     }
 }

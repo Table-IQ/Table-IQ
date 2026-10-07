@@ -101,7 +101,8 @@ import { loadPins, savePins, livePins } from "../lib/pins";
 /** The schema a connection should open on. Every engine has a conventional
  *  "your stuff lives here" schema; alphabetical order picks `auth` over
  *  `public`, which is never what the user meant. */
-function defaultSchema(names: string[]): string | undefined {
+function defaultSchema(names: string[], preferred?: string | null): string | undefined {
+  if (preferred && names.includes(preferred)) return preferred;
   return ["public", "dbo", "main"].find((n) => names.includes(n)) ?? names[0];
 }
 
@@ -293,7 +294,10 @@ export function MainShell() {
   // Keep the sidebar schema selection valid across connection/database switches.
   useEffect(() => {
     const names = schema?.schemas.map((s) => s.name) ?? [];
-    setActiveSchema((cur) => (cur && names.includes(cur) ? cur : defaultSchema(names)));
+    // ClickHouse lists every database on the server; open on the one the connection names.
+    const preferred = active?.engine === "clickhouse" ? active.database : null;
+    setActiveSchema((cur) => (cur && names.includes(cur) ? cur : defaultSchema(names, preferred)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [schema]);
 
   // Hydrate persisted tabs whenever we switch connections. Persist on every tab change

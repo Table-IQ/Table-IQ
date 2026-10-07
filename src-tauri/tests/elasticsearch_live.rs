@@ -239,6 +239,10 @@ async fn aggregate_runs_an_aggs_body_and_flattens_it_to_rows() {
     assert_eq!((level("debug"), level("info"), level("warn"), level("error")), (1000, 2000, 1000, 1000));
     let avg = rows.iter().find(|r| r["agg"] == "avg_ms").unwrap();
     assert!(avg["value"].as_f64().unwrap() > 900.0);
+    // A sub-aggregation named `agg` does not replace the row's own `agg`.
+    let r = d.aggregate("logs-2026", r#"{"l": {"terms": {"field": "level"}, "aggs": {"agg": {"avg": {"field": "duration_ms"}}}}}"#, 0).await.unwrap();
+    let rows = parse(&r.docs);
+    assert!(rows.iter().all(|r| r["agg"] == "l" && r["agg_sub"]["value"].is_number()), "{rows:?}");
     // A cap is a cap.
     let r = d.aggregate("logs-2026", r#"{"by_id": {"terms": {"field": "service"}}}"#, 2).await.unwrap();
     assert_eq!((r.docs.len(), r.truncated), (2, true));

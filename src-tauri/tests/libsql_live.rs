@@ -163,6 +163,17 @@ async fn every_seeded_type_decodes_the_way_the_sqlite_driver_shows_it() {
     assert_eq!(cell(b, "b", 0).as_deref(), Some("0x00ff10deadbeef"));
     assert_eq!((cell(b, "n", 0), cell(b, "nul", 0)), (None, None));
 
+    // ±Infinity arrives as a null float: shown with both signs, never a failure. NaN is a NULL.
+    let outs = d.run_statements(&v(&["SELECT 1e999 AS pos, -1e999 AS neg, 0.0 / 0 AS nan, 2.5 AS ok"]), 10, &CancelToken::new()).await.unwrap();
+    assert!(outs[0].error.is_none(), "{:?}", outs[0].error);
+    let b = outs[0].batch.as_ref().unwrap();
+    assert_eq!((cell(b, "pos", 0).as_deref(), cell(b, "neg", 0).as_deref(), cell(b, "nan", 0), cell(b, "ok", 0).as_deref()), (Some("±Inf"), Some("±Inf"), None, Some("2.5")));
+    let tmp = format!("tiq_inf_{}", std::process::id());
+    d.run_statements(&[format!("CREATE TABLE {tmp} (id INTEGER PRIMARY KEY, x REAL)"), format!("INSERT INTO {tmp} (x) VALUES (1e999), (-1e999), (1.5)")], 10, &CancelToken::new()).await.unwrap();
+    let b = page(&d, &tmp, 0, 10, &[], &[]).await;
+    assert_eq!(col(&b, "x"), ["±Inf", "±Inf", "1.5"]);
+    d.run_statements(&[format!("DROP TABLE {tmp}")], 10, &CancelToken::new()).await.unwrap();
+
     // Every REAL prints as SQLite itself prints it: ask the server, which renders it with CAST.
     let reals = ["0.1", "0.1 + 0.2", "1.0/3", "2.0/3", "1e100", "1e-100", "1e15", "1e14", "123456789012345678.0", "-0.0", "5e-324", "1.7976931348623157e308", "100.0", "0.0001", "0.00001234", "255.0 * 3.3", "9007199254740993.0"];
     let sql = format!("SELECT {}", reals.iter().enumerate().map(|(i, r)| format!("{r} AS r{i}, CAST({r} AS TEXT) AS c{i}")).collect::<Vec<_>>().join(", "));
@@ -314,6 +325,19 @@ async fn statements_run_as_written_in_one_round_trip_with_errors_and_no_secrets(
     assert_eq!((outs[5].columns.len(), outs[5].row_count), (2, 0), "a zero-row SELECT keeps its columns");
     assert_eq!(col(outs[6].batch.as_ref().unwrap(), "s"), ["a", "z", "z"]);
     assert!(outs.last().unwrap().notice.is_none());
+
+    // A statement the server cannot parse rejects the whole script before anything runs; the
+    // error names which statement, and a later statement that parses is not blamed.
+    let p = format!("tiq_parse_{}", std::process::id());
+    let outs = d.run_statements(&v(&[&format!("CREATE TABLE {p} (a)"), &format!("INSERT INTO {p} VALUES (1)"), "SELEC 3", "SELECT 4"]), 100, &CancelToken::new()).await.unwrap();
+    assert_eq!(outs.len(), 1);
+    let m = &outs[0].error.as_ref().unwrap().message;
+    assert!(m.starts_with("statement 3: ") && m.contains("nothing in the script ran"), "{m}");
+    let left = d.run_statements(&[format!("SELECT name FROM sqlite_master WHERE name = '{p}'")], 10, &CancelToken::new()).await.unwrap();
+    assert_eq!(left[0].row_count, 0, "the CREATE before the bad statement did not run");
+    // One statement alone is not numbered.
+    let outs = d.run_statements(&v(&["SELEC 1"]), 100, &CancelToken::new()).await.unwrap();
+    assert!(!outs[0].error.as_ref().unwrap().message.starts_with("statement"), "{:?}", outs[0].error);
 
     // An error inside a transaction stops the script, and what it did is rolled back.
     let u = format!("tiq_rb_{}", std::process::id());

@@ -106,12 +106,13 @@ function splitAuthToken(url: string): { url: string; token: string } {
   return { url: url.slice(0, i) + (kept.length ? `?${kept.join("&")}` : ""), token };
 }
 
-/** An Elasticsearch URL's `user:password@`: the URL without it, and the credentials. */
+/** A server URL's `user:password@` (the scheme is optional: `user:pw@host:9200` is a URL here too): the URL
+ *  without it, and the credentials. Unchanged when there is no userinfo. */
 function splitUserinfo(url: string): { url: string; user: string; password: string } {
-  const m = /^([a-z+]+:\/\/)([^/?#]*)@(.*)$/is.exec(url.trim());
+  const m = /^([a-z+]+:\/\/)?([^/?#]*)@(.*)$/is.exec(url.trim());
   if (!m) return { url, user: "", password: "" };
   const [user, ...pw] = m[2].split(":");
-  return { url: m[1] + m[3], user: safeDecode(user), password: safeDecode(pw.join(":")) };
+  return { url: (m[1] ?? "") + m[3], user: safeDecode(user), password: safeDecode(pw.join(":")) };
 }
 
 /** Typing (not pasting) a password into a URL host would save it in plaintext. Move it out the
@@ -124,8 +125,11 @@ export function normalizeUrlSecrets<T extends { engine: string; host: string; us
   const unchanged = { host: cfg.host, username: cfg.username, password };
   const host = cfg.host.trim();
   if (cfg.engine === "libsql") {
-    const t = splitAuthToken(host);
-    return t.token ? { host: t.url, username: cfg.username, password: t.token } : unchanged;
+    // `user:pw@` (a password has no other place in a Turso URL than the token) and `?authToken=` both move out.
+    const u = splitUserinfo(host);
+    const t = splitAuthToken(u.url);
+    if (u.url === host && !t.token) return unchanged;
+    return { host: t.url, username: u.user || cfg.username, password: t.token || u.password || password };
   }
   if (cfg.engine === "elasticsearch") {
     const u = splitUserinfo(host);
@@ -139,19 +143,22 @@ export function normalizeUrlSecrets<T extends { engine: string; host: string; us
 // Secrets a Mongo / Redis / Turso URL can carry in its query string. The keychain only fills the userinfo password,
 // so these can't be moved: they are refused instead of being saved in plaintext.
 const QUERY_SECRET = /^(authToken|tlsCertificateKeyFilePassword|sslClientCertificateKeyPassword|proxyPassword|password|pass|pwd)$/i;
+// Further names a Turso / Elasticsearch URL's query string may carry a secret under (API keys, tokens).
+const SERVER_QUERY_SECRET = /^(api[_-]?key|(access[_-]?|auth[_-]?|bearer[_-]?)?token|secret|apikey)$/i;
 const MECHANISM_SECRET = /\b(AWS_SESSION_TOKEN|ACCESS_TOKEN|ID_TOKEN|REFRESH_TOKEN|PASSWORD|SECRET)\s*:/i;
 
 const TURSO_URL = /^(libsql|elasticsearch|wss?|https?):\/\//i;
 
 /** The name of a secret in a Mongo / Redis / Turso URL host's query string, or null. */
 export function urlQuerySecret(host: string): string | null {
-  const q = Object.values(URL_HOST).some((r) => r.test(host)) || TURSO_URL.test(host) ? host.split("?").slice(1).join("?") : "";
+  const server = TURSO_URL.test(host);
+  const q = Object.values(URL_HOST).some((r) => r.test(host)) || server ? host.split("?").slice(1).join("?") : "";
   for (const pair of q.split("&")) {
     const [k, ...v] = pair.split("=");
     const name = safeDecode(k);
     let val = v.join("=");
     val = safeDecode(val);
-    if (QUERY_SECRET.test(name) && val !== "") return name;
+    if ((QUERY_SECRET.test(name) || (server && SERVER_QUERY_SECRET.test(name))) && val !== "") return name;
     if (/^authMechanismProperties$/i.test(name) && MECHANISM_SECRET.test(val)) return name;
   }
   return null;

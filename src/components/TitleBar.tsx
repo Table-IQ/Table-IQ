@@ -275,7 +275,7 @@ export function TitleBar(p: TitleBarProps) {
             >
               {seg.connection}
             </button>
-            {seg.database !== seg.connection && (
+            {seg.database && seg.database !== seg.connection && (
               <>
                 <Sep>:</Sep>
                 {p.fileEngine ? (

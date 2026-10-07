@@ -2,12 +2,21 @@
 # Healthcheck and seed for the `elasticsearch` service: exit 0 only once the data is there.
 # Seeds through the REST API; the `.tiq_meta` marker (a dot-index, which TableIQ hides) is
 # written last, so an interrupted seed is redone from scratch on the next beat.
-ES=http://127.0.0.1:9200
+ES=${ES:-http://127.0.0.1:9200}
+# A failed stage of a pipe (the awk generator, or curl) fails the whole pipe.
+set -o pipefail
 curl -sf "$ES/.tiq_meta/_doc/seeded" | grep -q '"found":true' && exit 0
 curl -sf "$ES/_cluster/health?wait_for_status=yellow&timeout=30s" >/dev/null || exit 1
 
 put() { curl -sf -X "$1" "$ES/$2" -H 'Content-Type: application/json' -d "$3" >/dev/null || exit 1; }
-bulk() { curl -sf -X POST "$ES/_bulk?refresh=true" -H 'Content-Type: application/x-ndjson' --data-binary @- | grep -q '"errors":false' || exit 1; }
+# `return`, not `exit`: it runs on the right of a pipe, in a subshell, so only the caller's
+# `|| exit 1` can stop the script before the marker. The reply is read whole (not through
+# `grep -q`, which would close the pipe on curl); `"errors":true` is a failed bulk.
+bulk() {
+  local reply
+  reply=$(curl -sf -X POST "$ES/_bulk?refresh=true" -H 'Content-Type: application/x-ndjson' --data-binary @-) || return 1
+  case $reply in *'"errors":false'*) ;; *) return 1 ;; esac
+}
 
 curl -s -X DELETE "$ES/books,logs-2026,empty-index" >/dev/null
 
@@ -63,7 +72,7 @@ awk 'BEGIN {
   # Text that must survive the round trip: quotes, non-ASCII, a very long word.
   print "{\"index\":{\"_index\":\"books\",\"_id\":\"b-unicode\"}}"
   print "{\"title\":\"Ünïcødé — 日本語 \\\"quoted\\\"\",\"author\":\"Zoë Ångström\",\"genre\":\"poetry\",\"year\":2001,\"published\":\"2001-09-09T01:46:40Z\",\"rating\":4.5,\"in_print\":true,\"tags\":[],\"note\":null,\"publisher\":{\"name\":\"Ünï\",\"country\":\"JP\"},\"reviews\":[]}"
-}' | bulk
+}' | bulk || exit 1
 
 # 5000 log lines, one a minute from 2026-01-01.
 awk 'BEGIN {
@@ -75,7 +84,7 @@ awk 'BEGIN {
     printf "{\"@timestamp\":\"2026-01-%02dT%02d:%02d:00Z\",\"level\":\"%s\",\"service\":\"%s\",\"status\":%s,\"duration_ms\":%.1f,\"message\":\"request %d handled by %s\"}\n", \
       1 + int(i / 1440), int(i % 1440 / 60), i % 60, lv[i % 5 + 1], sv[i % 4 + 1], st[i % 6 + 1], (i * 13) % 2000 + 0.5, i, sv[i % 4 + 1]
   }
-}' | bulk
+}' | bulk || exit 1
 
 put PUT '.tiq_meta/_doc/seeded?refresh=true' '{"v":1}'
 exit 0

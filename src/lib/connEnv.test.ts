@@ -17,7 +17,7 @@ describe("connEnv", () => {
     expect(pillSegments({ ...base, engine: "clickhouse" as const, sslmode: "require" }, null).ssl).toBe(true);
     // Turso's TLS is its URL's scheme, not sslmode.
     const tu = (host: string) => pillSegments({ ...base, engine: "libsql" as const, host }, null).ssl;
-    expect([tu("libsql://db-org.turso.io"), tu("https://h"), tu("db-org.turso.io"), tu("http://h"), tu("http://127.0.0.1:8080"), tu("localhost:8080")]).toEqual([true, true, true, false, false, false]);
+    expect([tu("libsql://db-org.turso.io"), tu("https://h"), tu("db-org.turso.io"), tu("http://h"), tu("http://127.0.0.1:8080"), tu("localhost:8080"), tu("127.evil.example"), tu("localhostfoo.com")]).toEqual([true, true, true, false, false, false, true, true]);
     expect(pillSegments({ ...base, engine: "redis" as const, sslmode: "require" }, null).ssl).toBe(false);
   });
 

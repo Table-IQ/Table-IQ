@@ -322,7 +322,7 @@ async fn cancel_stops_a_running_statement_on_the_server() {
     let token = CancelToken::new();
     let (d2, t2) = (d.clone(), token.clone());
     let start = Instant::now();
-    let h = tokio::spawn(async move { d2.run_statements(&v(&["SELECT sleep(3)", "SELECT 1"]), 100, &t2).await });
+    let h = tokio::spawn(async move { d2.run_statements(&v(&["SELECT sleep(3), 'cancel-marker'", "SELECT 1"]), 100, &t2).await });
     tokio::time::sleep(Duration::from_millis(600)).await;
     token.mark_cancelled();
     d.cancel(&token).await.expect("cancel");
@@ -330,7 +330,7 @@ async fn cancel_stops_a_running_statement_on_the_server() {
     assert!(matches!(res, Err(DriverError::Cancelled)), "{:?}", res.map(|o| o.len()));
     assert!(start.elapsed() < Duration::from_millis(2500), "the sleep was interrupted, not awaited: {:?}", start.elapsed());
     // Nothing is left running under that id.
-    let left = d.run_statements(&v(&["SELECT count() FROM system.processes WHERE query_id LIKE 'tiq:%' AND query LIKE '%sleep(3)%' AND query NOT LIKE '%system.processes%'"]), 10, &CancelToken::new()).await.unwrap();
+    let left = d.run_statements(&v(&["SELECT count() FROM system.processes WHERE query LIKE '%cancel-marker%' AND query NOT LIKE '%system.processes%'"]), 10, &CancelToken::new()).await.unwrap();
     assert_eq!(cell(left[0].batch.as_ref().unwrap(), "count()", 0).as_deref(), Some("0"));
 
     // Cancelled before it started: it never runs.
@@ -426,4 +426,71 @@ async fn logged_forwards_every_call_and_records_statements() {
     assert!(has("system.columns") && has("FROM `tableiq`.`events` AS _t") && has("SELECT count()") && has("SELECT 42"), "{all:#?}");
     assert_eq!(all.iter().filter(|s| *s == "SELECT 42").count(), 1, "{all:#?}");
     assert!(!all.iter().any(|s| s.contains("tableiq@") || s.contains("Authorization")), "{all:#?}");
+}
+
+/// The login of `docker/clickhouse/seed.sql`'s `tiq_ro`: a `readonly = 1` profile, which refuses
+/// every per-request setting.
+fn readonly_url() -> Option<String> {
+    live_url("TIQ_CLICKHOUSE_URL").map(|u| u.replacen("default:", "tiq_ro:", 1))
+}
+
+#[tokio::test]
+async fn a_readonly_one_account_works_by_dropping_the_refused_settings() {
+    let Some(url) = readonly_url() else { return };
+    let d = ClickHouseDriver::connect(&url).await.expect("a readonly=1 login connects");
+    let m = d.introspect().await.expect("introspect");
+    assert!(m.schemas.iter().any(|s| s.name == "tableiq"));
+    assert_eq!(page(&d, "events", 5, 3, &[], &[]).await.num_rows(), 3);
+    assert_eq!(d.count_rows("tableiq", "events", &[f("kind", FilterOp::Eq, "buy")], None).await.unwrap().count, Some(50_000));
+    // Statements run too; the row cap is still honoured, now by the client.
+    let o = d.run_statements(&v(&["SELECT * FROM tableiq.events"]), 1000, &CancelToken::new()).await.unwrap().remove(0);
+    assert!(o.error.is_none(), "{:?}", o.error);
+    assert_eq!((o.row_count, o.truncated), (1000, true));
+    // A write is refused by the server's grants, with its own words.
+    let o = d.run_statements(&v(&["INSERT INTO tableiq_aux.notes VALUES (9, 'x')"]), 10, &CancelToken::new()).await.unwrap().remove(0);
+    assert!(o.error.as_ref().unwrap().message.contains("ACCESS_DENIED"), "{:?}", o.error);
+}
+
+#[tokio::test]
+async fn query_ids_do_not_collide_with_another_instances() {
+    let Some(url) = live_url("TIQ_CLICKHOUSE_URL") else { return };
+    let d = Arc::new(drv().await.unwrap());
+    // Another TableIQ's query, under the id this process's first label would have used before the suffix.
+    let token = CancelToken::new();
+    let old_style_id = token.label();
+    let u = reqwest::Url::parse(&url).unwrap();
+    let other = tokio::spawn(async move {
+        reqwest::Client::new()
+            .post(format!("http://{}:{}/?query_id={old_style_id}", u.host_str().unwrap(), u.port().unwrap()))
+            .basic_auth("default", Some("tableiq"))
+            .body("SELECT sleep(2)")
+            .send()
+            .await
+            .unwrap()
+            .status()
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    // The same label in this process is not the other's id: both run, and cancel touches only ours.
+    let (d2, t2) = (d.clone(), token.clone());
+    let ours = tokio::spawn(async move { d2.run_statements(&v(&["SELECT sleep(3)"]), 10, &t2).await });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    token.mark_cancelled();
+    d.cancel(&token).await.unwrap();
+    assert!(matches!(ours.await.unwrap(), Err(DriverError::Cancelled)));
+    assert!(other.await.unwrap().is_success(), "the other instance's query was killed or refused (code 216)");
+}
+
+#[tokio::test]
+async fn a_reply_over_128_mb_is_refused_with_advice() {
+    let Some(d) = drv().await else { return };
+    let o = d
+        .run_statements(&v(&["SELECT repeat('x', 1000000) AS big FROM numbers(200)"]), 50_000, &CancelToken::new())
+        .await
+        .unwrap()
+        .remove(0);
+    let e = o.error.expect("200 MB must not be read whole").message;
+    assert!(e.contains("larger than 128 MB") && e.contains("LIMIT"), "{e}");
+    // Under the cap it is fine.
+    let o = d.run_statements(&v(&["SELECT repeat('x', 1000000) AS big FROM numbers(20)"]), 50_000, &CancelToken::new()).await.unwrap().remove(0);
+    assert_eq!(o.row_count, 20);
 }

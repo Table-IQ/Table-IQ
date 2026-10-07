@@ -89,6 +89,8 @@ struct BatchResult {
 #[derive(Deserialize)]
 struct HranaError {
     message: String,
+    #[serde(default)]
+    code: Option<String>,
 }
 #[derive(Deserialize, Default)]
 struct Res {
@@ -111,7 +113,9 @@ struct Col {
 enum Val {
     Null,
     Integer { value: String },
-    Float { value: f64 },
+    /// `value` is null for ±Infinity (SQLite's NaN is a NULL, never a float): JSON has no
+    /// infinity, and the server does not say which sign.
+    Float { value: Option<f64> },
     Text { value: String },
     Blob { base64: String },
 }
@@ -121,7 +125,7 @@ impl Val {
         match self {
             Val::Null => None,
             Val::Integer { value } | Val::Text { value } => Some(value.clone()),
-            Val::Float { value } => Some(real_text(*value)),
+            Val::Float { value } => Some(value.map_or_else(|| "±Inf".to_string(), real_text)),
             Val::Blob { base64 } => Some(
                 base64::engine::general_purpose::STANDARD_NO_PAD
                     .decode(base64.trim_end_matches('='))
@@ -179,6 +183,21 @@ fn clean(msg: &str) -> String {
     msg.strip_prefix("SQLite error: ").unwrap_or(msg).chars().take(2000).collect()
 }
 
+/// Whether `host[:port]` (a bracketed `[::1]:port` too) is this machine: exactly `localhost`, or
+/// a loopback address. Nothing else may be sent a token in the clear, so a name that merely
+/// starts like one (`127.evil.example`, `localhostfoo.com`) is not.
+fn is_local(host_port: &str) -> bool {
+    let host = match host_port.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or(""),
+        // One colon is a port; more is a bare IPv6 address.
+        None => match host_port.split_once(':') {
+            Some((h, p)) if !p.contains(':') => h,
+            _ => host_port,
+        },
+    };
+    host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
 /// `libsql://`, `wss://` and `https://` are TLS, `ws://` and `http://` are not; a bare host is
 /// TLS unless it is this machine. Any credentials, path, query or fragment in it are dropped:
 /// the token has its own field.
@@ -191,7 +210,7 @@ fn endpoint(input: &str) -> DResult<reqwest::Url> {
     };
     let host_port = rest.split(['/', '?', '#']).next().unwrap_or("");
     let host_port = host_port.rsplit_once('@').map_or(host_port, |(_, h)| h);
-    let local = host_port.starts_with("localhost") || host_port.starts_with("127.") || host_port.starts_with("[::1]");
+    let local = is_local(host_port);
     let https = match scheme.as_str() {
         "libsql" | "wss" | "https" => true,
         "ws" | "http" => false,
@@ -335,11 +354,31 @@ impl LibsqlDriver {
                     }
                 }
             }
-            // The server refused the request as a whole (a statement it cannot parse).
-            Some(Slot::Error { error }) => outs.push(Err(self.redact(clean(&error.message)))),
+            // The server refused the request as a whole (a statement it cannot parse), so
+            // nothing in it ran. Say which statement, when it can be found.
+            Some(Slot::Error { error }) => {
+                let msg = self.redact(clean(&error.message));
+                outs.push(Err(if stmts.len() < 2 {
+                    msg
+                } else {
+                    match self.locate_syntax_error(stmts).await {
+                        Some(i) => format!("statement {}: {msg} (nothing in the script ran)", i + 1),
+                        None => format!("in the script: {msg} (nothing in it ran)"),
+                    }
+                }));
+            }
             _ => return Err(DriverError::Db(format!("{} did not answer like a libSQL server", self.host()))),
         }
         Ok(outs)
+    }
+
+    /// The first of `stmts` the server cannot parse, found with Hrana `describe`, which parses
+    /// without running. A statement that parses but names a missing table (an `INSERT` after a
+    /// `CREATE` in the same script) fails with a SQLite error, which is not what is looked for.
+    async fn locate_syntax_error(&self, stmts: &[Stmt]) -> Option<usize> {
+        let reqs = stmts.iter().map(|(sql, _)| json!({"type": "describe", "sql": sql})).collect();
+        let slots = self.pipeline(reqs, Duration::from_secs(CATALOG_TIMEOUT_S)).await.ok()?;
+        slots.iter().position(|s| matches!(s, Slot::Error { error } if error.code.as_deref().is_some_and(|c| !c.starts_with("SQLITE"))))
     }
 
     /// One statement that must succeed.
@@ -716,6 +755,13 @@ mod tests {
         assert_eq!(e("ws://db.local").unwrap(), "http://db.local/v2/pipeline");
         assert_eq!(e("127.0.0.1:58080").unwrap(), "http://127.0.0.1:58080/v2/pipeline");
         assert_eq!(e("db-org.turso.io").unwrap(), "https://db-org.turso.io/v2/pipeline");
+        // Plain http is for this machine only: a name that merely starts like it gets https, token and all.
+        for host in ["127.evil.example", "localhostfoo.com", "localhost.evil.com", "127.0.0.1.evil.com", "localhost@evil.com", "127.1", "[2001:db8::1]:8080", "10.0.0.1"] {
+            assert!(e(host).unwrap().starts_with("https://"), "{host}");
+        }
+        for host in ["localhost", "LOCALHOST:8080", "127.0.0.1", "127.9.9.9:1", "[::1]", "[::1]:8080"] {
+            assert!(e(host).unwrap().starts_with("http://"), "{host}");
+        }
         assert!(e("file:///x.db").is_err() && e("libsql://").is_err() && e("").is_err());
     }
 
@@ -743,13 +789,13 @@ mod tests {
     fn values_decode_like_the_sqlite_driver() {
         let v: Vec<Val> = serde_json::from_str(
             r#"[{"type":"integer","value":"9223372036854775807"},{"type":"float","value":1.5},{"type":"text","value":"é"},
-                {"type":"blob","base64":"aGk"},{"type":"blob","base64":"AP8="},{"type":"null"}]"#,
+                {"type":"blob","base64":"aGk"},{"type":"blob","base64":"AP8="},{"type":"null"},{"type":"float","value":null}]"#,
         )
         .unwrap();
         let t: Vec<Option<String>> = v.iter().map(Val::text).collect();
         assert_eq!(
             t,
-            [Some("9223372036854775807".into()), Some("1.5".into()), Some("é".into()), Some("hi".into()), Some("0x00ff".into()), None]
+            [Some("9223372036854775807".into()), Some("1.5".into()), Some("é".into()), Some("hi".into()), Some("0x00ff".into()), None, Some("±Inf".into())]
         );
     }
 

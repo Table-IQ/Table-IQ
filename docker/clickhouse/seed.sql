@@ -62,6 +62,12 @@ ENGINE = MergeTree ORDER BY id;
 CREATE TABLE tableiq_aux.notes (id UInt8, body String) ENGINE = MergeTree ORDER BY id;
 INSERT INTO tableiq_aux.notes VALUES (1, 'in the second database');
 
+-- The typical analytics login: a profile with readonly = 1, which refuses any per-request setting.
+CREATE USER tiq_ro IDENTIFIED BY 'tableiq' SETTINGS readonly = 1;
+GRANT SELECT ON tableiq.* TO tiq_ro;
+GRANT SELECT ON system.* TO tiq_ro;
+GRANT SELECT ON tableiq_aux.* TO tiq_ro;
+
 -- Last: the healthcheck waits for exactly this many rows.
 INSERT INTO tableiq.events
 SELECT number, ['click', 'view', 'buy', 'scroll'][number % 4 + 1], toDateTime('2024-01-01 00:00:00', 'UTC') + number, number / 8, concat('event-', toString(number))

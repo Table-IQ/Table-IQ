@@ -302,9 +302,36 @@ describe("Elasticsearch URLs", () => {
     const cfg = { engine: "elasticsearch" as const, host: "http://127.0.0.1:9200", port: 0, database: "" };
     expect(validateConn(cfg)).toEqual({});
     expect(validateConn({ ...cfg, host: " " })).toEqual({ host: "Required" });
-    expect(validateConn({ ...cfg, host: "h?apiKey=x&password=y" }).host).toContain("password");
+    expect(validateConn({ ...cfg, host: "h?apiKey=x&password=y" }).host).toContain("apiKey");
     expect(isUrlHost("elasticsearch", "localhost")).toBe(true);
     expect(toConnUrl({ ...cfg, port: 9200, username: "u", sslmode: "prefer" })).toBe("http://127.0.0.1:9200");
     expect(toConnUrl({ ...cfg, host: "es.example.com", port: 9200, username: "", sslmode: "prefer" })).toBe("https://es.example.com");
+  });
+});
+
+describe("secrets in a Turso / Elasticsearch host", () => {
+  const cfg = (engine: string, host: string, username = "") => ({ engine, host, username });
+  it("a scheme-less user:password@ is moved out, as one with a scheme is", () => {
+    expect(normalizeUrlSecrets(cfg("elasticsearch", "bob:s3cret@es.example.com:9200"), "")).toEqual({ host: "es.example.com:9200", username: "bob", password: "s3cret" });
+    expect(normalizeUrlSecrets(cfg("elasticsearch", "bob:p%40ss@h"), "old")).toEqual({ host: "h", username: "bob", password: "p@ss" });
+    expect(normalizeUrlSecrets(cfg("elasticsearch", "es.example.com:9200"), "kept")).toEqual({ host: "es.example.com:9200", username: "", password: "kept" });
+    expect(normalizeUrlSecrets(cfg("libsql", "bob:s3cret@db.example.com:8080"), "")).toEqual({ host: "db.example.com:8080", username: "bob", password: "s3cret" });
+    expect(normalizeUrlSecrets(cfg("libsql", "https://:tok@db.example.com"), "")).toEqual({ host: "https://db.example.com", username: "", password: "tok" });
+    // The token in the query wins over a userinfo password; both leave the host.
+    expect(normalizeUrlSecrets(cfg("libsql", "u:pw@h?authToken=T"), "")).toEqual({ host: "h", username: "u", password: "T" });
+    expect(normalizeUrlSecrets(cfg("libsql", "h?authToken=T"), "")).toEqual({ host: "h", username: "", password: "T" });
+    // An `@` after the path or query is not userinfo.
+    expect(normalizeUrlSecrets(cfg("elasticsearch", "h:9200/a@b"), "")).toEqual({ host: "h:9200/a@b", username: "", password: "" });
+  });
+  it("refuses a secret it cannot move out of the query string, with or without a scheme", () => {
+    for (const host of ["https://h:9200?api_key=x", "h:9200?apikey=x", "elasticsearch://h?token=x", "h?password=x", "h?pass=x", "http://h?authToken=x", "h?access_token=x"]) {
+      expect(urlQuerySecret(/^[a-z+]+:\/\//i.test(host) ? host : `libsql://${host}`), host).not.toBeNull();
+      expect(validateConn({ engine: "elasticsearch", host, port: 0, database: "" }).host, host).toContain("saved in plaintext");
+      expect(validateConn({ engine: "libsql", host, port: 0, database: "" }).host, host).toContain("saved in plaintext");
+    }
+    expect(urlQuerySecret("https://h:9200?pretty=true&x=1")).toBeNull();
+    expect(urlQuerySecret("https://h:9200?api_key=")).toBeNull(); // empty: nothing to leak
+    // The extra names are for server URLs: a Mongo option of that name is not flagged.
+    expect(urlQuerySecret("mongodb://h/db?token=x")).toBeNull();
   });
 });
