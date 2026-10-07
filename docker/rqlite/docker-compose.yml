@@ -1,0 +1,53 @@
+# rqlite (distributed SQLite over HTTP) for tests/rqlite_live.rs and the rqlite QA. Two servers:
+#   rqlite       no auth, on 54001 — seeded with seed.sql (a `_tiq_meta` marker, written last)
+#                TIQ_RQLITE_URL=http://127.0.0.1:54001
+#   rqlite-auth  on 54002: Basic auth from auth.json (throwaway fixtures: `admin`/`adminpw`
+#                may do anything, `reader`/`readerpw` only query), seeded the same way
+#                TIQ_RQLITE_AUTH_URL=http://127.0.0.1:54002
+# The image has busybox wget but no curl, so the healthcheck is seed.sh. It seeds exactly once and
+# passes only once the marker is there, so `up -d --wait` returns when the data is there and later
+# edits to it are never undone. `down -v` resets. Each is a single node (a one-node cluster).
+# The image is pinned (10.5.3) by its multi-architecture index digest (amd64 and arm64),
+# like docker/mongo. Ports bind to 127.0.0.1 only.
+services:
+  rqlite:
+    image: rqlite/rqlite:10.5.3@sha256:de385382ef6d93a4b4b831eac4d419cfa35fdb1515621a4ad8ba8b5a5beeb6b5
+    container_name: tableiq-rqlite
+    environment:
+      # A fixed identity: the node's raft state lives in the container's volume, and by default
+      # its id and address are the container's hostname, which a re-create changes.
+      NODE_ID: tiq
+      RAFT_ADV_ADDR: 127.0.0.1:4002
+      HTTP_ADV_ADDR: 127.0.0.1:4001
+    ports:
+      - "127.0.0.1:54001:4001"
+    volumes:
+      - ./seed.sh:/seed.sh:ro
+      - ./seed.sql:/seed.sql:ro
+    healthcheck:
+      test: ["CMD", "sh", "/seed.sh"]
+      interval: 3s
+      timeout: 20s
+      retries: 40
+      start_period: 3s
+  rqlite-auth:
+    image: rqlite/rqlite:10.5.3@sha256:de385382ef6d93a4b4b831eac4d419cfa35fdb1515621a4ad8ba8b5a5beeb6b5
+    container_name: tableiq-rqlite-auth
+    command: ["-auth", "/auth.json"]
+    environment:
+      NODE_ID: tiq
+      RAFT_ADV_ADDR: 127.0.0.1:4002
+      HTTP_ADV_ADDR: 127.0.0.1:4001
+      SEED_AUTH: "Basic YWRtaW46YWRtaW5wdw==" # admin:adminpw
+    ports:
+      - "127.0.0.1:54002:4001"
+    volumes:
+      - ./auth.json:/auth.json:ro
+      - ./seed.sh:/seed.sh:ro
+      - ./seed.sql:/seed.sql:ro
+    healthcheck:
+      test: ["CMD", "sh", "/seed.sh"]
+      interval: 3s
+      timeout: 20s
+      retries: 40
+      start_period: 3s

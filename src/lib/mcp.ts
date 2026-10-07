@@ -96,7 +96,9 @@ export function mcpRowState(conn: Pick<ConnConfig, "engine" | "profile">, shared
         ? "Not available over MCP yet: TableIQ's agent guard has not been reviewed for Turso / libSQL."
         : conn.engine === "elasticsearch"
           ? "Not available over MCP yet: TableIQ's agent guard has not been reviewed for Elasticsearch."
-          : `Not available over MCP: this connection's profile (${conn.profile}) was saved by a newer TableIQ. Update TableIQ to manage it.`;
+          : conn.engine === "rqlite"
+            ? "Not available over MCP yet: TableIQ's agent guard has not been reviewed for rqlite."
+            : `Not available over MCP: this connection's profile (${conn.profile}) was saved by a newer TableIQ. Update TableIQ to manage it.`;
   return { shareable: false, shared: false, writes: false, writable: false, note };
 }
 

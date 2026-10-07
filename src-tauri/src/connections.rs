@@ -96,6 +96,8 @@ impl ConnConfig {
             }
             // The server URL as typed (`libsql://…`, `https://…`, a host): the token is never in it.
             "libsql" => self.host.clone(),
+            // rqlite too: the server URL as typed; the user and password travel as a Basic header.
+            "rqlite" => self.host.clone(),
             // Likewise: the server URL as typed; the user and password / API key travel as headers.
             "elasticsearch" => self.host.clone(),
             // The HTTP interface: TLS (https, verified) for every SSL mode that asks for it.
@@ -559,6 +561,25 @@ pub(crate) mod tests {
         assert_eq!(cfg.url_with_password("s3cret-token"), "libsql://db-org.turso.io");
         cfg.host = "http://127.0.0.1:8080".into();
         assert!(!cfg.url_with_password("s3cret-token").contains("s3cret"));
+    }
+
+    #[test]
+    fn rqlite_url_is_the_host_as_typed_and_never_carries_the_login() {
+        let cfg = ConnConfig {
+            env: None,
+            profile: None,
+            id: "x".into(),
+            name: "x".into(),
+            color: None,
+            engine: "rqlite".into(),
+            host: "http://127.0.0.1:4001".into(),
+            port: 4001,
+            database: String::new(),
+            username: "admin".into(),
+            sslmode: "prefer".into(),
+            ssh: None,
+        };
+        assert_eq!(cfg.url_with_password("s3cret"), "http://127.0.0.1:4001");
     }
 
     #[test]

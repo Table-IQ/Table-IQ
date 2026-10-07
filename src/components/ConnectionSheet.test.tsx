@@ -75,6 +75,19 @@ describe("ConnectionSheet", () => {
     expect(html({ form: { ...form, host: "https://h?password=x" } })).toContain("it would be saved in plaintext");
   });
 
+  it("rqlite takes one Server URL, an optional user and password: no host, port, database or SSH tunnel", () => {
+    const form = { ...base.form, engine: "rqlite" as const, host: "http://127.0.0.1:4001", port: 4001, database: "", username: "" };
+    const h = html({ form });
+    expect(h).toContain("Server URL");
+    expect(h).toContain("http://127.0.0.1:4001");
+    expect(h).toContain("User (optional)");
+    expect(h).toContain("Password (optional)");
+    expect(h).toContain("no BEGIN or COMMIT");
+    for (const gone of [">Host<", ">Port<", ">Database<", "SSH tunnel", "Connection string"]) expect(h).not.toContain(gone);
+    expect(h).toMatch(/title="rqlite \(distributed SQLite\)"/);
+    expect(html({ form: { ...form, host: "rqlite://h?password=x" } })).toContain("it would be saved in plaintext");
+  });
+
   it("Turso takes one Server URL and an Auth token: no host, port, user, database or SSH tunnel", () => {
     const form = { ...base.form, engine: "libsql" as const, host: "libsql://db-org.turso.io", port: 8080, database: "", username: "" };
     const h = html({ form });

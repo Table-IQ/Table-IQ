@@ -23,7 +23,7 @@ impl Dialect {
     pub fn from_engine(engine: &str) -> Self {
         match engine {
             "mysql" => Dialect::MySql,
-            "sqlite" | "libsql" => Dialect::Sqlite,
+            "sqlite" | "libsql" | "rqlite" => Dialect::Sqlite,
             "sqlserver" => Dialect::SqlServer,
             "duckdb" => Dialect::DuckDb,
             "clickhouse" => Dialect::ClickHouse,

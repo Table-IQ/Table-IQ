@@ -2,7 +2,7 @@ import { useEffect, useId, useState, type ClipboardEvent, type ReactNode } from 
 import type { ConnConfig, Engine } from "../lib/commands";
 import { defaultSshConfig, type SshConfig } from "../lib/ssh";
 import { CONN_ENVS, envTone, type ConnEnv } from "../lib/connEnv";
-import { isUrlHost, looksLikeConnUrl, parseConnUrl, validateConn, type ConnFieldErrors, type ParsedConnUrl } from "../lib/connUrl";
+import { isServerUrlEngine, isUrlHost, looksLikeConnUrl, parseConnUrl, validateConn, type ConnFieldErrors, type ParsedConnUrl } from "../lib/connUrl";
 import { capsOf, profileOf, profilesFor } from "../lib/profiles";
 import { EngineIcon, engineLabel } from "./ui/EngineIcon";
 import { ContextMenu } from "./ui/ContextMenu";
@@ -58,6 +58,7 @@ const ENGINES: { id: Engine; short: string; title?: string }[] = [
   { id: "clickhouse", short: "ClickHouse" },
   { id: "libsql", short: "Turso", title: "Turso / libSQL" },
   { id: "elasticsearch", short: "Elastic", title: "Elasticsearch / OpenSearch" },
+  { id: "rqlite", short: "rqlite", title: "rqlite (distributed SQLite)" },
 ];
 const ENV_SEGMENTS: { env: ConnEnv | null; label: string }[] = [
   { env: null, label: "None" },
@@ -236,8 +237,8 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
   const hostIsUrl = isUrlHost(form.engine, form.host);
   const hostPort = hostIsUrl ? (
     <div className="mb-[9px]">
-      <Field id={`${uid}host`} label={form.engine === "libsql" || form.engine === "elasticsearch" ? "Server URL" : "Connection string"} error={shown.host}>
-        <input {...ids("host", shown.host)} className={`${field(shown.host)} font-mono`} value={form.host} onChange={(e) => p.onField("host", e.target.value)} onBlur={touch("host")} onPaste={onHostPaste} placeholder={form.engine === "libsql" ? "libsql://my-db-org.turso.io" : form.engine === "elasticsearch" ? "https://my-deployment.es.io:9243 or http://localhost:9200" : undefined} spellCheck={false} />
+      <Field id={`${uid}host`} label={isServerUrlEngine(form.engine) ? "Server URL" : "Connection string"} error={shown.host}>
+        <input {...ids("host", shown.host)} className={`${field(shown.host)} font-mono`} value={form.host} onChange={(e) => p.onField("host", e.target.value)} onBlur={touch("host")} onPaste={onHostPaste} placeholder={form.engine === "libsql" ? "libsql://my-db-org.turso.io" : form.engine === "elasticsearch" ? "https://my-deployment.es.io:9243 or http://localhost:9200" : form.engine === "rqlite" ? "rqlite://my-host:4001 or http://127.0.0.1:4001" : undefined} spellCheck={false} />
       </Field>
     </div>
   ) : (
@@ -480,6 +481,18 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
                   Leave User empty to sign in with an API key (paste the encoded key as the password). The connection is read-only.
                 </p>
               </>
+            ) : form.engine === "rqlite" ? (
+              <>
+                <div className="mb-[9px] grid grid-cols-2 gap-[9px]">
+                  <Field id={`${uid}user`} label="User (optional)">
+                    <input {...ids("user")} className={field()} value={form.username} onChange={(e) => p.onField("username", e.target.value)} placeholder="admin" />
+                  </Field>
+                  {passwordField("Password (optional)")}
+                </div>
+                <p className="mb-[9px] text-[11px] leading-snug text-muted">
+                  The grid is read-only; statements run in a query tab can write, one request each, with no BEGIN or COMMIT.
+                </p>
+              </>
             ) : form.engine === "redis" ? (
               <>
                 <div className="mb-[9px] grid grid-cols-2 gap-[9px]">
@@ -534,7 +547,7 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
               </>
             )}
 
-            {form.engine !== "libsql" && form.engine !== "elasticsearch" && (
+            {form.engine !== "libsql" && form.engine !== "elasticsearch" && form.engine !== "rqlite" && (
               <>
                 <Section>Advanced</Section>
                 <div className="rounded-lg border border-border">

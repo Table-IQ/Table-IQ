@@ -206,3 +206,9 @@ describe("explainStatement on Turso", () => {
     expect(explainStatement("SELECT 1;", "libsql")).toBe("EXPLAIN QUERY PLAN SELECT 1");
   });
 });
+
+describe("explainStatement on rqlite", () => {
+  it("is SQLite's QUERY PLAN", () => {
+    expect(explainStatement("SELECT 1;", "rqlite")).toBe("EXPLAIN QUERY PLAN SELECT 1");
+  });
+});

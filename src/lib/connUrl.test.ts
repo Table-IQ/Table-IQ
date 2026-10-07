@@ -335,3 +335,38 @@ describe("secrets in a Turso / Elasticsearch host", () => {
     expect(urlQuerySecret("mongodb://h/db?token=x")).toBeNull();
   });
 });
+
+describe("rqlite URLs", () => {
+  it("claims rqlite:// and http(s) on 4001 only", () => {
+    expect(looksLikeConnUrl("rqlite://h:4001")).toBe(true);
+    expect(looksLikeConnUrl("http://127.0.0.1:4001")).toBe(true);
+    expect(looksLikeConnUrl("https://u:p@db.example.com:4001/")).toBe(true);
+    expect(looksLikeConnUrl("https://db.example.com")).toBe(false); // plain https is not ours to claim
+    expect(looksLikeConnUrl("http://localhost:4002")).toBe(false);
+    expect(parseConnUrl("http://localhost:8123")?.engine).toBe("clickhouse"); // still ClickHouse's
+    expect(parseConnUrl("http://localhost:9200")?.engine).toBe("elasticsearch"); // still Elasticsearch's
+  });
+  it("a pasted URL keeps its host as typed and moves user and password to their fields", () => {
+    expect(parseConnUrl("http://admin:p%40ss@127.0.0.1:4001")).toEqual({
+      engine: "rqlite", host: "http://127.0.0.1:4001", port: 4001, username: "admin", password: "p@ss", database: "",
+    });
+    expect(parseConnUrl("rqlite://h:4001")).toMatchObject({ engine: "rqlite", host: "rqlite://h:4001", username: "", password: "" });
+  });
+  it("a password typed into the URL host is moved out before it can be saved", () => {
+    const cfg = (host: string, username = "") => ({ engine: "rqlite", host, username });
+    expect(normalizeUrlSecrets(cfg("rqlite://bob:s3cret@h:4001"), "")).toEqual({ host: "rqlite://h:4001", username: "bob", password: "s3cret" });
+    expect(normalizeUrlSecrets(cfg("bob:s3cret@h:4001"), "")).toEqual({ host: "h:4001", username: "bob", password: "s3cret" });
+    expect(normalizeUrlSecrets(cfg("http://127.0.0.1:4001", "u"), "kept")).toEqual({ host: "http://127.0.0.1:4001", username: "u", password: "kept" });
+  });
+  it("needs no port, refuses a secret in the query, and copies as a URL without credentials", () => {
+    const cfg = { engine: "rqlite" as const, host: "http://127.0.0.1:4001", port: 0, database: "" };
+    expect(validateConn(cfg)).toEqual({});
+    expect(validateConn({ ...cfg, host: " " })).toEqual({ host: "Required" });
+    expect(validateConn({ ...cfg, host: "rqlite://h?password=x" }).host).toContain("password");
+    expect(validateConn({ ...cfg, host: "h:4001?token=x" }).host).toContain("token");
+    expect(urlQuerySecret("rqlite://h?level=none")).toBeNull();
+    expect(isUrlHost("rqlite", "localhost")).toBe(true);
+    expect(toConnUrl({ ...cfg, port: 4001, username: "u", sslmode: "prefer" })).toBe("http://127.0.0.1:4001");
+    expect(toConnUrl({ ...cfg, host: "db.example.com:4001", port: 4001, username: "", sslmode: "prefer" })).toBe("rqlite://db.example.com:4001");
+  });
+});

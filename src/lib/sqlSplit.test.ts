@@ -285,3 +285,9 @@ describe("Turso / libSQL splitting", () => {
     expect(dialectFor("libsql")).toBe("sqlite");
   });
 });
+
+describe("rqlite splitting", () => {
+  it("splits like SQLite", () => {
+    expect(dialectFor("rqlite")).toBe("sqlite");
+  });
+});

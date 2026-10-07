@@ -643,7 +643,7 @@ export function MainShell() {
         },
       );
     }
-    if (engine !== "sqlite" && engine !== "libsql") {
+    if (engine !== "sqlite" && engine !== "libsql" && engine !== "rqlite") {
       items.push({
         id: "n-schema",
         label: engine === "mysql" || engine === "clickhouse" ? "New Database…" : "New Schema…",
@@ -655,8 +655,8 @@ export function MainShell() {
           ),
       });
     }
-    // DuckDB has schemas but no roles or users; Turso has neither schemas nor roles.
-    if (engine !== "sqlite" && engine !== "duckdb" && engine !== "libsql") {
+    // DuckDB has schemas but no roles or users; Turso and rqlite have neither schemas nor roles.
+    if (engine !== "sqlite" && engine !== "duckdb" && engine !== "libsql" && engine !== "rqlite") {
       items.push({
         id: "n-group",
         label: "New Group / Role…",

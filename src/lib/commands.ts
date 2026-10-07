@@ -96,7 +96,8 @@ export type Engine =
   | "sqlserver"
   | "clickhouse"
   | "libsql"
-  | "elasticsearch";
+  | "elasticsearch"
+  | "rqlite";
 export interface ConnConfig {
   id: string;
   name: string;
@@ -667,6 +668,7 @@ export async function listDatabases(id: string): Promise<string[]> {
       case "sqlite":
       case "duckdb":
       case "libsql":
+      case "rqlite":
         return ["main"];
       case "redis":
         return Array.from({ length: 16 }, (_, i) => String(i));

@@ -23,7 +23,7 @@ import {
   type Engine,
 } from "../lib/commands";
 import { defaultSshConfig, type SshConfig } from "../lib/ssh";
-import { isUrlHost, normalizeUrlSecrets, toConnUrl, validateConn } from "../lib/connUrl";
+import { isServerUrlEngine, isUrlHost, normalizeUrlSecrets, toConnUrl, validateConn } from "../lib/connUrl";
 import { PROFILES, applyPreset, presetFor } from "../lib/profiles";
 import { confirmDialog } from "../lib/confirmDialog";
 import { cancelConnecting, openConnection, useConnections, type ConnectingState } from "../state/connectionStore";
@@ -585,11 +585,11 @@ export function ConnectionManager() {
             onField={set}
             onEngine={(eng) => {
               setForm((f) => {
-                // Turso and Elasticsearch take a server URL in the host field: a bare host from another
+                // Turso, Elasticsearch and rqlite take a server URL in the host field: a bare host from another
                 // engine ("127.0.0.1") is not one, and a URL is not a host.
                 const wasUrl = /^[a-z+]+:\/\//i.test(f.host);
-                const urlEngine = eng === "libsql" || eng === "elasticsearch";
-                const wasUrlEngine = f.engine === "libsql" || f.engine === "elasticsearch";
+                const urlEngine = isServerUrlEngine(eng);
+                const wasUrlEngine = isServerUrlEngine(f.engine);
                 const host = urlEngine ? (wasUrl ? f.host : "") : wasUrlEngine && (wasUrl || !f.host) ? "127.0.0.1" : f.host;
                 return {
                   ...applyPreset(f, presetFor(f.engine, f.profile ?? null), presetFor(eng, null)),

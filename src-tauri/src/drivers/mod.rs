@@ -20,6 +20,7 @@ pub mod libsql;
 pub mod logged;
 pub mod mysql;
 pub mod postgres;
+pub mod rqlite;
 pub mod sqlite;
 pub mod sqlserver;
 

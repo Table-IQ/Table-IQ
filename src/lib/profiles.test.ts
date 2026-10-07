@@ -213,3 +213,15 @@ describe("Elasticsearch", () => {
     expect(contrast(ENGINE_COLORS.elasticsearch, "#15171c")).toBeGreaterThanOrEqual(2);
   });
 });
+
+describe("rqlite", () => {
+  it("is a read-only browser: no transactions, backup, users or agents, and port 4001", () => {
+    expect(capsOf("rqlite")).toEqual({ transactions: false, backup: false, userMgmt: false, agents: false });
+    expect(presetFor("rqlite", null)).toEqual({ port: 4001, username: "", database: "", sslmode: "prefer" });
+  });
+  it("draws a rose fill that is legible under its white monogram and visible on the dark surface", () => {
+    expect(ENGINE_MONOGRAMS.rqlite).toBe("Rq");
+    expect(contrast("#ffffff", ENGINE_COLORS.rqlite)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(ENGINE_COLORS.rqlite, "#15171c")).toBeGreaterThanOrEqual(2);
+  });
+});
