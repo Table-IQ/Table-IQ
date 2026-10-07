@@ -1,0 +1,26 @@
+# Qdrant for tests/qdrant_live.rs (and the Qdrant QA): one server with an API key, so the key is
+# really needed, REST on 56333 (HTTP only; gRPC is not published).
+#   TIQ_QDRANT_URL=http://127.0.0.1:56333  TIQ_QDRANT_KEY=tableiq-fixture-qdrant-key-0001
+# The key below is a throwaway for this file alone. The image has bash but no curl or wget, so the
+# healthcheck is seed.sh: bash over /dev/tcp waits for the server, seeds `places` (501 points),
+# `docs` (5000, named vectors) and an empty collection exactly once, and passes only once the
+# marker is there (`empty`, created last), so `up -d --wait` returns when the data is there and
+# later edits to it are never undone. `down -v` resets.
+# The image is pinned (v1.19.2) by its multi-architecture index digest (amd64 and arm64),
+# like docker/mongo. The port binds to 127.0.0.1 only.
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.19.2@sha256:b7b0444c4c351c970b98e90a6f89c2ee4287c65b44e52b4cb503fa5b2aa927ad
+    container_name: tableiq-qdrant
+    environment:
+      QDRANT__SERVICE__API_KEY: tableiq-fixture-qdrant-key-0001
+    ports:
+      - "127.0.0.1:56333:6333"
+    volumes:
+      - ./seed.sh:/seed.sh:ro
+    healthcheck:
+      test: ["CMD", "bash", "/seed.sh"]
+      interval: 3s
+      timeout: 90s
+      retries: 60
+      start_period: 3s

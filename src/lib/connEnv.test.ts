@@ -81,3 +81,12 @@ describe("Meilisearch pill", () => {
     expect(ms("http://h").engine).toBe("Meilisearch");
   });
 });
+
+describe("Qdrant pill", () => {
+  it("is TLS by its URL: qdrant:// and a bare host are, unless this machine", () => {
+    const qd = (host: string) => pillSegments({ ...base, engine: "qdrant" as const, host }, null);
+    expect(["https://h:6333", "qdrant://qd.example.com", "qd.example.com:6333", "http://h", "http://127.0.0.1:56333", "qdrant://localhost", "localhost:6333", "[::1]:6333"].map((h) => qd(h).ssl)).toEqual([true, true, true, false, false, false, false, false]);
+    expect(["qdrant://127.evil.example", "127.0.0.1.evil.com", "qdrant://localhost.evil.com"].map((h) => qd(h).ssl)).toEqual([true, true, true]);
+    expect(qd("http://h").engine).toBe("Qdrant");
+  });
+});

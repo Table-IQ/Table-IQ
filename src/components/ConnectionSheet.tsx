@@ -60,6 +60,7 @@ const ENGINES: { id: Engine; short: string; title?: string }[] = [
   { id: "elasticsearch", short: "Elastic", title: "Elasticsearch / OpenSearch" },
   { id: "rqlite", short: "rqlite", title: "rqlite (distributed SQLite)" },
   { id: "meilisearch", short: "Meili", title: "Meilisearch" },
+  { id: "qdrant", short: "Qdrant", title: "Qdrant (vector database)" },
 ];
 const ENV_SEGMENTS: { env: ConnEnv | null; label: string }[] = [
   { env: null, label: "None" },
@@ -239,7 +240,7 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
   const hostPort = hostIsUrl ? (
     <div className="mb-[9px]">
       <Field id={`${uid}host`} label={isServerUrlEngine(form.engine) ? "Server URL" : "Connection string"} error={shown.host}>
-        <input {...ids("host", shown.host)} className={`${field(shown.host)} font-mono`} value={form.host} onChange={(e) => p.onField("host", e.target.value)} onBlur={touch("host")} onPaste={onHostPaste} placeholder={form.engine === "libsql" ? "libsql://my-db-org.turso.io" : form.engine === "elasticsearch" ? "https://my-deployment.es.io:9243 or http://localhost:9200" : form.engine === "rqlite" ? "rqlite://my-host:4001 or http://127.0.0.1:4001" : form.engine === "meilisearch" ? "https://ms-xxxx.meilisearch.io or http://localhost:7700" : undefined} spellCheck={false} />
+        <input {...ids("host", shown.host)} className={`${field(shown.host)} font-mono`} value={form.host} onChange={(e) => p.onField("host", e.target.value)} onBlur={touch("host")} onPaste={onHostPaste} placeholder={form.engine === "libsql" ? "libsql://my-db-org.turso.io" : form.engine === "elasticsearch" ? "https://my-deployment.es.io:9243 or http://localhost:9200" : form.engine === "rqlite" ? "rqlite://my-host:4001 or http://127.0.0.1:4001" : form.engine === "meilisearch" ? "https://ms-xxxx.meilisearch.io or http://localhost:7700" : form.engine === "qdrant" ? "https://xyz.cloud.qdrant.io:6333 or http://localhost:6333" : undefined} spellCheck={false} />
       </Field>
     </div>
   ) : (
@@ -487,6 +488,13 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
                 <div className="mb-[9px]">{passwordField("API key", "API key")}</div>
                 <p className="mb-[9px] text-[11px] leading-snug text-muted">
                   The master key, or a key allowed search, documents.get, indexes.get, settings.get, stats.get and version. Leave it empty for a server with no master key. The connection is read-only.
+                </p>
+              </>
+            ) : form.engine === "qdrant" ? (
+              <>
+                <div className="mb-[9px]">{passwordField("API key", "API key")}</div>
+                <p className="mb-[9px] text-[11px] leading-snug text-muted">
+                  The server's API key (sent as the api-key header; leave User empty). Leave it empty for a server with no API key. The connection is read-only.
                 </p>
               </>
             ) : form.engine === "rqlite" ? (

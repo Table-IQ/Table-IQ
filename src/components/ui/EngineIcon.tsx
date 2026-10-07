@@ -27,6 +27,7 @@ export const ENGINE_COLORS: Record<Engine, string> = {
   elasticsearch: "#0b6e99",
   rqlite: "#be185d",
   meilisearch: "#6d28d9",
+  qdrant: "#dc244c",
 };
 
 export const ENGINE_MONOGRAMS: Record<Engine, string> = {
@@ -42,6 +43,7 @@ export const ENGINE_MONOGRAMS: Record<Engine, string> = {
   elasticsearch: "Es",
   rqlite: "Rq",
   meilisearch: "Me",
+  qdrant: "Qr",
 };
 
 export const ENGINE_LABELS: Record<Engine, string> = {
@@ -57,6 +59,7 @@ export const ENGINE_LABELS: Record<Engine, string> = {
   elasticsearch: "Elasticsearch",
   rqlite: "rqlite",
   meilisearch: "Meilisearch",
+  qdrant: "Qdrant",
 };
 
 export function EngineIcon({

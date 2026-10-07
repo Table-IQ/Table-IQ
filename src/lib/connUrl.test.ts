@@ -406,3 +406,37 @@ describe("Meilisearch URLs", () => {
     expect(toConnUrl({ ...cfg, host: "ms.example.com:7700", port: 7700, username: "", sslmode: "prefer" })).toBe("meilisearch://ms.example.com:7700");
   });
 });
+
+describe("Qdrant URLs", () => {
+  it("claims qdrant:// and http(s) on 6333 only", () => {
+    expect(looksLikeConnUrl("qdrant://h:6333")).toBe(true);
+    expect(looksLikeConnUrl("http://127.0.0.1:6333")).toBe(true);
+    expect(looksLikeConnUrl("https://:key@xyz.cloud.qdrant.io:6333/")).toBe(true);
+    expect(looksLikeConnUrl("https://xyz.cloud.qdrant.io")).toBe(false); // plain https is not ours to claim
+    expect(looksLikeConnUrl("http://localhost:6334")).toBe(false);
+    expect(parseConnUrl("http://localhost:7700")?.engine).toBe("meilisearch"); // still Meilisearch's
+    expect(parseConnUrl("http://localhost:9200")?.engine).toBe("elasticsearch");
+  });
+  it("a pasted URL keeps its host as typed and moves the API key to the password, never to the user", () => {
+    expect(parseConnUrl("http://:k%40y@127.0.0.1:6333")).toEqual({
+      engine: "qdrant", host: "http://127.0.0.1:6333", port: 6333, username: "", password: "k@y", database: "",
+    });
+    expect(parseConnUrl("https://abc123@xyz.cloud.qdrant.io:6333")).toMatchObject({ host: "https://xyz.cloud.qdrant.io:6333", username: "", password: "abc123" });
+    expect(parseConnUrl("qdrant://h:6333")).toMatchObject({ engine: "qdrant", host: "qdrant://h:6333", username: "", password: "" });
+  });
+  it("a key typed into the URL host is moved out before it can be saved", () => {
+    const cfg = (host: string, username = "") => ({ engine: "qdrant", host, username });
+    expect(normalizeUrlSecrets(cfg("qdrant://:s3cret@h:6333"), "")).toEqual({ host: "qdrant://h:6333", username: "", password: "s3cret" });
+    expect(normalizeUrlSecrets(cfg("s3cret@h:6333"), "")).toEqual({ host: "h:6333", username: "", password: "s3cret" });
+    expect(normalizeUrlSecrets(cfg("http://127.0.0.1:6333", "u"), "kept")).toEqual({ host: "http://127.0.0.1:6333", username: "u", password: "kept" });
+  });
+  it("needs no port, refuses a key in the query, and copies as a URL without credentials", () => {
+    const cfg = { engine: "qdrant" as const, host: "http://127.0.0.1:6333", port: 0, database: "" };
+    expect(validateConn(cfg)).toEqual({});
+    expect(validateConn({ ...cfg, host: " " })).toEqual({ host: "Required" });
+    for (const name of ["api_key", "api-key", "apiKey", "token", "key"]) expect(validateConn({ ...cfg, host: `qdrant://h?${name}=x` }).host).toContain(name);
+    expect(isUrlHost("qdrant", "localhost")).toBe(true);
+    expect(toConnUrl({ ...cfg, port: 6333, username: "", sslmode: "prefer" })).toBe("http://127.0.0.1:6333");
+    expect(toConnUrl({ ...cfg, host: "qd.example.com:6333", port: 6333, username: "", sslmode: "prefer" })).toBe("qdrant://qd.example.com:6333");
+  });
+});

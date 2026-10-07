@@ -102,6 +102,8 @@ impl ConnConfig {
             "elasticsearch" => self.host.clone(),
             // Meilisearch too: the server URL as typed; the API key travels as a Bearer header.
             "meilisearch" => self.host.clone(),
+            // Qdrant too: the server URL as typed; the API key travels as the `api-key` header.
+            "qdrant" => self.host.clone(),
             // The HTTP interface: TLS (https, verified) for every SSL mode that asks for it.
             "clickhouse" => format!(
                 "{}://{}:{}@{}:{}/{}",
@@ -601,6 +603,25 @@ pub(crate) mod tests {
             ssh: None,
         };
         assert_eq!(cfg.url_with_password("s3cret"), "http://127.0.0.1:7700");
+    }
+
+    #[test]
+    fn qdrant_url_is_the_host_as_typed_and_never_carries_the_key() {
+        let cfg = ConnConfig {
+            env: None,
+            profile: None,
+            id: "x".into(),
+            name: "x".into(),
+            color: None,
+            engine: "qdrant".into(),
+            host: "http://127.0.0.1:6333".into(),
+            port: 6333,
+            database: String::new(),
+            username: String::new(),
+            sslmode: "prefer".into(),
+            ssh: None,
+        };
+        assert_eq!(cfg.url_with_password("s3cret"), "http://127.0.0.1:6333");
     }
 
     #[test]

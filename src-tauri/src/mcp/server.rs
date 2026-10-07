@@ -328,6 +328,7 @@ fn allowed(host: &dyn Host, cfg: &McpConfig, id: &str) -> Result<(ConnConfig, Mc
             "redis" => " Use the redis_* tools for it.",
             "elasticsearch" => " Elasticsearch is not available over MCP yet: TableIQ's agent guard has not been reviewed for it.",
             "meilisearch" => " Meilisearch is not available over MCP yet: TableIQ's agent guard has not been reviewed for it.",
+            "qdrant" => " Qdrant is not available over MCP yet: TableIQ's agent guard has not been reviewed for it.",
             _ => "",
         };
         return Err(format!("Connection `{id}` is not a SQL connection.{hint}"));
@@ -1997,6 +1998,20 @@ mod tests {
         assert!(m.list_databases(Extensions::new(), Parameters(ConnArgs { connection_id: "ms".into() })).await.is_err());
         let listed = m.list_connections(Extensions::new()).await.unwrap();
         assert!(!listed.contains("meilisearch"), "{listed}");
+    }
+
+    /// Qdrant, the same: refused before anything connects, and never listed.
+    #[tokio::test]
+    async fn a_qdrant_connection_is_refused_and_unlisted() {
+        let m = mcp(vec![cfg_of("qd", "qdrant", "http://127.0.0.1:6333")], &[("qd", true)]);
+        let e = query(&m, "qd", "SELECT 1").await.unwrap_err();
+        assert!(e.contains("not a SQL connection") && e.contains("not available over MCP"), "{e}");
+        let mut a = find_args(None);
+        a.connection_id = "qd".into();
+        assert!(mfind(&m, a).await.unwrap_err().contains("not a MongoDB connection"));
+        assert!(m.list_databases(Extensions::new(), Parameters(ConnArgs { connection_id: "qd".into() })).await.is_err());
+        let listed = m.list_connections(Extensions::new()).await.unwrap();
+        assert!(!listed.contains("qdrant"), "{listed}");
     }
 
     #[tokio::test(flavor = "multi_thread")]

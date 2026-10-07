@@ -9,15 +9,18 @@ import { IconPlay } from "./ui/Icon";
 const SAMPLE = '[\n  { "$match": {} },\n  { "$limit": 20 }\n]';
 const ES_SAMPLE = '{\n  "by_level": { "terms": { "field": "level" } }\n}';
 const MEILI_SAMPLE = '{\n  "facets": ["genres"]\n}';
+const QDRANT_SAMPLE = '{\n  "key": "city"\n}';
 
 /** Aggregation runner: a pipeline JSON editor, Run, and the results in the same JSON / Table / Tree
  *  views (read-only). `$out` / `$merge` are refused by the backend and say so here. For Elasticsearch the text is
  *  the `aggs` object instead of a pipeline, and each bucket of a result is a row; for Meilisearch it is the facets
- *  to count (`{"facets": ["genres"]}`), and each facet value is a row. */
+ *  to count (`{"facets": ["genres"]}`), and each facet value is a row; for Qdrant it is the payload key to count
+ *  (`{"key": "city"}`, the facet API), one row per value. */
 export function DocAggregate({ connId, collection, active, engine }: { connId: string; collection: string; active: boolean; engine?: string }) {
   const meili = engine === "meilisearch";
-  const elastic = engine === "elasticsearch" || meili;
-  const [text, setText] = useState(meili ? MEILI_SAMPLE : elastic ? ES_SAMPLE : SAMPLE);
+  const qdrant = engine === "qdrant";
+  const elastic = engine === "elasticsearch" || meili || qdrant;
+  const [text, setText] = useState(qdrant ? QDRANT_SAMPLE : meili ? MEILI_SAMPLE : elastic ? ES_SAMPLE : SAMPLE);
   const [res, setRes] = useState<{ docs: ReturnType<typeof parseDocs>; truncated: boolean } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -45,7 +48,7 @@ export function DocAggregate({ connId, collection, active, engine }: { connId: s
     <div className={`${active ? "flex" : "hidden"} h-full min-h-0 flex-col`} data-testid="doc-aggregate">
       <div className="tiq-rail flex flex-col gap-1.5 border-b border-border bg-bg px-3 py-2">
         <textarea
-          aria-label={meili ? "Facets" : elastic ? "Aggregations" : "Aggregation pipeline"}
+          aria-label={meili || qdrant ? "Facets" : elastic ? "Aggregations" : "Aggregation pipeline"}
           spellCheck={false}
           value={text}
           onChange={(e) => {
@@ -69,11 +72,13 @@ export function DocAggregate({ connId, collection, active, engine }: { connId: s
             <IconPlay size={10} /> Run <span className="opacity-70">⌘↵</span>
           </button>
           <span className="text-[11px] text-muted">
-            {meili
-              ? "Counts each facet's values over the whole index, or over a q / filter. Fields must be filterable; Meilisearch returns up to 100 values per facet."
-              : elastic
-                ? "Aggregations over the whole index (size 0): one row per bucket or metric."
-                : "Read-only: $out and $merge are refused."}
+            {qdrant
+              ? "Counts each value of a payload key over the whole collection, or over a filter. The key needs a payload index (keyword, integer, uuid or bool); most frequent first."
+              : meili
+                ? "Counts each facet's values over the whole index, or over a q / filter. Fields must be filterable; Meilisearch returns up to 100 values per facet."
+                : elastic
+                  ? "Aggregations over the whole index (size 0): one row per bucket or metric."
+                  : "Read-only: $out and $merge are refused."}
           </span>
         </div>
       </div>
@@ -84,7 +89,7 @@ export function DocAggregate({ connId, collection, active, engine }: { connId: s
       )}
       {res?.truncated && (
         <div role="status" className="border-b border-border bg-warn/10 px-3 py-1.5 text-[11px] text-warn">
-          Showing the first {res.docs.length.toLocaleString("en-US")} results — there are more. {meili ? "Narrow the facets." : elastic ? "Narrow the aggregation." : "Add a $limit or a narrower $match."}
+          Showing the first {res.docs.length.toLocaleString("en-US")} results — there are more. {meili || qdrant ? "Narrow the facets." : elastic ? "Narrow the aggregation." : "Add a $limit or a narrower $match."}
         </div>
       )}
       <div className="relative flex min-h-0 flex-1 flex-col">

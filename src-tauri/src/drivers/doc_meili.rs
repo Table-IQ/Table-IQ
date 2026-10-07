@@ -61,7 +61,7 @@ pub struct MeiliDriver {
 }
 
 /// Names a query string may carry an API key under.
-fn is_secret_param(name: &str) -> bool {
+pub(super) fn is_secret_param(name: &str) -> bool {
     let n: String = name.chars().filter(|c| !matches!(c, '_' | '-')).collect::<String>().to_ascii_lowercase();
     matches!(n.as_str(), "key" | "apikey" | "masterkey" | "token" | "accesstoken" | "authtoken" | "bearertoken" | "secret")
 }
@@ -71,29 +71,34 @@ fn is_secret_param(name: &str) -> bool {
 /// `meilisearch://` and a bare host mean https unless the host is this machine, and default to
 /// port 7700. A key in the query string is refused: it would be saved in plaintext.
 fn parse_base(input: &str) -> DResult<(reqwest::Url, String)> {
+    parse_base_as(input, "Meilisearch", "meilisearch", DEFAULT_PORT)
+}
+
+/// [`parse_base`] for any engine that takes such a URL (Qdrant too): `name` in the messages, its own `scheme`, its `default_port`.
+pub(super) fn parse_base_as(input: &str, name: &str, own_scheme: &str, default_port: u16) -> DResult<(reqwest::Url, String)> {
     let t = input.trim();
     let (scheme, rest) = t.split_once("://").map_or(("", t), |(s, r)| (s, r));
     let scheme = scheme.to_ascii_lowercase();
-    if !matches!(scheme.as_str(), "" | "http" | "https" | "meilisearch") {
-        return Err(DriverError::Db("a Meilisearch URL must start with http://, https:// or meilisearch://".into()));
+    if !matches!(scheme.as_str(), "" | "http" | "https") && scheme != own_scheme {
+        return Err(DriverError::Db(format!("a {name} URL must start with http://, https:// or {own_scheme}://")));
     }
-    let mut u = reqwest::Url::parse(&format!("http://{rest}")).map_err(|_| DriverError::Db("invalid Meilisearch URL".into()))?;
+    let mut u = reqwest::Url::parse(&format!("http://{rest}")).map_err(|_| DriverError::Db(format!("invalid {name} URL")))?;
     if u.host_str().is_none_or(str::is_empty) {
-        return Err(DriverError::Db("no host in the Meilisearch URL".into()));
+        return Err(DriverError::Db(format!("no host in the {name} URL")));
     }
-    if let Some((name, _)) = u.query_pairs().find(|(k, v)| is_secret_param(k) && !v.is_empty()) {
-        return Err(DriverError::Db(format!("remove {name} from the Meilisearch URL and enter the key in the Password field")));
+    if let Some((secret, _)) = u.query_pairs().find(|(k, v)| is_secret_param(k) && !v.is_empty()) {
+        return Err(DriverError::Db(format!("remove {secret} from the {name} URL and enter the key in the Password field")));
     }
     // The typed port, kept even when it is the old scheme's own (`:80`, which `Url` drops from http).
     let typed_port = rest.split(['/', '?', '#']).next().and_then(|a| a.rsplit('@').next()).and_then(|a| a.rsplit_once(':')).and_then(|(_, p)| p.parse::<u16>().ok());
-    if matches!(scheme.as_str(), "" | "meilisearch") {
+    if scheme.is_empty() || scheme == own_scheme {
         // Exactly `localhost` or a loopback address: `127.evil.example` is a name, not this machine.
         let h = u.host_str().unwrap_or("").trim_matches(['[', ']']);
         let local = h.eq_ignore_ascii_case("localhost") || h.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback());
         if !local {
             let _ = u.set_scheme("https");
         }
-        let _ = u.set_port(Some(typed_port.unwrap_or(DEFAULT_PORT)));
+        let _ = u.set_port(Some(typed_port.unwrap_or(default_port)));
     } else if scheme == "https" {
         let _ = u.set_scheme("https");
         let _ = u.set_port(typed_port);

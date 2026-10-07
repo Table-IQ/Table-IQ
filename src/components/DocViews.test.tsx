@@ -66,6 +66,18 @@ describe("the documents pane on a read-only (Meilisearch) session", () => {
   });
 });
 
+describe("the points pane on a read-only (Qdrant) session", () => {
+  it("shows Qdrant's filter hint, says points, and offers no insert", async () => {
+    const { DocCollection } = await import("./DocCollection");
+    const qd = renderToStaticMarkup(<DocCollection connId="qd1" collection="places" visible readOnly engine="qdrant" />);
+    expect(qd).toContain("read-only");
+    expect(qd).toContain("&quot;must&quot;");
+    expect(qd).toContain("_vector");
+    expect(qd).toContain("Points per page");
+    expect(qd).not.toContain("Insert a new document");
+  });
+});
+
 describe("the documents pane on a read-only (Elasticsearch) session", () => {
   it("offers no insert and no staged changes, and reads the query bar as a search", async () => {
     const { DocCollection } = await import("./DocCollection");

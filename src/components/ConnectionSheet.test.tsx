@@ -102,6 +102,19 @@ describe("ConnectionSheet", () => {
     expect(html({ form: { ...form, host: "http://h:7700?api_key=x" } })).toContain("it would be saved in plaintext");
   });
 
+  it("Qdrant takes one Server URL and an API key: no host, port, user, database or SSH tunnel", () => {
+    const form = { ...base.form, engine: "qdrant" as const, host: "http://127.0.0.1:6333", port: 6333, database: "", username: "" };
+    const h = html({ form });
+    expect(h).toContain("Server URL");
+    expect(h).toContain("http://127.0.0.1:6333");
+    expect(h).toContain('placeholder="API key"');
+    expect(html({ form, mode: "edit" })).toContain('placeholder="Keep saved API key"');
+    expect(h).toContain("api-key header");
+    for (const gone of [">Host<", ">Port<", ">User<", ">User (optional)<", ">Database<", "SSH tunnel", "Connection string"]) expect(h).not.toContain(gone);
+    expect(h).toMatch(/title="Qdrant/);
+    expect(html({ form: { ...form, host: "http://h:6333?api-key=x" } })).toContain("it would be saved in plaintext");
+  });
+
   it("Turso takes one Server URL and an Auth token: no host, port, user, database or SSH tunnel", () => {
     const form = { ...base.form, engine: "libsql" as const, host: "libsql://db-org.turso.io", port: 8080, database: "", username: "" };
     const h = html({ form });

@@ -3,7 +3,7 @@ import { docMapping } from "../lib/commands";
 import { readableError } from "../lib/docJson";
 import { highlightJson } from "../lib/docView";
 
-/** An Elasticsearch index's field mapping (Meilisearch: its settings and field counts), as the server reports it: one highlighted, read-only JSON card. */
+/** An Elasticsearch index's field mapping (Meilisearch: its settings and field counts; Qdrant: the collection info), as the server reports it: one highlighted, read-only JSON card. */
 export function DocMapping({ connId, collection, active }: { connId: string; collection: string; active: boolean }) {
   const [text, setText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
