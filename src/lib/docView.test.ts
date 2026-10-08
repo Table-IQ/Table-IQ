@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { docPagerLabel, docViewKey, highlightJson, loadDocView, saveDocView, sortKeyOf, sortText } from "./docView";
+import { showEmptyNote, docPagerLabel, docTabs, docViewKey, highlightJson, loadDocView, saveDocView, sortKeyOf, sortText } from "./docView";
 
 const mem = () => {
   const m = new Map<string, string>();
@@ -38,6 +38,18 @@ describe("highlightJson", () => {
   });
 });
 
+describe("docTabs", () => {
+  it("names the tabs per engine and leaves Aggregate out when the server cannot", () => {
+    const labels = (e: string | undefined, a?: boolean) => docTabs(e, a).map((t) => t.label);
+    expect(labels("mongodb")).toEqual(["Documents", "Indexes", "Aggregate"]);
+    expect(labels("elasticsearch")).toEqual(["Documents", "Mapping", "Aggregate"]);
+    expect(labels("meilisearch", true)).toEqual(["Documents", "Settings", "Aggregate"]);
+    expect(labels("qdrant", true)).toEqual(["Points", "Mapping", "Aggregate"]);
+    expect(labels("qdrant", false)).toEqual(["Points", "Mapping"]);
+    expect(docTabs("qdrant", undefined).map((t) => t.key)).toEqual(["documents", "mapping", "aggregate"]);
+  });
+});
+
 describe("docPagerLabel", () => {
   it("exact, estimated and unknown totals", () => {
     expect(docPagerLabel(0, 0, 0, true)).toBe("0 docs");
@@ -46,6 +58,8 @@ describe("docPagerLabel", () => {
     expect(docPagerLabel(0, 1, 1, true)).toBe("1–1 of 1 doc");
     expect(docPagerLabel(0, 100, 5400, false)).toBe("1–100 of ~5,400 (est.)");
     expect(docPagerLabel(100, 100, null, false)).toBe("101–200 docs");
+    expect(docPagerLabel(0, 10, 501, true, "point")).toBe("1–10 of 501 points");
+    expect(docPagerLabel(0, 0, 0, true, "point")).toBe("0 points");
   });
 });
 
@@ -58,5 +72,18 @@ describe("sort document <-> header marker", () => {
     expect(sortKeyOf('{"a":{"$meta":"textScore"}}')).toBeNull();
     expect(sortText({ column: "age", desc: true })).toBe('{"age":-1}');
     expect(sortText(null)).toBe("");
+  });
+});
+
+describe("showEmptyNote", () => {
+  it("says 'No documents' in every view on a read-only session, including a blank Table", () => {
+    for (const view of ["table", "json", "tree"] as const) expect(showEmptyNote(view, true, true)).toBe(true);
+  });
+  it("keeps an editable session's empty Table as a grid (a new document is staged there)", () => {
+    expect(showEmptyNote("table", true, false)).toBe(false);
+    expect(showEmptyNote("json", true, false)).toBe(true);
+  });
+  it("never hides documents that are there", () => {
+    expect(showEmptyNote("table", false, true)).toBe(false);
   });
 });

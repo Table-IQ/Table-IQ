@@ -45,16 +45,32 @@ export function highlightJson(text: string): string {
   return out + escapeHtml(text.slice(last));
 }
 
+/** A collection's tabs. A read-only search / vector engine shows its mapping (Meilisearch: Settings) in place of Indexes;
+ *  Qdrant's documents are Points; `aggregate: false` (a server that cannot aggregate) leaves the Aggregate pane out. */
+export function docTabs(engine: string | undefined, aggregate: boolean | undefined): { key: string; label: string }[] {
+  const mapped = engine === "elasticsearch" || engine === "meilisearch" || engine === "qdrant";
+  return [
+    { key: "documents", label: engine === "qdrant" ? "Points" : "Documents" },
+    mapped ? { key: "mapping", label: engine === "meilisearch" ? "Settings" : "Mapping" } : { key: "indexes", label: "Indexes" },
+    ...(aggregate === false ? [] : [{ key: "aggregate", label: "Aggregate" }]),
+  ];
+}
+
 const EXACT = new Intl.NumberFormat("en-US");
 
-/** `1–300 of 1,234 docs`; an estimate (empty filter, from collection metadata) reads `of ~1,234 (est.)`;
- *  an unknown total drops the "of …" half. */
-export function docPagerLabel(skip: number, shown: number, total: number | null, exact: boolean): string {
-  if (shown <= 0) return "0 docs";
+/** `1–300 of 1,234 docs` (`noun` "point": `points`); an estimate (empty filter, from collection metadata) reads
+ *  `of ~1,234 (est.)`; an unknown total drops the "of …" half. */
+export function docPagerLabel(skip: number, shown: number, total: number | null, exact: boolean, noun = "doc"): string {
+  if (shown <= 0) return `0 ${noun}s`;
   const range = `${EXACT.format(skip + 1)}–${EXACT.format(skip + shown)}`;
-  if (total === null) return `${range} docs`;
-  return exact ? `${range} of ${EXACT.format(total)} ${total === 1 ? "doc" : "docs"}` : `${range} of ~${EXACT.format(total)} (est.)`;
+  if (total === null) return `${range} ${noun}s`;
+  return exact ? `${range} of ${EXACT.format(total)} ${total === 1 ? noun : `${noun}s`}` : `${range} of ~${EXACT.format(total)} (est.)`;
 }
+
+/** Whether the body says "No documents." instead of a grid. A read-only session has no staged insert to show in an
+ *  empty grid, so its Table view says it too (a blank grid under an `_id` header explains nothing); an editable one
+ *  keeps the grid, where a new document is staged. */
+export const showEmptyNote = (view: DocViewKind, noDocs: boolean, readOnly: boolean): boolean => noDocs && (readOnly || view !== "table");
 
 /** A one-field `{"field": 1}` / `{"field": -1}` sort document as the grid's header sort marker. */
 export function sortKeyOf(sortText: string): { column: string; desc: boolean } | null {

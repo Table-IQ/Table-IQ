@@ -7,8 +7,8 @@ import { gatedCommit, productionCommitMessage } from "../lib/stagedEdits";
 import { NO_STAGED, stagedLock, totalStaged, type StagedCounts, type StagedSnapshot } from "../lib/stagedChanges";
 import { cycleSort } from "../lib/tableSort";
 import { buildDocChanges, commitOutcome, failedChanges, type Batch, diffDoc, docCommitError, docStagedCounts, shellScript } from "../lib/docChanges";
-import { cellText, field, has, idKey, parseDocs, parseObject, parseSearchText, readableError, sameValue, type Doc } from "../lib/docJson";
-import { docPagerLabel, loadDocView, saveDocView, sortKeyOf, sortText, type DocViewKind } from "../lib/docView";
+import { cellText, field, has, idKey, isEstimatedSearch, parseDocs, parseObject, parseSearchText, readableError, sameValue, type Doc } from "../lib/docJson";
+import { docPagerLabel, loadDocView, showEmptyNote, saveDocView, sortKeyOf, sortText, type DocViewKind } from "../lib/docView";
 import { escapeHtml } from "../lib/sqlHighlightHtml";
 import { type DataGridHandle } from "./DataGrid";
 import { DocTable, JsonDocs, TreeDocs, ViewToggle } from "./DocViews";
@@ -41,10 +41,13 @@ const input =
 
 /** One collection's Documents tab: query bar, JSON / Table / Tree views, and TablePlus-style staged
  *  editing (cells, whole documents, deletes, new documents) with Review → Commit / Discard.
- *  `readOnly` (the session's `read_only`, today Elasticsearch only) turns all of the editing off — no edit, insert,
+ *  `readOnly` (the session's `read_only`: Elasticsearch, Meilisearch) turns all of the editing off — no edit, insert,
  *  delete or staged-changes bar — and reads the query bar as a search: the filter is Query DSL JSON or a
- *  `query_string`, sort and projection may be JSON lists, and counts are exact. */
-export function DocCollection({ connId, collection, visible, readOnly = false }: { connId: string; collection: string; visible: boolean; readOnly?: boolean }) {
+ *  `query_string` (Meilisearch: a full-text query, or an object with `q` and `filter`; Qdrant: a filter object, the
+ *  points of a collection), sort and projection may be JSON lists, and counts are exact (Meilisearch's under a
+ *  full-text query are estimates). */
+export function DocCollection({ connId, collection, visible, readOnly = false, engine }: { connId: string; collection: string; visible: boolean; readOnly?: boolean; engine?: string }) {
+  const unit = engine === "qdrant" ? "point" : "document";
   const [draft, setDraft] = useState({ filter: "", sort: "", projection: "", skip: "0" });
   const [q, setQ] = useState<Query>(EMPTY_QUERY);
   const [queryError, setQueryError] = useState<string | null>(null);
@@ -128,7 +131,7 @@ export function DocCollection({ connId, collection, visible, readOnly = false }:
   useEffect(() => {
     let live = true;
     docCount(connId, collection, q.filter)
-      .then((n) => live && setTotal({ n, exact: readOnly || q.filter.trim() !== "" }))
+      .then((n) => live && setTotal({ n, exact: readOnly ? !isEstimatedSearch(engine, q.filter) : q.filter.trim() !== "" }))
       .catch(() => live && setTotal(null));
     return () => {
       live = false;
@@ -352,9 +355,9 @@ export function DocCollection({ connId, collection, visible, readOnly = false }:
       >
         {(
           [
-            ["filter", "Filter", readOnly ? `title:quiet  or  {"match": {"title": "quiet"}}` : `{"age": {"$gt": 30}}`, "min-w-[200px] flex-1"],
+            ["filter", "Filter", readOnly ? (engine === "meilisearch" ? `quiet river  or  {"q": "river", "filter": "year > 2000"}` : engine === "qdrant" ? `{"must": [{"key": "city", "match": {"value": "London"}}]}` : `title:quiet  or  {"match": {"title": "quiet"}}`) : `{"age": {"$gt": 30}}`, "min-w-[200px] flex-1"],
             ["sort", "Sort", readOnly ? `{"year": -1}` : `{"age": -1}`, "w-36"],
-            ["projection", "Projection", readOnly ? `{"title": 1}` : `{"name": 1}`, "w-36"],
+            ["projection", "Projection", readOnly ? (engine === "qdrant" ? `{"city": 1, "_vector": 1}` : `{"title": 1}`) : `{"name": 1}`, "w-36"],
           ] as const
         ).map(([k, label, ph, w]) => (
           <label key={k} className={`flex items-center gap-1 ${w}`}>
@@ -482,13 +485,17 @@ export function DocCollection({ connId, collection, visible, readOnly = false }:
 
       {/* Body */}
       <div className="relative flex min-h-0 flex-1 flex-col">
-        {fetching && <div className="tiq-progress absolute inset-x-0 top-0 z-10" role="progressbar" aria-label="Loading documents" />}
+        {fetching && <div className="tiq-progress absolute inset-x-0 top-0 z-10" role="progressbar" aria-label={`Loading ${unit}s`} />}
         {error ? (
           <div className="m-3 rounded-md border border-danger/30 bg-danger/10 p-3 text-xs text-danger" role="alert">
             {error}
           </div>
         ) : !page ? (
           <div className="p-3 text-xs text-muted">Loading…</div>
+        ) : showEmptyNote(view, noDocs, readOnly) ? (
+          <div className="flex flex-1 items-center justify-center text-sm text-muted">
+            {skip > 0 ? `No ${unit}s after the first ${skip.toLocaleString("en-US")} — lower Skip or go back a page.` : `No ${unit}s.`}
+          </div>
         ) : view === "table" ? (
           <div className={`tiq-dimmable min-h-0 flex-1 ${fetching ? "is-busy" : ""}`}>
             <DocTable
@@ -511,10 +518,6 @@ export function DocCollection({ connId, collection, visible, readOnly = false }:
                 run({ ...draft, sort: next }, 0);
               }}
             />
-          </div>
-        ) : noDocs ? (
-          <div className="flex flex-1 items-center justify-center text-sm text-muted">
-            {skip > 0 ? `No documents after the first ${skip.toLocaleString("en-US")} — lower Skip or go back a page.` : "No documents."}
           </div>
         ) : view === "json" ? (
           <JsonDocs docs={docs} />
@@ -545,9 +548,9 @@ export function DocCollection({ connId, collection, visible, readOnly = false }:
               </StatusBarButton>
               <span
                 className="whitespace-nowrap tabular-nums text-text"
-                title={total && !total.exact ? "Estimated from collection metadata. Add a filter for an exact count." : undefined}
+                title={total && !total.exact ? (readOnly ? "Meilisearch estimates the hits of a full-text query. Use a filter alone for an exact count." : "Estimated from collection metadata. Add a filter for an exact count.") : undefined}
               >
-                {page ? docPagerLabel(skip, docs.length, total?.n ?? null, total?.exact ?? false) : "Opening…"}
+                {page ? docPagerLabel(skip, docs.length, total?.n ?? null, total?.exact ?? false, unit) : "Opening…"}
               </span>
               <StatusBarButton onClick={() => goTo(skip + q.limit)} disabled={!hasNext || fetching || committing} title="Next page">
                 <IconChevronRight size={10} />
@@ -556,8 +559,8 @@ export function DocCollection({ connId, collection, visible, readOnly = false }:
             <span className="inline-flex items-center gap-1">
               <IconRow size={11} strokeWidth={1.5} />
               <select
-                aria-label="Documents per page"
-                title="Documents per page"
+                aria-label={`${unit === "point" ? "Points" : "Documents"} per page`}
+                title={`${unit === "point" ? "Points" : "Documents"} per page`}
                 value={q.limit}
                 disabled={committing}
                 onChange={(e) => {
@@ -578,7 +581,7 @@ export function DocCollection({ connId, collection, visible, readOnly = false }:
         }
         right={
           readOnly ? (
-            <span className="inline-flex items-center gap-1 text-muted" title="Elasticsearch indices can't be edited in TableIQ">
+            <span className="inline-flex items-center gap-1 text-muted" title="This connection is read-only: its data can't be edited in TableIQ">
               <StatusDot tone="muted" />
               <span>read-only</span>
             </span>

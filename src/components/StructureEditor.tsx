@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import {
   generateDdl,
   listObjects,
-  runScript,
+  runDdl,
   type ColumnSpec,
   type Engine,
   type SchemaModel,
@@ -59,7 +59,7 @@ export function StructureEditor({
     if (!sql) return;
     setStatus({ kind: "busy", msg: "Applying…" });
     try {
-      await runScript(connId, sql);
+      await runDdl(connId, engine, sql);
       updateSession(connId, { schema: await listObjects(connId).catch(() => schema) });
       onSchemaChanged?.();
       setStatus({ kind: "ok", msg: "Table created" });

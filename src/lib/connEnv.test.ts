@@ -61,3 +61,32 @@ describe("Elasticsearch pill", () => {
     expect(es("http://h").engine).toBe("Elasticsearch");
   });
 });
+
+describe("rqlite pill", () => {
+  it("is TLS by its URL: rqlite:// and a bare host are, unless this machine", () => {
+    const rq = (host: string) => pillSegments({ ...base, engine: "rqlite" as const, host }, null);
+    expect(["https://h:4001", "rqlite://db.example.com", "db.example.com:4001", "http://h", "http://127.0.0.1:54001", "rqlite://localhost", "localhost:4001", "rqlite://127.0.0.1:4001", "[::1]:4001"].map((h) => rq(h).ssl)).toEqual([true, true, true, false, false, false, false, false, false]);
+    // A name that merely starts like a loopback address is not one.
+    expect(["rqlite://127.evil.example", "127.0.0.1.evil.com", "localhostfoo.com", "rqlite://localhost.evil.com"].map((h) => rq(h).ssl)).toEqual([true, true, true, true]);
+    expect(rq("http://h").engine).toBe("rqlite");
+  });
+});
+
+describe("Meilisearch pill", () => {
+  it("is TLS by its URL: meilisearch:// and a bare host are, unless this machine", () => {
+    const ms = (host: string) => pillSegments({ ...base, engine: "meilisearch" as const, host }, null);
+    expect(["https://h:7700", "meilisearch://ms.example.com", "ms.example.com:7700", "http://h", "http://127.0.0.1:57700", "meilisearch://localhost", "localhost:7700", "[::1]:7700"].map((h) => ms(h).ssl)).toEqual([true, true, true, false, false, false, false, false]);
+    // A name that merely starts like a loopback address is not one.
+    expect(["meilisearch://127.evil.example", "127.0.0.1.evil.com", "localhostfoo.com", "meilisearch://localhost.evil.com"].map((h) => ms(h).ssl)).toEqual([true, true, true, true]);
+    expect(ms("http://h").engine).toBe("Meilisearch");
+  });
+});
+
+describe("Qdrant pill", () => {
+  it("is TLS by its URL: qdrant:// and a bare host are, unless this machine", () => {
+    const qd = (host: string) => pillSegments({ ...base, engine: "qdrant" as const, host }, null);
+    expect(["https://h:6333", "qdrant://qd.example.com", "qd.example.com:6333", "http://h", "http://127.0.0.1:56333", "qdrant://localhost", "localhost:6333", "[::1]:6333"].map((h) => qd(h).ssl)).toEqual([true, true, true, false, false, false, false, false]);
+    expect(["qdrant://127.evil.example", "127.0.0.1.evil.com", "qdrant://localhost.evil.com"].map((h) => qd(h).ssl)).toEqual([true, true, true]);
+    expect(qd("http://h").engine).toBe("Qdrant");
+  });
+});

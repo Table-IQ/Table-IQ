@@ -146,7 +146,7 @@ impl Val {
 }
 
 /// A REAL the way SQLite prints it: 15 significant digits (`%!.15g`), at least one decimal.
-fn real_text(f: f64) -> String {
+pub(super) fn real_text(f: f64) -> String {
     if f == 0.0 {
         return "0.0".into(); // SQLite prints -0.0 as 0.0
     }
@@ -170,11 +170,11 @@ fn real_text(f: f64) -> String {
     if fixed.contains('.') { fixed } else { format!("{fixed}.0") }
 }
 
-fn quote_ident(name: &str) -> String {
+pub(super) fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
-fn placeholder(i: usize, _col: &str) -> String {
+pub(super) fn placeholder(i: usize, _col: &str) -> String {
     format!("?{i}")
 }
 
@@ -186,7 +186,7 @@ fn clean(msg: &str) -> String {
 /// Whether `host[:port]` (a bracketed `[::1]:port` too) is this machine: exactly `localhost`, or
 /// a loopback address. Nothing else may be sent a token in the clear, so a name that merely
 /// starts like one (`127.evil.example`, `localhostfoo.com`) is not.
-fn is_local(host_port: &str) -> bool {
+pub(super) fn is_local(host_port: &str) -> bool {
     let host = match host_port.strip_prefix('[') {
         Some(v6) => v6.split(']').next().unwrap_or(""),
         // One colon is a port; more is a bare IPv6 address.
@@ -224,7 +224,7 @@ fn endpoint(input: &str) -> DResult<reqwest::Url> {
 }
 
 /// Race `fut` against the token: a cancel drops the request.
-async fn cancellable<T>(token: Option<&CancelToken>, fut: impl Future<Output = DResult<T>>) -> DResult<T> {
+pub(super) async fn cancellable<T>(token: Option<&CancelToken>, fut: impl Future<Output = DResult<T>>) -> DResult<T> {
     let Some(token) = token else { return fut.await };
     if token.is_cancelled() {
         return Err(DriverError::Cancelled);
@@ -245,11 +245,11 @@ fn texts(res: &Res) -> Vec<Vec<Option<String>>> {
     res.rows.iter().map(|r| r.iter().map(Val::text).collect()).collect()
 }
 
-fn s(v: &Option<String>) -> String {
+pub(super) fn s(v: &Option<String>) -> String {
     v.clone().unwrap_or_default()
 }
 
-fn int(v: &Option<String>) -> i64 {
+pub(super) fn int(v: &Option<String>) -> i64 {
     v.as_deref().and_then(|v| v.parse().ok()).unwrap_or(0)
 }
 
@@ -453,7 +453,7 @@ impl LibsqlDriver {
 
 /// What the Structure tab calls a trigger's timing and event, read from its DDL (SQLite keeps
 /// no column for either; `sqlite.rs` does the same).
-fn timing_event_of(sql: &str) -> String {
+pub(super) fn timing_event_of(sql: &str) -> String {
     let head = sql.to_uppercase();
     let head = head.split_once(" ON ").map_or(head.as_str(), |(h, _)| h);
     let timing = ["INSTEAD OF", "AFTER", "BEFORE"].into_iter().find(|k| head.contains(k)).unwrap_or("BEFORE");

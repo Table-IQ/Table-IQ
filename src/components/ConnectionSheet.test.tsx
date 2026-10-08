@@ -75,6 +75,53 @@ describe("ConnectionSheet", () => {
     expect(html({ form: { ...form, host: "https://h?password=x" } })).toContain("it would be saved in plaintext");
   });
 
+  it("rqlite takes one Server URL, an optional user and password: no host, port, database or SSH tunnel", () => {
+    const form = { ...base.form, engine: "rqlite" as const, host: "http://127.0.0.1:4001", port: 4001, database: "", username: "" };
+    const h = html({ form });
+    expect(h).toContain("Server URL");
+    expect(h).toContain("http://127.0.0.1:4001");
+    expect(h).toContain("User (optional)");
+    expect(h).toContain("Password (optional)");
+    expect(h).toContain("no BEGIN or COMMIT");
+    for (const gone of [">Host<", ">Port<", ">Database<", "SSH tunnel", "Connection string"]) expect(h).not.toContain(gone);
+    expect(h).toMatch(/title="rqlite \(distributed SQLite\)"/);
+    expect(html({ form: { ...form, host: "rqlite://h?password=x" } })).toContain("it would be saved in plaintext");
+  });
+
+  it("shows a key pasted into the URL's query at once, under the field, without waiting for a blur", () => {
+    const form = { ...base.form, engine: "qdrant" as const, host: "qdrant://h:6333?api-key=x", port: 6333, database: "", username: "" };
+    const h = html({ form });
+    expect(h).toMatch(/host-err" class="[^"]*text-danger">Remove api-key from the URL/);
+    expect(html({ form: { ...form, host: "" } })).not.toContain("host-err");
+  });
+
+  it("Meilisearch takes one Server URL and an API key: no host, port, user, database or SSH tunnel", () => {
+    const form = { ...base.form, engine: "meilisearch" as const, host: "http://127.0.0.1:7700", port: 7700, database: "", username: "" };
+    const h = html({ form });
+    expect(h).toContain("Server URL");
+    expect(h).toContain("http://127.0.0.1:7700");
+    expect(h).toContain("API key");
+    expect(h).toContain('placeholder="API key"');
+    expect(html({ form, mode: "edit" })).toContain('placeholder="Keep saved API key"');
+    expect(h).toContain("documents.get");
+    for (const gone of [">Host<", ">Port<", ">User<", ">User (optional)<", ">Database<", "SSH tunnel", "Connection string"]) expect(h).not.toContain(gone);
+    expect(h).toMatch(/title="Meilisearch"/);
+    expect(html({ form: { ...form, host: "http://h:7700?api_key=x" } })).toContain("it would be saved in plaintext");
+  });
+
+  it("Qdrant takes one Server URL and an API key: no host, port, user, database or SSH tunnel", () => {
+    const form = { ...base.form, engine: "qdrant" as const, host: "http://127.0.0.1:6333", port: 6333, database: "", username: "" };
+    const h = html({ form });
+    expect(h).toContain("Server URL");
+    expect(h).toContain("http://127.0.0.1:6333");
+    expect(h).toContain('placeholder="API key"');
+    expect(html({ form, mode: "edit" })).toContain('placeholder="Keep saved API key"');
+    expect(h).toContain("api-key header");
+    for (const gone of [">Host<", ">Port<", ">User<", ">User (optional)<", ">Database<", "SSH tunnel", "Connection string"]) expect(h).not.toContain(gone);
+    expect(h).toMatch(/title="Qdrant/);
+    expect(html({ form: { ...form, host: "http://h:6333?api-key=x" } })).toContain("it would be saved in plaintext");
+  });
+
   it("Turso takes one Server URL and an Auth token: no host, port, user, database or SSH tunnel", () => {
     const form = { ...base.form, engine: "libsql" as const, host: "libsql://db-org.turso.io", port: 8080, database: "", username: "" };
     const h = html({ form });

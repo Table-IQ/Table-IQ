@@ -127,7 +127,7 @@ export function explainStatement(sql: string, engine: Engine): string | null {
   const body = sql.trim().replace(/;+\s*$/, "");
   if (!body) return null;
   if (engine === "mysql" || engine === "clickhouse") return `EXPLAIN ${body}`;
-  if (engine === "sqlite" || engine === "libsql") return `EXPLAIN QUERY PLAN ${body}`;
+  if (engine === "sqlite" || engine === "libsql" || engine === "rqlite") return `EXPLAIN QUERY PLAN ${body}`;
   return null;
 }
 

@@ -57,6 +57,7 @@ function cmDialectFor(engine: Engine | undefined): SQLDialect {
       return MSSQL;
     case "sqlite":
     case "libsql":
+    case "rqlite":
       return SQLite;
     default:
       return PostgreSQL;

@@ -96,7 +96,11 @@ export function mcpRowState(conn: Pick<ConnConfig, "engine" | "profile">, shared
         ? "Not available over MCP yet: TableIQ's agent guard has not been reviewed for Turso / libSQL."
         : conn.engine === "elasticsearch"
           ? "Not available over MCP yet: TableIQ's agent guard has not been reviewed for Elasticsearch."
-          : `Not available over MCP: this connection's profile (${conn.profile}) was saved by a newer TableIQ. Update TableIQ to manage it.`;
+          : conn.engine === "rqlite"
+            ? "Not available over MCP yet: TableIQ's agent guard has not been reviewed for rqlite."
+            : conn.engine === "meilisearch" || conn.engine === "qdrant"
+              ? `Not available over MCP yet: TableIQ's agent guard has not been reviewed for ${conn.engine === "qdrant" ? "Qdrant" : "Meilisearch"}.`
+              : `Not available over MCP: this connection's profile (${conn.profile}) was saved by a newer TableIQ. Update TableIQ to manage it.`;
   return { shareable: false, shared: false, writes: false, writable: false, note };
 }
 
@@ -141,4 +145,12 @@ const MCP_ENGINES = new Set(["postgres", "mysql", "sqlite", "duckdb", "sqlserver
  *  read-only redis_* tools). */
 export function isMcpEngine(engine: string): boolean {
   return MCP_ENGINES.has(engine);
+}
+
+/** The line under "Shared connections" when no row is listed. Connections of an engine MCP does not serve are not
+ *  listed, so "No connections saved yet." would be untrue while some are saved. */
+export function mcpEmptyNote(saved: readonly Pick<ConnConfig, "engine">[]): string {
+  return saved.some((c) => !isMcpEngine(c.engine))
+    ? "None of your saved connections can be shared with agents: only Postgres, MySQL, SQL Server, SQLite, DuckDB, MongoDB and Redis connections are served."
+    : "No connections saved yet.";
 }

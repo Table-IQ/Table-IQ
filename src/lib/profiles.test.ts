@@ -213,3 +213,39 @@ describe("Elasticsearch", () => {
     expect(contrast(ENGINE_COLORS.elasticsearch, "#15171c")).toBeGreaterThanOrEqual(2);
   });
 });
+
+describe("rqlite", () => {
+  it("is a read-only browser: no transactions, backup, users or agents, and port 4001", () => {
+    expect(capsOf("rqlite")).toEqual({ transactions: false, backup: false, userMgmt: false, agents: false });
+    expect(presetFor("rqlite", null)).toEqual({ port: 4001, username: "", database: "", sslmode: "prefer" });
+  });
+  it("draws a rose fill that is legible under its white monogram and visible on the dark surface", () => {
+    expect(ENGINE_MONOGRAMS.rqlite).toBe("Rq");
+    expect(contrast("#ffffff", ENGINE_COLORS.rqlite)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(ENGINE_COLORS.rqlite, "#15171c")).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("Meilisearch", () => {
+  it("is a read-only browser: no transactions, backup, users or agents, and port 7700", () => {
+    expect(capsOf("meilisearch")).toEqual({ transactions: false, backup: false, userMgmt: false, agents: false });
+    expect(presetFor("meilisearch", null)).toEqual({ port: 7700, username: "", database: "", sslmode: "prefer" });
+  });
+  it("draws a violet fill that is legible under its white monogram and visible on the dark surface", () => {
+    expect(ENGINE_MONOGRAMS.meilisearch).toBe("Me");
+    expect(contrast("#ffffff", ENGINE_COLORS.meilisearch)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(ENGINE_COLORS.meilisearch, "#15171c")).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("Qdrant", () => {
+  it("is a read-only browser: no transactions, backup, users or agents, and port 6333", () => {
+    expect(capsOf("qdrant")).toEqual({ transactions: false, backup: false, userMgmt: false, agents: false });
+    expect(presetFor("qdrant", null)).toEqual({ port: 6333, username: "", database: "", sslmode: "prefer" });
+  });
+  it("draws a red fill that is legible under its white monogram and visible on the dark surface", () => {
+    expect(ENGINE_MONOGRAMS.qdrant).toBe("Qr");
+    expect(contrast("#ffffff", ENGINE_COLORS.qdrant)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(ENGINE_COLORS.qdrant, "#15171c")).toBeGreaterThanOrEqual(2);
+  });
+});

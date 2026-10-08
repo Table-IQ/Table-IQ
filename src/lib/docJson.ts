@@ -195,6 +195,20 @@ export function parseSearchText(text: string): Parsed<unknown> | null {
   }
 }
 
+/** Whether the count under this filter-box text is only an estimate: Meilisearch estimates the hits of a full-text
+ *  query (plain text, or a `q`); a filter alone, and every other engine's count, is exact. */
+export function isEstimatedSearch(engine: string | undefined, filter: string): boolean {
+  if (engine !== "meilisearch") return false;
+  const t = filter.trim();
+  if (!t.startsWith("{")) return t !== "";
+  try {
+    const q = (JSON.parse(t) as { q?: unknown } | null)?.q;
+    return typeof q === "string" && q.trim() !== "";
+  } catch {
+    return false;
+  }
+}
+
 /** Parse text that must be one JSON array (an aggregation pipeline). */
 export function parseArray(text: string): Parsed<unknown[]> {
   let v: unknown;

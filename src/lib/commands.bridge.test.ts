@@ -255,3 +255,26 @@ describe("connection-lost handler", () => {
     expect(lost).not.toHaveBeenCalled();
   });
 });
+
+describe("runDdl (the Alter / New table dialogs)", () => {
+  const meta = (over: object = {}) => ({ index: 0, result_id: null, columns: [], row_count: 0, total_rows: 0, truncated: false, rows_affected: 0, exec_ms: 1, error: null, notice: null, ...over });
+
+  it("sends other engines' DDL as one run_script", async () => {
+    reply(JSON.stringify({ rows_affected: 0 }), 200, "application/json");
+    await cmds.runDdl("c1", "postgres", 'ALTER TABLE "t" ADD COLUMN "a" text;');
+    expect(fetchMock.mock.calls[0][0]).toBe("/__ipc/run_script");
+  });
+
+  // rqlite refuses run_script (no sessions): the dialogs' Apply used to end in the BEGIN / COMMIT advice.
+  it("runs rqlite's DDL one statement per request through run_query", async () => {
+    reply(JSON.stringify([meta(), meta({ index: 1 })]), 200, "application/json");
+    await cmds.runDdl("c1", "rqlite", 'ALTER TABLE "t" ADD COLUMN "a" text;\nALTER TABLE "t" ADD COLUMN "b" text;');
+    expect(fetchMock.mock.calls[0][0]).toBe("/__ipc/run_query");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).statements).toEqual(['ALTER TABLE "t" ADD COLUMN "a" text', 'ALTER TABLE "t" ADD COLUMN "b" text']);
+  });
+
+  it("rejects with the failing statement's message", async () => {
+    reply(JSON.stringify([meta({ error: { message: 'near "x": syntax error', line: 1, position: null } })]), 200, "application/json");
+    await expect(cmds.runDdl("c1", "rqlite", "x")).rejects.toBe('near "x": syntax error');
+  });
+});

@@ -3,6 +3,7 @@ import { synthWindowIpc, MOCK_TOTAL_ROWS } from "./mockSource";
 import type { SshConfig } from "./ssh";
 import { restoreConfirmName } from "./backup";
 import { isMacPlatform } from "./shortcut";
+import { splitStatements } from "./sqlSplit";
 
 // ── connection-loss detection ────────────────────────────────────────────
 // Every Rust command returns its error as `e.to_string()`, so sqlx / the
@@ -96,7 +97,10 @@ export type Engine =
   | "sqlserver"
   | "clickhouse"
   | "libsql"
-  | "elasticsearch";
+  | "elasticsearch"
+  | "rqlite"
+  | "meilisearch"
+  | "qdrant";
 export interface ConnConfig {
   id: string;
   name: string;
@@ -148,8 +152,10 @@ export interface ConnectedInfo {
   /** The saved profile when this build knows it, else the product detected at connect; null for a plain base engine. */
   profile?: string | null;
   caps?: SessionCaps;
-  /** A document session that cannot be edited (Elasticsearch): the shell offers no edit, insert, delete or index change. */
+  /** A document session that cannot be edited (Elasticsearch, Meilisearch, Qdrant): the shell offers no edit, insert, delete or index change. */
   read_only?: boolean;
+  /** False for a document session whose server cannot aggregate (Qdrant before 1.12): the shell hides the Aggregate pane. */
+  aggregate?: boolean;
 }
 
 export interface KeyInfo {
@@ -615,7 +621,7 @@ export async function docDropIndex(id: string, collection: string, name: string)
   return invoke<void>("doc_drop_index", { id, collection, name });
 }
 
-/** An index's field mapping as pretty JSON text (Elasticsearch). */
+/** An index's field mapping as pretty JSON text (Elasticsearch), its settings and field counts (Meilisearch), or its collection info (Qdrant). */
 export async function docMapping(id: string, collection: string): Promise<string> {
   if (!inTauri()) return '{\n  "mappings": {}\n}';
   return invoke<string>("doc_mapping", { id, collection });
@@ -667,6 +673,7 @@ export async function listDatabases(id: string): Promise<string[]> {
       case "sqlite":
       case "duckdb":
       case "libsql":
+      case "rqlite":
         return ["main"];
       case "redis":
         return Array.from({ length: 16 }, (_, i) => String(i));
@@ -675,6 +682,8 @@ export async function listDatabases(id: string): Promise<string[]> {
       case "clickhouse":
         return ["default", "tableiq"];
       case "elasticsearch":
+      case "meilisearch":
+      case "qdrant":
         return [];
       default:
         return [];
@@ -1164,6 +1173,16 @@ export async function runScript(id: string, sql: string): Promise<{ rowsAffected
   if (!inTauri()) return { rowsAffected: 0 };
   const r = await invoke<{ rows_affected: number }>("run_script", { id, sql });
   return { rowsAffected: r.rows_affected };
+}
+
+/** DDL from the Alter / New table dialogs. rqlite has no sessions, so `run_script` (a transaction script) is
+ *  refused there: its statements go one request each through `run_query`, stopping at the first failure. */
+export async function runDdl(id: string, engine: string | undefined, sql: string): Promise<{ rowsAffected: number }> {
+  if (engine !== "rqlite") return runScript(id, sql);
+  const metas = await runQuery(id, splitStatements(sql, "sqlite").map((s) => s.text));
+  const failed = metas.find((m) => m.error);
+  if (failed?.error) throw failed.error.message;
+  return { rowsAffected: metas.reduce((n, m) => n + (m.rowsAffected ?? 0), 0) };
 }
 
 /** Plain rows from `query_rows` (Task 10 Users list, Task 11 metrics, Task 14 MCP) — capped
