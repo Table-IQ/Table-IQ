@@ -67,6 +67,11 @@ export function docPagerLabel(skip: number, shown: number, total: number | null,
   return exact ? `${range} of ${EXACT.format(total)} ${total === 1 ? noun : `${noun}s`}` : `${range} of ~${EXACT.format(total)} (est.)`;
 }
 
+/** Whether the body says "No documents." instead of a grid. A read-only session has no staged insert to show in an
+ *  empty grid, so its Table view says it too (a blank grid under an `_id` header explains nothing); an editable one
+ *  keeps the grid, where a new document is staged. */
+export const showEmptyNote = (view: DocViewKind, noDocs: boolean, readOnly: boolean): boolean => noDocs && (readOnly || view !== "table");
+
 /** A one-field `{"field": 1}` / `{"field": -1}` sort document as the grid's header sort marker. */
 export function sortKeyOf(sortText: string): { column: string; desc: boolean } | null {
   try {

@@ -321,6 +321,31 @@ async fn nested_array_null_and_unicode_payloads_survive_in_the_json() {
 }
 
 #[tokio::test]
+async fn ids_and_payload_integers_past_2_pow_53_arrive_as_exact_strings() {
+    let Some((d, url)) = drv().await else { return };
+    // Three u64 ids a unit apart (a f64 holds them as one), and a payload with large integers.
+    let pts = json!([
+        {"id": 18446744073709551613u64, "vector": [1.0, 0.0], "payload": {"big": 9007199254740993i64, "neg": -9223372036854775808i64, "small": 7, "list": [9007199254740995i64, 1]}},
+        {"id": 18446744073709551614u64, "vector": [0.0, 1.0], "payload": {"big": 9007199254740992i64}},
+        {"id": 18446744073709551615u64, "vector": [1.0, 1.0], "payload": {"nested": {"x": 9007199254740994i64}}},
+        {"id": 9007199254740992u64, "vector": [1.0, 2.0], "payload": {}},
+    ]);
+    let s = Scratch::new(&url, "tiq_scratch_bigint", pts).await;
+    let docs = d.find(s.name, &opts("", "", 0, 10)).await.unwrap();
+    let got = parse(&docs);
+    let id_of = |i: usize| got[i]["_id"].clone();
+    // 2^53 itself is exact and stays a number; everything past it is a string with every digit.
+    assert_eq!(id_of(0), json!(9007199254740992u64));
+    assert_eq!((id_of(1), id_of(2), id_of(3)), (json!("18446744073709551613"), json!("18446744073709551614"), json!("18446744073709551615")));
+    assert_eq!((got[1]["big"].clone(), got[1]["neg"].clone(), got[1]["small"].clone()), (json!("9007199254740993"), json!("-9223372036854775808"), json!(7)));
+    assert_eq!(got[1]["list"], json!(["9007199254740995", 1]));
+    assert_eq!(got[2]["big"], json!(9007199254740992u64));
+    assert_eq!(got[3]["nested"], json!({"x": "9007199254740994"}));
+    // The raw text has no rounded neighbour.
+    assert!(docs.iter().all(|t| !t.contains("18446744073709552000")), "{docs:?}");
+}
+
+#[tokio::test]
 async fn a_payload_with_keys_named_like_ours_is_not_merged() {
     let Some((d, url)) = drv().await else { return };
     let pts = json!([

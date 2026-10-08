@@ -184,6 +184,7 @@ jobs:
   # ten servers of `rust` they take ~2 GB more of a 7 GB runner, which the DuckDB link also needs.
   http-engines:
     runs-on: ubuntu-22.04
+    timeout-minutes: 75
     env:
       # docker/clickhouse/docker-compose.yml: the HTTP interface — tests/clickhouse_live.rs.
       TIQ_CLICKHOUSE_URL: http://default:tableiq@127.0.0.1:58123/tableiq
@@ -223,11 +224,11 @@ jobs:
       # is ~1 GB, Elasticsearch ~1.2 GB (heap pinned to 512 MB) and the slowest to come up.
       - name: Start ClickHouse, Turso (libSQL), Elasticsearch, rqlite, Meilisearch and Qdrant
         run: |
-          docker compose -f docker/clickhouse/docker-compose.yml up -d --wait
-          docker compose -f docker/libsql/docker-compose.yml up -d --wait
-          docker compose -f docker/rqlite/docker-compose.yml up -d --wait
-          docker compose -f docker/meilisearch/docker-compose.yml up -d --wait
-          docker compose -f docker/qdrant/docker-compose.yml up -d --wait
+          docker compose -f docker/clickhouse/docker-compose.yml up -d --wait --wait-timeout 300
+          docker compose -f docker/libsql/docker-compose.yml up -d --wait --wait-timeout 300
+          docker compose -f docker/rqlite/docker-compose.yml up -d --wait --wait-timeout 300
+          docker compose -f docker/meilisearch/docker-compose.yml up -d --wait --wait-timeout 300
+          docker compose -f docker/qdrant/docker-compose.yml up -d --wait --wait-timeout 300
           docker compose -f docker/elasticsearch/docker-compose.yml up -d --wait --wait-timeout 420
 
       - uses: dtolnay/rust-toolchain@stable

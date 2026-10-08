@@ -91,3 +91,14 @@ describe("the documents pane on a read-only (Elasticsearch) session", () => {
     expect(rw).not.toContain("read-only");
   });
 });
+
+describe("the aggregate pane's empty state names what to run", () => {
+  it("says facets for Meilisearch / Qdrant, aggregations for Elasticsearch, a pipeline for Mongo", async () => {
+    const { DocAggregate } = await import("./DocAggregate");
+    const text = (engine?: string) => renderToStaticMarkup(<DocAggregate connId="c1" collection="x" active engine={engine} />);
+    expect(text("qdrant")).toContain("Run a facet query to see its results.");
+    expect(text("meilisearch")).toContain("Run a facet query to see its results.");
+    expect(text("elasticsearch")).toContain("Run an aggregation to see its results.");
+    expect(text("mongodb")).toContain("Run a pipeline to see its results.");
+  });
+});

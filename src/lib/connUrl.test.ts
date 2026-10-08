@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isMongoUrlHost, isUrlHost, looksLikeConnUrl, normalizeUrlSecrets, parseConnUrl, toConnUrl, urlQuerySecret, validateConn } from "./connUrl";
+import { connNameFor, isMongoUrlHost, isUrlHost, looksLikeConnUrl, normalizeUrlSecrets, parseConnUrl, toConnUrl, urlQuerySecret, validateConn } from "./connUrl";
 
 describe("parseConnUrl", () => {
   it("parses a Postgres URL with an encoded password and sslmode", () => {
@@ -438,5 +438,17 @@ describe("Qdrant URLs", () => {
     expect(isUrlHost("qdrant", "localhost")).toBe(true);
     expect(toConnUrl({ ...cfg, port: 6333, username: "", sslmode: "prefer" })).toBe("http://127.0.0.1:6333");
     expect(toConnUrl({ ...cfg, host: "qd.example.com:6333", port: 6333, username: "", sslmode: "prefer" })).toBe("qdrant://qd.example.com:6333");
+  });
+});
+
+describe("connNameFor", () => {
+  it("names a pasted connection by its database, else by its host without scheme, query or trailing slash", () => {
+    expect(connNameFor(parseConnUrl("postgres://u@db.example.com/shop")!)).toBe("shop");
+    expect(connNameFor(parseConnUrl("rqlite://admin:pw@127.0.0.1:54002")!)).toBe("127.0.0.1:54002");
+    expect(connNameFor(parseConnUrl("elasticsearch://user:pw@es.example.com:9243/")!)).toBe("es.example.com:9243");
+  });
+  it("never lets a key in the query become the name", () => {
+    expect(connNameFor(parseConnUrl("meilisearch://127.0.0.1:7700?api_key=s3cret")!)).toBe("127.0.0.1:7700");
+    expect(connNameFor(parseConnUrl("qdrant://h:6333?api-key=s3cret")!)).toBe("h:6333");
   });
 });

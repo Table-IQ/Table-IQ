@@ -23,7 +23,7 @@ import {
   type Engine,
 } from "../lib/commands";
 import { defaultSshConfig, type SshConfig } from "../lib/ssh";
-import { isServerUrlEngine, isUrlHost, normalizeUrlSecrets, toConnUrl, validateConn } from "../lib/connUrl";
+import { connNameFor, isServerUrlEngine, isUrlHost, normalizeUrlSecrets, toConnUrl, validateConn } from "../lib/connUrl";
 import { PROFILES, applyPreset, presetFor } from "../lib/profiles";
 import { confirmDialog } from "../lib/confirmDialog";
 import { cancelConnecting, openConnection, useConnections, type ConnectingState } from "../state/connectionStore";
@@ -633,7 +633,7 @@ export function ConnectionManager() {
                 username: p.username,
                 database: p.database,
                 ...(p.sslmode ? { sslmode: p.sslmode } : {}),
-                name: f.name || p.database || p.host,
+                name: f.name || connNameFor(p),
               }));
               if (p.password) setPassword(p.password);
               clearStatus();

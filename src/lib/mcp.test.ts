@@ -3,6 +3,7 @@ import {
   claudeCodeCommand,
   claudeDesktopConfig,
   isMcpEngine,
+  mcpEmptyNote,
   REDIS_SHARING_NOTE,
   maskToken,
   mcpRowState,
@@ -268,5 +269,16 @@ describe("Qdrant over MCP", () => {
     const row = mcpRowState({ engine: "qdrant" }, { id: "c1", writes: true, rev: AGENT_REV });
     expect(row).toMatchObject({ shareable: false, shared: false, writes: false, writable: false });
     expect(row.note).toBe("Not available over MCP yet: TableIQ's agent guard has not been reviewed for Qdrant.");
+  });
+});
+
+describe("mcpEmptyNote", () => {
+  it("says none are saved only when none are", () => {
+    expect(mcpEmptyNote([])).toBe("No connections saved yet.");
+  });
+  it("says why when connections are saved but none can be listed (rqlite, Meilisearch, Qdrant, ClickHouse, Turso, Elasticsearch)", () => {
+    for (const engine of ["rqlite", "meilisearch", "qdrant", "clickhouse", "libsql", "elasticsearch"] as const) {
+      expect(mcpEmptyNote([{ engine }])).toContain("None of your saved connections can be shared with agents");
+    }
   });
 });

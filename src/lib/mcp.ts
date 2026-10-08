@@ -146,3 +146,11 @@ const MCP_ENGINES = new Set(["postgres", "mysql", "sqlite", "duckdb", "sqlserver
 export function isMcpEngine(engine: string): boolean {
   return MCP_ENGINES.has(engine);
 }
+
+/** The line under "Shared connections" when no row is listed. Connections of an engine MCP does not serve are not
+ *  listed, so "No connections saved yet." would be untrue while some are saved. */
+export function mcpEmptyNote(saved: readonly Pick<ConnConfig, "engine">[]): string {
+  return saved.some((c) => !isMcpEngine(c.engine))
+    ? "None of your saved connections can be shared with agents: only Postgres, MySQL, SQL Server, SQLite, DuckDB, MongoDB and Redis connections are served."
+    : "No connections saved yet.";
+}

@@ -88,6 +88,13 @@ describe("ConnectionSheet", () => {
     expect(html({ form: { ...form, host: "rqlite://h?password=x" } })).toContain("it would be saved in plaintext");
   });
 
+  it("shows a key pasted into the URL's query at once, under the field, without waiting for a blur", () => {
+    const form = { ...base.form, engine: "qdrant" as const, host: "qdrant://h:6333?api-key=x", port: 6333, database: "", username: "" };
+    const h = html({ form });
+    expect(h).toMatch(/host-err" class="[^"]*text-danger">Remove api-key from the URL/);
+    expect(html({ form: { ...form, host: "" } })).not.toContain("host-err");
+  });
+
   it("Meilisearch takes one Server URL and an API key: no host, port, user, database or SSH tunnel", () => {
     const form = { ...base.form, engine: "meilisearch" as const, host: "http://127.0.0.1:7700", port: 7700, database: "", username: "" };
     const h = html({ form });

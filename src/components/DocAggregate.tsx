@@ -26,6 +26,7 @@ export function DocAggregate({ connId, collection, active, engine }: { connId: s
   const [busy, setBusy] = useState(false);
   const [runs, setRuns] = useState(0);
   const [view, setView] = useState<DocViewKind>(() => loadDocView(connId, collection));
+  const what = meili || qdrant ? "a facet query" : elastic ? "an aggregation" : "a pipeline";
 
   const run = async () => {
     const p = elastic ? parseObject(text) : parseArray(text);
@@ -95,7 +96,7 @@ export function DocAggregate({ connId, collection, active, engine }: { connId: s
       <div className="relative flex min-h-0 flex-1 flex-col">
         {busy && <div className="tiq-progress absolute inset-x-0 top-0 z-10" role="progressbar" aria-label="Running pipeline" />}
         {!res ? (
-          <div className="flex flex-1 items-center justify-center text-sm text-muted">{busy ? "Running…" : "Run a pipeline to see its results."}</div>
+          <div className="flex flex-1 items-center justify-center text-sm text-muted">{busy ? "Running…" : `Run ${what} to see its results.`}</div>
         ) : res.docs.length === 0 ? (
           <div className="flex flex-1 items-center justify-center text-sm text-muted">No results.</div>
         ) : view === "table" ? (

@@ -22,9 +22,10 @@
 //!
 //! **Types.** Values are plain JSON: an integer keeps all 64 bits (serde_json reads `i64`
 //! exactly), a REAL that is whole arrives as `3` and the column's declared type (`types[]`) says
-//! to print it as `3.0`, and a BLOB column's value is base64 (shown as text when UTF-8, `0x…`
-//! hex otherwise, like `sqlite.rs`). Server limits that cannot be worked around: a BLOB in a
-//! computed column arrives as lossy text, and ±Infinity makes the server fail the whole reply
+//! to print it as `3.0`, and a BLOB (asked for with `blob_array`, which makes it an array of
+//! bytes, so it cannot be mistaken for a text value that merely looks like base64) is shown as
+//! text when UTF-8, `0x…` hex otherwise, like `sqlite.rs`. Server limits that cannot be worked
+//! around: a BLOB in a computed column (`SELECT x'00ff'`, a `CAST`) arrives as lossy text, and ±Infinity makes the server fail the whole reply
 //! (a page that holds one is re-read with the infinities cast to text; an editor query gets a
 //! message saying to cast).
 //!
@@ -34,14 +35,15 @@
 //! which for a write means it still commits.
 //!
 //! The password is sent only as a sensitive Basic-auth header, never in a URL, a log line or an
-//! error message.
+//! error message. An explicit `http://` URL to a host that is not this machine sends it in the
+//! clear: the user typed `http`, so it is allowed (like libSQL and Elasticsearch); `rqlite://`
+//! and a bare host use TLS unless the host is exactly loopback.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
-use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -63,7 +65,7 @@ const CATALOG_TIMEOUT_S: u64 = 30;
 /// The unforced count: past this the grid shows no total rather than wait.
 const COUNT_TIMEOUT_MS: u64 = 5_000;
 /// The most reply body read: a bigger result needs a LIMIT.
-const MAX_BODY: usize = 128 << 20;
+const MAX_BODY: usize = 64 << 20;
 /// rqlite's HTTP port, for an address typed without one.
 const DEFAULT_PORT: u16 = 4001;
 const READ_ONLY: &str =
@@ -94,7 +96,7 @@ type Stmt = (String, Vec<Option<String>>);
 struct Reply {
     results: Vec<Item>,
 }
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, Debug)]
 struct Item {
     #[serde(default)]
     columns: Vec<String>,
@@ -123,20 +125,17 @@ fn is_real(decl: &str) -> bool {
     ["real", "floa", "doub"].iter().any(|k| decl.contains(k))
 }
 
-/// A BLOB column's base64 as text or hex; a value that is not base64 is shown as it came.
-fn blob_text(b64: &str) -> String {
-    let e = &base64::engine::general_purpose::STANDARD;
-    e.decode(b64)
-        .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(b64.trim_end_matches('=')))
-        .map_or_else(|_| b64.to_string(), |b| exec::cell_text(&b))
-}
-
 /// One cell as the other SQLite drivers print it. `decl` is the column's declared type.
 fn cell(v: &Value, decl: &str) -> Option<String> {
     match v {
         Value::Null => None,
-        Value::String(t) if decl.contains("blob") => Some(blob_text(t)),
         Value::String(t) => Some(t.clone()),
+        // `blob_array` (see `send`): a BLOB is an array of bytes, so a string is always text, even in
+        // a BLOB-affinity column.
+        Value::Array(a) => {
+            let bytes: Vec<u8> = a.iter().filter_map(|b| b.as_u64().and_then(|b| u8::try_from(b).ok())).collect();
+            Some(exec::cell_text(&bytes))
+        }
         Value::Number(n) => Some(match (n.as_i64(), n.as_u64()) {
             (Some(i), _) if !is_real(decl) => i.to_string(),
             (_, Some(u)) if !is_real(decl) => u.to_string(),
@@ -161,8 +160,13 @@ impl Item {
         self.types.as_ref().and_then(|t| t.get(i)).map_or("", String::as_str)
     }
     fn texts(&self) -> Vec<Vec<Option<String>>> {
+        self.texts_upto(usize::MAX)
+    }
+    /// The first `n` rows as text.
+    fn texts_upto(&self, n: usize) -> Vec<Vec<Option<String>>> {
         self.values
             .iter()
+            .take(n)
             .map(|r| r.iter().enumerate().map(|(i, v)| cell(v, self.decl(i))).collect())
             .collect()
     }
@@ -250,7 +254,7 @@ impl RqliteDriver {
                 Value::Array(v)
             })
             .collect();
-        let path = if ep == Ep::Query { "db/query?level=weak&timings" } else { "db/execute?timings" };
+        let path = if ep == Ep::Query { "db/query?level=weak&timings&blob_array" } else { "db/execute?timings" };
         let url = self.base.join(path).map_err(|e| DriverError::Db(e.to_string()))?;
         let mut rb = self.http.post(url).timeout(timeout).json(&body);
         if !self.user.is_empty() {
@@ -282,13 +286,18 @@ impl RqliteDriver {
         if results.len() != stmts.len() {
             return Err(DriverError::Db("the server returned an incomplete reply".into()));
         }
-        Ok(results
-            .into_iter()
-            .map(|it| match it.error.clone() {
-                Some(e) => Err(self.redact(e.chars().take(2000).collect())),
-                None => Ok(it),
-            })
-            .collect())
+        Ok(results.into_iter().map(|it| self.item_result(it)).collect())
+    }
+
+    /// One statement's outcome: its error text (with the password blanked), or the item.
+    fn item_result(&self, it: Item) -> Result<Item, String> {
+        match it.error.clone() {
+            // The refusal is compared by `run_one`, so it must reach it as the server wrote it
+            // (a password like "query" would otherwise be blanked out of it).
+            Some(e) if e == WRITE_REFUSED => Err(e),
+            Some(e) => Err(self.redact(e.chars().take(2000).collect())),
+            None => Ok(it),
+        }
     }
 
     fn http_error(&self, status: u16, ep: Ep, body: &[u8]) -> String {
@@ -437,7 +446,15 @@ impl RqliteDriver {
                 outs.push(failed(NO_SESSIONS.into()));
                 break;
             }
-            match self.run_one(sql).await? {
+            let one = match self.run_one(sql).await {
+                Ok(one) => one,
+                // A transport failure (timeout, reset) after earlier statements ran: keep their
+                // results and report it on this one, as a SQL error would be. With nothing run
+                // yet it is the call's own error.
+                Err(e) if !outs.is_empty() => Err(e.to_string()),
+                Err(e) => return Err(e),
+            };
+            match one {
                 Err(message) => {
                     outs.push(failed(message));
                     break;
@@ -449,7 +466,7 @@ impl RqliteDriver {
                     let total = r.values.len();
                     let names = exec::dedup_names(&r.columns);
                     let types: Vec<String> = (0..names.len()).map(|i| r.col_type(i)).collect();
-                    let rows: Vec<Vec<Option<String>>> = r.texts().into_iter().take(cap).collect();
+                    let rows: Vec<Vec<Option<String>>> = r.texts_upto(cap);
                     outs.push(StmtOutput {
                         batch: Some(exec::text_batch(&names, &rows)?),
                         columns: names.into_iter().zip(types).collect(),
@@ -745,13 +762,14 @@ mod tests {
         assert_eq!(cell(&n("-0"), "real").as_deref(), Some("0.0"));
         assert_eq!(cell(&json!("é"), "text").as_deref(), Some("é"));
         assert_eq!(cell(&Value::Null, "real"), None);
-        // A BLOB column's base64: UTF-8 reads as text, anything else as hex, empty is empty.
-        assert_eq!(cell(&json!("aGk="), "blob").as_deref(), Some("hi"));
-        assert_eq!(cell(&json!("AP8="), "blob").as_deref(), Some("0x00ff"));
-        assert_eq!(cell(&json!("AP8"), "blob").as_deref(), Some("0x00ff"));
-        assert_eq!(cell(&json!(""), "blob").as_deref(), Some(""));
-        assert_eq!(cell(&json!("aGk="), "text").as_deref(), Some("aGk="), "only a BLOB column is decoded");
-        assert_eq!(cell(&json!("not base64!"), "blob").as_deref(), Some("not base64!"));
+        // A BLOB arrives as an array of bytes (`blob_array`): UTF-8 reads as text, anything else as
+        // hex, empty is empty. A string is text whatever the column's declared type, even one that
+        // happens to be valid base64.
+        assert_eq!(cell(&json!([104, 105]), "blob").as_deref(), Some("hi"));
+        assert_eq!(cell(&json!([0, 255]), "blob").as_deref(), Some("0x00ff"));
+        assert_eq!(cell(&json!([]), "blob").as_deref(), Some(""));
+        assert_eq!(cell(&json!("test"), "blob").as_deref(), Some("test"));
+        assert_eq!(cell(&json!("aGk="), "blob").as_deref(), Some("aGk="));
     }
 
     #[test]
@@ -798,5 +816,77 @@ mod tests {
         assert!(e.contains("redirect") && !e.contains("hunter2") && !e.contains("http://"), "{e}");
         let seen = srv.await.unwrap();
         assert!(seen.starts_with("POST /db/query?level=weak&timings"), "{seen}");
+    }
+
+    fn bare(pass: &str) -> RqliteDriver {
+        RqliteDriver {
+            http: reqwest::Client::new(),
+            base: reqwest::Url::parse("http://127.0.0.1:1/").unwrap(),
+            user: "u".into(),
+            pass: pass.into(),
+            meta: MetaCache::default(),
+        }
+    }
+
+    /// A password that is a word the server's own messages contain must not garble the one text
+    /// `run_one` compares (so the `/db/execute` retry still fires), and still hides itself elsewhere.
+    #[test]
+    fn the_write_refusal_survives_a_password_that_is_one_of_its_words() {
+        let it = |e: &str| Item { error: Some(e.into()), ..Default::default() };
+        for pass in ["query", "a", "via", "base", "change"] {
+            let d = bare(pass);
+            assert_eq!(d.item_result(it(WRITE_REFUSED)).unwrap_err(), WRITE_REFUSED, "{pass}");
+            assert!(!d.item_result(it(&format!("no such table: {pass}"))).unwrap_err().contains(pass), "{pass}");
+        }
+    }
+
+    /// A server that answers the probe and the first statement, then drops the connection.
+    #[tokio::test]
+    async fn a_transport_failure_keeps_the_results_of_the_statements_that_ran() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let n2 = n.clone();
+        tokio::spawn(async move {
+            loop {
+                let (mut c, _) = l.accept().await.unwrap();
+                let n = n2.clone();
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    loop {
+                        let mut chunk = [0u8; 4096];
+                        let Ok(k) = c.read(&mut chunk).await else { return };
+                        if k == 0 {
+                            return;
+                        }
+                        buf.extend_from_slice(&chunk[..k]);
+                        // One request is complete when the body (Content-Length) has arrived.
+                        let Some(h) = buf.windows(4).position(|w| w == b"\r\n\r\n") else { continue };
+                        let head = String::from_utf8_lossy(&buf[..h]).to_lowercase();
+                        let len: usize = head.split("content-length:").nth(1).and_then(|v| v.split_whitespace().next()?.parse().ok()).unwrap_or(0);
+                        if buf.len() < h + 4 + len {
+                            continue;
+                        }
+                        buf.clear();
+                        // Request 1 is the probe, 2 the first statement; from the 3rd on, hang up.
+                        if n.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 2 {
+                            return;
+                        }
+                        let body = br#"{"results":[{"columns":["a"],"types":["integer"],"values":[[1]]}]}"#;
+                        let head = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n", body.len());
+                        c.write_all(head.as_bytes()).await.unwrap();
+                        c.write_all(body).await.unwrap();
+                    }
+                });
+            }
+        });
+        let d = RqliteDriver::connect(&format!("http://127.0.0.1:{port}"), "", "").await.unwrap();
+        let outs = d.run_statements(&["SELECT 1 AS a".into(), "SELECT 2".into(), "SELECT 3".into()], 10, &CancelToken::new()).await.unwrap();
+        assert_eq!(outs.len(), 2, "the failed statement ends the run");
+        assert_eq!(outs[0].row_count, 1);
+        assert!(outs[0].error.is_none() && outs[1].error.is_some());
+        // With nothing run yet, the failure is the call's own.
+        assert!(d.run_statements(&["SELECT 4".into()], 10, &CancelToken::new()).await.is_err());
     }
 }

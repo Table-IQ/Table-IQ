@@ -18,6 +18,7 @@ import {
   REDIS_SHARING_NOTE,
   isMcpEngine,
   maskToken,
+  mcpEmptyNote,
   mcpRowState,
   mcpUrl,
   pruneUnshareable,
@@ -89,6 +90,7 @@ export function McpSettings() {
   const [cfg, setCfg] = useState<McpConfig | null>(null);
   const [status, setStatus] = useState<McpStatus | null>(null);
   const [conns, setConns] = useState<ConnConfig[]>([]);
+  const [savedAll, setSavedAll] = useState<ConnConfig[]>([]);
   const [token, setToken] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -101,6 +103,7 @@ export function McpSettings() {
       .then(([c, s, list]) => {
         setCfg(c);
         setStatus(s);
+        setSavedAll(list);
         setConns(list.filter((x) => isMcpEngine(x.engine)));
         // An entry for a connection that can no longer be shared is dropped, and saved.
         if (pruneUnshareable(c, list) !== c) void apply(c, list);
@@ -200,7 +203,7 @@ export function McpSettings() {
         <p className="text-xs text-muted">
           Agents see only the connections checked here, read-only unless you allow writes.
         </p>
-        {conns.length === 0 && <p className="text-xs text-muted">No connections saved yet.</p>}
+        {conns.length === 0 && <p className="text-xs text-muted">{mcpEmptyNote(savedAll)}</p>}
         <ul className="space-y-0.5">
           {conns.map((c) => {
             // From the saved profile: a compatible product is listed, but cannot be shared.

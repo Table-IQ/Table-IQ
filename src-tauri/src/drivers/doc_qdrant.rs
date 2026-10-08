@@ -16,6 +16,15 @@
 //! unmerged, as `{"_id", "_source": {…}}`. Vectors are left out unless the projection names
 //! `_vector`; then `_vector` is a short summary (`dim=1536 [0.01, 0.02, …]`), never the full vector.
 //!
+//! **Big integers.** A number past ±2^53 (a `u64` point id up to 18446744073709551615, a large
+//! payload counter) is returned as a JSON *string*, `_id` and payload alike: the UI's `JSON.parse`
+//! would round it, so two nearby ids would show as one. (A `has_id` filter takes the number as the
+//! server does; this is only how a value is shown.)
+//!
+//! **Plain http.** An explicit `http://` URL to a host that is not this machine sends the key in
+//! the clear. The user typed `http`, so it is allowed (as for libSQL, rqlite and Elasticsearch);
+//! a bare host uses TLS unless it is exactly loopback.
+//!
 //! **Paging.** Qdrant scrolls by cursor (a point id), the shell pages by `skip`: a skip is walked
 //! server-side with one id-only scroll, up to [`WINDOW`] points. With `order_by` there is no cursor, so
 //! the first `skip + limit` points are fetched and the page cut from them.
@@ -29,7 +38,7 @@ use reqwest::header::{HeaderName, HeaderValue};
 use reqwest::Method;
 use serde_json::{json, Map, Value};
 
-use super::doc_meili::parse_base_as;
+use super::doc_meili::{parse_base_as, pretty};
 use super::clickhouse::net_err;
 use super::{AggResult, DResult, DocChange, DocChangesResult, DocIndex, DocumentDriver, DriverError, FindOpts, CONNECT_TIMEOUT};
 use crate::sql_log::note;
@@ -83,7 +92,7 @@ fn http_error(status: u16, body: &[u8], host: &str) -> DriverError {
     // Qdrant answers 401 to both: a missing key says "Must provide an API key…", a wrong one "Invalid API key or JWT".
     let missing = String::from_utf8_lossy(body).contains("Must provide");
     DriverError::Db(match (status, reason) {
-        (401, _) if missing => "this Qdrant server needs an API key (HTTP 401): enter it as the password".into(),
+        (401, _) if missing => "this Qdrant server needs an API key (HTTP 401): enter it in the API key field".into(),
         (401 | 403, _) => format!("Qdrant rejected the API key (HTTP {status}): it is wrong or expired, or it may not read"),
         (301..=308, _) => format!("{host} redirected the request (HTTP {status}); TableIQ does not follow redirects: connect to the final address"),
         (_, Some(r)) => r,
@@ -262,10 +271,6 @@ fn point_doc(p: &Value) -> Value {
     Value::Object(d)
 }
 
-fn pretty(v: &Value) -> String {
-    serde_json::to_string_pretty(v).unwrap_or_else(|_| "{}".into())
-}
-
 fn version_of(root: &Value) -> Option<(u32, u32)> {
     let mut it = root.get("version")?.as_str()?.split(['.', '-']);
     Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?))
@@ -420,7 +425,7 @@ impl DocumentDriver for QdrantDriver {
             }
             self.scroll(collection, body).await?.0
         };
-        Ok(points.iter().map(|p| pretty(&point_doc(p))).collect())
+        Ok(points.iter().map(|p| pretty(point_doc(p))).collect())
     }
 
     async fn count(&self, collection: &str, filter: &str) -> DResult<u64> {
@@ -497,7 +502,7 @@ impl DocumentDriver for QdrantDriver {
         }
         let truncated = rows.len() > cap;
         rows.truncate(cap);
-        Ok(AggResult { docs: rows.iter().map(pretty).collect(), truncated })
+        Ok(AggResult { docs: rows.into_iter().map(pretty).collect(), truncated })
     }
 
     /// The collection's info as the server reports it: status, point counts, vector config (with
@@ -505,13 +510,21 @@ impl DocumentDriver for QdrantDriver {
     async fn mapping(&self, collection: &str) -> DResult<String> {
         note(&format!("GET /collections/{collection}"));
         let v = self.call(Method::GET, &["collections", collection], None, CLIENT_TIMEOUT).await?;
-        Ok(pretty(v.get("result").unwrap_or(&Value::Null)))
+        Ok(pretty(v.get("result").cloned().unwrap_or(Value::Null)))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_u64_id_and_a_large_payload_integer_reach_the_ui_as_exact_strings() {
+        let p = json!({"id": 18446744073709551615u64, "payload": {"big": 9007199254740993i64, "small": 7}});
+        let t = pretty(point_doc(&p));
+        let back: Value = serde_json::from_str(&t).unwrap();
+        assert_eq!(back, json!({"_id": "18446744073709551615", "big": "9007199254740993", "small": 7}));
+    }
 
     #[test]
     fn the_url_is_normalised_and_its_key_taken_out() {

@@ -8,7 +8,7 @@ import { NO_STAGED, stagedLock, totalStaged, type StagedCounts, type StagedSnaps
 import { cycleSort } from "../lib/tableSort";
 import { buildDocChanges, commitOutcome, failedChanges, type Batch, diffDoc, docCommitError, docStagedCounts, shellScript } from "../lib/docChanges";
 import { cellText, field, has, idKey, isEstimatedSearch, parseDocs, parseObject, parseSearchText, readableError, sameValue, type Doc } from "../lib/docJson";
-import { docPagerLabel, loadDocView, saveDocView, sortKeyOf, sortText, type DocViewKind } from "../lib/docView";
+import { docPagerLabel, loadDocView, showEmptyNote, saveDocView, sortKeyOf, sortText, type DocViewKind } from "../lib/docView";
 import { escapeHtml } from "../lib/sqlHighlightHtml";
 import { type DataGridHandle } from "./DataGrid";
 import { DocTable, JsonDocs, TreeDocs, ViewToggle } from "./DocViews";
@@ -492,6 +492,10 @@ export function DocCollection({ connId, collection, visible, readOnly = false, e
           </div>
         ) : !page ? (
           <div className="p-3 text-xs text-muted">Loading…</div>
+        ) : showEmptyNote(view, noDocs, readOnly) ? (
+          <div className="flex flex-1 items-center justify-center text-sm text-muted">
+            {skip > 0 ? `No ${unit}s after the first ${skip.toLocaleString("en-US")} — lower Skip or go back a page.` : `No ${unit}s.`}
+          </div>
         ) : view === "table" ? (
           <div className={`tiq-dimmable min-h-0 flex-1 ${fetching ? "is-busy" : ""}`}>
             <DocTable
@@ -514,10 +518,6 @@ export function DocCollection({ connId, collection, visible, readOnly = false, e
                 run({ ...draft, sort: next }, 0);
               }}
             />
-          </div>
-        ) : noDocs ? (
-          <div className="flex flex-1 items-center justify-center text-sm text-muted">
-            {skip > 0 ? `No ${unit}s after the first ${skip.toLocaleString("en-US")} — lower Skip or go back a page.` : `No ${unit}s.`}
           </div>
         ) : view === "json" ? (
           <JsonDocs docs={docs} />

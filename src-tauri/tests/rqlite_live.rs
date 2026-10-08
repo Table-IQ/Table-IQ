@@ -95,6 +95,12 @@ async fn connect_probes_the_server_and_the_login_without_leaking_either_secret()
     assert!(m.contains("reader") && m.contains("may not run statements that change data") && !m.contains("readerpw"), "{m}");
     let left = d.run_statements(&[format!("SELECT name FROM sqlite_master WHERE name = '{t}'")], 10, &CancelToken::new()).await.unwrap();
     assert_eq!(left[0].row_count, 0);
+    // A password that is a word of the server's own messages ("query"): the write retry on
+    // /db/execute still happens, and the word is blanked from an error that carries it.
+    let q = RqliteDriver::connect(&auth, "qa", "query").await.expect("qa");
+    let outs = q.run_statements(&[format!("CREATE TABLE {t}_q (a)"), format!("DROP TABLE {t}_q"), "SELECT * FROM nope_query".into()], 10, &CancelToken::new()).await.unwrap();
+    assert!(outs[0].error.is_none() && outs[1].error.is_none(), "{:?}", outs.iter().map(|o| &o.error).collect::<Vec<_>>());
+    assert_eq!(outs[2].error.as_ref().unwrap().message, "no such table: nope_***");
     // The admin may, and the password is in no statement the SQL log saw, nor in an error.
     let log = Arc::new(SqlLog::default());
     init_tracing();
@@ -175,6 +181,14 @@ async fn every_seeded_type_decodes_the_way_the_sqlite_driver_shows_it() {
     assert_eq!(cell(b, "i_max", 0).as_deref(), Some("9223372036854775807"));
     assert_eq!(cell(b, "b", 0).as_deref(), Some("0x00ff10deadbeef"));
     assert_eq!((cell(b, "n", 0), cell(b, "nul", 0)), (None, None));
+    // A BLOB-affinity column holds text and blobs side by side: a string is text even when it is
+    // valid base64 ("test"), a BLOB is bytes (UTF-8 as text, else hex).
+    let bt = format!("tiq_blob_{}", std::process::id());
+    let outs = d.run_statements(&[format!("CREATE TABLE {bt} (id INTEGER PRIMARY KEY, b BLOB)"), format!("INSERT INTO {bt} (b) VALUES ('test'), (x'74657374'), (x'00ff'), (x''), (NULL), ('aGk=')")], 10, &CancelToken::new()).await.unwrap();
+    assert!(outs.iter().all(|o| o.error.is_none()), "{:?}", outs.iter().map(|o| &o.error).collect::<Vec<_>>());
+    let b = page(&d, &bt, 0, 10, &[], &[]).await;
+    assert_eq!(col(&b, "b"), ["test", "test", "0x00ff", "", "NULL", "aGk="]);
+    d.run_statements(&[format!("DROP TABLE {bt}")], 10, &CancelToken::new()).await.unwrap();
     // int64 survives an expression too (no f64 hop), both ends.
     let outs = d.run_statements(&v(&["SELECT 9223372036854775807 AS hi, -9223372036854775808 AS lo, 9007199254740993 AS odd"]), 10, &CancelToken::new()).await.unwrap();
     let b = outs[0].batch.as_ref().unwrap();

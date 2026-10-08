@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { docPagerLabel, docTabs, docViewKey, highlightJson, loadDocView, saveDocView, sortKeyOf, sortText } from "./docView";
+import { showEmptyNote, docPagerLabel, docTabs, docViewKey, highlightJson, loadDocView, saveDocView, sortKeyOf, sortText } from "./docView";
 
 const mem = () => {
   const m = new Map<string, string>();
@@ -72,5 +72,18 @@ describe("sort document <-> header marker", () => {
     expect(sortKeyOf('{"a":{"$meta":"textScore"}}')).toBeNull();
     expect(sortText({ column: "age", desc: true })).toBe('{"age":-1}');
     expect(sortText(null)).toBe("");
+  });
+});
+
+describe("showEmptyNote", () => {
+  it("says 'No documents' in every view on a read-only session, including a blank Table", () => {
+    for (const view of ["table", "json", "tree"] as const) expect(showEmptyNote(view, true, true)).toBe(true);
+  });
+  it("keeps an editable session's empty Table as a grid (a new document is staged there)", () => {
+    expect(showEmptyNote("table", true, false)).toBe(false);
+    expect(showEmptyNote("json", true, false)).toBe(true);
+  });
+  it("never hides documents that are there", () => {
+    expect(showEmptyNote("table", false, true)).toBe(false);
   });
 });

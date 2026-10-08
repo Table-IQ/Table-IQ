@@ -139,7 +139,8 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
   const [touched, setTouched] = useState<Partial<Record<keyof ConnFieldErrors, true>>>({});
   const touch = (k: keyof ConnFieldErrors) => () => setTouched((t) => (t[k] ? t : { ...t, [k]: true }));
   const shown: ConnFieldErrors = {
-    host: touched.host ? errs.host : undefined,
+    // A secret in the URL (a pasted `?api_key=…`) is a bad value, not an empty field: say so at once.
+    host: touched.host || (errs.host && errs.host !== "Required") ? errs.host : undefined,
     port: touched.port || form.port ? errs.port : undefined,
     database: touched.database || form.database ? errs.database : undefined,
   };

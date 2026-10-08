@@ -17,6 +17,11 @@ export interface ParsedConnUrl {
   profile?: string;
 }
 
+/** The default Name for a pasted URL: its database, else its host as a person reads it. A server-URL engine keeps
+ *  the whole URL in `host`, so the scheme and query go: `?api_key=…` would otherwise be saved as the connection's name. */
+export const connNameFor = (p: Pick<ParsedConnUrl, "host" | "database">): string =>
+  p.database || p.host.replace(/^[a-z+]+:\/\//i, "").replace(/[?#].*$/, "").replace(/\/+$/, "") || p.host;
+
 /** SSL spellings (Postgres `sslmode`, MySQL `ssl-mode`) → the form's six modes. */
 const SSL_MODES: Record<string, string> = {
   disable: "disable", disabled: "disable", allow: "allow", prefer: "prefer", preferred: "prefer", require: "require", required: "require",

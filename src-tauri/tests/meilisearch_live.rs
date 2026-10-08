@@ -119,6 +119,33 @@ impl Drop for Scratch {
 }
 
 #[tokio::test]
+async fn integers_past_2_pow_53_arrive_as_exact_strings() {
+    let Some((d, url)) = drv().await else { return };
+    // Primary keys a unit apart (a f64 holds them as one) and large field values.
+    let docs = json!([
+        {"id": 9007199254740993i64, "big": 9223372036854775807i64, "neg": -9223372036854775808i64, "small": 7, "list": [9007199254740995i64, 1]},
+        {"id": 9007199254740994i64, "nested": {"x": 9007199254740993i64}},
+        {"id": 9007199254740992i64, "ok": 9007199254740992i64},
+        {"id": 5, "ok": 1},
+    ]);
+    let s = Scratch::new(&url, "tiq_scratch_bigint", json!({"sortableAttributes": ["small"]}), docs).await;
+    let texts = d.find(s.name, &opts("", "", 0, 10)).await.unwrap();
+    let got = parse(&texts);
+    let by = |id: Value| got.iter().find(|x| x["_id"] == id).unwrap_or_else(|| panic!("no {id}: {texts:?}"));
+    let a = by(json!("9007199254740993"));
+    assert_eq!((a["big"].clone(), a["neg"].clone(), a["small"].clone()), (json!("9223372036854775807"), json!("-9223372036854775808"), json!(7)));
+    assert_eq!(a["list"], json!(["9007199254740995", 1]));
+    assert_eq!(by(json!("9007199254740994"))["nested"], json!({"x": "9007199254740993"}));
+    // 2^53 itself and small values stay numbers; there are four distinct keys.
+    assert_eq!(by(json!(9007199254740992u64))["ok"], json!(9007199254740992u64));
+    assert_eq!(by(json!(5))["ok"], json!(1));
+    assert_eq!(got.len(), 4);
+    // A search reaches the same documents the same way.
+    let hits = parse(&d.find(s.name, &opts(r#"{"q": ""}"#, "", 0, 10)).await.unwrap());
+    assert!(hits.iter().any(|x| x["_id"] == json!("9007199254740993")));
+}
+
+#[tokio::test]
 async fn lists_the_indices_sorted() {
     let Some((d, _)) = drv().await else { return };
     let names = d.list_collections().await.unwrap();

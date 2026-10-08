@@ -2,7 +2,8 @@
 #   rqlite       no auth, on 54001 — seeded with seed.sql (a `_tiq_meta` marker, written last)
 #                TIQ_RQLITE_URL=http://127.0.0.1:54001
 #   rqlite-auth  on 54002: Basic auth from auth.json (throwaway fixtures: `admin`/`adminpw`
-#                may do anything, `reader`/`readerpw` only query), seeded the same way
+#                may do anything, `reader`/`readerpw` only query, and `qa`/`query`, whose password is a word
+#                the server's own messages contain), seeded the same way
 #                TIQ_RQLITE_AUTH_URL=http://127.0.0.1:54002
 # The image has busybox wget but no curl, so the healthcheck is seed.sh. It seeds exactly once and
 # passes only once the marker is there, so `up -d --wait` returns when the data is there and later

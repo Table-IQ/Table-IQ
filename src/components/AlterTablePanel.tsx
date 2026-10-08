@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   generateDdl,
   listObjects,
-  runScript,
+  runDdl,
   type ColumnInfo,
   type ColumnSpec,
   type Engine,
@@ -117,7 +117,7 @@ export function AlterTablePanel({
     if (!sql) return;
     setStatus({ kind: "busy", msg: "Applying…" });
     try {
-      await runScript(connId, sql);
+      await runDdl(connId, engine, sql);
       const refreshed = await listObjects(connId).catch(() => null);
       if (refreshed) updateSession(connId, { schema: refreshed });
       setSql(null);

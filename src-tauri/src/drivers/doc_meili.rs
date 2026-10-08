@@ -18,6 +18,19 @@
 //! named `_id` or `_rankingScore` is returned unmerged, as `{"_id", "_source": {…}}`. (A search
 //! hit's own `_rankingScore` cannot be told from the server's: the server's wins.)
 //!
+//! **Big integers.** A number past ±2^53 (a 64-bit id or counter) is returned as a JSON *string*,
+//! in the key and the fields alike: the UI's `JSON.parse` would round it. (A filter takes the
+//! number as the server does; this is only how a value is shown.)
+//!
+//! **Search window.** A search stops at `maxTotalHits`. A page that starts past it is an empty
+//! reply and errors with that cap in the message; a page that *straddles* it (skip 900, limit 200
+//! with a cap of 1000) is returned short, 100 hits, with no hint: `find` has no channel for a
+//! notice beside the documents. Use a filter, or page inside the cap.
+//!
+//! **Plain http.** An explicit `http://` URL to a host that is not this machine sends the key in
+//! the clear. The user typed `http`, so it is allowed (as for libSQL, rqlite and Elasticsearch);
+//! a bare host uses TLS unless it is exactly loopback.
+//!
 //! **Counts** are exact without a `q` (index stats, or the documents fetch under a filter) and
 //! the search's `estimatedTotalHits` with one. The aggregate pane runs a `limit: 0` search with
 //! `facets`; each facet value becomes one row.
@@ -126,7 +139,7 @@ const KEY_NEEDS: &str = "search, documents.get, indexes.get, settings.get, stats
 fn http_error(status: u16, body: &[u8], host: &str) -> DriverError {
     let reason = serde_json::from_slice::<Value>(body).ok().and_then(|v| v.get("message")?.as_str().map(String::from));
     DriverError::Db(match (status, reason) {
-        (401, _) => "this Meilisearch server needs an API key (HTTP 401): enter the master key, or a key that can read, as the password".into(),
+        (401, _) => "this Meilisearch server needs an API key (HTTP 401): enter the master key, or a key that can read, in the API key field".into(),
         (403, _) => format!("Meilisearch rejected the API key (HTTP 403): it is wrong or expired, or it lacks one of the permissions a browser needs ({KEY_NEEDS})"),
         (301..=308, _) => format!("{host} redirected the request (HTTP {status}); TableIQ does not follow redirects: connect to the final address"),
         (_, Some(r)) => r,
@@ -163,7 +176,20 @@ fn sort_value(v: Value) -> DResult<Option<Value>> {
 }
 
 fn sort_of(text: &str) -> DResult<Option<Value>> {
-    if text.trim().is_empty() { Ok(None) } else { sort_value(json_in("sort", text)?) }
+    let t = text.trim();
+    if t.is_empty() {
+        return Ok(None);
+    }
+    // `rating:desc, year:asc` as typed is the same list as `["rating:desc","year:asc"]`.
+    if !t.starts_with(['[', '{']) {
+        let parts = t.split(',').map(str::trim).filter(|p| !p.is_empty());
+        let ok = |p: &str| p.rsplit_once(':').is_some_and(|(a, d)| !a.is_empty() && matches!(d, "asc" | "desc"));
+        return parts
+            .map(|p| if ok(p) { Ok(json!(p)) } else { Err(bad("sort", "must look like rating:desc, year:asc")) })
+            .collect::<DResult<Vec<_>>>()
+            .map(|a| Some(Value::Array(a)));
+    }
+    sort_value(json_in("sort", text)?)
 }
 
 /// The projection box → the fields to retrieve: a list of names, or the Mongo-style
@@ -262,8 +288,26 @@ fn facet_rows(asked: &[String], dist: &Map<String, Value>, stats: Option<&Map<St
     out
 }
 
-fn pretty(v: &Value) -> String {
-    serde_json::to_string_pretty(v).unwrap_or_else(|_| "{}".into())
+/// Every integer past ±2^53 as a string, in place. The UI reads a document with `JSON.parse`, which
+/// would round such a number (two ids a few apart would show as one); a string keeps every digit.
+pub(super) fn big_ints_as_strings(v: &mut Value) {
+    const EXACT: u64 = 1 << 53;
+    match v {
+        Value::Number(n) => {
+            if n.as_u64().is_some_and(|u| u > EXACT) || n.as_i64().is_some_and(|i| i.unsigned_abs() > EXACT) {
+                *v = Value::String(n.to_string());
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(big_ints_as_strings),
+        Value::Object(o) => o.values_mut().for_each(big_ints_as_strings),
+        _ => {}
+    }
+}
+
+/// A document or reply as the text the UI parses (see [`big_ints_as_strings`]).
+pub(super) fn pretty(mut v: Value) -> String {
+    big_ints_as_strings(&mut v);
+    serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".into())
 }
 
 fn group(n: u64) -> String {
@@ -440,7 +484,7 @@ impl DocumentDriver for MeiliDriver {
             return Err(self.window_message(collection).await);
         }
         let scored = searching && !spec.q.is_empty();
-        Ok(hits.iter().map(|h| pretty(&hit_doc(h, pk.as_deref(), keep_pk, scored))).collect())
+        Ok(hits.iter().map(|h| pretty(hit_doc(h, pk.as_deref(), keep_pk, scored))).collect())
     }
 
     async fn count(&self, collection: &str, filter: &str) -> DResult<u64> {
@@ -511,14 +555,14 @@ impl DocumentDriver for MeiliDriver {
         let mut rows = facet_rows(&asked, dist, v.get("facetStats").and_then(Value::as_object));
         let truncated = rows.len() > cap;
         rows.truncate(cap);
-        Ok(AggResult { docs: rows.iter().map(pretty).collect(), truncated })
+        Ok(AggResult { docs: rows.into_iter().map(pretty).collect(), truncated })
     }
 
     /// The index's settings plus what the stats say about its fields: `{"primaryKey", "numberOfDocuments",
     /// "fieldDistribution", "settings"}`.
     async fn mapping(&self, collection: &str) -> DResult<String> {
         let (index, settings, stats) = tokio::try_join!(self.get(collection, &[]), self.get(collection, &["settings"]), self.get(collection, &["stats"]))?;
-        Ok(pretty(&json!({
+        Ok(pretty(json!({
             "primaryKey": index.get("primaryKey"),
             "numberOfDocuments": stats.get("numberOfDocuments"),
             "fieldDistribution": stats.get("fieldDistribution"),
@@ -529,7 +573,33 @@ impl DocumentDriver for MeiliDriver {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_plain_sort_is_a_list() {
+        assert_eq!(super::sort_of("rating:desc, year:asc").unwrap(), Some(serde_json::json!(["rating:desc", "year:asc"])));
+        assert_eq!(super::sort_of("  ").unwrap(), None);
+    }
+
     use super::*;
+
+    #[test]
+    fn integers_past_2_pow_53_become_strings_and_nothing_else_changes() {
+        let mut v: Value = serde_json::from_str(
+            r#"{"id":18446744073709551615,"n":[9007199254740993,-9007199254740993,-9223372036854775808],
+                "ok":[9007199254740992,-9007199254740992,0,1.5,1e300,"x",null,true],"deep":{"u":9007199254740994}}"#,
+        )
+        .unwrap();
+        big_ints_as_strings(&mut v);
+        assert_eq!(
+            v,
+            json!({"id":"18446744073709551615","n":["9007199254740993","-9007199254740993","-9223372036854775808"],
+                   "ok":[9007199254740992i64,-9007199254740992i64,0,1.5,1e300,"x",null,true],"deep":{"u":"9007199254740994"}})
+        );
+        // Two close ids stay two values in the text the UI parses.
+        let a = pretty(json!({"_id": 18446744073709551614u64}));
+        let b = pretty(json!({"_id": 18446744073709551615u64}));
+        assert_ne!(a, b);
+        assert!(b.contains("\"18446744073709551615\""), "{b}");
+    }
 
     #[test]
     fn the_url_is_normalised_and_its_key_taken_out() {

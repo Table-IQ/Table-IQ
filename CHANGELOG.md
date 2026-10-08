@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.8 — 2026-10-09
+
+Three more read-only engines over HTTP, again with no new crate: rqlite, Meilisearch and Qdrant. None of them can be shared with agents over MCP.
+
+### Added
+- **rqlite** (distributed SQLite) over its HTTP API: a server URL with optional user and password. Browse, page (rowid and `WITHOUT ROWID` keysets), run SQL. The grid is read-only. Statements run one request at a time, because rqlite has no cross-request transactions, so `BEGIN`/`COMMIT` are refused with advice; a write the editor sends is retried on the write endpoint only when the server says the read endpoint refused it. A user with only the query permission can connect.
+- **Meilisearch** in the document shell: indices with document counts, a filter box that takes plain text (the search query) or a JSON object with `q`, `filter`, `sort`, `matchingStrategy` and `facets`, projection, exact counts without a query, a message when a search runs past `maxTotalHits`, a Settings tab and a facet pane. The API key goes in the password field.
+- **Qdrant** in the document shell: collections and points with exact counts, Qdrant filter JSON, `order_by`, payload projection with an optional vector summary, a Mapping tab with the collection info, and a payload facet pane. Paging walks the scroll cursor up to 10,000 points. The API key goes in the password field.
+- Big integers (past 2^53) in Qdrant ids and Meilisearch fields show exactly, as strings.
+- **Live tests and CI:** rqlite (open and with auth), Meilisearch and Qdrant in `docker/`, run by the `http-engines` job, which now also has a timeout.
+
+### Not included
+- Writes and transactions, similarity search, agent access, and a private CA for HTTPS servers. An explicit `http://` URL to a remote host sends credentials unencrypted, as with the other HTTP engines.
+
 ## 0.8.7 — 2026-10-08
 
 Three new read-only engines over HTTP, with no new crate: ClickHouse, Turso (libSQL) and Elasticsearch. None of them can be shared with agents over MCP.
