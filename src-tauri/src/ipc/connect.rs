@@ -16,7 +16,7 @@ use crate::connections::{self, ConnConfig, ConnStore};
 use crate::lk;
 use crate::profiles;
 use crate::drivers::{
-    clickhouse::ClickHouseDriver, doc_elastic::ElasticDriver, doc_meili::MeiliDriver, doc_mongo::MongoDriver, doc_qdrant::QdrantDriver, duckdb::DuckDriver, kv_redis::RedisDriver, libsql::LibsqlDriver, logged::Logged, mysql::MySqlDriver, rqlite::RqliteDriver,
+    clickhouse::ClickHouseDriver, doc_elastic::ElasticDriver, doc_meili::MeiliDriver, doc_mongo::MongoDriver, doc_qdrant::QdrantDriver, duckdb::DuckDriver, influxdb::InfluxDriver, kv_redis::RedisDriver, libsql::LibsqlDriver, logged::Logged, mysql::MySqlDriver, rqlite::RqliteDriver,
     postgres::PgDriver, sqlite::SqliteDriver, sqlserver::SqlServerDriver, CancelToken, Change,
     AggResult, ChangesResult, ColumnFilter, DocChange, DocChangesResult, DocIndex, DocumentDriver, DriverError, EditSpec, FindOpts,
     KeyInfo, KeyPage, KvChange, KvChangesResult, KvDriver, KvRead, KvReadOpts, KvReply, KvValue, SchemaModel,
@@ -105,7 +105,7 @@ async fn maybe_open_tunnel(
         _ => return Ok((cfg.clone(), None)),
     };
     // The tunnel's local end is plain TCP to a URL's host, which TLS would then not match.
-    if matches!(cfg.engine.as_str(), "libsql" | "elasticsearch" | "rqlite" | "meilisearch" | "qdrant") {
+    if matches!(cfg.engine.as_str(), "libsql" | "elasticsearch" | "rqlite" | "meilisearch" | "qdrant" | "influxdb") {
         return Err(format!(
             "A {} connection can't be combined with an SSH tunnel",
             match cfg.engine.as_str() {
@@ -113,6 +113,7 @@ async fn maybe_open_tunnel(
                 "rqlite" => "rqlite",
                 "meilisearch" => "Meilisearch",
                 "qdrant" => "Qdrant",
+                "influxdb" => "InfluxDB",
                 _ => "Elasticsearch",
             }
         ));
@@ -182,6 +183,10 @@ async fn open_driver(cfg: &ConnConfig, pw: &str) -> Result<Arc<dyn SqlDriver>, S
     // rqlite likewise: the login is a Basic-auth header, apart from the URL.
     if cfg.engine == "rqlite" {
         return Ok(Arc::new(RqliteDriver::connect(&cfg.host, &cfg.username, pw).await.map_err(|e| e.to_string())?));
+    }
+    // InfluxDB 3 likewise: the token is a Bearer header; the database is the connection's own field.
+    if cfg.engine == "influxdb" {
+        return Ok(Arc::new(InfluxDriver::connect(&cfg.host, &cfg.database, pw).await.map_err(|e| e.to_string())?));
     }
     let url = cfg.url_with_password(pw);
     let drv: Arc<dyn SqlDriver> = match cfg.engine.as_str() {
@@ -1246,7 +1251,7 @@ fn refuse_unsafe_literals(safe: bool) -> Result<(), String> {
     Err("Import is not available on this connection: the server did not turn on standard_conforming_strings, so TableIQ cannot quote text safely. Load the data with the server's own import tool.".to_string())
 }
 
-/// ClickHouse, Turso and rqlite are read-only browsers here. ClickHouse: a MergeTree has no transactions
+/// ClickHouse, Turso, rqlite and InfluxDB are read-only browsers here. ClickHouse: a MergeTree has no transactions
 /// to make a partial import safe to roll back, and CREATE TABLE needs an ENGINE the importer does
 /// not choose. Turso and rqlite: the driver refuses every write, and an HTTP session holds no transaction.
 fn refuse_import(engine: &str) -> Result<(), String> {
@@ -1254,6 +1259,7 @@ fn refuse_import(engine: &str) -> Result<(), String> {
         "clickhouse" => Err("Import is not supported for ClickHouse: load the data with INSERT ... SELECT or clickhouse-client".to_string()),
         "libsql" => Err("Import is not supported for Turso: load the data with the turso CLI or INSERT statements in a query tab".to_string()),
         "rqlite" => Err("Import is not supported for rqlite: load the data with rqlite's own /db/load or INSERT statements in a query tab".to_string()),
+        "influxdb" => Err("Import is not supported for InfluxDB: write points as line protocol (POST /api/v3/write_lp or the influxdb3 CLI)".to_string()),
         _ => Ok(()),
     }
 }
@@ -2545,6 +2551,7 @@ async fn backup_inner(
         "clickhouse" => Err("ClickHouse backup is not supported".into()),
         "libsql" => Err("Turso backup is not supported: use `turso db shell … .dump`".into()),
         "rqlite" => Err("rqlite backup is not supported: use rqlite's own GET /db/backup".into()),
+        "influxdb" => Err("InfluxDB backup is not supported: copy the server's data directory or object store".into()),
         _ => Err("Backup is not supported for this engine".into()),
     }
 }
@@ -2696,6 +2703,7 @@ async fn restore_inner(
         "clickhouse" => Err("ClickHouse restore is not supported".into()),
         "libsql" => Err("Turso restore is not supported".into()),
         "rqlite" => Err("rqlite restore is not supported: use rqlite's own POST /db/load".into()),
+        "influxdb" => Err("InfluxDB restore is not supported: write points as line protocol (POST /api/v3/write_lp)".into()),
         _ => Err("Restore is not supported for this engine".into()),
     }
 }

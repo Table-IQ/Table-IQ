@@ -100,7 +100,8 @@ export type Engine =
   | "elasticsearch"
   | "rqlite"
   | "meilisearch"
-  | "qdrant";
+  | "qdrant"
+  | "influxdb";
 export interface ConnConfig {
   id: string;
   name: string;
@@ -681,6 +682,8 @@ export async function listDatabases(id: string): Promise<string[]> {
         return ["admin", "tableiq", "local"];
       case "clickhouse":
         return ["default", "tableiq"];
+      case "influxdb":
+        return ["tiq", "tiq_other"];
       case "elasticsearch":
       case "meilisearch":
       case "qdrant":

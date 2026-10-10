@@ -238,6 +238,18 @@ describe("Meilisearch", () => {
   });
 });
 
+describe("InfluxDB", () => {
+  it("is a read-only browser: no transactions, backup, users or agents, and port 8181", () => {
+    expect(capsOf("influxdb")).toEqual({ transactions: false, backup: false, userMgmt: false, agents: false });
+    expect(presetFor("influxdb", null)).toEqual({ port: 8181, username: "", database: "", sslmode: "prefer" });
+  });
+  it("draws an indigo fill that is legible under its white monogram and visible on the dark surface", () => {
+    expect(ENGINE_MONOGRAMS.influxdb).toBe("In");
+    expect(contrast("#ffffff", ENGINE_COLORS.influxdb)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(ENGINE_COLORS.influxdb, "#15171c")).toBeGreaterThanOrEqual(2);
+  });
+});
+
 describe("Qdrant", () => {
   it("is a read-only browser: no transactions, backup, users or agents, and port 6333", () => {
     expect(capsOf("qdrant")).toEqual({ transactions: false, backup: false, userMgmt: false, agents: false });

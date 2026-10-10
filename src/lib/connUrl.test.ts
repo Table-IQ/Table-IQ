@@ -441,6 +441,42 @@ describe("Qdrant URLs", () => {
   });
 });
 
+describe("InfluxDB URLs", () => {
+  it("claims influxdb:// and http(s) on 8181 only", () => {
+    expect(looksLikeConnUrl("influxdb://h:8181")).toBe(true);
+    expect(looksLikeConnUrl("http://127.0.0.1:8181")).toBe(true);
+    expect(looksLikeConnUrl("https://:tok@influx.example.com:8181/mydb")).toBe(true);
+    expect(looksLikeConnUrl("https://influx.example.com")).toBe(false); // plain https is not ours to claim
+    expect(looksLikeConnUrl("http://localhost:8182")).toBe(false);
+    expect(parseConnUrl("http://localhost:8123")?.engine).toBe("clickhouse"); // still ClickHouse's
+  });
+  it("a pasted URL keeps its host as typed, moves the token to the password and the first path segment to the database", () => {
+    expect(parseConnUrl("http://:apiv3_t%40k@127.0.0.1:8181/mydb")).toEqual({
+      engine: "influxdb", host: "http://127.0.0.1:8181", port: 8181, username: "", password: "apiv3_t@k", database: "mydb",
+    });
+    expect(parseConnUrl("https://apiv3_abc@influx.example.com:8181")).toMatchObject({ host: "https://influx.example.com:8181", username: "", password: "apiv3_abc", database: "" });
+    expect(parseConnUrl("influxdb://h:8181")).toMatchObject({ engine: "influxdb", host: "influxdb://h:8181", username: "", password: "", database: "" });
+    expect(parseConnUrl("influxdb://h:8181/a%20b/ignored")).toMatchObject({ host: "influxdb://h:8181", database: "a b" });
+  });
+  it("a token typed into the URL host is moved out before it can be saved", () => {
+    const cfg = (host: string, username = "") => ({ engine: "influxdb", host, username });
+    expect(normalizeUrlSecrets(cfg("influxdb://:s3cret@h:8181"), "")).toEqual({ host: "influxdb://h:8181", username: "", password: "s3cret" });
+    expect(normalizeUrlSecrets(cfg("s3cret@h:8181"), "")).toEqual({ host: "h:8181", username: "", password: "s3cret" });
+    expect(normalizeUrlSecrets(cfg("http://127.0.0.1:8181", "u"), "kept")).toEqual({ host: "http://127.0.0.1:8181", username: "u", password: "kept" });
+  });
+  it("needs no port, refuses a token in the query, and copies as a URL without credentials", () => {
+    const cfg = { engine: "influxdb" as const, host: "http://127.0.0.1:8181", port: 0, database: "" };
+    expect(validateConn(cfg)).toEqual({});
+    expect(validateConn({ ...cfg, host: " " })).toEqual({ host: "Required" });
+    for (const name of ["token", "api_key", "apiKey", "key", "access_token"]) expect(validateConn({ ...cfg, host: `influxdb://h?${name}=x` }).host).toContain(name);
+    expect(isUrlHost("influxdb", "localhost")).toBe(true);
+    expect(toConnUrl({ ...cfg, port: 8181, username: "", sslmode: "prefer" })).toBe("http://127.0.0.1:8181");
+    expect(toConnUrl({ ...cfg, host: "in.example.com:8181", port: 8181, username: "", sslmode: "prefer" })).toBe("influxdb://in.example.com:8181");
+    expect(toConnUrl({ ...cfg, database: "my db", port: 8181, username: "", sslmode: "prefer" })).toBe("http://127.0.0.1:8181/my%20db");
+    expect(toConnUrl({ ...cfg, host: "http://h:8181/?x=1", database: "d", port: 8181, username: "", sslmode: "prefer" })).toBe("http://h:8181/d?x=1");
+  });
+});
+
 describe("connNameFor", () => {
   it("names a pasted connection by its database, else by its host without scheme, query or trailing slash", () => {
     expect(connNameFor(parseConnUrl("postgres://u@db.example.com/shop")!)).toBe("shop");
@@ -450,5 +486,6 @@ describe("connNameFor", () => {
   it("never lets a key in the query become the name", () => {
     expect(connNameFor(parseConnUrl("meilisearch://127.0.0.1:7700?api_key=s3cret")!)).toBe("127.0.0.1:7700");
     expect(connNameFor(parseConnUrl("qdrant://h:6333?api-key=s3cret")!)).toBe("h:6333");
+    expect(connNameFor(parseConnUrl("influxdb://h:8181?token=s3cret")!)).toBe("h:8181");
   });
 });

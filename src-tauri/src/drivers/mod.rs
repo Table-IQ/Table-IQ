@@ -17,6 +17,7 @@ pub mod doc_mongo;
 pub mod doc_qdrant;
 pub mod duckdb;
 pub mod exec;
+pub mod influxdb;
 pub mod kv_redis;
 pub mod libsql;
 pub mod logged;

@@ -287,7 +287,7 @@ Lives in [src/components/ui/EngineIcon.tsx](src/components/ui/EngineIcon.tsx).
 TablePlus-style 2-letter monogram circle (not square tile, not avatar): flat
 engine colour fill + an inset 1px white-on-top / black-on-bottom highlight that
 reads as glass depth. Used everywhere a connection is identified (welcome list,
-⌘O picker). Sizes: sm 16 / md 22 / lg 32 / xl 44. Monograms: Pg, My, Sq, Dk, Re, Mo, Ms, Ch, Tu (Turso / libSQL, teal `#0f766e`), Es (Elasticsearch / OpenSearch, blue `#0b6e99`), Me (Meilisearch, violet `#6d28d9`), Qr (Qdrant, red `#dc244c`).
+⌘O picker). Sizes: sm 16 / md 22 / lg 32 / xl 44. Monograms: Pg, My, Sq, Dk, Re, Mo, Ms, Ch, Tu (Turso / libSQL, teal `#0f766e`), Es (Elasticsearch / OpenSearch, blue `#0b6e99`), Me (Meilisearch, violet `#6d28d9`), Qr (Qdrant, red `#dc244c`), In (InfluxDB 3, indigo `#4f46e5`).
 
 A connection saved as a wire-compatible product (a **profile**: TiDB, CockroachDB, Neon, …)
 takes its monogram and fill from [src/lib/profiles.json](src/lib/profiles.json), the one table

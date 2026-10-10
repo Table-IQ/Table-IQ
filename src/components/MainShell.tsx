@@ -103,7 +103,7 @@ import { loadPins, savePins, livePins } from "../lib/pins";
  *  `public`, which is never what the user meant. */
 function defaultSchema(names: string[], preferred?: string | null): string | undefined {
   if (preferred && names.includes(preferred)) return preferred;
-  return ["public", "dbo", "main"].find((n) => names.includes(n)) ?? names[0];
+  return ["public", "dbo", "main", "iox"].find((n) => names.includes(n)) ?? names[0];
 }
 
 function findObject(
@@ -643,7 +643,7 @@ export function MainShell() {
         },
       );
     }
-    if (engine !== "sqlite" && engine !== "libsql" && engine !== "rqlite") {
+    if (engine !== "sqlite" && engine !== "libsql" && engine !== "rqlite" && engine !== "influxdb") {
       items.push({
         id: "n-schema",
         label: engine === "mysql" || engine === "clickhouse" ? "New Database…" : "New Schema…",
@@ -655,8 +655,8 @@ export function MainShell() {
           ),
       });
     }
-    // DuckDB has schemas but no roles or users; Turso and rqlite have neither schemas nor roles.
-    if (engine !== "sqlite" && engine !== "duckdb" && engine !== "libsql" && engine !== "rqlite") {
+    // DuckDB has schemas but no roles or users; Turso and rqlite have neither schemas nor roles; InfluxDB's schemas are the server's own and it has no roles.
+    if (engine !== "sqlite" && engine !== "duckdb" && engine !== "libsql" && engine !== "rqlite" && engine !== "influxdb") {
       items.push({
         id: "n-group",
         label: "New Group / Role…",

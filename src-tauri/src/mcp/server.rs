@@ -329,6 +329,7 @@ fn allowed(host: &dyn Host, cfg: &McpConfig, id: &str) -> Result<(ConnConfig, Mc
             "elasticsearch" => " Elasticsearch is not available over MCP yet: TableIQ's agent guard has not been reviewed for it.",
             "meilisearch" => " Meilisearch is not available over MCP yet: TableIQ's agent guard has not been reviewed for it.",
             "qdrant" => " Qdrant is not available over MCP yet: TableIQ's agent guard has not been reviewed for it.",
+            "influxdb" => " InfluxDB is not available over MCP yet: TableIQ's agent guard has not been reviewed for it.",
             _ => "",
         };
         return Err(format!("Connection `{id}` is not a SQL connection.{hint}"));
@@ -2012,6 +2013,17 @@ mod tests {
         assert!(m.list_databases(Extensions::new(), Parameters(ConnArgs { connection_id: "qd".into() })).await.is_err());
         let listed = m.list_connections(Extensions::new()).await.unwrap();
         assert!(!listed.contains("qdrant"), "{listed}");
+    }
+
+    /// InfluxDB 3, the same: refused before anything connects, and never listed.
+    #[tokio::test]
+    async fn an_influxdb_connection_is_refused_and_unlisted() {
+        let m = mcp(vec![cfg_of("in", "influxdb", "http://127.0.0.1:8181")], &[("in", true)]);
+        let e = query(&m, "in", "SELECT 1").await.unwrap_err();
+        assert!(e.contains("not a SQL connection") && e.contains("not available over MCP"), "{e}");
+        assert!(m.list_databases(Extensions::new(), Parameters(ConnArgs { connection_id: "in".into() })).await.is_err());
+        let listed = m.list_connections(Extensions::new()).await.unwrap();
+        assert!(!listed.contains("influxdb"), "{listed}");
     }
 
     #[tokio::test(flavor = "multi_thread")]

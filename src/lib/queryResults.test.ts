@@ -207,6 +207,12 @@ describe("explainStatement on Turso", () => {
   });
 });
 
+describe("explainStatement on InfluxDB", () => {
+  it("is DataFusion's plain EXPLAIN, which answers as rows", () => {
+    expect(explainStatement("SELECT 1;", "influxdb")).toBe("EXPLAIN SELECT 1");
+  });
+});
+
 describe("explainStatement on rqlite", () => {
   it("is SQLite's QUERY PLAN", () => {
     expect(explainStatement("SELECT 1;", "rqlite")).toBe("EXPLAIN QUERY PLAN SELECT 1");

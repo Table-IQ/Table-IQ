@@ -98,8 +98,8 @@ export function mcpRowState(conn: Pick<ConnConfig, "engine" | "profile">, shared
           ? "Not available over MCP yet: TableIQ's agent guard has not been reviewed for Elasticsearch."
           : conn.engine === "rqlite"
             ? "Not available over MCP yet: TableIQ's agent guard has not been reviewed for rqlite."
-            : conn.engine === "meilisearch" || conn.engine === "qdrant"
-              ? `Not available over MCP yet: TableIQ's agent guard has not been reviewed for ${conn.engine === "qdrant" ? "Qdrant" : "Meilisearch"}.`
+            : conn.engine === "meilisearch" || conn.engine === "qdrant" || conn.engine === "influxdb"
+              ? `Not available over MCP yet: TableIQ's agent guard has not been reviewed for ${conn.engine === "qdrant" ? "Qdrant" : conn.engine === "influxdb" ? "InfluxDB" : "Meilisearch"}.`
               : `Not available over MCP: this connection's profile (${conn.profile}) was saved by a newer TableIQ. Update TableIQ to manage it.`;
   return { shareable: false, shared: false, writes: false, writable: false, note };
 }

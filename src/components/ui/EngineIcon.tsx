@@ -28,6 +28,7 @@ export const ENGINE_COLORS: Record<Engine, string> = {
   rqlite: "#be185d",
   meilisearch: "#6d28d9",
   qdrant: "#dc244c",
+  influxdb: "#4f46e5",
 };
 
 export const ENGINE_MONOGRAMS: Record<Engine, string> = {
@@ -44,6 +45,7 @@ export const ENGINE_MONOGRAMS: Record<Engine, string> = {
   rqlite: "Rq",
   meilisearch: "Me",
   qdrant: "Qr",
+  influxdb: "In",
 };
 
 export const ENGINE_LABELS: Record<Engine, string> = {
@@ -60,6 +62,7 @@ export const ENGINE_LABELS: Record<Engine, string> = {
   rqlite: "rqlite",
   meilisearch: "Meilisearch",
   qdrant: "Qdrant",
+  influxdb: "InfluxDB",
 };
 
 export function EngineIcon({

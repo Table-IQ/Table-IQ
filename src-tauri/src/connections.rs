@@ -104,6 +104,8 @@ impl ConnConfig {
             "meilisearch" => self.host.clone(),
             // Qdrant too: the server URL as typed; the API key travels as the `api-key` header.
             "qdrant" => self.host.clone(),
+            // InfluxDB 3 too: the server URL as typed; the token travels as a Bearer header.
+            "influxdb" => self.host.clone(),
             // The HTTP interface: TLS (https, verified) for every SSL mode that asks for it.
             "clickhouse" => format!(
                 "{}://{}:{}@{}:{}/{}",
@@ -622,6 +624,25 @@ pub(crate) mod tests {
             ssh: None,
         };
         assert_eq!(cfg.url_with_password("s3cret"), "http://127.0.0.1:6333");
+    }
+
+    #[test]
+    fn influxdb_url_is_the_host_as_typed_and_never_carries_the_token() {
+        let cfg = ConnConfig {
+            env: None,
+            profile: None,
+            id: "x".into(),
+            name: "x".into(),
+            color: None,
+            engine: "influxdb".into(),
+            host: "http://127.0.0.1:8181".into(),
+            port: 8181,
+            database: "mydb".into(),
+            username: String::new(),
+            sslmode: "prefer".into(),
+            ssh: None,
+        };
+        assert_eq!(cfg.url_with_password("apiv3_s3cret"), "http://127.0.0.1:8181");
     }
 
     #[test]

@@ -27,6 +27,7 @@ impl Dialect {
             "sqlserver" => Dialect::SqlServer,
             "duckdb" => Dialect::DuckDb,
             "clickhouse" => Dialect::ClickHouse,
+            // Everything else, InfluxDB 3 too (DataFusion SQL, read-only here): Postgres quoting.
             _ => Dialect::Postgres,
         }
     }

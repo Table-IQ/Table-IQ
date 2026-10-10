@@ -4,11 +4,11 @@ import { DEFAULT_PORT, PROFILES, profileForUrl } from "./profiles";
 const SCHEME_ENGINE: Record<string, Engine> = {
   postgres: "postgres", postgresql: "postgres", mysql: "mysql",
   sqlserver: "sqlserver", mssql: "sqlserver", redis: "redis", rediss: "redis",
-  mongodb: "mongodb", "mongodb+srv": "mongodb", sqlite: "sqlite", duckdb: "duckdb", clickhouse: "clickhouse", libsql: "libsql", elasticsearch: "elasticsearch", rqlite: "rqlite", meilisearch: "meilisearch", qdrant: "qdrant",
+  mongodb: "mongodb", "mongodb+srv": "mongodb", sqlite: "sqlite", duckdb: "duckdb", clickhouse: "clickhouse", libsql: "libsql", elasticsearch: "elasticsearch", rqlite: "rqlite", meilisearch: "meilisearch", qdrant: "qdrant", influxdb: "influxdb",
 };
 const ENGINE_SCHEME: Record<Engine, string> = {
   postgres: "postgres", mysql: "mysql", sqlserver: "sqlserver", redis: "redis",
-  mongodb: "mongodb", sqlite: "sqlite", duckdb: "duckdb", clickhouse: "http", libsql: "libsql", elasticsearch: "https", rqlite: "rqlite", meilisearch: "meilisearch", qdrant: "qdrant",
+  mongodb: "mongodb", sqlite: "sqlite", duckdb: "duckdb", clickhouse: "http", libsql: "libsql", elasticsearch: "https", rqlite: "rqlite", meilisearch: "meilisearch", qdrant: "qdrant", influxdb: "influxdb",
 };
 
 export interface ParsedConnUrl {
@@ -65,10 +65,14 @@ const isMeiliHttp = (sc: string | undefined, rest: string): boolean =>
 const isQdrantHttp = (sc: string | undefined, rest: string): boolean =>
   (sc === "http" || sc === "https") && /^[^/?@]*@?[^/?@]*:6333(?:[/?]|$)/.test(rest);
 
+/** `http(s)://host:8181/…`: InfluxDB 3's HTTP port. Only that port is claimed; any other http URL is not ours. */
+const isInfluxHttp = (sc: string | undefined, rest: string): boolean =>
+  (sc === "http" || sc === "https") && /^[^/?@]*@?[^/?@]*:8181(?:[/?]|$)/.test(rest);
+
 export function looksLikeConnUrl(s: string): boolean {
   const sc = scheme(s);
   const rest = s.trim().replace(/^[a-z+]+:\/\//i, "");
-  return !!sc && (sc in SCHEME_ENGINE || profileForUrl(sc, "", null) !== null || isClickHouseHttp(sc, rest) || isElasticHttp(sc, rest) || isRqliteHttp(sc, rest) || isMeiliHttp(sc, rest) || isQdrantHttp(sc, rest));
+  return !!sc && (sc in SCHEME_ENGINE || profileForUrl(sc, "", null) !== null || isClickHouseHttp(sc, rest) || isElasticHttp(sc, rest) || isRqliteHttp(sc, rest) || isMeiliHttp(sc, rest) || isQdrantHttp(sc, rest) || isInfluxHttp(sc, rest));
 }
 
 /** Engines whose connection can keep its whole URL in `host`. */
@@ -102,9 +106,10 @@ export const isMongoUrlHost = (host: string): boolean => URL_HOST.mongodb.test(h
 
 /** Engines whose server is one URL kept whole in `host`, with no port beside it: Turso (`libsql://db-org.turso.io`,
  *  `http://127.0.0.1:8080`: the scheme picks TLS), Elasticsearch (`https://my.es.io:9243`), rqlite
- *  (`rqlite://my-host:4001`, `http://127.0.0.1:4001`) Meilisearch (`meilisearch://my-host:7700`) and Qdrant (`qdrant://my-host:6333`). */
+ *  (`rqlite://my-host:4001`, `http://127.0.0.1:4001`) Meilisearch (`meilisearch://my-host:7700`), Qdrant (`qdrant://my-host:6333`)
+ *  and InfluxDB 3 (`influxdb://my-host:8181`, `http://127.0.0.1:8181`). */
 export const isServerUrlEngine = (engine: string): boolean =>
-  engine === "libsql" || engine === "elasticsearch" || engine === "rqlite" || engine === "meilisearch" || engine === "qdrant";
+  engine === "libsql" || engine === "elasticsearch" || engine === "rqlite" || engine === "meilisearch" || engine === "qdrant" || engine === "influxdb";
 
 /** True when `engine`'s connection keeps its whole URL in `host`: Mongo and Redis when it is one, the
  *  [server-URL engines](isServerUrlEngine) always. */
@@ -157,8 +162,8 @@ export function normalizeUrlSecrets<T extends { engine: string; host: string; us
     const u = splitUserinfo(host);
     return u.url === host ? unchanged : { host: u.url, username: u.user || cfg.username, password: u.password || password };
   }
-  if (cfg.engine === "meilisearch" || cfg.engine === "qdrant") {
-    // `:key@host` and `key@host` both name the API key, which has no other place in a Meilisearch / Qdrant URL than the password.
+  if (cfg.engine === "meilisearch" || cfg.engine === "qdrant" || cfg.engine === "influxdb") {
+    // `:key@host` and `key@host` both name the API key (InfluxDB: the token), which has no other place in such a URL than the password.
     const u = splitUserinfo(host);
     return u.url === host ? unchanged : { host: u.url, username: "", password: u.password || u.user || password };
   }
@@ -170,11 +175,11 @@ export function normalizeUrlSecrets<T extends { engine: string; host: string; us
 // Secrets a Mongo / Redis / Turso URL can carry in its query string. The keychain only fills the userinfo password,
 // so these can't be moved: they are refused instead of being saved in plaintext.
 const QUERY_SECRET = /^(authToken|tlsCertificateKeyFilePassword|sslClientCertificateKeyPassword|proxyPassword|password|pass|pwd)$/i;
-// Further names a Turso / Elasticsearch / Meilisearch / Qdrant URL's query string may carry a secret under (API keys, tokens).
+// Further names a Turso / Elasticsearch / Meilisearch / Qdrant / InfluxDB URL's query string may carry a secret under (API keys, tokens).
 const SERVER_QUERY_SECRET = /^(api[_-]?key|master[_-]?key|key|(access[_-]?|auth[_-]?|bearer[_-]?)?token|secret|apikey)$/i;
 const MECHANISM_SECRET = /\b(AWS_SESSION_TOKEN|ACCESS_TOKEN|ID_TOKEN|REFRESH_TOKEN|PASSWORD|SECRET)\s*:/i;
 
-const TURSO_URL = /^(libsql|elasticsearch|rqlite|meilisearch|qdrant|wss?|https?):\/\//i;
+const TURSO_URL = /^(libsql|elasticsearch|rqlite|meilisearch|qdrant|influxdb|wss?|https?):\/\//i;
 
 /** The name of a secret in a Mongo / Redis / Turso URL host's query string, or null. */
 export function urlQuerySecret(host: string): string | null {
@@ -197,7 +202,7 @@ export function parseConnUrl(input: string): ParsedConnUrl | null {
   const m = /^([a-z+]+):\/\/(.*)$/i.exec(s);
   if (!m) return null;
   const sc = m[1].toLowerCase();
-  const engine = SCHEME_ENGINE[sc] ?? (isClickHouseHttp(sc, m[2]) ? "clickhouse" : isElasticHttp(sc, m[2]) ? "elasticsearch" : isRqliteHttp(sc, m[2]) ? "rqlite" : isMeiliHttp(sc, m[2]) ? "meilisearch" : isQdrantHttp(sc, m[2]) ? "qdrant" : undefined) ?? PROFILES[profileForUrl(sc, "", null) ?? ""]?.base;
+  const engine = SCHEME_ENGINE[sc] ?? (isClickHouseHttp(sc, m[2]) ? "clickhouse" : isElasticHttp(sc, m[2]) ? "elasticsearch" : isRqliteHttp(sc, m[2]) ? "rqlite" : isMeiliHttp(sc, m[2]) ? "meilisearch" : isQdrantHttp(sc, m[2]) ? "qdrant" : isInfluxHttp(sc, m[2]) ? "influxdb" : undefined) ?? PROFILES[profileForUrl(sc, "", null) ?? ""]?.base;
   if (!engine) return null;
   if (engine === "sqlite" || engine === "duckdb") {
     return { engine, host: "", port: 0, username: "", password: "", database: safeDecode(m[2]) };
@@ -211,6 +216,13 @@ export function parseConnUrl(input: string): ParsedConnUrl | null {
     // The URL as typed; the API key (in the password slot, or alone) goes to the form's password.
     const u = splitUserinfo(`${sc}://${m[2]}`);
     return { engine, host: u.url, port: DEFAULT_PORT[engine], username: "", password: u.password || u.user, database: "" };
+  }
+  if (engine === "influxdb") {
+    // The URL as typed; the token (in the password slot, or alone) goes to the form's password, and the first path segment
+    // (`influxdb://host:8181/mydb`) to the database.
+    const u = splitUserinfo(`${sc}://${m[2]}`);
+    const p = /^([a-z+]+:\/\/[^/?#]*)(?:\/([^/?#]*))?[^?#]*(.*)$/is.exec(u.url);
+    return { engine, host: p ? p[1] + p[3] : u.url, port: DEFAULT_PORT.influxdb, username: "", password: u.password || u.user, database: safeDecode(p?.[2] ?? "") };
   }
   if (engine === "libsql") {
     // The token is the password; the URL keeps everything else, as typed.
@@ -252,7 +264,13 @@ export function parseConnUrl(input: string): ParsedConnUrl | null {
 export function toConnUrl(cfg: Pick<ConnConfig, "engine" | "profile" | "host" | "port" | "username" | "database" | "sslmode">): string {
   // ClickHouse's HTTP interface: https when the form asks for TLS.
   const scheme = cfg.engine === "clickhouse" && /^(require|verify)/.test(cfg.sslmode) ? "https" : ENGINE_SCHEME[cfg.engine];
-  if (isServerUrlEngine(cfg.engine)) return /^[a-z+]+:\/\//i.test(cfg.host) ? cfg.host : `${cfg.engine === "rqlite" || cfg.engine === "meilisearch" || cfg.engine === "qdrant" ? scheme : "https"}://${cfg.host}`;
+  if (isServerUrlEngine(cfg.engine)) {
+    const url = /^[a-z+]+:\/\//i.test(cfg.host) ? cfg.host : `${cfg.engine === "rqlite" || cfg.engine === "meilisearch" || cfg.engine === "qdrant" || cfg.engine === "influxdb" ? scheme : "https"}://${cfg.host}`;
+    if (cfg.engine !== "influxdb" || !cfg.database) return url;
+    // InfluxDB: the database is the URL's path, ahead of any query.
+    const i = url.search(/[?#]/);
+    return `${(i < 0 ? url : url.slice(0, i)).replace(/\/+$/, "")}/${encodeURIComponent(cfg.database)}${i < 0 ? "" : url.slice(i)}`;
+  }
   if (isUrlHost(cfg.engine, cfg.host)) return cfg.host; // already a URL
   if (cfg.engine === "sqlite" || cfg.engine === "duckdb") return `${scheme}://${cfg.database}`;
   const user = cfg.username ? `${encodeURIComponent(cfg.username)}@` : "";
@@ -276,7 +294,7 @@ export function validateConn(cfg: Pick<ConnConfig, "engine" | "host" | "port" | 
     const secret = urlQuerySecret(/^[a-z+]+:\/\//i.test(cfg.host) ? cfg.host : `libsql://${cfg.host}`);
     if (secret) e.host = `Remove ${secret} from the URL — it would be saved in plaintext`;
   }
-  // A Turso / Elasticsearch / rqlite / Meilisearch / Qdrant URL carries its port.
+  // A Turso / Elasticsearch / rqlite / Meilisearch / Qdrant / InfluxDB URL carries its port.
   if (isServerUrlEngine(cfg.engine)) return e;
   if (!Number.isInteger(cfg.port) || cfg.port < 1 || cfg.port > 65535) e.port = "1–65535";
   return e;

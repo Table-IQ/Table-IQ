@@ -1,0 +1,38 @@
+# InfluxDB 3 Core for tests/influxdb_live.rs and the InfluxDB QA. Two servers:
+#   influxdb       no auth, on 58181 — TIQ_INFLUX_URL=http://127.0.0.1:58181
+#   influxdb-auth  on 58182, every request needs the admin token in admin-token.json
+#                  (a throwaway fixture: the server loads that file at start-up, so the token
+#                  is pinned, with nothing to discover) — TIQ_INFLUX_AUTH_URL=http://127.0.0.1:58182
+#                  TIQ_INFLUX_TOKEN=apiv3_tableiq-fixture-token-for-tests-only-0123456789abcdefghijklmnopqrstuvwxyz-ABCDEFGHIJKLMNOP
+# The healthcheck is seed.sh (the image has bash, curl and awk). It writes the fixture once and
+# passes only once the marker is there, so `up -d --wait` returns when the data is there and later
+# edits to it are never undone. The data lives in the container: `down` resets it.
+# The image is pinned (3.12.0) by its multi-architecture index digest (amd64 and arm64),
+# like docker/mongo. Ports bind to 127.0.0.1 only.
+x-influx: &influx
+  image: influxdb:3-core@sha256:624d69bca6bf6fb174aca5a974e1d96e5c5486994e6ae35bc9b4fe02b9520076
+  volumes:
+    - ./seed.sh:/seed.sh:ro
+    - ./admin-token.json:/admin-token.json:ro
+  healthcheck:
+    test: ["CMD", "bash", "/seed.sh"]
+    interval: 3s
+    timeout: 120s
+    retries: 60
+    start_period: 3s
+
+services:
+  influxdb:
+    <<: *influx
+    container_name: tableiq-influxdb
+    command: ["serve", "--node-id", "tiq", "--object-store", "file", "--data-dir", "/var/lib/influxdb3", "--without-auth"]
+    ports:
+      - "127.0.0.1:58181:8181"
+  influxdb-auth:
+    <<: *influx
+    container_name: tableiq-influxdb-auth
+    command: ["serve", "--node-id", "tiq", "--object-store", "file", "--data-dir", "/var/lib/influxdb3", "--admin-token-file", "/admin-token.json"]
+    environment:
+      INFLUX_TOKEN: apiv3_tableiq-fixture-token-for-tests-only-0123456789abcdefghijklmnopqrstuvwxyz-ABCDEFGHIJKLMNOP
+    ports:
+      - "127.0.0.1:58182:8181"
