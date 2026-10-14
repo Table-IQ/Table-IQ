@@ -136,6 +136,21 @@ describe("ConnectionSheet", () => {
     expect(html({ form: { ...form, host: "http://h:6333?api-key=x" } })).toContain("it would be saved in plaintext");
   });
 
+  it("ChromaDB takes one Server URL, an optional database and a token: no host, port, user or SSH tunnel", () => {
+    const form = { ...base.form, engine: "chroma" as const, host: "http://127.0.0.1:8000", port: 8000, database: "", username: "" };
+    const h = html({ form });
+    expect(h).toContain("Server URL");
+    expect(h).toContain("http://127.0.0.1:8000");
+    expect(h).toContain("Database (optional)");
+    expect(h).toContain('placeholder="default_database"');
+    expect(h).toContain('placeholder="token"');
+    expect(html({ form, mode: "edit" })).toContain('placeholder="Keep saved token"');
+    expect(h).toContain("X-Chroma-Token");
+    for (const gone of [">Host<", ">Port<", ">User<", ">User (optional)<", "SSH tunnel", "Connection string"]) expect(h).not.toContain(gone);
+    expect(h).toMatch(/title="ChromaDB \(vector database\)"/);
+    for (const q of ["token", "x-chroma-token"]) expect(html({ form: { ...form, host: `http://h:8000?${q}=x` } })).toContain("it would be saved in plaintext");
+  });
+
   it("Turso takes one Server URL and an Auth token: no host, port, user, database or SSH tunnel", () => {
     const form = { ...base.form, engine: "libsql" as const, host: "libsql://db-org.turso.io", port: 8080, database: "", username: "" };
     const h = html({ form });

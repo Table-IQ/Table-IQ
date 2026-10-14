@@ -76,7 +76,7 @@ pub struct MeiliDriver {
 /// Names a query string may carry an API key under.
 pub(super) fn is_secret_param(name: &str) -> bool {
     let n: String = name.chars().filter(|c| !matches!(c, '_' | '-')).collect::<String>().to_ascii_lowercase();
-    matches!(n.as_str(), "key" | "apikey" | "masterkey" | "token" | "accesstoken" | "authtoken" | "bearertoken" | "secret")
+    matches!(n.as_str(), "key" | "apikey" | "masterkey" | "token" | "accesstoken" | "authtoken" | "bearertoken" | "secret" | "chromatoken" | "xchromatoken")
 }
 
 /// The server URL as typed — `https://host:7700`, `http://localhost:7700`, `meilisearch://host`

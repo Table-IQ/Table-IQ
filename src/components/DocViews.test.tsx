@@ -102,3 +102,16 @@ describe("the aggregate pane's empty state names what to run", () => {
     expect(text("mongodb")).toContain("Run a pipeline to see its results.");
   });
 });
+
+describe("the documents pane on a read-only (ChromaDB) session", () => {
+  it("shows Chroma's filter hint, has no Sort box, and offers no insert", async () => {
+    const { DocCollection } = await import("./DocCollection");
+    const ch = renderToStaticMarkup(<DocCollection connId="ch1" collection="places" visible readOnly engine="chroma" />);
+    expect(ch).toContain("read-only");
+    expect(ch).toContain("&quot;city&quot;: &quot;London&quot;");
+    expect(ch).toContain("_embedding");
+    expect(ch).not.toContain('aria-label="Sort"');
+    expect(ch).not.toContain("Insert a new document");
+    expect(ch).toContain('aria-label="Documents per page"');
+  });
+});

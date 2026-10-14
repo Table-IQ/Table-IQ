@@ -101,6 +101,7 @@ export type Engine =
   | "rqlite"
   | "meilisearch"
   | "qdrant"
+  | "chroma"
   | "influxdb";
 export interface ConnConfig {
   id: string;
@@ -153,9 +154,9 @@ export interface ConnectedInfo {
   /** The saved profile when this build knows it, else the product detected at connect; null for a plain base engine. */
   profile?: string | null;
   caps?: SessionCaps;
-  /** A document session that cannot be edited (Elasticsearch, Meilisearch, Qdrant): the shell offers no edit, insert, delete or index change. */
+  /** A document session that cannot be edited (Elasticsearch, Meilisearch, Qdrant, ChromaDB): the shell offers no edit, insert, delete or index change. */
   read_only?: boolean;
-  /** False for a document session whose server cannot aggregate (Qdrant before 1.12): the shell hides the Aggregate pane. */
+  /** False for a document session whose server cannot aggregate (Qdrant before 1.12, ChromaDB): the shell hides the Aggregate pane. */
   aggregate?: boolean;
 }
 
@@ -622,7 +623,7 @@ export async function docDropIndex(id: string, collection: string, name: string)
   return invoke<void>("doc_drop_index", { id, collection, name });
 }
 
-/** An index's field mapping as pretty JSON text (Elasticsearch), its settings and field counts (Meilisearch), or its collection info (Qdrant). */
+/** An index's field mapping as pretty JSON text (Elasticsearch), its settings and field counts (Meilisearch), or its collection info (Qdrant, ChromaDB). */
 export async function docMapping(id: string, collection: string): Promise<string> {
   if (!inTauri()) return '{\n  "mappings": {}\n}';
   return invoke<string>("doc_mapping", { id, collection });
@@ -687,6 +688,7 @@ export async function listDatabases(id: string): Promise<string[]> {
       case "elasticsearch":
       case "meilisearch":
       case "qdrant":
+      case "chroma":
         return [];
       default:
         return [];

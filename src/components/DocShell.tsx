@@ -23,7 +23,8 @@ type Pane = "documents" | "indexes" | "mapping" | "aggregate";
  *  (filter, doc counts), and for the open collection Documents / Indexes / Aggregate panes.
  *  Elasticsearch / OpenSearch and Meilisearch use it too, read-only (the session's `read_only`): indices are the
  *  collections, and Mapping (Settings, for Meilisearch) replaces Indexes. So does Qdrant: collections of points
- *  (the Points tab), with Mapping showing the collection info; its Aggregate pane (the facet API) is hidden on a
+ *  (the Points tab), with Mapping showing the collection info; and ChromaDB: collections of documents, the same Mapping, and no
+ *  Aggregate pane (it has no aggregation); its Aggregate pane (the facet API) is hidden on a
  *  server that lacks it (`aggregate: false`). */
 export function DocShell() {
   const { active, saved } = useConnections();
@@ -40,10 +41,11 @@ export function DocShell() {
   // Elasticsearch / OpenSearch and Meilisearch: indices to search, read-only.
   const search = active?.engine === "elasticsearch" || active?.engine === "meilisearch";
   const qdrant = active?.engine === "qdrant";
+  const chroma = active?.engine === "chroma";
   const readOnly = !!active?.read_only;
   const kind = search ? "indices" : "collections";
   // The product the server reported at connect (OpenSearch speaks the same API).
-  const engineName = active?.profile === "opensearch" ? "opensearch" : search || qdrant ? (active?.engine ?? "") : "mongo";
+  const engineName = active?.profile === "opensearch" ? "opensearch" : search || qdrant || chroma ? (active?.engine ?? "") : "mongo";
   // A URL connection (mongodb+srv://, several hosts) may report no database; the saved config has it.
   const database = active?.database || cfg?.database || "";
 
@@ -141,7 +143,7 @@ export function DocShell() {
                   <IconView size={12} className="text-muted" />
                   <span className="min-w-0 flex-1 truncate font-mono">{c}</span>
                   {counts[c] !== undefined && (
-                    <span className="shrink-0 rounded bg-bg px-1 text-[10px] tabular-nums text-muted" title={`${search || qdrant ? "" : "~"}${counts[c].toLocaleString("en-US")} ${qdrant ? "points" : "documents"}${search || qdrant ? "" : " (estimated)"}`}>
+                    <span className="shrink-0 rounded bg-bg px-1 text-[10px] tabular-nums text-muted" title={`${search || qdrant || chroma ? "" : "~"}${counts[c].toLocaleString("en-US")} ${qdrant ? "points" : "documents"}${search || qdrant || chroma ? "" : " (estimated)"}`}>
                       {COMPACT.format(counts[c])}
                     </span>
                   )}
@@ -172,7 +174,7 @@ export function DocShell() {
               {/* All three stay mounted: switching panes must not drop staged edits or a typed pipeline. */}
               <div className="min-h-0 flex-1">
                 <DocCollection key={`${id}.${selected}`} connId={id} collection={selected} visible={pane === "documents"} readOnly={readOnly} engine={active.engine} />
-                {search || qdrant ? (
+                {search || qdrant || chroma ? (
                   <DocMapping key={`m.${id}.${selected}`} connId={id} collection={selected} active={pane === "mapping"} />
                 ) : (
                   <DocIndexes key={`i.${id}.${selected}`} connId={id} collection={selected} active={pane === "indexes"} />

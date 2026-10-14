@@ -92,6 +92,15 @@ describe("InfluxDB pill", () => {
   });
 });
 
+describe("ChromaDB pill", () => {
+  it("is TLS by its URL: chroma:// and a bare host are, unless this machine", () => {
+    const ch = (host: string) => pillSegments({ ...base, engine: "chroma" as const, host }, null);
+    expect(["https://h:8000", "chroma://ch.example.com", "ch.example.com:8000", "http://h", "http://127.0.0.1:58000", "chroma://localhost", "localhost:8000", "[::1]:8000"].map((h) => ch(h).ssl)).toEqual([true, true, true, false, false, false, false, false]);
+    expect(["chroma://127.evil.example", "127.0.0.1.evil.com", "chroma://localhost.evil.com"].map((h) => ch(h).ssl)).toEqual([true, true, true]);
+    expect(ch("http://h").engine).toBe("ChromaDB");
+  });
+});
+
 describe("Qdrant pill", () => {
   it("is TLS by its URL: qdrant:// and a bare host are, unless this machine", () => {
     const qd = (host: string) => pillSegments({ ...base, engine: "qdrant" as const, host }, null);

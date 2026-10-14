@@ -46,6 +46,7 @@ describe("docTabs", () => {
     expect(labels("meilisearch", true)).toEqual(["Documents", "Settings", "Aggregate"]);
     expect(labels("qdrant", true)).toEqual(["Points", "Mapping", "Aggregate"]);
     expect(labels("qdrant", false)).toEqual(["Points", "Mapping"]);
+    expect(labels("chroma", false)).toEqual(["Documents", "Mapping"]);
     expect(docTabs("qdrant", undefined).map((t) => t.key)).toEqual(["documents", "mapping", "aggregate"]);
   });
 });
@@ -60,6 +61,7 @@ describe("docPagerLabel", () => {
     expect(docPagerLabel(100, 100, null, false)).toBe("101–200 docs");
     expect(docPagerLabel(0, 10, 501, true, "point")).toBe("1–10 of 501 points");
     expect(docPagerLabel(0, 0, 0, true, "point")).toBe("0 points");
+    expect(docPagerLabel(0, 300, 10000, false, "doc", true)).toBe("1–300 of 10,000+ docs");
   });
 });
 

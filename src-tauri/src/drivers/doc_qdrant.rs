@@ -237,7 +237,7 @@ fn short(n: &Value) -> String {
 }
 
 /// One vector as a line: `dim=1536 [0.01, 0.02, …]`; a sparse one as `sparse nnz=3`, a multivector as `multi 4×128`.
-fn vector_summary(v: &Value) -> Value {
+pub(super) fn vector_summary(v: &Value) -> Value {
     match v {
         Value::Array(a) if a.iter().all(Value::is_array) && !a.is_empty() => {
             json!(format!("multi {}×{}", a.len(), a[0].as_array().map_or(0, Vec::len)))

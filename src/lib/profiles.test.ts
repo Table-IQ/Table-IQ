@@ -250,6 +250,18 @@ describe("InfluxDB", () => {
   });
 });
 
+describe("ChromaDB", () => {
+  it("is a read-only browser: no transactions, backup, users or agents, and port 8000", () => {
+    expect(capsOf("chroma")).toEqual({ transactions: false, backup: false, userMgmt: false, agents: false });
+    expect(presetFor("chroma", null)).toEqual({ port: 8000, username: "", database: "", sslmode: "prefer" });
+  });
+  it("draws an orange fill that is legible under its white monogram and visible on the dark surface", () => {
+    expect(ENGINE_MONOGRAMS.chroma).toBe("Cd");
+    expect(contrast("#ffffff", ENGINE_COLORS.chroma)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(ENGINE_COLORS.chroma, "#15171c")).toBeGreaterThanOrEqual(2);
+  });
+});
+
 describe("Qdrant", () => {
   it("is a read-only browser: no transactions, backup, users or agents, and port 6333", () => {
     expect(capsOf("qdrant")).toEqual({ transactions: false, backup: false, userMgmt: false, agents: false });

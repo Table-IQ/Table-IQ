@@ -1,0 +1,46 @@
+# ChromaDB for tests/chroma_live.rs (and the Chroma QA): two doors to one server.
+#   TIQ_CHROMA_URL=http://127.0.0.1:58000  TIQ_CHROMA_TOKEN=tableiq-fixture-chroma-token-0001
+#   TIQ_CHROMA_OPEN_URL=http://127.0.0.1:58001   (the server itself, no token)
+# The Chroma 1.x server (a Rust binary) has no authentication of its own: it ignores the old
+# CHROMA_SERVER_AUTHN_* settings (checked against this pinned image). Real deployments put a proxy in
+# front of it, or use Chroma Cloud, which takes the same token as `X-Chroma-Token`. So 58000 is
+# nginx, which lets a request through only with the token (nginx.conf), and 58001 is the server
+# direct, for the no-token path. The token below is a throwaway for this file alone.
+# The healthcheck of `chroma` is seed.sh (the image has bash and awk, no curl): it waits for the
+# server, seeds `places` (503 records, 4-dim embeddings), `docs` (5000) and an empty collection
+# exactly once, and passes only once the marker is there (`empty`, created last), so
+# `up -d --wait` returns when the data is there and later edits to it are never undone.
+# `down -v` resets. Both images are pinned (chroma 1.5.9, nginx 1.30.5) by their multi-architecture
+# index digest (amd64 and arm64), like docker/mongo. The ports bind to 127.0.0.1 only.
+services:
+  chroma:
+    image: chromadb/chroma:1.5.9@sha256:1e0b73a187a28757c572acba508c46f48c9e8b0acaf5c20e6d95cdedce1acdf6
+    container_name: tableiq-chroma
+    ports:
+      - "127.0.0.1:58001:8000"
+    volumes:
+      - chroma-data:/data
+      - ./seed.sh:/seed.sh:ro
+    healthcheck:
+      test: ["CMD", "bash", "/seed.sh"]
+      interval: 3s
+      timeout: 90s
+      retries: 60
+      start_period: 3s
+  gate:
+    image: nginx:1.30.5-alpine@sha256:0985e772fb9f729e6fa0980da05fca5d9c468e870eed43071545afa9d2e27d94
+    container_name: tableiq-chroma-gate
+    depends_on:
+      chroma:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:58000:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "--header=X-Chroma-Token: tableiq-fixture-chroma-token-0001", "http://127.0.0.1/api/v2/heartbeat"]
+      interval: 3s
+      timeout: 10s
+      retries: 20
+volumes:
+  chroma-data:

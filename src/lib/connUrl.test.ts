@@ -441,6 +441,39 @@ describe("Qdrant URLs", () => {
   });
 });
 
+describe("ChromaDB URLs", () => {
+  it("claims chroma:// and http(s) on 8000 only", () => {
+    expect(looksLikeConnUrl("chroma://h:8000")).toBe(true);
+    expect(looksLikeConnUrl("http://127.0.0.1:8000")).toBe(true);
+    expect(looksLikeConnUrl("https://:tok@h.example.com:8000/")).toBe(true);
+    expect(looksLikeConnUrl("https://api.trychroma.com")).toBe(false); // plain https is not ours to claim
+    expect(looksLikeConnUrl("http://localhost:8001")).toBe(false);
+  });
+  it("a pasted URL keeps its host as typed and moves the token to the password, never to the user", () => {
+    expect(parseConnUrl("http://:t%40k@127.0.0.1:8000")).toEqual({
+      engine: "chroma", host: "http://127.0.0.1:8000", port: 8000, username: "", password: "t@k", database: "",
+    });
+    expect(parseConnUrl("https://abc123@h.example.com:8000")).toMatchObject({ engine: "chroma", host: "https://h.example.com:8000", username: "", password: "abc123" });
+    expect(parseConnUrl("chroma://h:8000")).toMatchObject({ engine: "chroma", host: "chroma://h:8000", username: "", password: "" });
+    expect(connNameFor(parseConnUrl("chroma://h:8000?x-chroma-token=s3cret")!)).toBe("h:8000");
+  });
+  it("a token typed into the URL host is moved out before it can be saved", () => {
+    const cfg = (host: string, username = "") => ({ engine: "chroma", host, username });
+    expect(normalizeUrlSecrets(cfg("chroma://:s3cret@h:8000"), "")).toEqual({ host: "chroma://h:8000", username: "", password: "s3cret" });
+    expect(normalizeUrlSecrets(cfg("s3cret@h:8000"), "")).toEqual({ host: "h:8000", username: "", password: "s3cret" });
+    expect(normalizeUrlSecrets(cfg("http://127.0.0.1:8000", "u"), "kept")).toEqual({ host: "http://127.0.0.1:8000", username: "u", password: "kept" });
+  });
+  it("needs no port, refuses a token in the query, and copies as a URL without credentials", () => {
+    const cfg = { engine: "chroma" as const, host: "http://127.0.0.1:8000", port: 0, database: "" };
+    expect(validateConn(cfg)).toEqual({});
+    expect(validateConn({ ...cfg, host: " " })).toEqual({ host: "Required" });
+    for (const name of ["token", "x-chroma-token", "X_CHROMA_TOKEN", "chroma_token", "api_key"]) expect(validateConn({ ...cfg, host: `chroma://h?${name}=x` }).host).toContain(name);
+    expect(isUrlHost("chroma", "localhost")).toBe(true);
+    expect(toConnUrl({ ...cfg, port: 8000, username: "", sslmode: "prefer" })).toBe("http://127.0.0.1:8000");
+    expect(toConnUrl({ ...cfg, host: "ch.example.com:8000", port: 8000, username: "", sslmode: "prefer" })).toBe("chroma://ch.example.com:8000");
+  });
+});
+
 describe("InfluxDB URLs", () => {
   it("claims influxdb:// and http(s) on 8181 only", () => {
     expect(looksLikeConnUrl("influxdb://h:8181")).toBe(true);

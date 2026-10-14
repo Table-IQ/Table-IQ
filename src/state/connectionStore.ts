@@ -81,8 +81,8 @@ interface ConnectionState {
   setEditsPending: (editsPending: boolean) => void;
 }
 
-/** Redis, MongoDB, Elasticsearch, Meilisearch and Qdrant sessions have no SQL schema to list. */
-const hasSchema = (engine: string): boolean => engine !== "redis" && engine !== "mongodb" && engine !== "elasticsearch" && engine !== "meilisearch" && engine !== "qdrant";
+/** Redis, MongoDB, Elasticsearch, Meilisearch, Qdrant and ChromaDB sessions have no SQL schema to list. */
+const hasSchema = (engine: string): boolean => engine !== "redis" && engine !== "mongodb" && engine !== "elasticsearch" && engine !== "meilisearch" && engine !== "qdrant" && engine !== "chroma";
 
 // The tab list is global and each shell re-hydrates its connection's slice on
 // mount; clearing it whenever the active connection changes keeps the next shell

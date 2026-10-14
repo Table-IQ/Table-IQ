@@ -16,7 +16,7 @@ use crate::connections::{self, ConnConfig, ConnStore};
 use crate::lk;
 use crate::profiles;
 use crate::drivers::{
-    clickhouse::ClickHouseDriver, doc_elastic::ElasticDriver, doc_meili::MeiliDriver, doc_mongo::MongoDriver, doc_qdrant::QdrantDriver, duckdb::DuckDriver, influxdb::InfluxDriver, kv_redis::RedisDriver, libsql::LibsqlDriver, logged::Logged, mysql::MySqlDriver, rqlite::RqliteDriver,
+    clickhouse::ClickHouseDriver, doc_chroma::ChromaDriver, doc_elastic::ElasticDriver, doc_meili::MeiliDriver, doc_mongo::MongoDriver, doc_qdrant::QdrantDriver, duckdb::DuckDriver, influxdb::InfluxDriver, kv_redis::RedisDriver, libsql::LibsqlDriver, logged::Logged, mysql::MySqlDriver, rqlite::RqliteDriver,
     postgres::PgDriver, sqlite::SqliteDriver, sqlserver::SqlServerDriver, CancelToken, Change,
     AggResult, ChangesResult, ColumnFilter, DocChange, DocChangesResult, DocIndex, DocumentDriver, DriverError, EditSpec, FindOpts,
     KeyInfo, KeyPage, KvChange, KvChangesResult, KvDriver, KvRead, KvReadOpts, KvReply, KvValue, SchemaModel,
@@ -105,7 +105,7 @@ async fn maybe_open_tunnel(
         _ => return Ok((cfg.clone(), None)),
     };
     // The tunnel's local end is plain TCP to a URL's host, which TLS would then not match.
-    if matches!(cfg.engine.as_str(), "libsql" | "elasticsearch" | "rqlite" | "meilisearch" | "qdrant" | "influxdb") {
+    if matches!(cfg.engine.as_str(), "libsql" | "elasticsearch" | "rqlite" | "meilisearch" | "qdrant" | "chroma" | "influxdb") {
         return Err(format!(
             "A {} connection can't be combined with an SSH tunnel",
             match cfg.engine.as_str() {
@@ -113,6 +113,7 @@ async fn maybe_open_tunnel(
                 "rqlite" => "rqlite",
                 "meilisearch" => "Meilisearch",
                 "qdrant" => "Qdrant",
+                "chroma" => "ChromaDB",
                 "influxdb" => "InfluxDB",
                 _ => "Elasticsearch",
             }
@@ -359,7 +360,7 @@ pub struct ConnectedInfo {
     pub caps: crate::profiles::Caps,
     /// A document session that cannot be edited ([`DocumentDriver::read_only`]): the shell offers no edit.
     pub read_only: bool,
-    /// False for a document session whose server cannot aggregate (Qdrant before 1.12): the shell hides the Aggregate pane.
+    /// False for a document session whose server cannot aggregate (Qdrant before 1.12, ChromaDB): the shell hides the Aggregate pane.
     pub aggregate: bool,
 }
 
@@ -486,6 +487,8 @@ pub async fn test_connection(cfg: ConnConfig, password: String) -> Result<(), St
         MeiliDriver::connect(&cfg.host, &password).await.map(|_| ()).map_err(|e| e.to_string())
     } else if cfg.engine == "qdrant" {
         QdrantDriver::connect(&cfg.host, &password).await.map(|_| ()).map_err(|e| e.to_string())
+    } else if cfg.engine == "chroma" {
+        ChromaDriver::connect(&cfg.host, &password, &cfg.database).await.map(|_| ()).map_err(|e| e.to_string())
     } else {
         open_driver(&cfg, &password).await.map(|_| ())
     }
@@ -556,6 +559,10 @@ pub(crate) async fn connect_session(
             lk(&state.doc_sessions).insert(id.clone(), Arc::new(drv));
         } else if eff.engine == "qdrant" {
             let drv = QdrantDriver::connect(&eff.host, &password).await.map_err(|e| e.to_string())?;
+            (session.0, read_only, aggregate) = (drv.product(), drv.read_only(), drv.aggregate_supported());
+            lk(&state.doc_sessions).insert(id.clone(), Arc::new(drv));
+        } else if eff.engine == "chroma" {
+            let drv = ChromaDriver::connect(&eff.host, &password, &eff.database).await.map_err(|e| e.to_string())?;
             (session.0, read_only, aggregate) = (drv.product(), drv.read_only(), drv.aggregate_supported());
             lk(&state.doc_sessions).insert(id.clone(), Arc::new(drv));
         } else {
@@ -792,6 +799,10 @@ pub(crate) async fn switch_inner(state: &ConnState, id: String, database: String
         let drv = QdrantDriver::connect(&eff.host, &password).await.map_err(|e| e.to_string())?;
         (profile.0, read_only, aggregate) = (drv.product(), drv.read_only(), drv.aggregate_supported());
         NewSession::Doc(Arc::new(drv))
+    } else if eff.engine == "chroma" {
+        let drv = ChromaDriver::connect(&eff.host, &password, &eff.database).await.map_err(|e| e.to_string())?;
+        (profile.0, read_only, aggregate) = (drv.product(), drv.read_only(), drv.aggregate_supported());
+        NewSession::Doc(Arc::new(drv))
     } else {
         let drv = open_driver(&eff, &password).await?;
         profile = (drv.product(), drv.caps());
@@ -884,7 +895,7 @@ fn refuse_read_only_doc(drv: &dyn DocumentDriver) -> Result<(), String> {
     Ok(())
 }
 
-/// A collection's field mapping as JSON text (Elasticsearch; Meilisearch's settings; Qdrant's collection info).
+/// A collection's field mapping as JSON text (Elasticsearch; Meilisearch's settings; Qdrant's and ChromaDB's collection info).
 #[tauri::command]
 pub async fn doc_mapping(state: State<'_, ConnState>, id: String, collection: String) -> Result<String, String> {
     let drv = state.doc_session(&id)?;
@@ -1818,7 +1829,7 @@ async fn introspect_any(state: &ConnState, id: &str) -> Result<SchemaModel, Stri
         .find(|c| c.id == id)
         .cloned()
         .ok_or_else(|| "unknown connection".to_string())?;
-    if matches!(cfg.engine.as_str(), "redis" | "mongodb" | "elasticsearch" | "meilisearch" | "qdrant") {
+    if matches!(cfg.engine.as_str(), "redis" | "mongodb" | "elasticsearch" | "meilisearch" | "qdrant" | "chroma") {
         return Err("schema diff supports SQL connections only".into());
     }
     let pw = if cfg.is_file_engine() {
