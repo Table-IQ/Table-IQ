@@ -283,7 +283,7 @@ describe("Elasticsearch URLs", () => {
     expect(looksLikeConnUrl("http://127.0.0.1:9200")).toBe(true);
     expect(looksLikeConnUrl("https://u:p@es.example.com:9200/")).toBe(true);
     expect(looksLikeConnUrl("https://es.example.com:9243")).toBe(false); // plain https is not ours to claim
-    expect(looksLikeConnUrl("http://localhost:8080")).toBe(false);
+    expect(looksLikeConnUrl("http://localhost:8081")).toBe(false);
     expect(looksLikeConnUrl("http://localhost:8123")).toBe(true); // still ClickHouse's
     expect(parseConnUrl("http://localhost:8123")?.engine).toBe("clickhouse");
   });
@@ -471,6 +471,39 @@ describe("ChromaDB URLs", () => {
     expect(isUrlHost("chroma", "localhost")).toBe(true);
     expect(toConnUrl({ ...cfg, port: 8000, username: "", sslmode: "prefer" })).toBe("http://127.0.0.1:8000");
     expect(toConnUrl({ ...cfg, host: "ch.example.com:8000", port: 8000, username: "", sslmode: "prefer" })).toBe("chroma://ch.example.com:8000");
+  });
+});
+
+describe("Weaviate URLs", () => {
+  it("claims weaviate:// and http(s) on 8080 only", () => {
+    expect(looksLikeConnUrl("weaviate://h:8080")).toBe(true);
+    expect(looksLikeConnUrl("http://127.0.0.1:8080")).toBe(true);
+    expect(looksLikeConnUrl("https://:key@h.example.com:8080/")).toBe(true);
+    expect(looksLikeConnUrl("https://my-cluster.weaviate.cloud")).toBe(false); // plain https is not ours to claim
+    expect(looksLikeConnUrl("http://localhost:8081")).toBe(false);
+  });
+  it("a pasted URL keeps its host as typed and moves the key to the password, never to the user", () => {
+    expect(parseConnUrl("http://:k%40y@127.0.0.1:8080")).toEqual({
+      engine: "weaviate", host: "http://127.0.0.1:8080", port: 8080, username: "", password: "k@y", database: "",
+    });
+    expect(parseConnUrl("https://abc123@h.example.com:8080")).toMatchObject({ engine: "weaviate", host: "https://h.example.com:8080", username: "", password: "abc123" });
+    expect(parseConnUrl("weaviate://h:8080")).toMatchObject({ engine: "weaviate", host: "weaviate://h:8080", username: "", password: "" });
+    expect(connNameFor(parseConnUrl("weaviate://h:8080?api_key=s3cret")!)).toBe("h:8080");
+  });
+  it("a key typed into the URL host is moved out before it can be saved", () => {
+    const cfg = (host: string, username = "") => ({ engine: "weaviate", host, username });
+    expect(normalizeUrlSecrets(cfg("weaviate://:s3cret@h:8080"), "")).toEqual({ host: "weaviate://h:8080", username: "", password: "s3cret" });
+    expect(normalizeUrlSecrets(cfg("s3cret@h:8080"), "")).toEqual({ host: "h:8080", username: "", password: "s3cret" });
+    expect(normalizeUrlSecrets(cfg("http://127.0.0.1:8080", "u"), "kept")).toEqual({ host: "http://127.0.0.1:8080", username: "u", password: "kept" });
+  });
+  it("needs no port, refuses a key in the query, and copies as a URL without credentials", () => {
+    const cfg = { engine: "weaviate" as const, host: "http://127.0.0.1:8080", port: 0, database: "" };
+    expect(validateConn(cfg)).toEqual({});
+    expect(validateConn({ ...cfg, host: " " })).toEqual({ host: "Required" });
+    for (const name of ["api_key", "apikey", "token", "authorization", "X-Weaviate-Api-Key", "weaviate", "weaviate_api_key"]) expect(validateConn({ ...cfg, host: `weaviate://h?${name}=x` }).host).toContain(name);
+    expect(isUrlHost("weaviate", "localhost")).toBe(true);
+    expect(toConnUrl({ ...cfg, port: 8080, username: "", sslmode: "prefer" })).toBe("http://127.0.0.1:8080");
+    expect(toConnUrl({ ...cfg, host: "wv.example.com:8080", port: 8080, username: "", sslmode: "prefer" })).toBe("weaviate://wv.example.com:8080");
   });
 });
 

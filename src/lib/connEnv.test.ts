@@ -101,6 +101,15 @@ describe("ChromaDB pill", () => {
   });
 });
 
+describe("Weaviate pill", () => {
+  it("is TLS by its URL: weaviate:// and a bare host are, unless this machine", () => {
+    const wv = (host: string) => pillSegments({ ...base, engine: "weaviate" as const, host }, null);
+    expect(["https://h:8080", "weaviate://wv.example.com", "wv.example.com:8080", "http://h", "http://127.0.0.1:58090", "weaviate://localhost", "localhost:8080", "[::1]:8080"].map((h) => wv(h).ssl)).toEqual([true, true, true, false, false, false, false, false]);
+    expect(["weaviate://127.evil.example", "127.0.0.1.evil.com", "weaviate://localhost.evil.com"].map((h) => wv(h).ssl)).toEqual([true, true, true]);
+    expect(wv("http://h").engine).toBe("Weaviate");
+  });
+});
+
 describe("Qdrant pill", () => {
   it("is TLS by its URL: qdrant:// and a bare host are, unless this machine", () => {
     const qd = (host: string) => pillSegments({ ...base, engine: "qdrant" as const, host }, null);

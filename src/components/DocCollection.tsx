@@ -44,10 +44,10 @@ const input =
  *  `readOnly` (the session's `read_only`: Elasticsearch, Meilisearch) turns all of the editing off — no edit, insert,
  *  delete or staged-changes bar — and reads the query bar as a search: the filter is Query DSL JSON or a
  *  `query_string` (Meilisearch: a full-text query, or an object with `q` and `filter`; Qdrant: a filter object, the
- *  points of a collection; ChromaDB: plain text in a document, or a `where` object or `where`, `where_document` and `ids`; no sort), sort and projection may be JSON lists, and counts are exact (Meilisearch's under a
+ *  points of a collection; ChromaDB: plain text in a document, or a `where` object or `where`, `where_document` and `ids`; no sort; Weaviate: a `where` object, and the sort box is `{"year": -1}`), sort and projection may be JSON lists, and counts are exact (Meilisearch's under a
  *  full-text query are estimates). */
 export function DocCollection({ connId, collection, visible, readOnly = false, engine }: { connId: string; collection: string; visible: boolean; readOnly?: boolean; engine?: string }) {
-  const unit = engine === "qdrant" ? "point" : "document";
+  const unit = engine === "qdrant" ? "point" : engine === "weaviate" ? "object" : "document";
   const [draft, setDraft] = useState({ filter: "", sort: "", projection: "", skip: "0" });
   const [q, setQ] = useState<Query>(EMPTY_QUERY);
   const [queryError, setQueryError] = useState<string | null>(null);
@@ -360,9 +360,9 @@ export function DocCollection({ connId, collection, visible, readOnly = false, e
       >
         {(
           [
-            ["filter", "Filter", readOnly ? (engine === "meilisearch" ? `quiet river  or  {"q": "river", "filter": "year > 2000"}` : engine === "qdrant" ? `{"must": [{"key": "city", "match": {"value": "London"}}]}` : engine === "chroma" ? `river  or  {"city": "London"}` : `title:quiet  or  {"match": {"title": "quiet"}}`) : `{"age": {"$gt": 30}}`, "min-w-[200px] flex-1"],
+            ["filter", "Filter", readOnly ? (engine === "meilisearch" ? `quiet river  or  {"q": "river", "filter": "year > 2000"}` : engine === "qdrant" ? `{"must": [{"key": "city", "match": {"value": "London"}}]}` : engine === "chroma" ? `river  or  {"city": "London"}` : engine === "weaviate" ? `{"path": ["city"], "operator": "Equal", "valueText": "London"}` : `title:quiet  or  {"match": {"title": "quiet"}}`) : `{"age": {"$gt": 30}}`, "min-w-[200px] flex-1"],
             ["sort", "Sort", readOnly ? `{"year": -1}` : `{"age": -1}`, "w-36"],
-            ["projection", "Projection", readOnly ? (engine === "qdrant" ? `{"city": 1, "_vector": 1}` : engine === "chroma" ? `{"city": 1, "_embedding": 1}` : `{"title": 1}`) : `{"name": 1}`, "w-36"],
+            ["projection", "Projection", readOnly ? (engine === "qdrant" || engine === "weaviate" ? `{"city": 1, "_vector": 1}` : engine === "chroma" ? `{"city": 1, "_embedding": 1}` : `{"title": 1}`) : `{"name": 1}`, "w-36"],
           ] as const
         )
           .filter(([k]) => engine !== "chroma" || k !== "sort") // ChromaDB cannot sort
@@ -501,7 +501,7 @@ export function DocCollection({ connId, collection, visible, readOnly = false, e
           <div className="p-3 text-xs text-muted">Loading…</div>
         ) : showEmptyNote(view, noDocs, readOnly) ? (
           <div className="flex flex-1 items-center justify-center text-sm text-muted">
-            {skip > 0 ? `No ${unit}s after the first ${skip.toLocaleString("en-US")} — lower Skip or go back a page.` : engine === "chroma" ? (q.filter ? "No documents match this filter." : "This collection has no documents.") : `No ${unit}s.`}
+            {skip > 0 ? `No ${unit}s after the first ${skip.toLocaleString("en-US")} — lower Skip or go back a page.` : engine === "chroma" ? (q.filter ? "No documents match this filter." : "This collection has no documents.") : engine === "weaviate" ? (q.filter ? "No objects match this filter." : "This class has no objects.") : `No ${unit}s.`}
           </div>
         ) : view === "table" ? (
           <div className={`tiq-dimmable min-h-0 flex-1 ${fetching ? "is-busy" : ""}`}>
@@ -570,8 +570,8 @@ export function DocCollection({ connId, collection, visible, readOnly = false, e
             <span className="inline-flex items-center gap-1">
               <IconRow size={11} strokeWidth={1.5} />
               <select
-                aria-label={`${unit === "point" ? "Points" : "Documents"} per page`}
-                title={`${unit === "point" ? "Points" : "Documents"} per page`}
+                aria-label={`${unit[0].toUpperCase()}${unit.slice(1)}s per page`}
+                title={`${unit[0].toUpperCase()}${unit.slice(1)}s per page`}
                 value={q.limit}
                 disabled={committing}
                 onChange={(e) => {

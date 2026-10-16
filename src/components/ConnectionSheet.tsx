@@ -62,6 +62,7 @@ const ENGINES: { id: Engine; short: string; title?: string }[] = [
   { id: "meilisearch", short: "Meili", title: "Meilisearch" },
   { id: "qdrant", short: "Qdrant", title: "Qdrant (vector database)" },
   { id: "chroma", short: "Chroma", title: "ChromaDB (vector database)" },
+  { id: "weaviate", short: "Weaviate", title: "Weaviate (vector database)" },
   { id: "influxdb", short: "InfluxDB", title: "InfluxDB 3 (time series)" },
 ];
 const ENV_SEGMENTS: { env: ConnEnv | null; label: string }[] = [
@@ -243,7 +244,7 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
   const hostPort = hostIsUrl ? (
     <div className="mb-[9px]">
       <Field id={`${uid}host`} label={isServerUrlEngine(form.engine) ? "Server URL" : "Connection string"} error={shown.host}>
-        <input {...ids("host", shown.host)} className={`${field(shown.host)} font-mono`} value={form.host} onChange={(e) => p.onField("host", e.target.value)} onBlur={touch("host")} onPaste={onHostPaste} placeholder={form.engine === "libsql" ? "libsql://my-db-org.turso.io" : form.engine === "elasticsearch" ? "https://my-deployment.es.io:9243 or http://localhost:9200" : form.engine === "rqlite" ? "rqlite://my-host:4001 or http://127.0.0.1:4001" : form.engine === "meilisearch" ? "https://ms-xxxx.meilisearch.io or http://localhost:7700" : form.engine === "qdrant" ? "https://xyz.cloud.qdrant.io:6333 or http://localhost:6333" : form.engine === "chroma" ? "https://api.trychroma.com or http://localhost:8000" : form.engine === "influxdb" ? "influxdb://my-host:8181 or http://localhost:8181" : undefined} spellCheck={false} />
+        <input {...ids("host", shown.host)} className={`${field(shown.host)} font-mono`} value={form.host} onChange={(e) => p.onField("host", e.target.value)} onBlur={touch("host")} onPaste={onHostPaste} placeholder={form.engine === "libsql" ? "libsql://my-db-org.turso.io" : form.engine === "elasticsearch" ? "https://my-deployment.es.io:9243 or http://localhost:9200" : form.engine === "rqlite" ? "rqlite://my-host:4001 or http://127.0.0.1:4001" : form.engine === "meilisearch" ? "https://ms-xxxx.meilisearch.io or http://localhost:7700" : form.engine === "qdrant" ? "https://xyz.cloud.qdrant.io:6333 or http://localhost:6333" : form.engine === "chroma" ? "https://api.trychroma.com or http://localhost:8000" : form.engine === "weaviate" ? "https://my-cluster.weaviate.cloud or http://localhost:8080" : form.engine === "influxdb" ? "influxdb://my-host:8181 or http://localhost:8181" : undefined} spellCheck={false} />
       </Field>
     </div>
   ) : (
@@ -510,6 +511,18 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
                 </div>
                 <p className="mb-[9px] text-[11px] leading-snug text-muted">
                   The token of the proxy in front of the server, or of Chroma Cloud, sent as a Bearer and an X-Chroma-Token header. Leave it empty for a server with no token. The connection is read-only.
+                </p>
+              </>
+            ) : form.engine === "weaviate" ? (
+              <>
+                <div className="mb-[9px] grid grid-cols-2 gap-[9px]">
+                  <Field id={`${uid}db`} label="Tenant (optional)">
+                    <input {...ids("db")} className={field()} value={form.database} onChange={(e) => p.onField("database", e.target.value)} placeholder="for multi-tenant classes" />
+                  </Field>
+                  {passwordField("API key", "API key")}
+                </div>
+                <p className="mb-[9px] text-[11px] leading-snug text-muted">
+                  The API key (sent as a Bearer header; leave User empty). Leave it empty for a server with anonymous access. A multi-tenant class is read as the tenant named here. The connection is read-only.
                 </p>
               </>
             ) : form.engine === "influxdb" ? (

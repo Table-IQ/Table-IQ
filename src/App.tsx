@@ -16,7 +16,7 @@ function Root() {
     <ConnectionManager />
   ) : active.engine === "redis" ? (
     <KvShell key={active.id} />
-  ) : active.engine === "mongodb" || active.engine === "elasticsearch" || active.engine === "meilisearch" || active.engine === "qdrant" || active.engine === "chroma" ? (
+  ) : active.engine === "mongodb" || active.engine === "elasticsearch" || active.engine === "meilisearch" || active.engine === "qdrant" || active.engine === "chroma" || active.engine === "weaviate" ? (
     <DocShell key={active.id} />
   ) : (
     <MainShell key={active.id} />

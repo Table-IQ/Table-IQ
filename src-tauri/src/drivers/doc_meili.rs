@@ -76,7 +76,7 @@ pub struct MeiliDriver {
 /// Names a query string may carry an API key under.
 pub(super) fn is_secret_param(name: &str) -> bool {
     let n: String = name.chars().filter(|c| !matches!(c, '_' | '-')).collect::<String>().to_ascii_lowercase();
-    matches!(n.as_str(), "key" | "apikey" | "masterkey" | "token" | "accesstoken" | "authtoken" | "bearertoken" | "secret" | "chromatoken" | "xchromatoken")
+    matches!(n.as_str(), "key" | "apikey" | "masterkey" | "token" | "accesstoken" | "authtoken" | "bearertoken" | "secret" | "chromatoken" | "xchromatoken" | "weaviate" | "weaviateapikey" | "xweaviateapikey" | "authorization")
 }
 
 /// The server URL as typed — `https://host:7700`, `http://localhost:7700`, `meilisearch://host`
@@ -125,7 +125,7 @@ pub(super) fn parse_base_as(input: &str, name: &str, own_scheme: &str, default_p
 }
 
 /// None without a key; a sensitive Bearer header with one.
-fn auth_header(key: &str) -> DResult<Option<HeaderValue>> {
+pub(super) fn auth_header(key: &str) -> DResult<Option<HeaderValue>> {
     if key.is_empty() {
         return Ok(None);
     }

@@ -29,6 +29,7 @@ export const ENGINE_COLORS: Record<Engine, string> = {
   meilisearch: "#6d28d9",
   qdrant: "#dc244c",
   chroma: "#c2410c",
+  weaviate: "#4d7c0f",
   influxdb: "#4f46e5",
 };
 
@@ -47,6 +48,7 @@ export const ENGINE_MONOGRAMS: Record<Engine, string> = {
   meilisearch: "Me",
   qdrant: "Qr",
   chroma: "Cd",
+  weaviate: "We",
   influxdb: "In",
 };
 
@@ -65,6 +67,7 @@ export const ENGINE_LABELS: Record<Engine, string> = {
   meilisearch: "Meilisearch",
   qdrant: "Qdrant",
   chroma: "ChromaDB",
+  weaviate: "Weaviate",
   influxdb: "InfluxDB",
 };
 

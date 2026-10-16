@@ -36,6 +36,7 @@ describe("backup engine rules", () => {
     expect(supportsBackup("meilisearch")).toBe(false);
     expect(supportsBackup("qdrant")).toBe(false);
     expect(supportsBackup("chroma")).toBe(false);
+    expect(supportsBackup("weaviate")).toBe(false);
     expect(supportsBackup("influxdb")).toBe(false);
     expect(supportsBackup("elasticsearch")).toBe(false);
   });

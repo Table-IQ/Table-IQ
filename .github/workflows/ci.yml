@@ -180,7 +180,7 @@ jobs:
         working-directory: src-tauri
         run: cargo build --features ipc-bridge --example ipc_bridge --locked
 
-  # ClickHouse, Turso (libSQL), Elasticsearch, rqlite, Meilisearch, Qdrant, ChromaDB and InfluxDB run in a job of their own: started next to the
+  # ClickHouse, Turso (libSQL), Elasticsearch, rqlite, Meilisearch, Qdrant, ChromaDB, Weaviate and InfluxDB run in a job of their own: started next to the
   # ten servers of `rust` they take ~2 GB more of a 7 GB runner, which the DuckDB link also needs.
   http-engines:
     runs-on: ubuntu-22.04
@@ -206,6 +206,9 @@ jobs:
       TIQ_CHROMA_URL: http://127.0.0.1:58000
       TIQ_CHROMA_OPEN_URL: http://127.0.0.1:58001
       TIQ_CHROMA_TOKEN: tableiq-fixture-chroma-token-0001
+      # docker/weaviate/docker-compose.yml: API-key authentication, no anonymous access, so the (throwaway) key is really needed — tests/weaviate_live.rs.
+      TIQ_WEAVIATE_URL: http://127.0.0.1:58090
+      TIQ_WEAVIATE_KEY: tableiq-fixture-weaviate-key-0001
       # docker/influxdb/docker-compose.yml: one server without auth, one that needs the (throwaway, pinned) admin token — tests/influxdb_live.rs.
       TIQ_INFLUX_URL: http://127.0.0.1:58181
       TIQ_INFLUX_AUTH_URL: http://127.0.0.1:58182
@@ -230,7 +233,7 @@ jobs:
 
       # Compose, not `services:` — the healthchecks seed each server once. The ClickHouse image
       # is ~1 GB, Elasticsearch ~1.2 GB (heap pinned to 512 MB) and the slowest to come up.
-      - name: Start ClickHouse, Turso (libSQL), Elasticsearch, rqlite, Meilisearch, Qdrant, ChromaDB and InfluxDB
+      - name: Start ClickHouse, Turso (libSQL), Elasticsearch, rqlite, Meilisearch, Qdrant, ChromaDB, Weaviate and InfluxDB
         run: |
           docker compose -f docker/clickhouse/docker-compose.yml up -d --wait --wait-timeout 300
           docker compose -f docker/libsql/docker-compose.yml up -d --wait --wait-timeout 300
@@ -238,6 +241,7 @@ jobs:
           docker compose -f docker/meilisearch/docker-compose.yml up -d --wait --wait-timeout 300
           docker compose -f docker/qdrant/docker-compose.yml up -d --wait --wait-timeout 300
           docker compose -f docker/chroma/docker-compose.yml up -d --wait --wait-timeout 300
+          docker compose -f docker/weaviate/docker-compose.yml up -d --wait --wait-timeout 300
           docker compose -f docker/influxdb/docker-compose.yml up -d --wait --wait-timeout 300
           docker compose -f docker/elasticsearch/docker-compose.yml up -d --wait --wait-timeout 420
 
@@ -249,4 +253,4 @@ jobs:
 
       - name: Live tests that must not skip
         working-directory: src-tauri
-        run: TIQ_REQUIRE_LIVE=1 cargo test --locked --test clickhouse_live --test libsql_live --test elasticsearch_live --test rqlite_live --test meilisearch_live --test qdrant_live --test chroma_live --test influxdb_live
+        run: TIQ_REQUIRE_LIVE=1 cargo test --locked --test clickhouse_live --test libsql_live --test elasticsearch_live --test rqlite_live --test meilisearch_live --test qdrant_live --test chroma_live --test weaviate_live --test influxdb_live

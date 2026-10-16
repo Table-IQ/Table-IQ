@@ -59,7 +59,7 @@ const FACET_SINCE: (u32, u32) = (1, 12);
 /// Numbers a vector summary shows.
 const SUMMARY_NUMS: usize = 4;
 
-fn bad(what: &str, why: impl std::fmt::Display) -> DriverError {
+pub(super) fn bad(what: &str, why: impl std::fmt::Display) -> DriverError {
     DriverError::Db(format!("{what}: {why}"))
 }
 
@@ -100,7 +100,7 @@ fn http_error(status: u16, body: &[u8], host: &str) -> DriverError {
     })
 }
 
-fn json_in(what: &str, text: &str) -> DResult<Value> {
+pub(super) fn json_in(what: &str, text: &str) -> DResult<Value> {
     if text.len() > MAX_JSON_IN {
         return Err(bad(what, format!("over {} KiB", MAX_JSON_IN >> 10)));
     }
@@ -134,7 +134,7 @@ fn sort_of(text: &str) -> DResult<Option<Value>> {
 
 /// Which payload fields to return.
 #[derive(Debug, Default, PartialEq)]
-enum Payload {
+pub(super) enum Payload {
     #[default]
     All,
     None,
@@ -143,14 +143,14 @@ enum Payload {
 }
 
 #[derive(Debug, Default, PartialEq)]
-struct Projection {
-    payload: Payload,
-    vector: bool,
+pub(super) struct Projection {
+    pub(super) payload: Payload,
+    pub(super) vector: bool,
 }
 
 /// The projection box: a list of payload keys, or the Mongo-style `{"city": 1}` (or `{"city": 0}` to hide).
 /// `_vector` asks for the vectors' summary; `_id` is always there and needs no naming.
-fn projection_of(text: &str) -> DResult<Projection> {
+pub(super) fn projection_of(text: &str) -> DResult<Projection> {
     if text.trim().is_empty() {
         return Ok(Projection::default());
     }

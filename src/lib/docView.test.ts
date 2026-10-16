@@ -47,6 +47,8 @@ describe("docTabs", () => {
     expect(labels("qdrant", true)).toEqual(["Points", "Mapping", "Aggregate"]);
     expect(labels("qdrant", false)).toEqual(["Points", "Mapping"]);
     expect(labels("chroma", false)).toEqual(["Documents", "Mapping"]);
+    expect(labels("weaviate", true)).toEqual(["Objects", "Mapping", "Aggregate"]);
+    expect(labels("weaviate", undefined)).toEqual(["Objects", "Mapping", "Aggregate"]);
     expect(docTabs("qdrant", undefined).map((t) => t.key)).toEqual(["documents", "mapping", "aggregate"]);
   });
 });

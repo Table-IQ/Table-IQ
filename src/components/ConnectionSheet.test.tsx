@@ -151,6 +151,20 @@ describe("ConnectionSheet", () => {
     for (const q of ["token", "x-chroma-token"]) expect(html({ form: { ...form, host: `http://h:8000?${q}=x` } })).toContain("it would be saved in plaintext");
   });
 
+  it("Weaviate takes one Server URL, an optional tenant and an API key: no host, port, user or SSH tunnel", () => {
+    const form = { ...base.form, engine: "weaviate" as const, host: "http://127.0.0.1:8080", port: 8080, database: "", username: "" };
+    const h = html({ form });
+    expect(h).toContain("Server URL");
+    expect(h).toContain("http://127.0.0.1:8080");
+    expect(h).toContain("Tenant (optional)");
+    expect(h).toContain('placeholder="API key"');
+    expect(html({ form, mode: "edit" })).toContain('placeholder="Keep saved API key"');
+    expect(h).toContain("multi-tenant class");
+    for (const gone of [">Host<", ">Port<", ">User<", ">User (optional)<", "SSH tunnel", "Connection string"]) expect(h).not.toContain(gone);
+    expect(h).toMatch(/title="Weaviate \(vector database\)"/);
+    for (const q of ["api_key", "token", "x-weaviate-api-key"]) expect(html({ form: { ...form, host: `http://h:8080?${q}=x` } })).toContain("it would be saved in plaintext");
+  });
+
   it("Turso takes one Server URL and an Auth token: no host, port, user, database or SSH tunnel", () => {
     const form = { ...base.form, engine: "libsql" as const, host: "libsql://db-org.turso.io", port: 8080, database: "", username: "" };
     const h = html({ form });

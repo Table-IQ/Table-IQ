@@ -46,11 +46,11 @@ export function highlightJson(text: string): string {
 }
 
 /** A collection's tabs. A read-only search / vector engine shows its mapping (Meilisearch: Settings) in place of Indexes;
- *  Qdrant's documents are Points; `aggregate: false` (a server that cannot aggregate) leaves the Aggregate pane out. */
+ *  Qdrant's documents are Points and Weaviate's Objects; `aggregate: false` (a server that cannot aggregate) leaves the Aggregate pane out. */
 export function docTabs(engine: string | undefined, aggregate: boolean | undefined): { key: string; label: string }[] {
-  const mapped = engine === "elasticsearch" || engine === "meilisearch" || engine === "qdrant" || engine === "chroma";
+  const mapped = engine === "elasticsearch" || engine === "meilisearch" || engine === "qdrant" || engine === "chroma" || engine === "weaviate";
   return [
-    { key: "documents", label: engine === "qdrant" ? "Points" : "Documents" },
+    { key: "documents", label: engine === "qdrant" ? "Points" : engine === "weaviate" ? "Objects" : "Documents" },
     mapped ? { key: "mapping", label: engine === "meilisearch" ? "Settings" : "Mapping" } : { key: "indexes", label: "Indexes" },
     ...(aggregate === false ? [] : [{ key: "aggregate", label: "Aggregate" }]),
   ];

@@ -1,0 +1,39 @@
+# Weaviate for tests/weaviate_live.rs (and the Weaviate QA): one server with API-key authentication
+# and no anonymous access, so the key is really needed (REST and GraphQL on 58090; gRPC is not published).
+#   TIQ_WEAVIATE_URL=http://127.0.0.1:58090  TIQ_WEAVIATE_KEY=tableiq-fixture-weaviate-key-0001
+# The key below is a throwaway for this file alone. (Not 58080: that is Turso's, docker/libsql.)
+# The image is Alpine with busybox only (wget, nc, awk; no bash or curl), so the healthcheck is
+# seed.sh: it waits for the server, seeds `Place` (501 objects, 4-dim vectors), `Doc` (5000), `Reserved`
+# and an empty class exactly once, and passes only once the marker is there (`Empty`, created last),
+# so `up -d --wait` returns when the data is there and later edits to it are never undone. `down -v` resets.
+# The image is pinned (1.37.0) by its multi-architecture index digest (amd64 and arm64), like
+# docker/mongo. The port binds to 127.0.0.1 only.
+services:
+  weaviate:
+    image: cr.weaviate.io/semitechnologies/weaviate:1.37.0@sha256:486ab98a3c74655de680c2248ce7017993ece8cbb52a4d16f7d66788948ff3c2
+    container_name: tableiq-weaviate
+    environment:
+      PERSISTENCE_DATA_PATH: /var/lib/weaviate
+      CLUSTER_HOSTNAME: node1
+      DEFAULT_VECTORIZER_MODULE: none
+      ENABLE_MODULES: ""
+      DISABLE_TELEMETRY: "true"
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "false"
+      AUTHENTICATION_APIKEY_ENABLED: "true"
+      AUTHENTICATION_APIKEY_ALLOWED_KEYS: tableiq-fixture-weaviate-key-0001
+      AUTHENTICATION_APIKEY_USERS: tiq
+      AUTHORIZATION_ADMINLIST_ENABLED: "true"
+      AUTHORIZATION_ADMINLIST_USERS: tiq
+    ports:
+      - "127.0.0.1:58090:8080"
+    volumes:
+      - weaviate-data:/var/lib/weaviate
+      - ./seed.sh:/seed.sh:ro
+    healthcheck:
+      test: ["CMD", "sh", "/seed.sh"]
+      interval: 3s
+      timeout: 120s
+      retries: 60
+      start_period: 3s
+volumes:
+  weaviate-data:
