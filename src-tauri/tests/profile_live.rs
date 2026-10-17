@@ -354,6 +354,31 @@ async fn a_starrocks_page_inlines_its_bounds() {
     drv.run_script("DROP TABLE tiq_inline_my").await.ok();
 }
 
+/// Value: protects=a compat session's own count (BEGIN; SET LOCAL on a connection it holds)
+/// counts exactly, answers "unknown" past its 2s bound, and leaves the pool usable;
+/// fails_when=the held-connection transaction or its bounds break; why_new=CI's compat counts
+/// ran only on fast tables; seam=none
+#[tokio::test]
+async fn a_compat_count_counts_and_is_bounded() {
+    use tableiq_lib::drivers::{ColumnFilter, FilterOp};
+    let Some(url) = live_url("TIQ_PG_URL") else { return };
+    let drv = PgDriver::connect_as(&url, Some("yugabytedb")).await.expect("connect");
+    drv.run_script("DROP SCHEMA IF EXISTS tiq_cc CASCADE; CREATE SCHEMA tiq_cc; \
+                    CREATE TABLE tiq_cc.t (id INT PRIMARY KEY); INSERT INTO tiq_cc.t SELECT generate_series(1, 7); \
+                    CREATE VIEW tiq_cc.slow AS SELECT g AS id, (pg_sleep(0.001))::text || g AS s FROM generate_series(1, 5000) g;")
+        .await
+        .expect("fixture");
+    let c = drv.count_rows("tiq_cc", "t", &[], None).await.expect("count");
+    assert_eq!((c.count, c.exact), (Some(7), true));
+    let search = [ColumnFilter { column: "*".into(), op: FilterOp::Search, value: Some("zzz".into()) }];
+    let c = drv.count_rows("tiq_cc", "slow", &search, None).await.expect("bounded count");
+    assert_eq!((c.count, c.exact), (None, false));
+    for _ in 0..5 {
+        assert_eq!(drv.run_query("SELECT 1", 1).await.expect("a pooled connection still works").batch.num_rows(), 1);
+    }
+    drv.run_script("DROP SCHEMA tiq_cc CASCADE").await.ok();
+}
+
 /// Value: protects=a compat session whose server refuses `set_config` (QuestDB, Materialize)
 /// still pages, bounds its counts on the client, and lets Stop end an exact count; a missing
 /// table is still an error, not "no primary key"; fails_when=the unpin fallback, the client

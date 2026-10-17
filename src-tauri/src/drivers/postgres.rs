@@ -241,6 +241,8 @@ pub struct PgDriver {
     /// Materialize; see `begin_pinned`): pages and counts run unpinned from then on, bounded on
     /// the client instead.
     pin_unsupported: std::sync::atomic::AtomicBool,
+    /// A compat session's BEGIN reported its transaction once (see `begin_pinned`).
+    begin_checked: std::sync::atomic::AtomicBool,
 }
 
 /// The session GUCs every pooled connection pins (see `connect_as`).
@@ -256,9 +258,6 @@ fn session_sets() -> impl Iterator<Item = &'static str> {
     SESSION_SETS.split(';').map(str::trim).filter(|s| !s.is_empty())
 }
 
-/// A failed cancellable page: 57014 is a cancel when the token says so or the server says
-/// "due to user request" (someone else's `pg_cancel_backend`), and otherwise the statement
-/// timeout.
 /// The bound on a count the grid asks for on its own (`count_rows` without `force_exact`).
 const COUNT_TIMEOUT_MS: u64 = 2000;
 
@@ -268,6 +267,16 @@ fn gone_or_denied(e: &dyn sqlx::error::DatabaseError) -> bool {
     matches!(e.code().as_deref(), Some("42P01" | "42501"))
 }
 
+/// Wait until `token` is cancelled (polled: nothing on the server can be told to stop).
+async fn cancelled(token: &CancelToken) {
+    while !token.is_cancelled() {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+/// A failed cancellable page: 57014 is a cancel when the token says so or the server says
+/// "due to user request" (someone else's `pg_cancel_backend`), and otherwise the statement
+/// timeout.
 fn window_err(e: sqlx::Error, token: &CancelToken, timeout_ms: u64) -> DriverError {
     if !is_cancel(&e) {
         db(e)
@@ -410,6 +419,7 @@ impl PgDriver {
             degrade_logged: Default::default(),
             scs_rejected,
             pin_unsupported: Default::default(),
+            begin_checked: Default::default(),
         })
     }
 
@@ -475,6 +485,20 @@ impl PgDriver {
         // Only the server's own refusal unpins the session: RisingWave answers BEGIN without the
         // in-transaction status sqlx checks for (`BeginFailed`), QuestDB and Materialize have no
         // `set_config` (a database error). A dropped link or a pool timeout is just an error.
+        // The BEGIN is first tried once on a held connection: after `BeginFailed` the server may
+        // still be in a transaction sqlx never counted, so that connection is closed, not pooled.
+        if self.compat() && !self.begin_checked.load(Relaxed) {
+            let mut conn = self.pool.acquire().await.map_err(db)?;
+            let r = sqlx::Connection::begin(&mut *conn).await.map(drop);
+            match r {
+                Ok(()) => self.begin_checked.store(true, Relaxed),
+                Err(e @ sqlx::Error::BeginFailed) => {
+                    conn.close_on_drop();
+                    return Ok(self.unpin(&e));
+                }
+                Err(e) => return Err(db(e)),
+            }
+        }
         let mut tx = match self.pool.begin().await {
             Ok(tx) => tx,
             Err(e @ sqlx::Error::BeginFailed) if self.compat() => return Ok(self.unpin(&e)),
@@ -665,12 +689,23 @@ impl PgDriver {
             (None, Some(_)) => {
                 // Bounded here, and a page that runs past it closes its connection rather than
                 // hold it until the server finishes.
+                // Stop (or a newer page) drops it the same way.
                 let mut conn = self.pool.acquire().await.map_err(db)?;
-                match tokio::time::timeout(std::time::Duration::from_millis(ms), qy.fetch_all(&mut *conn)).await {
-                    Ok(r) => r,
-                    Err(_) => {
+                let t = token.expect("this arm has a token");
+                let bound = std::time::Duration::from_millis(ms);
+                let done = tokio::select! {
+                    r = tokio::time::timeout(bound, qy.fetch_all(&mut *conn)) => r.ok(),
+                    () = cancelled(t) => None,
+                };
+                match done {
+                    Some(r) => r,
+                    None => {
                         conn.close_on_drop();
-                        return Err(DriverError::Db(format!("query timed out after {ms} ms")));
+                        return Err(if t.is_cancelled() {
+                            DriverError::Cancelled
+                        } else {
+                            DriverError::Db(format!("query timed out after {ms} ms"))
+                        });
                     }
                 }
             }
@@ -910,10 +945,14 @@ impl SqlDriver for PgDriver {
             quote_ident(table),
             if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },
         );
-        let mut qy = sqlx::query_scalar::<_, i64>(&q);
-        for b in &binds {
-            qy = qy.bind(b.clone());
-        }
+        let make = || {
+            let mut qy = sqlx::query_scalar::<_, i64>(&q);
+            for b in &binds {
+                qy = qy.bind(b.clone());
+            }
+            qy
+        };
+        let qy = make();
         if let Some(token) = force_exact {
             // Unbounded, so pinned to one connection whose PID `cancel` can target — named
             // in a transaction, as a page is (see `pin`).
@@ -923,14 +962,9 @@ impl SqlDriver for PgDriver {
                 // closes the connection instead of handing it back mid-statement.
                 None => {
                     let mut conn = self.pool.acquire().await.map_err(db)?;
-                    let watch = async {
-                        while !token.is_cancelled() {
-                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                        }
-                    };
                     let done = tokio::select! {
                         r = qy.fetch_one(&mut *conn) => Some(r),
-                        () = watch => None,
+                        () = cancelled(token) => None,
                     };
                     match done {
                         Some(r) => r,
@@ -950,41 +984,48 @@ impl SqlDriver for PgDriver {
         // SET LOCAL needs a transaction; it also reverts on its own when this one ends. Sent
         // with the BEGIN in one round trip; the ROLLBACK is queued on drop (see `window`).
         let begin = format!("BEGIN; SET LOCAL statement_timeout = {COUNT_TIMEOUT_MS}");
+        let bound = std::time::Duration::from_millis(COUNT_TIMEOUT_MS);
         let res: Result<i64, Option<sqlx::Error>> = if !self.compat() {
             let mut tx = self.pool.begin_with(begin).await.map_err(db)?;
             qy.fetch_one(&mut *tx).await.map_err(Some)
         } else {
-            // A compat session sends the BEGIN as plain text on a connection that is closed
-            // afterwards: sqlx would not roll back a transaction it did not open, so the
-            // connection must never go back to the pool (a refused SET LOCAL leaves it aborted).
-            // A product that refuses it (see `begin_pinned`) counts under a client-side bound
-            // of the same length instead.
-            let mut held = None;
-            if !self.pin_unsupported.load(std::sync::atomic::Ordering::Relaxed) {
-                let mut conn = self.pool.acquire().await.map_err(db)?;
-                conn.close_on_drop();
-                match conn.execute(begin.as_str()).await {
-                    Ok(_) => held = Some(conn),
-                    Err(e @ sqlx::Error::Database(_)) => {
+            // A compat session begins on a connection it holds, so one whose BEGIN or SET LOCAL
+            // the server refused (an aborted or uncounted transaction) is closed, not pooled; a
+            // product that refuses it (see `begin_pinned`) counts under a client-side bound of
+            // the same length instead. The server's own bound is not trusted alone either.
+            let mut conn = self.pool.acquire().await.map_err(db)?;
+            let mut refused = self.pin_unsupported.load(std::sync::atomic::Ordering::Relaxed);
+            let mut res = Err(None);
+            if !refused {
+                let begun = sqlx::Connection::begin_with(&mut *conn, begin).await;
+                match begun {
+                    Ok(mut tx) => {
+                        res = match tokio::time::timeout(bound, make().fetch_one(&mut *tx)).await {
+                            Ok(r) => r.map_err(Some),
+                            Err(_) => Err(None),
+                        };
+                    }
+                    Err(e @ (sqlx::Error::BeginFailed | sqlx::Error::Database(_))) => {
                         self.unpin::<()>(&e);
+                        refused = true;
                     }
                     Err(e) => return Err(db(e)),
                 }
             }
-            match held {
-                Some(mut conn) => qy.fetch_one(&mut *conn).await.map_err(Some),
-                None => {
-                    let mut conn = self.pool.acquire().await.map_err(db)?;
-                    let bound = std::time::Duration::from_millis(COUNT_TIMEOUT_MS);
-                    match tokio::time::timeout(bound, qy.fetch_one(&mut *conn)).await {
-                        Ok(r) => r.map_err(Some),
-                        Err(_) => {
-                            conn.close_on_drop();
-                            Err(None)
-                        }
+            if refused {
+                conn.close_on_drop();
+                let mut conn = self.pool.acquire().await.map_err(db)?;
+                res = match tokio::time::timeout(bound, make().fetch_one(&mut *conn)).await {
+                    Ok(r) => r.map_err(Some),
+                    Err(_) => {
+                        conn.close_on_drop();
+                        Err(None)
                     }
-                }
+                };
+            } else if matches!(res, Err(None)) {
+                conn.close_on_drop();
             }
+            res
         };
         // 57014 is the statement_timeout firing — this query carries no cancel token; `None` is
         // the client-side bound. The catalog estimate is the whole table's, so a filtered count
