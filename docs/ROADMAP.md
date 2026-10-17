@@ -1,16 +1,17 @@
 # TableIQ Roadmap
 
-_Last updated 2026-10-07 · current version v0.8.9 · companion doc: [GTM.md](GTM.md)_
+_Last updated 2026-10-18 · current version v0.8.10 · companion doc: [GTM.md](GTM.md)_
 
 We are aiming for engine parity with [dbx](https://github.com/t8y2/dbx) (100+ database profiles, 22k★ in five months) while keeping the product TablePlus-grade and agent-safe. Each phase ships as one `/rudys-workflow` slice and one PR, and each merged phase gets its own release announcement (see GTM.md).
 
-## Where we are (v0.8.3)
+## Where we are (v0.8.10)
 
 | Area | Status |
 |---|---|
 | Full SQL engines | PostgreSQL, MySQL/MariaDB, SQL Server, SQLite, DuckDB |
 | Engine profiles (PostgreSQL and MySQL wire) | 23 on the existing drivers: 15 verified, 8 Beta ([ENGINES.md](ENGINES.md)) |
-| Non-SQL shells (read-only, thin) | MongoDB (`DocShell`), Redis (`KvShell`) |
+| Document and key-value browsers | MongoDB (`DocShell`, v0.8.5) and Redis (`KvShell`, v0.8.6), with staged edits and read-only MCP tools; Redis Cluster and Sentinel not yet |
+| HTTP engines (read-only, P3) | ClickHouse, Turso/libSQL, Elasticsearch/OpenSearch, rqlite, Meilisearch, Qdrant, InfluxDB 3, ChromaDB, Weaviate |
 | Built | Keyset paging to 1T rows, staged edits in one transaction, SQL log, user management, metrics board, backup/restore, ERD, schema/result diff, ⌘K, BYO-key AI (Anthropic/OpenAI/Gemini/Ollama), MCP server with a fail-closed guard and an in-repo adversarial guard suite, WASM plugins, SSH tunnels, keychain secrets, Apache-2.0 LICENSE |
 | Missing before launch | A public repo (private today), signing/notarization, auto-updater, any published release, the public cross-vendor guard test suite |
 
@@ -62,7 +63,7 @@ A **profile** is a base driver plus default port and URL scheme, dialect quirks,
 
 **Done** = each profile connects, browses, runs a query and (where allowed) stages an edit, with live tests running against the docker image for TiDB, CockroachDB and one more.
 
-**Status, v0.8.3** (the full matrix is `docs/ENGINES.md`):
+**Status, v0.8.3 to v0.8.10** (the full matrix is `docs/ENGINES.md`):
 
 - [x] The profile table (`src/lib/profiles.json`), 23 profiles, no new crates.
 - [x] Detection on connect, the compatible-database picker, per-product capabilities, and read-only grids on products without transactions.

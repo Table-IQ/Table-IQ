@@ -49,7 +49,7 @@ Deferred from the Connected Home plan review (2026-09-27, `docs/superpowers/plan
 
 ## Completed
 
-- **Engine profile leftovers** (verified 2026-10-17, v0.8.10): the connect-time transaction probe (`profiles::caps_with_probe`), the named Metrics error for engines without read-only transactions (`widget_rows`), named Structure/ERD/Explain states (`catalogUnavailable`, `explainUnavailable`), and every locally runnable profile run (15 of 23 verified).
+- **Engine profile leftovers** (v0.8.10, 2026-10-18): named Structure/ERD states (`catalogUnavailable`) and every locally runnable profile run (15 of 23 verified). Found already done in code: the connect-time transaction probe (`profiles::caps_with_probe`, v0.8.4), the named Metrics error for engines without read-only transactions (`widget_rows`), and Explain's named state (`explainUnavailable`).
 
 - **Confirm `+ Row` inserts in production.** New rows are now staged and go through the production commit confirm. **Completed:** v0.8.0 (2026-09-28)
 - **Redis follow-ups** (2026-10-06, v0.8.6):

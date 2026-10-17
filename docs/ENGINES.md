@@ -104,8 +104,9 @@ uses; a failure means that feature degrades on that product.
 
 ### Images
 
-Local runs, all on an arm64 host. 2026-10-17: QuestDB, Materialize, Manticore and StarRocks
-were re-run on the images below, after the driver changes in the notes:
+Local runs, all on an arm64 host. 2026-10-17 (QuestDB, Materialize, Manticore and StarRocks
+were also re-run that day, after the driver changes in the notes, on their 2026-10-03 images
+further down):
 
 | Profile | Image | Server version text |
 |---|---|---|
@@ -136,24 +137,31 @@ Not run, and why: **SelectDB, PlanetScale, Amazon Redshift, Neon, Supabase, Allo
 cloud services with no local image. The official openGauss image (`opengauss/opengauss`) exits
 at start (`libopenblas.so.0` missing), so its run used `enmotech/opengauss-lite`.
 
-Driver changes made for the 2026-10-17 runs (compat sessions only, except that MySQL catalog
-names are now read from bytes on every session, which reads the same text where sqlx could):
+Driver changes made for the 2026-10-17 runs (compat sessions only, except that on MySQL catalog
+names are now read from bytes and `CONNECTION_ID()` as signed or unsigned on every session,
+which reads the same values where sqlx could):
 
-- **PostgreSQL wire.** The catalog pass falls back to a form without `= ANY(int2vector)` and
-  takes the type name from `pg_type` when `format_type` answers NULL (QuestDB); the primary key
-  falls back to table order without `array_position` (openGauss), then to none. Page `OFFSET`/
-  `LIMIT` are inlined integers (RisingWave refuses placeholders there; QuestDB has no `OFFSET`
-  and gets `LIMIT lo, hi`). A server without `set_config`, or whose `BEGIN` does not report a
-  transaction (QuestDB, Materialize, RisingWave), runs its pages unpinned: bounded on the client,
-  and the Stop button cannot reach the server. A server without `pg_backend_pid()` (QuestDB) runs
+- **PostgreSQL wire.** The catalog pass falls back to a form without `= ANY(int2vector)`, so
+  with no primary keys, and takes the type name from `pg_type` when `format_type` answers NULL
+  (QuestDB). The primary key falls back to table order without `array_position` (openGauss),
+  then to none, and only when the server reports a missing feature (SQLSTATE 42883, 0A000,
+  42601 or 42804, or QuestDB's 00000); any other error is returned. Page `OFFSET`/`LIMIT` are
+  inlined integers on RisingWave and QuestDB only (RisingWave refuses placeholders there; QuestDB
+  has no `OFFSET` and gets `LIMIT lo, hi`). A server without `set_config`, or whose `BEGIN` does
+  not report a transaction (QuestDB, Materialize, RisingWave), runs its pages and counts
+  unpinned: pages and automatic counts are bounded on the client, an exact count only by Stop,
+  and Stop cannot reach the server. A server without `pg_backend_pid()` (QuestDB only) runs
   scripts the same way; its `cancel` soft check is `ok` only because there is nothing to cancel.
-- **MySQL wire.** Page `LIMIT`/`OFFSET` are inlined (StarRocks); `CONNECTION_ID()` is read as
-  signed or unsigned (StarRocks); catalog names are decoded from bytes (PolarDB-X answers
-  `CAST(… AS CHAR)` as BINARY); the schema name is the gateway's `DATABASE()` (Vitess runs the
-  catalog query on its shard, which names `vt_tiq_0`); staged commits send `BEGIN`/`COMMIT` as
-  plain text on a connection that is closed afterwards (PolarDB-X never sets the in-transaction
-  status sqlx checks). Manticore's tables come from `SHOW TABLES`/`DESCRIBE`, since it answers
-  any filtered `information_schema` query with no rows.
+- **MySQL wire.** Page `LIMIT`/`OFFSET` are inlined on StarRocks only; `CONNECTION_ID()` is read
+  as signed or unsigned (StarRocks); catalog names are decoded from bytes (PolarDB-X answers
+  `CAST(… AS CHAR)` as BINARY); the schema name in the tree and in foreign keys is the gateway's
+  `DATABASE()` (Vitess runs the catalog query on its shard, which names `vt_tiq_0`). Staged
+  commits on PolarDB-X alone send `BEGIN`/`COMMIT` as plain text on a connection that is closed
+  afterwards (PolarDB-X never sets the in-transaction status sqlx checks); on any other
+  compatible product a `BEGIN` that does not report a transaction is an error, and its connection
+  is closed. Manticore's tables come from `SHOW TABLES`/`DESCRIBE`, since it answers any filtered
+  `information_schema` query with no rows; distributed and template tables are left out (they
+  have no columns to describe).
 - **Still Beta.** Apache Doris prepares only point queries ("Only support prepare SelectStmt
   point query now"), and the MySQL driver prepares every catalog and page query. Manticore now
   connects and lists its tables, but the grid's page query (a subquery with `CAST(… AS CHAR)`)
@@ -322,16 +330,16 @@ Markers in `profiles.json`, and where the text came from:
 |---|---|---|
 | MariaDB | `MariaDB` | observed: `11.8.9-MariaDB-ubu2404 mariadb.org binary distribution (CI)` |
 | TiDB | `TiDB` | observed: `8.0.11-TiDB-v8.5.7 (CI)` |
-| OceanBase | `OceanBase` | documented, not observed: OceanBase docs: `5.7.25-OceanBase-v4.1.0.0` |
-| Apache Doris | none | no name found in vendor docs (not run) |
+| OceanBase | `OceanBase` | documented: OceanBase docs: `5.7.25-OceanBase-v4.1.0.0`; the 2026-10-17 run was named by this marker (full text not captured) |
+| Apache Doris | none | no name found in vendor docs; not captured in the 2026-10-17 run (saved profile) |
 | StarRocks | none | observed: `8.0.33 4.1.6-6862092 (no product name)` |
 | SelectDB | none | no name found in vendor docs (not run) |
-| PolarDB-X | none | n/a |
+| PolarDB-X | none | observed: `5.6.29-PXC-5.4.19-SNAPSHOT` |
 | GreatSQL | `GreatSQL` | observed: `8.4.4-5 GreatSQL, Release 5, Revision 39b389cdf3b` |
 | Dolt | `Dolt` | observed: `8.0.31 Dolt` |
 | Manticore Search | none | observed: `29.9.0 58e88d5ab@26091108 (columnar 14.2.1 ...) git branch HEAD (no branch)` (no product name) |
 | PlanetScale | none | n/a |
-| Vitess | none | no name found in vendor docs (not run) |
+| Vitess | none | no name found in vendor docs; not captured in the 2026-10-17 run (saved profile) |
 | CockroachDB | `CockroachDB` | not captured (CI asserts the product is `cockroachdb`) |
 | Amazon Redshift | `Redshift` | documented, not observed: AWS docs: `PostgreSQL 8.0.2 on i686-pc-linux-gnu, compiled by GCC gcc (GCC) 3.4.2 20041017 (Red Hat 3.4.2-6.fc3), Redshift 1.0.12103` |
 | YugabyteDB | `-YB-` | observed: `PostgreSQL 15.12-YB-2026.1.2.0-b0 on aarch64-unknown-linux-gnu, compiled by clang version 21.1.1` |
