@@ -520,6 +520,23 @@ impl PgDriver {
         }
     }
 
+    /// A count under the client-side bound alone, on one connection that is closed if the bound
+    /// is reached (the server may still be counting). `Err(None)` is the bound.
+    async fn bounded_count(
+        &self,
+        qy: sqlx::query::QueryScalar<'_, Postgres, i64, sqlx::postgres::PgArguments>,
+    ) -> DResult<Result<i64, Option<sqlx::Error>>> {
+        let mut conn = self.pool.acquire().await.map_err(db)?;
+        let bound = std::time::Duration::from_millis(COUNT_TIMEOUT_MS);
+        Ok(match tokio::time::timeout(bound, qy.fetch_one(&mut *conn)).await {
+            Ok(r) => r.map_err(Some),
+            Err(_) => {
+                conn.close_on_drop();
+                Err(None)
+            }
+        })
+    }
+
     /// Unpin the rest of this session (see `begin_pinned`); always `None`.
     fn unpin<T>(&self, why: &sqlx::Error) -> Option<T> {
         crate::applog::log("warn", &format!("pages run unpinned on this session: {why}"));
@@ -993,39 +1010,37 @@ impl SqlDriver for PgDriver {
             // the server refused (an aborted or uncounted transaction) is closed, not pooled; a
             // product that refuses it (see `begin_pinned`) counts under a client-side bound of
             // the same length instead. The server's own bound is not trusted alone either.
-            let mut conn = self.pool.acquire().await.map_err(db)?;
-            let mut refused = self.pin_unsupported.load(std::sync::atomic::Ordering::Relaxed);
-            let mut res = Err(None);
-            if !refused {
-                let begun = sqlx::Connection::begin_with(&mut *conn, begin).await;
-                match begun {
-                    Ok(mut tx) => {
-                        res = match tokio::time::timeout(bound, make().fetch_one(&mut *tx)).await {
+            if self.pin_unsupported.load(std::sync::atomic::Ordering::Relaxed) {
+                self.bounded_count(make()).await?
+            } else {
+                let mut conn = self.pool.acquire().await.map_err(db)?;
+                let outcome = {
+                    let begun = sqlx::Connection::begin_with(&mut *conn, begin).await;
+                    match begun {
+                        Ok(mut tx) => Ok(match tokio::time::timeout(bound, make().fetch_one(&mut *tx)).await {
                             Ok(r) => r.map_err(Some),
                             Err(_) => Err(None),
-                        };
+                        }),
+                        Err(e) => Err(e),
+                    }
+                };
+                match outcome {
+                    Ok(res) => {
+                        if matches!(res, Err(None)) {
+                            conn.close_on_drop();
+                        }
+                        res
                     }
                     Err(e @ (sqlx::Error::BeginFailed | sqlx::Error::Database(_))) => {
+                        // Released before the fallback takes its own: never two at once.
+                        conn.close_on_drop();
+                        drop(conn);
                         self.unpin::<()>(&e);
-                        refused = true;
+                        self.bounded_count(make()).await?
                     }
                     Err(e) => return Err(db(e)),
                 }
             }
-            if refused {
-                conn.close_on_drop();
-                let mut conn = self.pool.acquire().await.map_err(db)?;
-                res = match tokio::time::timeout(bound, make().fetch_one(&mut *conn)).await {
-                    Ok(r) => r.map_err(Some),
-                    Err(_) => {
-                        conn.close_on_drop();
-                        Err(None)
-                    }
-                };
-            } else if matches!(res, Err(None)) {
-                conn.close_on_drop();
-            }
-            res
         };
         // 57014 is the statement_timeout firing — this query carries no cancel token; `None` is
         // the client-side bound. The catalog estimate is the whole table's, so a filtered count

@@ -417,6 +417,16 @@ async fn a_compat_session_without_set_config_runs_unpinned() {
     let search = [ColumnFilter { column: "*".into(), op: FilterOp::Search, value: Some("zzz".into()) }];
     let c = drv.count_rows("public", "slow", &search, None).await.expect("bounded count");
     assert_eq!((c.count, c.exact), (None, false), "the client-side bound answered");
+    // Four bounded counts and a page at once fit the pool of four: each count holds one
+    // connection, never two (a count that held two left every one waiting on the pool).
+    let started = std::time::Instant::now();
+    let count = || drv.count_rows("public", "slow", &search, None);
+    let (a, b, c, d, p) = tokio::join!(count(), count(), count(), count(), drv.open_window_filtered("public", "t", 0, 10, &[], &[], None));
+    for r in [a, b, c, d] {
+        assert_eq!(r.map(|c| (c.count, c.exact)).expect("no pool timeout"), (None, false));
+    }
+    assert_eq!(p.expect("page").num_rows(), 5);
+    assert!(started.elapsed() < std::time::Duration::from_secs(8), "{:?}", started.elapsed());
 
     let stop = CancelToken::new();
     let started = std::time::Instant::now();
