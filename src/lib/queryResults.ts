@@ -126,7 +126,8 @@ export function transactionKeywords(engine: Engine): { begin: string; commit: st
 export function explainStatement(sql: string, engine: Engine): string | null {
   const body = sql.trim().replace(/;+\s*$/, "");
   if (!body) return null;
-  if (engine === "mysql" || engine === "clickhouse") return `EXPLAIN ${body}`;
+  // InfluxDB 3 (DataFusion): `EXPLAIN` answers as rows of plan text, like ClickHouse.
+  if (engine === "mysql" || engine === "clickhouse" || engine === "influxdb") return `EXPLAIN ${body}`;
   if (engine === "sqlite" || engine === "libsql" || engine === "rqlite") return `EXPLAIN QUERY PLAN ${body}`;
   return null;
 }

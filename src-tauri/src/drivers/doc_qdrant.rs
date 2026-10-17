@@ -59,7 +59,7 @@ const FACET_SINCE: (u32, u32) = (1, 12);
 /// Numbers a vector summary shows.
 const SUMMARY_NUMS: usize = 4;
 
-fn bad(what: &str, why: impl std::fmt::Display) -> DriverError {
+pub(super) fn bad(what: &str, why: impl std::fmt::Display) -> DriverError {
     DriverError::Db(format!("{what}: {why}"))
 }
 
@@ -93,14 +93,14 @@ fn http_error(status: u16, body: &[u8], host: &str) -> DriverError {
     let missing = String::from_utf8_lossy(body).contains("Must provide");
     DriverError::Db(match (status, reason) {
         (401, _) if missing => "this Qdrant server needs an API key (HTTP 401): enter it in the API key field".into(),
-        (401 | 403, _) => format!("Qdrant rejected the API key (HTTP {status}): it is wrong or expired, or it may not read"),
+        (401 | 403, _) => format!("Qdrant rejected the API key (HTTP {status}): it is wrong or expired, or it lacks permission to read"),
         (301..=308, _) => format!("{host} redirected the request (HTTP {status}); TableIQ does not follow redirects: connect to the final address"),
         (_, Some(r)) => r,
         (s, None) => format!("Qdrant answered HTTP {s}"),
     })
 }
 
-fn json_in(what: &str, text: &str) -> DResult<Value> {
+pub(super) fn json_in(what: &str, text: &str) -> DResult<Value> {
     if text.len() > MAX_JSON_IN {
         return Err(bad(what, format!("over {} KiB", MAX_JSON_IN >> 10)));
     }
@@ -134,7 +134,7 @@ fn sort_of(text: &str) -> DResult<Option<Value>> {
 
 /// Which payload fields to return.
 #[derive(Debug, Default, PartialEq)]
-enum Payload {
+pub(super) enum Payload {
     #[default]
     All,
     None,
@@ -143,14 +143,14 @@ enum Payload {
 }
 
 #[derive(Debug, Default, PartialEq)]
-struct Projection {
-    payload: Payload,
-    vector: bool,
+pub(super) struct Projection {
+    pub(super) payload: Payload,
+    pub(super) vector: bool,
 }
 
 /// The projection box: a list of payload keys, or the Mongo-style `{"city": 1}` (or `{"city": 0}` to hide).
 /// `_vector` asks for the vectors' summary; `_id` is always there and needs no naming.
-fn projection_of(text: &str) -> DResult<Projection> {
+pub(super) fn projection_of(text: &str) -> DResult<Projection> {
     if text.trim().is_empty() {
         return Ok(Projection::default());
     }
@@ -237,7 +237,7 @@ fn short(n: &Value) -> String {
 }
 
 /// One vector as a line: `dim=1536 [0.01, 0.02, …]`; a sparse one as `sparse nnz=3`, a multivector as `multi 4×128`.
-fn vector_summary(v: &Value) -> Value {
+pub(super) fn vector_summary(v: &Value) -> Value {
     match v {
         Value::Array(a) if a.iter().all(Value::is_array) && !a.is_empty() => {
             json!(format!("multi {}×{}", a.len(), a[0].as_array().map_or(0, Vec::len)))

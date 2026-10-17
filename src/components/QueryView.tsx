@@ -610,7 +610,7 @@ export function QueryView({
           </>
         }
         center={
-          selectedMeta ? <Chip tone="muted">{selectedMeta.columns.length} columns</Chip> : null
+          selectedMeta ? <Chip tone="muted">{selectedMeta.columns.length === 0 && selectedMeta.rowCount === 0 ? "no rows" : `${selectedMeta.columns.length} ${selectedMeta.columns.length === 1 ? "column" : "columns"}`}</Chip> : null
         }
         right={
           <>

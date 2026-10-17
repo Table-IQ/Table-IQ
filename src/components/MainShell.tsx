@@ -75,6 +75,7 @@ import {
   type ObjectInfo,
   type SavedQuery,
 } from "../lib/commands";
+import { isReadOnlyEngine } from "../lib/profiles";
 import {
   buildTableScript,
   quoteIdent,
@@ -103,7 +104,7 @@ import { loadPins, savePins, livePins } from "../lib/pins";
  *  `public`, which is never what the user meant. */
 function defaultSchema(names: string[], preferred?: string | null): string | undefined {
   if (preferred && names.includes(preferred)) return preferred;
-  return ["public", "dbo", "main"].find((n) => names.includes(n)) ?? names[0];
+  return ["public", "dbo", "main", "iox"].find((n) => names.includes(n)) ?? names[0];
 }
 
 function findObject(
@@ -643,7 +644,7 @@ export function MainShell() {
         },
       );
     }
-    if (engine !== "sqlite" && engine !== "libsql" && engine !== "rqlite") {
+    if (engine !== "sqlite" && engine !== "libsql" && engine !== "rqlite" && engine !== "influxdb") {
       items.push({
         id: "n-schema",
         label: engine === "mysql" || engine === "clickhouse" ? "New Database…" : "New Schema…",
@@ -655,8 +656,8 @@ export function MainShell() {
           ),
       });
     }
-    // DuckDB has schemas but no roles or users; Turso and rqlite have neither schemas nor roles.
-    if (engine !== "sqlite" && engine !== "duckdb" && engine !== "libsql" && engine !== "rqlite") {
+    // DuckDB has schemas but no roles or users; Turso and rqlite have neither schemas nor roles; InfluxDB's schemas are the server's own and it has no roles.
+    if (engine !== "sqlite" && engine !== "duckdb" && engine !== "libsql" && engine !== "rqlite" && engine !== "influxdb") {
       items.push({
         id: "n-group",
         label: "New Group / Role…",
@@ -825,6 +826,8 @@ export function MainShell() {
           }),
           // The pill names the session's profile: the saved one when known, else the detected product.
           profile: active.profile,
+          // …and the database the session is on now: a switch changes it, the saved one stays as typed.
+          database: active.database || saved.find((c) => c.id === active.id)?.database || "",
         }}
         activeObject={
           activeTab?.kind === "table" && activeTab.schema && activeTab.table
@@ -1016,17 +1019,19 @@ export function MainShell() {
                 className="flex shrink-0 items-center gap-1 border-t border-border px-2 text-[10px] text-muted"
                 style={{ height: "var(--statusbar-h)" }}
               >
-                <button
-                  onClick={(e) => {
-                    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                    setSidebarMenu({ x: r.left, y: r.top - 4 });
-                  }}
-                  title="New table, view, function, schema…"
-                  aria-label="New object"
-                  className="inline-flex h-[18px] w-[18px] items-center justify-center rounded text-muted transition-colors hover:bg-surface-2 hover:text-text"
-                >
-                  <IconPlus size={12} />
-                </button>
+                {!isReadOnlyEngine(engine) && (
+                  <button
+                    onClick={(e) => {
+                      const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                      setSidebarMenu({ x: r.left, y: r.top - 4 });
+                    }}
+                    title="New table, view, function, schema…"
+                    aria-label="New object"
+                    className="inline-flex h-[18px] w-[18px] items-center justify-center rounded text-muted transition-colors hover:bg-surface-2 hover:text-text"
+                  >
+                    <IconPlus size={12} />
+                  </button>
+                )}
                 {schema.schemas.length > 1 ? (
                   <select
                     value={activeSchema ?? ""}

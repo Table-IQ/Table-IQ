@@ -16,7 +16,7 @@ use crate::connections::{self, ConnConfig, ConnStore};
 use crate::lk;
 use crate::profiles;
 use crate::drivers::{
-    clickhouse::ClickHouseDriver, doc_elastic::ElasticDriver, doc_meili::MeiliDriver, doc_mongo::MongoDriver, doc_qdrant::QdrantDriver, duckdb::DuckDriver, kv_redis::RedisDriver, libsql::LibsqlDriver, logged::Logged, mysql::MySqlDriver, rqlite::RqliteDriver,
+    clickhouse::ClickHouseDriver, doc_chroma::ChromaDriver, doc_elastic::ElasticDriver, doc_meili::MeiliDriver, doc_mongo::MongoDriver, doc_qdrant::QdrantDriver, doc_weaviate::WeaviateDriver, duckdb::DuckDriver, influxdb::InfluxDriver, kv_redis::RedisDriver, libsql::LibsqlDriver, logged::Logged, mysql::MySqlDriver, rqlite::RqliteDriver,
     postgres::PgDriver, sqlite::SqliteDriver, sqlserver::SqlServerDriver, CancelToken, Change,
     AggResult, ChangesResult, ColumnFilter, DocChange, DocChangesResult, DocIndex, DocumentDriver, DriverError, EditSpec, FindOpts,
     KeyInfo, KeyPage, KvChange, KvChangesResult, KvDriver, KvRead, KvReadOpts, KvReply, KvValue, SchemaModel,
@@ -105,7 +105,7 @@ async fn maybe_open_tunnel(
         _ => return Ok((cfg.clone(), None)),
     };
     // The tunnel's local end is plain TCP to a URL's host, which TLS would then not match.
-    if matches!(cfg.engine.as_str(), "libsql" | "elasticsearch" | "rqlite" | "meilisearch" | "qdrant") {
+    if matches!(cfg.engine.as_str(), "libsql" | "elasticsearch" | "rqlite" | "meilisearch" | "qdrant" | "chroma" | "weaviate" | "influxdb") {
         return Err(format!(
             "A {} connection can't be combined with an SSH tunnel",
             match cfg.engine.as_str() {
@@ -113,6 +113,9 @@ async fn maybe_open_tunnel(
                 "rqlite" => "rqlite",
                 "meilisearch" => "Meilisearch",
                 "qdrant" => "Qdrant",
+                "chroma" => "ChromaDB",
+                "weaviate" => "Weaviate",
+                "influxdb" => "InfluxDB",
                 _ => "Elasticsearch",
             }
         ));
@@ -182,6 +185,10 @@ async fn open_driver(cfg: &ConnConfig, pw: &str) -> Result<Arc<dyn SqlDriver>, S
     // rqlite likewise: the login is a Basic-auth header, apart from the URL.
     if cfg.engine == "rqlite" {
         return Ok(Arc::new(RqliteDriver::connect(&cfg.host, &cfg.username, pw).await.map_err(|e| e.to_string())?));
+    }
+    // InfluxDB 3 likewise: the token is a Bearer header; the database is the connection's own field.
+    if cfg.engine == "influxdb" {
+        return Ok(Arc::new(InfluxDriver::connect(&cfg.host, &cfg.database, pw).await.map_err(|e| e.to_string())?));
     }
     let url = cfg.url_with_password(pw);
     let drv: Arc<dyn SqlDriver> = match cfg.engine.as_str() {
@@ -354,7 +361,7 @@ pub struct ConnectedInfo {
     pub caps: crate::profiles::Caps,
     /// A document session that cannot be edited ([`DocumentDriver::read_only`]): the shell offers no edit.
     pub read_only: bool,
-    /// False for a document session whose server cannot aggregate (Qdrant before 1.12): the shell hides the Aggregate pane.
+    /// False for a document session whose server cannot aggregate (Qdrant before 1.12, ChromaDB): the shell hides the Aggregate pane.
     pub aggregate: bool,
 }
 
@@ -481,6 +488,10 @@ pub async fn test_connection(cfg: ConnConfig, password: String) -> Result<(), St
         MeiliDriver::connect(&cfg.host, &password).await.map(|_| ()).map_err(|e| e.to_string())
     } else if cfg.engine == "qdrant" {
         QdrantDriver::connect(&cfg.host, &password).await.map(|_| ()).map_err(|e| e.to_string())
+    } else if cfg.engine == "chroma" {
+        ChromaDriver::connect(&cfg.host, &password, &cfg.database).await.map(|_| ()).map_err(|e| e.to_string())
+    } else if cfg.engine == "weaviate" {
+        WeaviateDriver::connect(&cfg.host, &password, &cfg.database).await.map(|_| ()).map_err(|e| e.to_string())
     } else {
         open_driver(&cfg, &password).await.map(|_| ())
     }
@@ -530,6 +541,7 @@ pub(crate) async fn connect_session(
     let mut session = (None, crate::profiles::effective_caps(None, None));
     let mut read_only = false;
     let mut aggregate = true;
+    let mut used_db: Option<String> = None;
     let result: Result<(), String> = async {
         if eff.engine == "redis" {
             let drv = RedisDriver::connect(&eff.url_with_password(&password))
@@ -553,9 +565,21 @@ pub(crate) async fn connect_session(
             let drv = QdrantDriver::connect(&eff.host, &password).await.map_err(|e| e.to_string())?;
             (session.0, read_only, aggregate) = (drv.product(), drv.read_only(), drv.aggregate_supported());
             lk(&state.doc_sessions).insert(id.clone(), Arc::new(drv));
+        } else if eff.engine == "chroma" {
+            let drv = ChromaDriver::connect(&eff.host, &password, &eff.database).await.map_err(|e| e.to_string())?;
+            (session.0, read_only, aggregate) = (drv.product(), drv.read_only(), drv.aggregate_supported());
+            lk(&state.doc_sessions).insert(id.clone(), Arc::new(drv));
+        } else if eff.engine == "weaviate" {
+            let drv = WeaviateDriver::connect(&eff.host, &password, &eff.database).await.map_err(|e| e.to_string())?;
+            (session.0, read_only, aggregate) = (drv.product(), drv.read_only(), drv.aggregate_supported());
+            lk(&state.doc_sessions).insert(id.clone(), Arc::new(drv));
         } else {
             let drv = open_driver(&eff, &password).await?;
             session = (drv.product(), drv.caps());
+            // A connection that named no database (InfluxDB takes the server's first) reports the one in use.
+            if eff.database.is_empty() {
+                used_db = drv.database().filter(|d| !d.is_empty());
+            }
             let drv = Arc::new(Logged { inner: drv, log: state.sql_log_for(&id) });
             // Checked again under the sessions lock: a restore that began while this was
             // opening takes the session out after marking the connection, so it never finds
@@ -580,7 +604,7 @@ pub(crate) async fn connect_session(
     Ok(ConnectedInfo {
         id,
         name: cfg.name,
-        database: cfg.database,
+        database: used_db.unwrap_or(cfg.database),
         engine: cfg.engine,
         profile: session.0,
         caps: session.1,
@@ -787,6 +811,14 @@ pub(crate) async fn switch_inner(state: &ConnState, id: String, database: String
         let drv = QdrantDriver::connect(&eff.host, &password).await.map_err(|e| e.to_string())?;
         (profile.0, read_only, aggregate) = (drv.product(), drv.read_only(), drv.aggregate_supported());
         NewSession::Doc(Arc::new(drv))
+    } else if eff.engine == "chroma" {
+        let drv = ChromaDriver::connect(&eff.host, &password, &eff.database).await.map_err(|e| e.to_string())?;
+        (profile.0, read_only, aggregate) = (drv.product(), drv.read_only(), drv.aggregate_supported());
+        NewSession::Doc(Arc::new(drv))
+    } else if eff.engine == "weaviate" {
+        let drv = WeaviateDriver::connect(&eff.host, &password, &eff.database).await.map_err(|e| e.to_string())?;
+        (profile.0, read_only, aggregate) = (drv.product(), drv.read_only(), drv.aggregate_supported());
+        NewSession::Doc(Arc::new(drv))
     } else {
         let drv = open_driver(&eff, &password).await?;
         profile = (drv.product(), drv.caps());
@@ -879,7 +911,7 @@ fn refuse_read_only_doc(drv: &dyn DocumentDriver) -> Result<(), String> {
     Ok(())
 }
 
-/// A collection's field mapping as JSON text (Elasticsearch; Meilisearch's settings; Qdrant's collection info).
+/// A collection's field mapping as JSON text (Elasticsearch; Meilisearch's settings; Qdrant's, ChromaDB's and Weaviate's collection info).
 #[tauri::command]
 pub async fn doc_mapping(state: State<'_, ConnState>, id: String, collection: String) -> Result<String, String> {
     let drv = state.doc_session(&id)?;
@@ -1246,7 +1278,7 @@ fn refuse_unsafe_literals(safe: bool) -> Result<(), String> {
     Err("Import is not available on this connection: the server did not turn on standard_conforming_strings, so TableIQ cannot quote text safely. Load the data with the server's own import tool.".to_string())
 }
 
-/// ClickHouse, Turso and rqlite are read-only browsers here. ClickHouse: a MergeTree has no transactions
+/// ClickHouse, Turso, rqlite and InfluxDB are read-only browsers here. ClickHouse: a MergeTree has no transactions
 /// to make a partial import safe to roll back, and CREATE TABLE needs an ENGINE the importer does
 /// not choose. Turso and rqlite: the driver refuses every write, and an HTTP session holds no transaction.
 fn refuse_import(engine: &str) -> Result<(), String> {
@@ -1254,6 +1286,7 @@ fn refuse_import(engine: &str) -> Result<(), String> {
         "clickhouse" => Err("Import is not supported for ClickHouse: load the data with INSERT ... SELECT or clickhouse-client".to_string()),
         "libsql" => Err("Import is not supported for Turso: load the data with the turso CLI or INSERT statements in a query tab".to_string()),
         "rqlite" => Err("Import is not supported for rqlite: load the data with rqlite's own /db/load or INSERT statements in a query tab".to_string()),
+        "influxdb" => Err("Import is not supported for InfluxDB: write points as line protocol (POST /api/v3/write_lp or the influxdb3 CLI)".to_string()),
         _ => Ok(()),
     }
 }
@@ -1812,7 +1845,7 @@ async fn introspect_any(state: &ConnState, id: &str) -> Result<SchemaModel, Stri
         .find(|c| c.id == id)
         .cloned()
         .ok_or_else(|| "unknown connection".to_string())?;
-    if matches!(cfg.engine.as_str(), "redis" | "mongodb" | "elasticsearch" | "meilisearch" | "qdrant") {
+    if matches!(cfg.engine.as_str(), "redis" | "mongodb" | "elasticsearch" | "meilisearch" | "qdrant" | "chroma" | "weaviate") {
         return Err("schema diff supports SQL connections only".into());
     }
     let pw = if cfg.is_file_engine() {
@@ -2545,6 +2578,7 @@ async fn backup_inner(
         "clickhouse" => Err("ClickHouse backup is not supported".into()),
         "libsql" => Err("Turso backup is not supported: use `turso db shell … .dump`".into()),
         "rqlite" => Err("rqlite backup is not supported: use rqlite's own GET /db/backup".into()),
+        "influxdb" => Err("InfluxDB backup is not supported: copy the server's data directory or object store".into()),
         _ => Err("Backup is not supported for this engine".into()),
     }
 }
@@ -2696,6 +2730,7 @@ async fn restore_inner(
         "clickhouse" => Err("ClickHouse restore is not supported".into()),
         "libsql" => Err("Turso restore is not supported".into()),
         "rqlite" => Err("rqlite restore is not supported: use rqlite's own POST /db/load".into()),
+        "influxdb" => Err("InfluxDB restore is not supported: write points as line protocol (POST /api/v3/write_lp)".into()),
         _ => Err("Restore is not supported for this engine".into()),
     }
 }

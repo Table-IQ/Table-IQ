@@ -15,6 +15,7 @@ import {
 } from "../lib/commands";
 import { clearMetaCaches, loadForeignKeys } from "../state/connectionStore";
 import { decodeWindow } from "../lib/arrowWindow";
+import { isReadOnlyEngine } from "../lib/profiles";
 import { formatRelative, oneLine } from "../lib/history";
 import { highlightSql } from "../lib/sqlHighlightHtml";
 import { envLabel, envTone } from "../lib/connEnv";
@@ -629,7 +630,8 @@ function QuickActions(p: LobbyViewProps) {
     { label: "New Query", kbd: "⌘T", icon: <IconSqlLog size={20} />, onClick: () => p.onRunSql() },
     { label: "Open Table", kbd: "⌘P", icon: <IconTable size={20} />, onClick: p.onPalette },
     { label: "ERD", icon: <IconErd size={20} />, onClick: p.onOpenErd },
-    { label: "Import CSV", icon: <IconImport size={20} />, onClick: p.onImport },
+    // A read-only engine has no write path: there is nothing to import into.
+    ...(isReadOnlyEngine(p.cfg.engine) ? [] : [{ label: "Import CSV", icon: <IconImport size={20} />, onClick: p.onImport }]),
   ];
   return (
     <div className="mb-3.5 grid grid-cols-4 gap-2.5">

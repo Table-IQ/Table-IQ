@@ -76,7 +76,7 @@ pub struct MeiliDriver {
 /// Names a query string may carry an API key under.
 pub(super) fn is_secret_param(name: &str) -> bool {
     let n: String = name.chars().filter(|c| !matches!(c, '_' | '-')).collect::<String>().to_ascii_lowercase();
-    matches!(n.as_str(), "key" | "apikey" | "masterkey" | "token" | "accesstoken" | "authtoken" | "bearertoken" | "secret")
+    matches!(n.as_str(), "key" | "apikey" | "masterkey" | "token" | "accesstoken" | "authtoken" | "bearertoken" | "secret" | "chromatoken" | "xchromatoken" | "weaviate" | "weaviateapikey" | "xweaviateapikey" | "authorization")
 }
 
 /// The server URL as typed — `https://host:7700`, `http://localhost:7700`, `meilisearch://host`
@@ -100,7 +100,7 @@ pub(super) fn parse_base_as(input: &str, name: &str, own_scheme: &str, default_p
         return Err(DriverError::Db(format!("no host in the {name} URL")));
     }
     if let Some((secret, _)) = u.query_pairs().find(|(k, v)| is_secret_param(k) && !v.is_empty()) {
-        return Err(DriverError::Db(format!("remove {secret} from the {name} URL and enter the key in the Password field")));
+        return Err(DriverError::Db(format!("remove {secret} from the {name} URL and enter the key in the API key (or Token) field")));
     }
     // The typed port, kept even when it is the old scheme's own (`:80`, which `Url` drops from http).
     let typed_port = rest.split(['/', '?', '#']).next().and_then(|a| a.rsplit('@').next()).and_then(|a| a.rsplit_once(':')).and_then(|(_, p)| p.parse::<u16>().ok());
@@ -125,7 +125,7 @@ pub(super) fn parse_base_as(input: &str, name: &str, own_scheme: &str, default_p
 }
 
 /// None without a key; a sensitive Bearer header with one.
-fn auth_header(key: &str) -> DResult<Option<HeaderValue>> {
+pub(super) fn auth_header(key: &str) -> DResult<Option<HeaderValue>> {
     if key.is_empty() {
         return Ok(None);
     }

@@ -88,6 +88,20 @@ describe("ConnectionSheet", () => {
     expect(html({ form: { ...form, host: "rqlite://h?password=x" } })).toContain("it would be saved in plaintext");
   });
 
+  it("InfluxDB takes one Server URL, an optional database and a token: no host, port, user or SSH tunnel", () => {
+    const form = { ...base.form, engine: "influxdb" as const, host: "http://127.0.0.1:8181", port: 8181, database: "", username: "" };
+    const h = html({ form });
+    expect(h).toContain("Server URL");
+    expect(h).toContain("http://127.0.0.1:8181");
+    expect(h).toContain("Database (optional)");
+    expect(h).toContain('placeholder="token"');
+    expect(html({ form, mode: "edit" })).toContain('placeholder="Keep saved token"');
+    expect(h).toContain("line protocol");
+    for (const gone of [">Host<", ">Port<", ">User<", ">User (optional)<", "SSH tunnel", "Connection string"]) expect(h).not.toContain(gone);
+    expect(h).toMatch(/title="InfluxDB 3 \(time series\)"/);
+    expect(html({ form: { ...form, host: "http://h:8181?token=x" } })).toContain("it would be saved in plaintext");
+  });
+
   it("shows a key pasted into the URL's query at once, under the field, without waiting for a blur", () => {
     const form = { ...base.form, engine: "qdrant" as const, host: "qdrant://h:6333?api-key=x", port: 6333, database: "", username: "" };
     const h = html({ form });
@@ -120,6 +134,35 @@ describe("ConnectionSheet", () => {
     for (const gone of [">Host<", ">Port<", ">User<", ">User (optional)<", ">Database<", "SSH tunnel", "Connection string"]) expect(h).not.toContain(gone);
     expect(h).toMatch(/title="Qdrant/);
     expect(html({ form: { ...form, host: "http://h:6333?api-key=x" } })).toContain("it would be saved in plaintext");
+  });
+
+  it("ChromaDB takes one Server URL, an optional database and a token: no host, port, user or SSH tunnel", () => {
+    const form = { ...base.form, engine: "chroma" as const, host: "http://127.0.0.1:8000", port: 8000, database: "", username: "" };
+    const h = html({ form });
+    expect(h).toContain("Server URL");
+    expect(h).toContain("http://127.0.0.1:8000");
+    expect(h).toContain("Database (optional)");
+    expect(h).toContain('placeholder="default_database"');
+    expect(h).toContain('placeholder="token"');
+    expect(html({ form, mode: "edit" })).toContain('placeholder="Keep saved token"');
+    expect(h).toContain("X-Chroma-Token");
+    for (const gone of [">Host<", ">Port<", ">User<", ">User (optional)<", "SSH tunnel", "Connection string"]) expect(h).not.toContain(gone);
+    expect(h).toMatch(/title="ChromaDB \(vector database\)"/);
+    for (const q of ["token", "x-chroma-token"]) expect(html({ form: { ...form, host: `http://h:8000?${q}=x` } })).toContain("it would be saved in plaintext");
+  });
+
+  it("Weaviate takes one Server URL, an optional tenant and an API key: no host, port, user or SSH tunnel", () => {
+    const form = { ...base.form, engine: "weaviate" as const, host: "http://127.0.0.1:8080", port: 8080, database: "", username: "" };
+    const h = html({ form });
+    expect(h).toContain("Server URL");
+    expect(h).toContain("http://127.0.0.1:8080");
+    expect(h).toContain("Tenant (optional)");
+    expect(h).toContain('placeholder="API key"');
+    expect(html({ form, mode: "edit" })).toContain('placeholder="Keep saved API key"');
+    expect(h).toContain("multi-tenant class");
+    for (const gone of [">Host<", ">Port<", ">User<", ">User (optional)<", "SSH tunnel", "Connection string"]) expect(h).not.toContain(gone);
+    expect(h).toMatch(/title="Weaviate \(vector database\)"/);
+    for (const q of ["api_key", "token", "x-weaviate-api-key"]) expect(html({ form: { ...form, host: `http://h:8080?${q}=x` } })).toContain("it would be saved in plaintext");
   });
 
   it("Turso takes one Server URL and an Auth token: no host, port, user, database or SSH tunnel", () => {

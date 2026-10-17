@@ -46,24 +46,30 @@ export function highlightJson(text: string): string {
 }
 
 /** A collection's tabs. A read-only search / vector engine shows its mapping (Meilisearch: Settings) in place of Indexes;
- *  Qdrant's documents are Points; `aggregate: false` (a server that cannot aggregate) leaves the Aggregate pane out. */
+ *  Qdrant's documents are Points and Weaviate's Objects; `aggregate: false` (a server that cannot aggregate) leaves the Aggregate pane out. */
 export function docTabs(engine: string | undefined, aggregate: boolean | undefined): { key: string; label: string }[] {
-  const mapped = engine === "elasticsearch" || engine === "meilisearch" || engine === "qdrant";
+  const mapped = engine === "elasticsearch" || engine === "meilisearch" || engine === "qdrant" || engine === "chroma" || engine === "weaviate";
   return [
-    { key: "documents", label: engine === "qdrant" ? "Points" : "Documents" },
+    { key: "documents", label: engine === "qdrant" ? "Points" : engine === "weaviate" ? "Objects" : "Documents" },
     mapped ? { key: "mapping", label: engine === "meilisearch" ? "Settings" : "Mapping" } : { key: "indexes", label: "Indexes" },
     ...(aggregate === false ? [] : [{ key: "aggregate", label: "Aggregate" }]),
   ];
 }
 
+/** The most matches ChromaDB's filtered count reads (it has no count of its own); the backend sends one more when there are more. */
+export const CHROMA_COUNT_CAP = 10_000;
+
 const EXACT = new Intl.NumberFormat("en-US");
 
 /** `1–300 of 1,234 docs` (`noun` "point": `points`); an estimate (empty filter, from collection metadata) reads
- *  `of ~1,234 (est.)`; an unknown total drops the "of …" half. */
-export function docPagerLabel(skip: number, shown: number, total: number | null, exact: boolean, noun = "doc"): string {
+ *  `of ~1,234 (est.)`; a count that stopped at its cap (`more`) reads `of 10,000+`; an unknown total drops the "of …" half.
+ *  A failed load (`failed`) has no range: the error banner above is the answer, the previous page's range would be stale. */
+export function docPagerLabel(skip: number, shown: number, total: number | null, exact: boolean, noun = "doc", more = false, failed = false): string {
+  if (failed) return "—";
   if (shown <= 0) return `0 ${noun}s`;
   const range = `${EXACT.format(skip + 1)}–${EXACT.format(skip + shown)}`;
   if (total === null) return `${range} ${noun}s`;
+  if (more) return `${range} of ${EXACT.format(total)}+ ${noun}s`;
   return exact ? `${range} of ${EXACT.format(total)} ${total === 1 ? noun : `${noun}s`}` : `${range} of ~${EXACT.format(total)} (est.)`;
 }
 

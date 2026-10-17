@@ -2,7 +2,7 @@
 //!
 //! Split by data model (plan spec #1): SQL engines (Postgres, MySQL/MariaDB, SQLite,
 //! SQL Server, DuckDB) stream Arrow via [`SqlDriver`], the document store (MongoDB) returns
-//! JSON/tree via [`DocumentDriver`] (also Elasticsearch, Meilisearch and Qdrant, read-only), and the key-value store (Redis) returns typed
+//! JSON/tree via [`DocumentDriver`] (also Elasticsearch, Meilisearch, Qdrant, ChromaDB and Weaviate, read-only), and the key-value store (Redis) returns typed
 //! values via [`KvDriver`]. All six engines are real implementations.
 
 use std::sync::{Arc, Mutex};
@@ -11,12 +11,15 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 pub mod clickhouse;
+pub mod doc_chroma;
 pub mod doc_elastic;
 pub mod doc_meili;
 pub mod doc_mongo;
 pub mod doc_qdrant;
+pub mod doc_weaviate;
 pub mod duckdb;
 pub mod exec;
+pub mod influxdb;
 pub mod kv_redis;
 pub mod libsql;
 pub mod logged;
@@ -1103,7 +1106,7 @@ pub trait DocumentDriver: Send + Sync {
     async fn list_databases(&self) -> DResult<Vec<String>> {
         Err(DriverError::NotImplemented)
     }
-    /// A read-only store (Elasticsearch, Meilisearch, Qdrant): `apply_changes` and the index calls are refused with
+    /// A read-only store (Elasticsearch, Meilisearch, Qdrant, ChromaDB, Weaviate): `apply_changes` and the index calls are refused with
     /// `NotImplemented`, and the shell offers none of them.
     fn read_only(&self) -> bool {
         false
@@ -1113,11 +1116,11 @@ pub trait DocumentDriver: Send + Sync {
     fn product(&self) -> Option<String> {
         None
     }
-    /// Whether the server can aggregate at all (Qdrant before 1.12 has no facet API): the shell hides the pane when not.
+    /// Whether the server can aggregate at all (Qdrant before 1.12 has no facet API; ChromaDB has none at all): the shell hides the pane when not.
     fn aggregate_supported(&self) -> bool {
         true
     }
-    /// The collection's field mapping as JSON text (Elasticsearch; Meilisearch's settings and fields; Qdrant's collection info).
+    /// The collection's field mapping as JSON text (Elasticsearch; Meilisearch's settings and fields; Qdrant's, ChromaDB's and Weaviate's collection info).
     async fn mapping(&self, _collection: &str) -> DResult<String> {
         Err(DriverError::NotImplemented)
     }

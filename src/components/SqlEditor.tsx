@@ -59,6 +59,8 @@ function cmDialectFor(engine: Engine | undefined): SQLDialect {
     case "libsql":
     case "rqlite":
       return SQLite;
+    // InfluxDB 3 is DataFusion SQL, which is Postgres-flavoured: double-quoted identifiers, `::` casts.
+    case "influxdb":
     default:
       return PostgreSQL;
   }

@@ -272,12 +272,39 @@ describe("Qdrant over MCP", () => {
   });
 });
 
+describe("ChromaDB over MCP", () => {
+  it("is never shareable, never listed, and its note names it", () => {
+    expect(isMcpEngine("chroma")).toBe(false);
+    const row = mcpRowState({ engine: "chroma" }, { id: "c1", writes: true, rev: AGENT_REV });
+    expect(row).toMatchObject({ shareable: false, shared: false, writes: false, writable: false });
+    expect(row.note).toBe("Not available over MCP yet: TableIQ's agent guard has not been reviewed for ChromaDB.");
+  });
+});
+
+describe("Weaviate over MCP", () => {
+  it("is never shareable, never listed, and its note names it", () => {
+    expect(isMcpEngine("weaviate")).toBe(false);
+    const row = mcpRowState({ engine: "weaviate" }, { id: "w1", writes: true, rev: AGENT_REV });
+    expect(row).toMatchObject({ shareable: false, shared: false, writes: false, writable: false });
+    expect(row.note).toBe("Not available over MCP yet: TableIQ's agent guard has not been reviewed for Weaviate.");
+  });
+});
+
+describe("InfluxDB over MCP", () => {
+  it("is never shareable, never listed, and its note names it", () => {
+    expect(isMcpEngine("influxdb")).toBe(false);
+    const row = mcpRowState({ engine: "influxdb" }, { id: "c1", writes: true, rev: AGENT_REV });
+    expect(row).toMatchObject({ shareable: false, shared: false, writes: false, writable: false });
+    expect(row.note).toBe("Not available over MCP yet: TableIQ's agent guard has not been reviewed for InfluxDB.");
+  });
+});
+
 describe("mcpEmptyNote", () => {
   it("says none are saved only when none are", () => {
     expect(mcpEmptyNote([])).toBe("No connections saved yet.");
   });
-  it("says why when connections are saved but none can be listed (rqlite, Meilisearch, Qdrant, ClickHouse, Turso, Elasticsearch)", () => {
-    for (const engine of ["rqlite", "meilisearch", "qdrant", "clickhouse", "libsql", "elasticsearch"] as const) {
+  it("says why when connections are saved but none can be listed (rqlite, Meilisearch, Qdrant, ChromaDB, Weaviate, InfluxDB, ClickHouse, Turso, Elasticsearch)", () => {
+    for (const engine of ["rqlite", "meilisearch", "qdrant", "chroma", "weaviate", "influxdb", "clickhouse", "libsql", "elasticsearch"] as const) {
       expect(mcpEmptyNote([{ engine }])).toContain("None of your saved connections can be shared with agents");
     }
   });

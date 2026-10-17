@@ -82,6 +82,34 @@ describe("Meilisearch pill", () => {
   });
 });
 
+describe("InfluxDB pill", () => {
+  it("is TLS by its URL: influxdb:// and a bare host are, unless this machine", () => {
+    const inf = (host: string) => pillSegments({ ...base, engine: "influxdb" as const, host }, null);
+    expect(["https://h:8181", "influxdb://in.example.com", "in.example.com:8181", "http://h", "http://127.0.0.1:58181", "influxdb://localhost", "localhost:8181", "[::1]:8181", "influxdb://127.0.0.1:8181"].map((h) => inf(h).ssl)).toEqual([true, true, true, false, false, false, false, false, false]);
+    // A name that merely starts like a loopback address is not one.
+    expect(["influxdb://127.evil.example", "127.0.0.1.evil.com", "influxdb://localhost.evil.com", "localhostfoo.com"].map((h) => inf(h).ssl)).toEqual([true, true, true, true]);
+    expect(inf("http://h").engine).toBe("InfluxDB");
+  });
+});
+
+describe("ChromaDB pill", () => {
+  it("is TLS by its URL: chroma:// and a bare host are, unless this machine", () => {
+    const ch = (host: string) => pillSegments({ ...base, engine: "chroma" as const, host }, null);
+    expect(["https://h:8000", "chroma://ch.example.com", "ch.example.com:8000", "http://h", "http://127.0.0.1:58000", "chroma://localhost", "localhost:8000", "[::1]:8000"].map((h) => ch(h).ssl)).toEqual([true, true, true, false, false, false, false, false]);
+    expect(["chroma://127.evil.example", "127.0.0.1.evil.com", "chroma://localhost.evil.com"].map((h) => ch(h).ssl)).toEqual([true, true, true]);
+    expect(ch("http://h").engine).toBe("ChromaDB");
+  });
+});
+
+describe("Weaviate pill", () => {
+  it("is TLS by its URL: weaviate:// and a bare host are, unless this machine", () => {
+    const wv = (host: string) => pillSegments({ ...base, engine: "weaviate" as const, host }, null);
+    expect(["https://h:8080", "weaviate://wv.example.com", "wv.example.com:8080", "http://h", "http://127.0.0.1:58090", "weaviate://localhost", "localhost:8080", "[::1]:8080"].map((h) => wv(h).ssl)).toEqual([true, true, true, false, false, false, false, false]);
+    expect(["weaviate://127.evil.example", "127.0.0.1.evil.com", "weaviate://localhost.evil.com"].map((h) => wv(h).ssl)).toEqual([true, true, true]);
+    expect(wv("http://h").engine).toBe("Weaviate");
+  });
+});
+
 describe("Qdrant pill", () => {
   it("is TLS by its URL: qdrant:// and a bare host are, unless this machine", () => {
     const qd = (host: string) => pillSegments({ ...base, engine: "qdrant" as const, host }, null);

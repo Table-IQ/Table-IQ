@@ -329,6 +329,9 @@ fn allowed(host: &dyn Host, cfg: &McpConfig, id: &str) -> Result<(ConnConfig, Mc
             "elasticsearch" => " Elasticsearch is not available over MCP yet: TableIQ's agent guard has not been reviewed for it.",
             "meilisearch" => " Meilisearch is not available over MCP yet: TableIQ's agent guard has not been reviewed for it.",
             "qdrant" => " Qdrant is not available over MCP yet: TableIQ's agent guard has not been reviewed for it.",
+            "chroma" => " ChromaDB is not available over MCP yet: TableIQ's agent guard has not been reviewed for it.",
+            "weaviate" => " Weaviate is not available over MCP yet: TableIQ's agent guard has not been reviewed for it.",
+            "influxdb" => " InfluxDB is not available over MCP yet: TableIQ's agent guard has not been reviewed for it.",
             _ => "",
         };
         return Err(format!("Connection `{id}` is not a SQL connection.{hint}"));
@@ -2012,6 +2015,45 @@ mod tests {
         assert!(m.list_databases(Extensions::new(), Parameters(ConnArgs { connection_id: "qd".into() })).await.is_err());
         let listed = m.list_connections(Extensions::new()).await.unwrap();
         assert!(!listed.contains("qdrant"), "{listed}");
+    }
+
+    /// InfluxDB 3, the same: refused before anything connects, and never listed.
+    #[tokio::test]
+    async fn an_influxdb_connection_is_refused_and_unlisted() {
+        let m = mcp(vec![cfg_of("in", "influxdb", "http://127.0.0.1:8181")], &[("in", true)]);
+        let e = query(&m, "in", "SELECT 1").await.unwrap_err();
+        assert!(e.contains("not a SQL connection") && e.contains("not available over MCP"), "{e}");
+        assert!(m.list_databases(Extensions::new(), Parameters(ConnArgs { connection_id: "in".into() })).await.is_err());
+        let listed = m.list_connections(Extensions::new()).await.unwrap();
+        assert!(!listed.contains("influxdb"), "{listed}");
+    }
+
+    /// ChromaDB, the same: refused before anything connects, and never listed.
+    #[tokio::test]
+    async fn a_chroma_connection_is_refused_and_unlisted() {
+        let m = mcp(vec![cfg_of("ch", "chroma", "http://127.0.0.1:8000")], &[("ch", true)]);
+        let e = query(&m, "ch", "SELECT 1").await.unwrap_err();
+        assert!(e.contains("not a SQL connection") && e.contains("not available over MCP"), "{e}");
+        let mut a = find_args(None);
+        a.connection_id = "ch".into();
+        assert!(mfind(&m, a).await.unwrap_err().contains("not a MongoDB connection"));
+        assert!(m.list_databases(Extensions::new(), Parameters(ConnArgs { connection_id: "ch".into() })).await.is_err());
+        let listed = m.list_connections(Extensions::new()).await.unwrap();
+        assert!(!listed.contains("chroma"), "{listed}");
+    }
+
+    /// Weaviate, the same: refused before anything connects, and never listed.
+    #[tokio::test]
+    async fn a_weaviate_connection_is_refused_and_unlisted() {
+        let m = mcp(vec![cfg_of("wv", "weaviate", "http://127.0.0.1:8080")], &[("wv", true)]);
+        let e = query(&m, "wv", "SELECT 1").await.unwrap_err();
+        assert!(e.contains("not a SQL connection") && e.contains("not available over MCP"), "{e}");
+        let mut a = find_args(None);
+        a.connection_id = "wv".into();
+        assert!(mfind(&m, a).await.unwrap_err().contains("not a MongoDB connection"));
+        assert!(m.list_databases(Extensions::new(), Parameters(ConnArgs { connection_id: "wv".into() })).await.is_err());
+        let listed = m.list_connections(Extensions::new()).await.unwrap();
+        assert!(!listed.contains("weaviate"), "{listed}");
     }
 
     #[tokio::test(flavor = "multi_thread")]

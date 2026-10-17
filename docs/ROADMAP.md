@@ -1,6 +1,6 @@
 # TableIQ Roadmap
 
-_Last updated 2026-10-07 · current version v0.8.8 · companion doc: [GTM.md](GTM.md)_
+_Last updated 2026-10-07 · current version v0.8.9 · companion doc: [GTM.md](GTM.md)_
 
 We are aiming for engine parity with [dbx](https://github.com/t8y2/dbx) (100+ database profiles, 22k★ in five months) while keeping the product TablePlus-grade and agent-safe. Each phase ships as one `/rudys-workflow` slice and one PR, and each merged phase gets its own release announcement (see GTM.md).
 
@@ -100,6 +100,8 @@ A **profile** is a base driver plus default port and URL scheme, dialect quirks,
 SQL-shaped engines (ClickHouse, Snowflake, BigQuery, Databricks, Turso, D1, rqlite) implement `SqlDriver` and read-only first. Search and vector engines get a document shell modelled on `DocShell`.
 
 **Done** = ClickHouse, Turso and Elasticsearch each have live tests. The rest may ship read-only.
+
+**Status, v0.8.9:** InfluxDB 3, ChromaDB and Weaviate ship read-only too (second CI job `search-engines`). Not started: Snowflake, BigQuery, Databricks, Cloudflare D1, Milvus, VictoriaMetrics.
 
 **Status, v0.8.8:** rqlite, Meilisearch and Qdrant ship read-only too (own live tests in the `http-engines` job). Not started: Snowflake, BigQuery, Databricks, Cloudflare D1, Milvus, Weaviate, ChromaDB, InfluxDB 3, VictoriaMetrics.
 

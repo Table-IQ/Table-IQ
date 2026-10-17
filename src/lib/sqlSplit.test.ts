@@ -286,6 +286,13 @@ describe("Turso / libSQL splitting", () => {
   });
 });
 
+describe("InfluxDB splitting", () => {
+  it("splits like Postgres: one statement per request, so the editor must split on top-level semicolons", () => {
+    expect(dialectFor("influxdb")).toBe("postgres");
+    expect(splitStatements("SELECT ';' AS a; -- c;\nSELECT \"x;y\" FROM t;", "postgres").map((s) => s.text)).toEqual(["SELECT ';' AS a", "-- c;\nSELECT \"x;y\" FROM t"]);
+  });
+});
+
 describe("rqlite splitting", () => {
   it("splits like SQLite", () => {
     expect(dialectFor("rqlite")).toBe("sqlite");

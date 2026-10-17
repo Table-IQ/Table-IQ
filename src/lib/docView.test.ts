@@ -46,11 +46,18 @@ describe("docTabs", () => {
     expect(labels("meilisearch", true)).toEqual(["Documents", "Settings", "Aggregate"]);
     expect(labels("qdrant", true)).toEqual(["Points", "Mapping", "Aggregate"]);
     expect(labels("qdrant", false)).toEqual(["Points", "Mapping"]);
+    expect(labels("chroma", false)).toEqual(["Documents", "Mapping"]);
+    expect(labels("weaviate", true)).toEqual(["Objects", "Mapping", "Aggregate"]);
+    expect(labels("weaviate", undefined)).toEqual(["Objects", "Mapping", "Aggregate"]);
     expect(docTabs("qdrant", undefined).map((t) => t.key)).toEqual(["documents", "mapping", "aggregate"]);
   });
 });
 
 describe("docPagerLabel", () => {
+  it("has no range after a failed load: the previous page's range would be stale", () => {
+    expect(docPagerLabel(0, 2, 2, true, "document", false, true)).toBe("—");
+    expect(docPagerLabel(300, 0, null, false, "object", false, true)).toBe("—");
+  });
   it("exact, estimated and unknown totals", () => {
     expect(docPagerLabel(0, 0, 0, true)).toBe("0 docs");
     expect(docPagerLabel(0, 300, 1234, true)).toBe("1–300 of 1,234 docs");
@@ -60,6 +67,7 @@ describe("docPagerLabel", () => {
     expect(docPagerLabel(100, 100, null, false)).toBe("101–200 docs");
     expect(docPagerLabel(0, 10, 501, true, "point")).toBe("1–10 of 501 points");
     expect(docPagerLabel(0, 0, 0, true, "point")).toBe("0 points");
+    expect(docPagerLabel(0, 300, 10000, false, "doc", true)).toBe("1–300 of 10,000+ docs");
   });
 });
 

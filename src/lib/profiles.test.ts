@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ENGINE_COLORS, ENGINE_MONOGRAMS } from "../components/ui/EngineIcon";
 import cases from "./agentAccessCases.json";
-import { AGENT_REV, MONGODB_AGENT_SINCE, PROFILES, REDIS_AGENT_SINCE, applyPreset, capsOf, explainUnavailable, presetFor, profileForUrl, profileOf, profilesFor } from "./profiles";
+import { AGENT_REV, MONGODB_AGENT_SINCE, PROFILES, REDIS_AGENT_SINCE, applyPreset, capsOf, explainUnavailable, isReadOnlyEngine, presetFor, profileForUrl, profileOf, profilesFor } from "./profiles";
 
 /** WCAG relative luminance of a `#rrggbb` colour. */
 function luminance(hex: string): number {
@@ -139,6 +139,13 @@ describe("agent access", () => {
   });
 });
 
+describe("isReadOnlyEngine", () => {
+  it("is true for the read-only browsers and false for engines with a write path", () => {
+    for (const e of ["clickhouse", "libsql", "elasticsearch", "rqlite", "meilisearch", "qdrant", "chroma", "weaviate", "influxdb"]) expect(isReadOnlyEngine(e), e).toBe(true);
+    for (const e of ["postgres", "mysql", "sqlite", "duckdb", "mongodb", "redis", "sqlserver"]) expect(isReadOnlyEngine(e), e).toBe(false);
+  });
+});
+
 describe("capsOf", () => {
   it("is all true for a base engine, from the profile's flags otherwise", () => {
     expect(capsOf("postgres")).toEqual({ transactions: true, backup: true, userMgmt: true, agents: true });
@@ -235,6 +242,42 @@ describe("Meilisearch", () => {
     expect(ENGINE_MONOGRAMS.meilisearch).toBe("Me");
     expect(contrast("#ffffff", ENGINE_COLORS.meilisearch)).toBeGreaterThanOrEqual(4.5);
     expect(contrast(ENGINE_COLORS.meilisearch, "#15171c")).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("InfluxDB", () => {
+  it("is a read-only browser: no transactions, backup, users or agents, and port 8181", () => {
+    expect(capsOf("influxdb")).toEqual({ transactions: false, backup: false, userMgmt: false, agents: false });
+    expect(presetFor("influxdb", null)).toEqual({ port: 8181, username: "", database: "", sslmode: "prefer" });
+  });
+  it("draws an indigo fill that is legible under its white monogram and visible on the dark surface", () => {
+    expect(ENGINE_MONOGRAMS.influxdb).toBe("In");
+    expect(contrast("#ffffff", ENGINE_COLORS.influxdb)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(ENGINE_COLORS.influxdb, "#15171c")).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("ChromaDB", () => {
+  it("is a read-only browser: no transactions, backup, users or agents, and port 8000", () => {
+    expect(capsOf("chroma")).toEqual({ transactions: false, backup: false, userMgmt: false, agents: false });
+    expect(presetFor("chroma", null)).toEqual({ port: 8000, username: "", database: "", sslmode: "prefer" });
+  });
+  it("draws an orange fill that is legible under its white monogram and visible on the dark surface", () => {
+    expect(ENGINE_MONOGRAMS.chroma).toBe("Cd");
+    expect(contrast("#ffffff", ENGINE_COLORS.chroma)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(ENGINE_COLORS.chroma, "#15171c")).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("Weaviate", () => {
+  it("is a read-only browser: no transactions, backup, users or agents, and port 8080", () => {
+    expect(capsOf("weaviate")).toEqual({ transactions: false, backup: false, userMgmt: false, agents: false });
+    expect(presetFor("weaviate", null)).toEqual({ port: 8080, username: "", database: "", sslmode: "prefer" });
+  });
+  it("draws an olive fill that is legible under its white monogram and visible on the dark surface", () => {
+    expect(ENGINE_MONOGRAMS.weaviate).toBe("We");
+    expect(contrast("#ffffff", ENGINE_COLORS.weaviate)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(ENGINE_COLORS.weaviate, "#15171c")).toBeGreaterThanOrEqual(2);
   });
 });
 

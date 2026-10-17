@@ -102,3 +102,36 @@ describe("the aggregate pane's empty state names what to run", () => {
     expect(text("mongodb")).toContain("Run a pipeline to see its results.");
   });
 });
+
+describe("the documents pane on a read-only (Weaviate) session", () => {
+  it("shows Weaviate's where hint, keeps the Sort box, and counts objects", async () => {
+    const { DocCollection } = await import("./DocCollection");
+    const wv = renderToStaticMarkup(<DocCollection connId="wv1" collection="Place" visible readOnly engine="weaviate" />);
+    expect(wv).toContain("read-only");
+    expect(wv).toContain("&quot;operator&quot;: &quot;Equal&quot;");
+    expect(wv).toContain("_vector");
+    expect(wv).toContain('aria-label="Sort"');
+    expect(wv).not.toContain("Insert a new document");
+    expect(wv).toContain('aria-label="Objects per page"');
+  });
+  it("asks for a property to group by on the Aggregate pane", async () => {
+    const { DocAggregate } = await import("./DocAggregate");
+    const a = renderToStaticMarkup(<DocAggregate connId="wv1" collection="Place" active engine="weaviate" />);
+    expect(a).toContain("&quot;key&quot;: &quot;city&quot;");
+    expect(a).toContain('aria-label="Facets"');
+    expect(a).toContain("Run a facet query to see its results.");
+  });
+});
+
+describe("the documents pane on a read-only (ChromaDB) session", () => {
+  it("shows Chroma's filter hint, has no Sort box, and offers no insert", async () => {
+    const { DocCollection } = await import("./DocCollection");
+    const ch = renderToStaticMarkup(<DocCollection connId="ch1" collection="places" visible readOnly engine="chroma" />);
+    expect(ch).toContain("read-only");
+    expect(ch).toContain("&quot;city&quot;: &quot;London&quot;");
+    expect(ch).toContain("_embedding");
+    expect(ch).not.toContain('aria-label="Sort"');
+    expect(ch).not.toContain("Insert a new document");
+    expect(ch).toContain('aria-label="Documents per page"');
+  });
+});
