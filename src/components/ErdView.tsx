@@ -13,6 +13,8 @@ import {
   type NodeBox,
 } from "../lib/erdLayout";
 import { tabGuard } from "../state/tabGuard";
+import { useConnections } from "../state/connectionStore";
+import { catalogUnavailable } from "../lib/profiles";
 import { Toolbar, ToolbarButton, ToolbarSpacer } from "./ui/Toolbar";
 import { IconRefresh, IconSearch } from "./ui/Icon";
 
@@ -83,7 +85,20 @@ export function ErdView({
   // arrangement or snap the viewport back to fit.
   const userArrangedRef = useRef(false);
 
-  const refresh = () => foreignKeys(connId).then(setFks).catch(() => setFks([]));
+  const engine = useConnections((s) => s.active?.engine ?? "postgres");
+  const profile = useConnections((s) => s.active?.profile);
+  /** Named when a wire-compatible product has no foreign-key catalog; a base engine's error stays silent. */
+  const [fkNote, setFkNote] = useState<string | null>(null);
+  const refresh = () =>
+    foreignKeys(connId)
+      .then((f) => {
+        setFks(f);
+        setFkNote(null);
+      })
+      .catch(() => {
+        setFks([]);
+        setFkNote(catalogUnavailable("Relationships", engine, profile));
+      });
   useEffect(() => {
     refresh();
   }, [connId]);
@@ -303,7 +318,7 @@ export function ErdView({
       <Toolbar>
         <span className="inline-flex items-center gap-1.5 text-xs text-muted">
           <span className="text-text">Schema diagram</span>
-          <span>· {edges.length} relationships</span>
+          <span>· {fkNote ?? `${edges.length} relationships`}</span>
         </span>
         <ToolbarSpacer />
         <label className="flex h-7 items-center gap-1.5 rounded-md border border-border bg-bg px-2 focus-within:border-primary">

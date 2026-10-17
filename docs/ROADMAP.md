@@ -9,7 +9,7 @@ We are aiming for engine parity with [dbx](https://github.com/t8y2/dbx) (100+ da
 | Area | Status |
 |---|---|
 | Full SQL engines | PostgreSQL, MySQL/MariaDB, SQL Server, SQLite, DuckDB |
-| Engine profiles (PostgreSQL and MySQL wire) | 23 on the existing drivers: 7 verified, 16 Beta ([ENGINES.md](ENGINES.md)) |
+| Engine profiles (PostgreSQL and MySQL wire) | 23 on the existing drivers: 15 verified, 8 Beta ([ENGINES.md](ENGINES.md)) |
 | Non-SQL shells (read-only, thin) | MongoDB (`DocShell`), Redis (`KvShell`) |
 | Built | Keyset paging to 1T rows, staged edits in one transaction, SQL log, user management, metrics board, backup/restore, ERD, schema/result diff, ⌘K, BYO-key AI (Anthropic/OpenAI/Gemini/Ollama), MCP server with a fail-closed guard and an in-repo adversarial guard suite, WASM plugins, SSH tunnels, keychain secrets, Apache-2.0 LICENSE |
 | Missing before launch | A public repo (private today), signing/notarization, auto-updater, any published release, the public cross-vendor guard test suite |
@@ -68,7 +68,9 @@ A **profile** is a base driver plus default port and URL scheme, dialect quirks,
 - [x] Detection on connect, the compatible-database picker, per-product capabilities, and read-only grids on products without transactions.
 - [x] Live tests in CI against TiDB, CockroachDB and MariaDB (`src-tauri/tests/profile_live.rs`).
 - [x] A by-hand smoke run against the profiles that could be run on the test machine: 8 of the 20 profiles outside CI. 7 profiles are verified, meaning every hard check passed: MariaDB, TiDB and CockroachDB (CI), and GreatSQL, Dolt, YugabyteDB and TimescaleDB (by hand).
-- [ ] The other 16 ship as Beta. Four were run and failed a hard check: QuestDB and Materialize at Browse, Manticore at Browse (it connects through the session-setup fallback), and StarRocks at connect (run before the fallback, not re-run). Twelve were not run: Apache Doris, RisingWave and openGauss have images that were too large or would not start; OceanBase, PolarDB-X and Vitess were not probed; SelectDB, PlanetScale, Amazon Redshift, Neon, Supabase and AlloyDB are cloud only. Each Beta profile moves to verified when its row in `docs/ENGINES.md` has every hard check `ok`.
+- [x] Every profile with a local image has been run (v0.8.10, 2026-10-17). Eight more are verified after compat-only driver fixes: OceanBase, StarRocks, PolarDB-X, Vitess, openGauss, QuestDB, Materialize and RisingWave, so 15 of 23 are verified.
+- Beta by decision: Apache Doris (prepares only point queries) and Manticore Search (the grid's page SQL is beyond it) each need a text-protocol path of their own; SelectDB, PlanetScale, Amazon Redshift, Neon, Supabase and AlloyDB are cloud only and stay Beta until someone runs them with an account (`docs/ENGINES.md`, "Add a profile").
+- [x] Structure and ERD name the product ("… aren't available on QuestDB yet") instead of showing a raw catalog error (v0.8.10).
 - [ ] Agent access for compatible engines. It opens per engine after the agent guard is reviewed for it: CockroachDB since 0.8.4; TiDB stays closed (it has no read-only transaction, `docs/ENGINES.md`); the rest cannot be shared yet (TODOS.md).
 - [x] Cloud URL presets for RDS/Aurora, Azure PostgreSQL/MySQL and Cloud SQL (v0.8.4); Azure SQL gets TLS only.
 
@@ -188,8 +190,8 @@ A product that speaks the PostgreSQL or MySQL wire protocol is a profile, not a 
 |---|---|---|
 | PostgreSQL, MySQL, MariaDB, SQL Server, SQLite, DuckDB | native / sidecar | ✅ shipped |
 | MongoDB, Redis | native | 🟡 read-only → P2 |
-| TiDB, OceanBase-MySQL, Doris, StarRocks, SelectDB, PolarDB, GreatSQL, Dolt, Manticore, TDSQL, GoldenDB | MySQL wire | P1, profiles in v0.8.3: TiDB, GreatSQL and Dolt verified; OceanBase, Doris, StarRocks, SelectDB, PolarDB-X and Manticore Beta. TDSQL and GoldenDB have no profile yet |
-| CockroachDB, Redshift, openGauss, GaussDB, QuestDB, KWDB, Cloudberry, OpenTenBase | PG wire | P1, profiles in v0.8.3: CockroachDB verified; Redshift, openGauss and QuestDB Beta. GaussDB, KWDB, Cloudberry and OpenTenBase only with zh launch |
+| TiDB, OceanBase-MySQL, Doris, StarRocks, SelectDB, PolarDB, GreatSQL, Dolt, Manticore, TDSQL, GoldenDB | MySQL wire | P1: TiDB, GreatSQL, Dolt, OceanBase, StarRocks and PolarDB-X verified; Doris, SelectDB and Manticore Beta. TDSQL and GoldenDB have no profile yet |
+| CockroachDB, Redshift, openGauss, GaussDB, QuestDB, KWDB, Cloudberry, OpenTenBase | PG wire | P1: CockroachDB, openGauss and QuestDB verified; Redshift Beta. GaussDB, KWDB, Cloudberry and OpenTenBase only with zh launch |
 | ClickHouse, Elasticsearch, Easysearch, Solr, Meilisearch | HTTP | P3 (Easysearch and Solr on request) |
 | Qdrant, Milvus, Weaviate, ChromaDB | HTTP | P3 |
 | Turso, Cloudflare D1, rqlite, InfluxDB 3, VictoriaMetrics, HBase REST | HTTP | P3 (HBase on request) |

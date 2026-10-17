@@ -73,6 +73,13 @@ export function explainUnavailable(engine: string, profile?: string | null): str
   return p?.explain === false ? `Explain isn't available on ${p.label} yet.` : null;
 }
 
+/** The named message for a catalog feature (Structure, ERD) that failed on a wire-compatible
+ *  product, else null: there the base engine's catalog may simply not exist (docs/ENGINES.md). */
+export function catalogUnavailable(feature: string, engine: string, profile?: string | null): string | null {
+  const p = profileOf(engine, profile);
+  return p && !p.real ? `${feature} aren't available on ${p.label} yet.` : null;
+}
+
 /** Why a product without an `agentNote` is not shared. Mirrored in `profiles.rs` (`AGENT_NOTE`). */
 export const AGENT_NOTE =
   "TableIQ's agent guard has been reviewed for PostgreSQL, MySQL, MariaDB and CockroachDB only.";

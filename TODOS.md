@@ -44,24 +44,12 @@ Deferred from the Connected Home plan review (2026-09-27, `docs/superpowers/plan
     - What: run `any_profile_smoke` against each; flip `tested` for Neon and Supabase if every hard check passes.
     - Why: they are cloud-only, so no local image exists, and Neon and Supabase are Beta.
     - Context: TLS settings and host suffixes in `profiles.json`; the matrix rows say `not run (no local image)`.
-  - **Probe transaction support at connect instead of the static flag.**
-    - What: try a `BEGIN`/`ROLLBACK` on the probe connection and use the answer over `transactions` in the profile.
-    - Why: Doris, StarRocks, SelectDB and Manticore have no detection marker, so a server saved through a base tile still gets staged commits that are not atomic.
-    - Context: `pending.md` 2i; `Caps` in `src-tauri/src/profiles.rs`.
-  - **Per-feature "not available on {label} yet" states for Structure, ERD and Explain.**
-    - What: replace the raw catalog error with a named, per-feature message.
-    - Why: `explain_json` fails on five verified engines, QuestDB fails its catalog query and Materialize fails the grid's page query (`set_config`); the user sees a driver error.
-    - Context: `docs/ENGINES.md` soft-check table.
-  - **`TIQ_REQUIRE_LIVE` for the existing live tests.**
-    - What: make the Postgres, MySQL and SQL Server live tests fail instead of skip when the flag is set and their URL is not.
-    - Why: only `profile_live` and `mysql_ssl_live` do so; a CI service that does not start leaves the others skipped and green. `guard_live`'s MariaDB cases are the same: they skip silently when `TIQ_MARIADB_URL` is unset.
-    - Context: `.github/workflows/ci.yml`.
-  - **A readable error for Metrics widgets on engines without read-only transactions.**
-    - What: say that the engine has no read-only transactions, instead of passing on the driver text.
-    - Why: widgets run inside `START TRANSACTION READ ONLY` (§2g), which TiDB rejects by default (`tidb_enable_noop_functions` turns it into a no-op) and other engines may reject.
-    - Context: `query_rows` with `read_only: true`.
+  - **`TIQ_REQUIRE_LIVE` for the SQL Server live tests.** Postgres, MySQL and MariaDB are done (`tests/common/mod.rs` `live_url`). SQL Server stays a skip: CI has no SQL Server, and `sql_log`, `search`, `mcp_live`, `backup_live` and `restore_live` read `TIQ_MSSQL_URL` directly.
+  - **Doris and Manticore need a text-protocol path.** Doris prepares only point queries; Manticore's SQL cannot run the grid's page query. Both stay Beta (`docs/ENGINES.md`).
 
 ## Completed
+
+- **Engine profile leftovers** (verified 2026-10-17, v0.8.10): the connect-time transaction probe (`profiles::caps_with_probe`), the named Metrics error for engines without read-only transactions (`widget_rows`), named Structure/ERD/Explain states (`catalogUnavailable`, `explainUnavailable`), and every locally runnable profile run (15 of 23 verified).
 
 - **Confirm `+ Row` inserts in production.** New rows are now staged and go through the production commit confirm. **Completed:** v0.8.0 (2026-09-28)
 - **Redis follow-ups** (2026-10-06, v0.8.6):

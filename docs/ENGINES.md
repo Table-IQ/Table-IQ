@@ -6,16 +6,19 @@ and so on) so the connection sheet can preset its port and scheme, and so TableI
 that product lacks. The profile table is `src/lib/profiles.json`; the Rust backend reads the
 same file.
 
-Seven profiles are **verified**: every hard check below passed in a run against the real
-product. The other sixteen ship as **Beta**: they are in the picker, marked "(Beta)", and have
-either failed a run or not been run. A Beta profile may work; this page does not claim it.
+Fifteen profiles are **verified**: every hard check below passed in a run against the real
+product. The other eight ship as **Beta**: they are in the picker, marked "(Beta)", and have
+either failed a run (Apache Doris, Manticore Search) or are cloud services with no local image
+(SelectDB, PlanetScale, Amazon Redshift, Neon, Supabase, AlloyDB). A Beta profile may work;
+this page does not claim it.
 
 ## Compatibility matrix
 
 Run by `src-tauri/tests/profile_live.rs`. "CI" is TiDB, CockroachDB and MariaDB from
 `docker/profiles/docker-compose.yml`, which run in CI and were re-run on
-2026-10-03 for this page. "local 2026-10-03" is a by-hand run of `any_profile_smoke` against
-a throwaway container (images below). Cells read `ok`, the first line of the error, `n/a`,
+2026-10-17 for this page. "local <date>" is a by-hand run of `any_profile_smoke` against
+a throwaway container (images below); "existing table" means the run used
+`TIQ_PROFILE_TABLE`, because the product cannot create the fixture (`id INT PRIMARY KEY`). Cells read `ok`, the first line of the error, `n/a`,
 `not run`, or `not reached` (an earlier hard check stopped the run).
 
 ### Hard checks
@@ -37,16 +40,16 @@ here is `ok`.
 |---|---|---|---|---|---|---|
 | MariaDB | CI | ok | ok | ok | ok | ok |
 | TiDB | CI | ok | ok | ok | ok | ok |
-| OceanBase | not run (no image probed) | not run | not run | not run | not run | not run |
-| Apache Doris | not run (image too large for this machine: 3.7 GB compressed) | not run | not run | not run | not run | not run |
-| StarRocks | local 2026-10-03, before the session-setup fallback; not re-run | FAIL (before the fallback): Getting analyzing error. Detail message: Set statement only support constant expr.. | not reached | not reached | not reached | n/a (no transactions) |
+| OceanBase | local 2026-10-17 | ok | ok | ok | ok | ok |
+| Apache Doris | local 2026-10-17, existing table | ok | FAIL: introspect: errCode = 2, detailMessage = Only support prepare SelectStmt point query now | not reached | not reached | n/a (no transactions) |
+| StarRocks | local 2026-10-17, existing table | ok | ok | ok | ok | n/a (no transactions) |
 | SelectDB | not run (no local image) | not run | not run | not run | not run | not run |
-| PolarDB-X | not run (no image probed) | not run | not run | not run | not run | not run |
+| PolarDB-X | local 2026-10-17 | ok | ok | ok | ok | ok |
 | GreatSQL | local 2026-10-03 | ok | ok | ok | ok | ok |
 | Dolt | local 2026-10-03 | ok | ok | ok | ok | ok |
-| Manticore Search | local 2026-10-03; first run failed at connect, re-run after the session-setup fallback | ok (via the fallback) | FAIL: introspect finds Manticore.tiq_probe (no rows from information_schema.tables) | not reached | not reached | n/a (no transactions) |
+| Manticore Search | local 2026-10-17, existing table | ok (via the fallback) | FAIL: first page: P01: syntax error, unexpected AS (the page's `CAST(… AS CHAR)` in a subquery) | not reached | not reached | n/a (no transactions) |
 | PlanetScale | not run (no local image) | not run | not run | not run | not run | not run |
-| Vitess | not run (no image probed) | not run | not run | not run | not run | not run |
+| Vitess | local 2026-10-17 | ok | ok | ok | ok | ok |
 | CockroachDB | CI | ok | ok | ok | ok | ok |
 | Amazon Redshift | not run (no local image) | not run | not run | not run | not run | not run |
 | YugabyteDB | local 2026-10-03 | ok | ok | ok | ok | ok |
@@ -54,10 +57,10 @@ here is `ok`.
 | Supabase | not run (no local image) | not run | not run | not run | not run | not run |
 | TimescaleDB | local 2026-10-03 | ok | ok | ok | ok | ok |
 | AlloyDB | not run (no local image) | not run | not run | not run | not run | not run |
-| openGauss | not run (image does not start: libopenblas.so.0 missing) | not run | not run | not run | not run | not run |
-| QuestDB | local 2026-10-03 | ok | FAIL: introspect: unknown function name: ANY(INT) | not reached | not reached | n/a (no transactions) |
-| Materialize | local 2026-10-03 | ok | FAIL: first cancellable page: function "set_config" does not exist | not reached | not reached | n/a (no transactions) |
-| RisingWave | not run (about 2.5 GB compressed, skipped to protect disk space) | not run | not run | not run | not run | not run |
+| openGauss | local 2026-10-17 (lite image) | ok | ok | ok | ok | ok |
+| QuestDB | local 2026-10-17, existing table | ok | ok | ok | ok | n/a (no transactions) |
+| Materialize | local 2026-10-17, existing table | ok | ok | ok | ok | n/a (no transactions) |
+| RisingWave | local 2026-10-17, existing table | ok | ok | ok | ok | n/a (no transactions) |
 
 ### Soft checks
 
@@ -77,16 +80,16 @@ uses; a failure means that feature degrades on that product.
 |---|---|---|---|---|---|---|---|---|
 | MariaDB | ok | ok | ok | ok | ok | not implemented | ok | ok |
 | TiDB | ok | ok | ok | ok | ok | not implemented | ok | START TRANSACTION READ ONLY rejected: function READ ONLY has only noop implementation in tidb now, use tidb_enable_noop_functions to enable these functions |
-| OceanBase | not run | not run | not run | not run | not run | not run | not run | not run |
-| Apache Doris | not run | not run | not run | not run | not run | not run | not run | not run |
-| StarRocks | not reached | not reached | not reached | not reached | not reached | not reached | not reached | not reached |
+| OceanBase | ok | ok | ok | ok | ok | not implemented | ok | ok |
+| Apache Doris | not reached | not reached | not reached | not reached | not reached | not reached | not reached | not reached |
+| StarRocks | ok | ok | tiq_probe is not among 0 tables | no estimate | ok | not implemented | ok | n/a (existing table) |
 | SelectDB | not run | not run | not run | not run | not run | not run | not run | not run |
-| PolarDB-X | not run | not run | not run | not run | not run | not run | not run | not run |
+| PolarDB-X | unknown NPE | ok | tiq_smoke is not among 0 tables | ok | ok | not implemented | ok | ok |
 | GreatSQL | ok | ok | ok | ok | ok | not implemented | ok | ok |
 | Dolt | ok | ok | ok | ok | ok | not implemented | ok | ok |
 | Manticore Search | not reached | not reached | not reached | not reached | not reached | not reached | not reached | not reached |
 | PlanetScale | not run | not run | not run | not run | not run | not run | not run | not run |
-| Vitess | not run | not run | not run | not run | not run | not run | not run | not run |
+| Vitess | ok | ok | ok | ok | ok | not implemented | VT07001: kill statement execution not permitted. | ok |
 | CockroachDB | ok | ok | tiq_smoke is not among 0 tables | no estimate | ok | at or near "json": syntax error | unknown function: pg_cancel_backend() | ok |
 | Amazon Redshift | not run | not run | not run | not run | not run | not run | not run | not run |
 | YugabyteDB | ok | ok | ok | ok | ok | ok | ok | ok |
@@ -94,14 +97,26 @@ uses; a failure means that feature degrades on that product.
 | Supabase | not run | not run | not run | not run | not run | not run | not run | not run |
 | TimescaleDB | ok | ok | ok | ok | ok | ok | ok | ok |
 | AlloyDB | not run | not run | not run | not run | not run | not run | not run | not run |
-| openGauss | not run | not run | not run | not run | not run | not run | not run | not run |
-| QuestDB | not reached | not reached | not reached | not reached | not reached | not reached | not reached | not reached |
-| Materialize | not reached | not reached | not reached | not reached | not reached | not reached | not reached | not reached |
-| RisingWave | not run | not run | not run | not run | not run | not run | not run | not run |
+| openGauss | ok | syntax error at or near "." | ok | ok | ok | ok | the statement ran to its end | ok |
+| QuestDB | unknown function name: ANY(INT) | LATERAL requires a subquery | tiq_probe is not among 0 tables | no estimate | ok | JSON plan arrives as VARCHAR | ok (no backend PID, see notes) | n/a (existing table) |
+| Materialize | column "ix.indnkeyatts" does not exist | function unnest(smallint[], smallint[]) does not exist | tiq_probe is not among 0 tables | no estimate | ok | Expected SELECT, VALUES, or a subquery in the query body, found FORMAT | unknown catalog item 'pg_stat_activity' | n/a (existing table) |
+| RisingWave | Failed to execute the statement | Failed to prepare the statement | tiq_probe is not among 0 tables | no estimate | ok | JSON plan arrives as VARCHAR | Failed to prepare the statement | n/a (existing table) |
 
 ### Images
 
-Local runs, all on an arm64 host, 2026-10-03:
+Local runs, all on an arm64 host. 2026-10-17: QuestDB, Materialize, Manticore and StarRocks
+were re-run on the images below, after the driver changes in the notes:
+
+| Profile | Image | Server version text |
+|---|---|---|
+| OceanBase | `oceanbase/oceanbase-ce:latest@sha256:eaa2c3b3513fa21e4a658f197c1deb93c9d6b6eb742cfa5ef0f085f82b9cec54` (`MODE=mini`) | named by its `OceanBase` marker; text not captured |
+| Apache Doris | `apache/doris:doris-all-in-one-2.1.0@sha256:83538f071c8ea22134b8151d8b751cdf36da9e1a5da315443ba461909ee11835` | not captured (saved profile) |
+| PolarDB-X | `polardbx/polardb-x:latest@sha256:17843f32d11dc059d7de4c8f75df451eaeed31b2019f9b2d280dc1d0fd7fa5ad` | `5.6.29-PXC-5.4.19-SNAPSHOT` |
+| Vitess | `vitess/vttestserver:mysql80@sha256:bf9f5e9efec9467893651587a7c5e6784ccbee3e9e4aa8429006bc131a37f028` (amd64, emulated) | not captured (saved profile) |
+| openGauss | `enmotech/opengauss-lite:latest@sha256:eeb52c3c8ab05322f4b97db4445fa6d55ce5376eecf9697ae845d02c4db5b013` | not captured (saved profile) |
+| RisingWave | `risingwavelabs/risingwave:latest@sha256:ee2e8e7a10b728d01b0e149d2a4f35864f0f52a0c889fa6cf9bc32c8ff46c602` (`single_node`) | `PostgreSQL 13.14.0-RisingWave-3.1.0 (45baf6460ea942e4ff57a5aa057d5b8db7f3b563)` |
+
+2026-10-03:
 
 | Profile | Image | Server version text |
 |---|---|---|
@@ -117,37 +132,46 @@ Local runs, all on an arm64 host, 2026-10-03:
 CI images (TiDB 8.5.7, CockroachDB 26.3.2, MariaDB 11) are pinned by digest in
 `docker/profiles/docker-compose.yml`.
 
-Not run, and why:
+Not run, and why: **SelectDB, PlanetScale, Amazon Redshift, Neon, Supabase, AlloyDB** are
+cloud services with no local image. The official openGauss image (`opengauss/opengauss`) exits
+at start (`libopenblas.so.0` missing), so its run used `enmotech/opengauss-lite`.
 
-- **Apache Doris** (`apache/doris:doris-all-in-one-2.1.0`): 3.7 GB compressed, too large for the
-  machine that ran this. It may also need the session-setup fallback (unverified).
-- **RisingWave** (`risingwavelabs/risingwave`): about 2.5 GB compressed, skipped to protect disk
-  space on the machine that ran this.
-- **openGauss** (`opengauss/opengauss`): the container exits at start on arm64 and on
-  `linux/amd64` with `gaussdb: error while loading shared libraries: libopenblas.so.0`.
-- **OceanBase, PolarDB-X, Vitess:** no image was probed.
-- **SelectDB, PlanetScale, Amazon Redshift, Neon, Supabase, AlloyDB:** cloud services with no
-  local image.
+Driver changes made for the 2026-10-17 runs (compat sessions only; the base engines run
+exactly as before):
+
+- **PostgreSQL wire.** The catalog pass falls back to a form without `= ANY(int2vector)` and
+  takes the type name from `pg_type` when `format_type` answers NULL (QuestDB); the primary key
+  falls back to table order without `array_position` (openGauss), then to none. Page `OFFSET`/
+  `LIMIT` are inlined integers (RisingWave refuses placeholders there; QuestDB has no `OFFSET`
+  and gets `LIMIT lo, hi`). A server without `set_config`, or whose `BEGIN` does not report a
+  transaction (QuestDB, Materialize, RisingWave), runs its pages unpinned: bounded on the client,
+  and the Stop button cannot reach the server. A server without `pg_backend_pid()` (QuestDB) runs
+  scripts the same way; its `cancel` soft check is `ok` only because there is nothing to cancel.
+- **MySQL wire.** Page `LIMIT`/`OFFSET` are inlined (StarRocks); `CONNECTION_ID()` is read as
+  signed or unsigned (StarRocks); catalog names are decoded from bytes (PolarDB-X answers
+  `CAST(… AS CHAR)` as BINARY); the schema name is the gateway's `DATABASE()` (Vitess runs the
+  catalog query on its shard, which names `vt_tiq_0`); staged commits send `BEGIN`/`COMMIT` as
+  plain text on a connection that is closed afterwards (PolarDB-X never sets the in-transaction
+  status sqlx checks). Manticore's tables come from `SHOW TABLES`/`DESCRIBE`, since it answers
+  any filtered `information_schema` query with no rows.
+- **Still Beta.** Apache Doris prepares only point queries ("Only support prepare SelectStmt
+  point query now"), and the MySQL driver prepares every catalog and page query. Manticore now
+  connects and lists its tables, but the grid's page query (a subquery with `CAST(… AS CHAR)`)
+  is beyond its SQL. Either needs a text-protocol path of its own.
 
 Notes on the runs that were made:
 
 - **Dolt** refuses `root` from outside its own container by default. The run started it with
   `-e DOLT_ROOT_HOST='%'`, a documented variable of the image, then connected without a password.
-- **QuestDB and Materialize** take one statement per call, so the fixture table was created
-  with two calls (`CREATE TABLE`, then `INSERT`).
-- **Manticore and StarRocks** rejected the standard MySQL session setup, a
-  `SET sql_mode=(SELECT …),time_zone='+00:00',NAMES …` that neither server parses. Both runs
-  were on 2026-10-03. The first Manticore run failed at connect (`P01: syntax error, unexpected
-  '('`) and StarRocks failed at connect (`Set statement only support constant expr..`). A driver
-  change then added a fallback to a plain session setup (below). After it, Manticore connects
-  under its saved profile (`manticore` has no detection marker, so the product comes from the
-  saved profile, not from the server), and fails at Browse: `information_schema.tables` is
-  answered by Manticore's Buddy helper, which returns no rows (with Buddy down, the query fails
-  with a syntax error at `CAST(… AS CHAR)`), so `introspect finds Manticore.tiq_probe` fails.
-  **StarRocks was not re-run after the fallback**; its row keeps the pre-fallback result and
-  does not claim that it connects now.
-- **QuestDB** connects, then its catalog query fails on `ANY(INT)`. **Materialize** connects and
-  introspects, then the grid's page query fails on `set_config`.
+- **Fixture tables by hand** (2026-10-17). QuestDB, Materialize, RisingWave, StarRocks, Doris and
+  Manticore cannot create `tiq_smoke` (`id INT PRIMARY KEY`), so each run used a three-row
+  `tiq_probe` made with the product's own DDL (StarRocks and Doris with a primary or unique key
+  and `replication_num` 1; Manticore an RT table). openGauss creates the fixture in the
+  connecting user's own schema (`gaussdb`), so its run used that schema.
+- **Manticore and StarRocks** reject the standard MySQL session setup (2026-10-03: Manticore
+  `P01: syntax error, unexpected '('`, StarRocks `Set statement only support constant expr..`),
+  so both connect through the plain-setup fallback below. Neither has a detection marker: the
+  product comes from the saved profile.
 - **TimescaleDB** is PostgreSQL with an extension, so the run shows that the profile's
   connection and grid work; nothing in `SELECT version()` names Timescale.
 
@@ -318,7 +342,7 @@ Markers in `profiles.json`, and where the text came from:
 | openGauss | none | none found in openGauss vendor docs; community pages show `openGauss 5.0.3 build ...`, which is not vendor documentation, so the marker is empty |
 | QuestDB | `QuestDB` | observed: `PostgreSQL 12.3, compiled by Visual C++ build 1914, 64-bit, QuestDB` |
 | Materialize | `Materialize` | observed: `PostgreSQL 9.5 on aarch64-unknown-linux-gnu (Materialize 26.44.1)` |
-| RisingWave | `RisingWave` | documented, not observed: RisingWave docs and blog: `13.14.0-RisingWave-2.8.0` |
+| RisingWave | `RisingWave` | observed: `PostgreSQL 13.14.0-RisingWave-3.1.0 (45baf6460ea942e4ff57a5aa057d5b8db7f3b563)` |
 
 ## Add a profile
 
