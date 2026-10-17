@@ -1439,11 +1439,14 @@ function StructureView({
       })
       .catch((e: unknown) => {
         if (!live) return;
-        if (isNotImplementedError(e)) return setNote("This connection doesn't report indexes or triggers.");
+        if (isNotImplementedError(e)) {
+          setNote("This connection doesn't report indexes or triggers.");
+          return;
+        }
         const raw = String((e as { message?: string })?.message ?? e);
         const named = catalogUnavailable("Indexes and triggers", engine, profile);
         setNote(named ?? raw);
-        setDetail(named && raw);
+        setDetail(named ? raw : null);
       });
     return () => {
       live = false;

@@ -420,13 +420,13 @@ impl PgDriver {
     /// page SQL itself stays the same text for every token, so it is prepared once per
     /// connection), a timeout bounds the statement, and `tid_scan` turns seq scans off (see
     /// `window`). `set_config(…, true)` is `SET LOCAL`: it needs the caller's transaction and
-    /// reverts when it ends. A token already cancelled stops the page here.
+    /// reverts when it ends. Returns the PID; the caller records it (see `begin_pinned`).
     async fn pin(
         conn: &mut sqlx::PgConnection,
         token: Option<&CancelToken>,
         timeout_ms: Option<u64>,
         tid_scan: bool,
-    ) -> DResult<()> {
+    ) -> Result<i64, sqlx::Error> {
         // `::int8`: CockroachDB's pg_backend_pid() is an INT8, which does not decode as i32.
         let pid: i64 = sqlx::query_scalar(
             "SELECT pg_backend_pid()::int8 FROM \
@@ -439,23 +439,16 @@ impl PgDriver {
         .bind(timeout_ms.map(|ms| ms.to_string()))
         .bind(tid_scan)
         .fetch_one(&mut *conn)
-        .await
-        .map_err(db)?;
-        if let Some(token) = token {
-            token.set_backend_id(pid);
-            if token.is_cancelled() {
-                return Err(DriverError::Cancelled);
-            }
-        }
-        Ok(())
+        .await?;
+        Ok(pid)
     }
 
     /// [`Self::pin`] in a new transaction, or `None` on a compat product without `set_config`:
     /// the caller then runs unpinned, so the Stop button cannot reach the server and only a
     /// client-side bound ends the statement.
-    // ponytail: unpinned pages are not cancelled server-side, and on a compat session a dropped
-    // link here also unpins the rest of the session; a product-specific cancel, and matching
-    // on the SQLSTATE, if either ever matters.
+    // ponytail: unpinned pages are not cancelled server-side (a timed-out one closes its
+    // connection instead), and any server error from `pin` unpins a compat session, not only
+    // a missing `set_config`; a product-specific cancel and a SQLSTATE match if either matters.
     async fn begin_pinned(
         &self,
         token: Option<&CancelToken>,
@@ -469,20 +462,35 @@ impl PgDriver {
         if self.pin_unsupported.load(Relaxed) {
             return Ok(None);
         }
-        // RisingWave answers BEGIN without the in-transaction status sqlx checks for.
-        let pinned = match self.pool.begin().await {
-            Ok(mut tx) => Self::pin(&mut tx, token, timeout_ms, tid_scan).await.map(|()| tx),
-            Err(e) => Err(db(e)),
+        // Only the server's own refusal unpins the session: RisingWave answers BEGIN without the
+        // in-transaction status sqlx checks for (`BeginFailed`), QuestDB and Materialize have no
+        // `set_config` (a database error). A dropped link or a pool timeout is just an error.
+        let mut tx = match self.pool.begin().await {
+            Ok(tx) => tx,
+            Err(e @ sqlx::Error::BeginFailed) if self.compat() => return Ok(self.unpin(&e)),
+            Err(e) => return Err(db(e)),
         };
-        match pinned {
-            Ok(tx) => Ok(Some(tx)),
-            Err(DriverError::Db(e)) if self.compat() => {
-                crate::applog::log("warn", &format!("pages run unpinned on this session: {e}"));
-                self.pin_unsupported.store(true, Relaxed);
-                Ok(None)
+        match Self::pin(&mut tx, token, timeout_ms, tid_scan).await {
+            Ok(pid) => {
+                // Recorded, then the flag checked (the `CancelToken` protocol).
+                if let Some(token) = token {
+                    token.set_backend_id(pid);
+                    if token.is_cancelled() {
+                        return Err(DriverError::Cancelled);
+                    }
+                }
+                Ok(Some(tx))
             }
-            Err(e) => Err(e),
+            Err(e @ sqlx::Error::Database(_)) if self.compat() => Ok(self.unpin(&e)),
+            Err(e) => Err(db(e)),
         }
+    }
+
+    /// Unpin the rest of this session (see `begin_pinned`); always `None`.
+    fn unpin<T>(&self, why: &sqlx::Error) -> Option<T> {
+        crate::applog::log("warn", &format!("pages run unpinned on this session: {why}"));
+        self.pin_unsupported.store(true, std::sync::atomic::Ordering::Relaxed);
+        None
     }
 
     /// [`PgMeta`] for one relation, from the cache after the first page. A missing
@@ -603,12 +611,13 @@ impl PgDriver {
         } else {
             ("*".to_string(), select_list)
         };
-        // RisingWave takes no placeholder in OFFSET/LIMIT, so a compat session inlines the two
-        // integers; QuestDB has no OFFSET at all, and its `LIMIT lo, hi` takes row bounds.
-        let compat = self.compat();
-        let paging = if self.product().as_deref() == Some("questdb") {
-            format!("LIMIT {offset}, {}", offset + len)
-        } else if compat {
+        // RisingWave takes no placeholder in OFFSET/LIMIT, so its page inlines the two integers;
+        // QuestDB has no OFFSET at all, and its `LIMIT lo, hi` takes row bounds.
+        let product = self.product();
+        let inline = matches!(product.as_deref(), Some("questdb" | "risingwave"));
+        let paging = if product.as_deref() == Some("questdb") {
+            format!("LIMIT {offset}, {}", offset.saturating_add(len))
+        } else if inline {
             format!("OFFSET {offset} LIMIT {len}")
         } else {
             format!("OFFSET ${} LIMIT ${}", binds.len() + 1, binds.len() + 2)
@@ -626,7 +635,7 @@ impl PgDriver {
         for b in &binds {
             qy = qy.bind(b.clone());
         }
-        if !compat {
+        if !inline {
             qy = qy.bind(offset as i64).bind(len as i64);
         }
         let ms = self.window_timeout_ms * if filters.is_empty() { 2 } else { 1 };
@@ -643,9 +652,15 @@ impl PgDriver {
             (Some(tx), Some(t)) => super::recheck_cancel(self, t, qy.fetch_all(&mut **tx)).await,
             (Some(tx), None) => qy.fetch_all(&mut **tx).await,
             (None, Some(_)) => {
-                match tokio::time::timeout(std::time::Duration::from_millis(ms), qy.fetch_all(&self.pool)).await {
+                // Bounded here, and a page that runs past it closes its connection rather than
+                // hold it until the server finishes.
+                let mut conn = self.pool.acquire().await.map_err(db)?;
+                match tokio::time::timeout(std::time::Duration::from_millis(ms), qy.fetch_all(&mut *conn)).await {
                     Ok(r) => r,
-                    Err(_) => return Err(DriverError::Db(format!("query timed out after {ms} ms"))),
+                    Err(_) => {
+                        conn.close_on_drop();
+                        return Err(DriverError::Db(format!("query timed out after {ms} ms")));
+                    }
                 }
             }
             (None, None) => qy.fetch_all(&self.pool).await,
@@ -789,7 +804,8 @@ impl SqlDriver for PgDriver {
         let rows = match sqlx::query(&full).fetch_all(&self.pool).await {
             // QuestDB has no `= ANY(int2vector)` and its `format_type` answers NULL: a compat
             // product without them browses with no primary keys rather than not at all.
-            Err(sqlx::Error::Database(_)) if self.compat() => {
+            Err(sqlx::Error::Database(e)) if self.compat() => {
+                crate::applog::log("warn", &format!("catalog read without primary keys: {e}"));
                 let plain = sql(
                     "false",
                     "COALESCE(format_type(a.atttypid, a.atttypmod), t.typname, 'unknown')",
@@ -909,20 +925,22 @@ impl SqlDriver for PgDriver {
         } else {
             match self.pool.begin_with("BEGIN; SET LOCAL statement_timeout = 2000").await {
                 Ok(tx) => Some(tx),
-                Err(e) if self.compat() => {
-                    crate::applog::log("warn", &format!("pages run unpinned on this session: {e}"));
-                    self.pin_unsupported.store(true, std::sync::atomic::Ordering::Relaxed);
-                    None
-                }
+                Err(e @ (sqlx::Error::BeginFailed | sqlx::Error::Database(_))) if self.compat() => self.unpin(&e),
                 Err(e) => return Err(db(e)),
             }
         };
         let res = match tx {
             Some(mut tx) => qy.fetch_one(&mut *tx).await.map_err(Some),
-            None => match tokio::time::timeout(std::time::Duration::from_millis(2000), qy.fetch_one(&self.pool)).await {
-                Ok(r) => r.map_err(Some),
-                Err(_) => Err(None),
-            },
+            None => {
+                let mut conn = self.pool.acquire().await.map_err(db)?;
+                match tokio::time::timeout(std::time::Duration::from_millis(2000), qy.fetch_one(&mut *conn)).await {
+                    Ok(r) => r.map_err(Some),
+                    Err(_) => {
+                        conn.close_on_drop();
+                        Err(None)
+                    }
+                }
+            }
         };
         match res {
             Ok(n) => Ok(RowCount { count: Some(n), exact: true }),

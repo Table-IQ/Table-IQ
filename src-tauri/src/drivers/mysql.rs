@@ -64,6 +64,27 @@ async fn connection_id(conn: &mut sqlx::MySqlConnection) -> DResult<u64> {
     row.try_get::<u64, _>(0).or_else(|_| row.try_get::<i64, _>(0).map(|n| n as u64)).map_err(db)
 }
 
+/// A staged batch's statements in `change_order`, on a connection already in a transaction.
+async fn run_changes(
+    conn: &mut sqlx::MySqlConnection,
+    stmts: &[(String, Vec<Option<String>>)],
+    changes: &[Change],
+) -> DResult<ChangesResult> {
+    let mut out = ChangesResult::default();
+    for i in super::change_order(changes) {
+        let (sql, binds) = &stmts[i];
+        let mut q = sqlx::query(sql);
+        for b in binds {
+            q = q.bind(b.clone());
+        }
+        match q.execute(&mut *conn).await {
+            Ok(r) => super::tally(&mut out, i, &changes[i], r.rows_affected())?,
+            Err(e) => return Err(super::change_err(i, db(e))),
+        }
+    }
+    Ok(out)
+}
+
 /// A catalog name as text, whatever the server types it: PolarDB-X answers `CAST(… AS CHAR)`
 /// as BINARY, which sqlx refuses to decode as `String`.
 fn catalog_text(row: &MySqlRow, col: &str) -> DResult<String> {
@@ -518,9 +539,9 @@ impl MySqlDriver {
         };
         // No per-token comment: that made every page's text unique, so each one was
         // prepared anew (an extra round trip) and churned sqlx's statement cache. StarRocks
-        // takes no placeholder in LIMIT/OFFSET, so a compat session inlines the two integers.
-        let compat = self.compat();
-        let paging = if compat { format!("LIMIT {len} OFFSET {offset}") } else { "LIMIT ? OFFSET ?".into() };
+        // takes no placeholder in LIMIT/OFFSET, so its page inlines the two integers.
+        let inline = self.product().as_deref() == Some("starrocks");
+        let paging = if inline { format!("LIMIT {len} OFFSET {offset}") } else { "LIMIT ? OFFSET ?".into() };
         let q = format!(
             "SELECT {hint}{select_list} FROM (SELECT * FROM {}.{} AS _t{}{order_sql} {paging}) AS _w",
             quote_ident(schema),
@@ -534,7 +555,7 @@ impl MySqlDriver {
             for b in &binds {
                 qy = qy.bind(b.clone());
             }
-            if compat {
+            if inline {
                 qy
             } else {
                 qy.bind(len as i64).bind(offset as i64)
@@ -962,51 +983,56 @@ impl SqlDriver for MySqlDriver {
     async fn apply_changes(&self, schema: &str, table: &str, changes: &[Change]) -> DResult<ChangesResult> {
         super::check_keys(changes)?;
         let stmts: Vec<_> = changes.iter().map(|c| change_sql(schema, table, c)).collect();
-        // sqlx's `begin` checks the server's in-transaction status flag, which PolarDB-X never
-        // sets, so a compat session sends BEGIN/COMMIT as plain text instead. That connection
-        // is closed when dropped, so one abandoned mid-batch never goes back to the pool open.
-        let (mut tx, mut plain) = (None, None);
-        if self.compat() {
-            let mut c = self.pool.acquire().await.map_err(db)?;
-            c.close_on_drop();
-            c.execute("BEGIN").await.map_err(db)?;
-            plain = Some(c);
-        } else {
-            tx = Some(self.pool.begin().await.map_err(db)?);
-        }
-        let conn: &mut sqlx::MySqlConnection = match (&mut tx, &mut plain) {
-            (Some(t), _) => t,
-            (_, Some(c)) => c,
-            _ => unreachable!("one of the two was just set"),
-        };
-        let mut out = ChangesResult::default();
-        for i in super::change_order(changes) {
-            let (sql, binds) = &stmts[i];
-            let mut q = sqlx::query(sql);
-            for b in binds {
-                q = q.bind(b.clone());
-            }
-            let step = match q.execute(&mut *conn).await {
-                Ok(r) => super::tally(&mut out, i, &changes[i], r.rows_affected()),
-                Err(e) => Err(super::change_err(i, db(e))),
-            };
-            if let Err(e) = step {
-                match (tx, plain) {
-                    (Some(tx), _) => drop(tx.rollback().await),
-                    (_, Some(mut c)) => drop(c.execute("ROLLBACK").await),
-                    _ => {}
+        if !self.compat() {
+            let mut tx = self.pool.begin().await.map_err(db)?;
+            return match run_changes(&mut tx, &stmts, changes).await {
+                Ok(out) => {
+                    tx.commit().await.map_err(db)?;
+                    Ok(out)
                 }
-                return Err(e);
+                Err(e) => {
+                    let _ = tx.rollback().await;
+                    Err(e)
+                }
+            };
+        }
+        // sqlx's `begin` also checks the server's in-transaction status flag, which PolarDB-X
+        // never sets although its BEGIN works (`BeginFailed` after the BEGIN ran). Only for a
+        // product whose profile says it has transactions does the batch go on as plain text on
+        // that connection; it is closed when dropped, so it never goes back to the pool open.
+        let mut conn = self.pool.acquire().await.map_err(db)?;
+        let known_tx = self.product().and_then(|id| crate::profiles::lookup(&id)).is_some_and(|p| p.transactions);
+        let failed = match sqlx::Connection::begin(&mut *conn).await {
+            Ok(mut tx) => {
+                return match run_changes(&mut tx, &stmts, changes).await {
+                    Ok(out) => {
+                        tx.commit().await.map_err(db)?;
+                        Ok(out)
+                    }
+                    Err(e) => {
+                        let _ = tx.rollback().await;
+                        Err(e)
+                    }
+                };
+            }
+            Err(e) => e,
+        };
+        // A BEGIN that ran but did not report a transaction may have left one open, so this
+        // connection is closed when dropped in either case.
+        conn.close_on_drop();
+        if !(matches!(failed, sqlx::Error::BeginFailed) && known_tx) {
+            return Err(db(failed));
+        }
+        match run_changes(&mut conn, &stmts, changes).await {
+            Ok(out) => {
+                conn.execute("COMMIT").await.map_err(db)?;
+                Ok(out)
+            }
+            Err(e) => {
+                let _ = conn.execute("ROLLBACK").await;
+                Err(e)
             }
         }
-        match (tx, plain) {
-            (Some(tx), _) => tx.commit().await.map_err(db)?,
-            (_, Some(mut c)) => {
-                c.execute("COMMIT").await.map_err(db)?;
-            }
-            _ => {}
-        }
-        Ok(out)
     }
 
     async fn run_script(&self, sql: &str) -> DResult<u64> {
