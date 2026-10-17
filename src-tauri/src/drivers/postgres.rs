@@ -261,10 +261,23 @@ fn session_sets() -> impl Iterator<Item = &'static str> {
 /// The bound on a count the grid asks for on its own (`count_rows` without `force_exact`).
 const COUNT_TIMEOUT_MS: u64 = 2000;
 
-/// A missing relation (42P01) or a refused privilege (42501): an answer about the table, never
-/// a catalog the product lacks, so no compat fallback may swallow it.
-fn gone_or_denied(e: &dyn sqlx::error::DatabaseError) -> bool {
-    matches!(e.code().as_deref(), Some("42P01" | "42501"))
+/// The server lacks a function, type or syntax the base engine has: undefined function
+/// (42883), feature not supported (0A000), syntax (42601), datatype mismatch (42804), and
+/// QuestDB, which answers every error with 00000. Only these let a compat catalog read fall
+/// back; anything else (a missing table, a denied privilege, a retry, an outage) is an error.
+fn unsupported(e: &dyn sqlx::error::DatabaseError) -> bool {
+    matches!(e.code().as_deref(), Some("42883" | "0A000" | "42601" | "42804" | "00000"))
+}
+
+/// A compat server's own refusal of a pinned page's BEGIN or `set_config`, which unpins the
+/// session: `BeginFailed`, or a server error outside the transient classes (connection 08,
+/// transaction rollback 40, resources 53, operator intervention 57, system 58, internal XX).
+fn refusal(e: &sqlx::Error) -> bool {
+    match e {
+        sqlx::Error::BeginFailed => true,
+        sqlx::Error::Database(d) => !d.code().is_some_and(|c| ["08", "40", "53", "57", "58", "XX"].iter().any(|k| c.starts_with(k))),
+        _ => false,
+    }
 }
 
 /// Wait until `token` is cancelled (polled: nothing on the server can be told to stop).
@@ -492,16 +505,19 @@ impl PgDriver {
             let r = sqlx::Connection::begin(&mut *conn).await.map(drop);
             match r {
                 Ok(()) => self.begin_checked.store(true, Relaxed),
-                Err(e @ sqlx::Error::BeginFailed) => {
+                Err(e) if refusal(&e) => {
                     conn.close_on_drop();
                     return Ok(self.unpin(&e));
                 }
-                Err(e) => return Err(db(e)),
+                Err(e) => {
+                    conn.close_on_drop();
+                    return Err(db(e));
+                }
             }
         }
         let mut tx = match self.pool.begin().await {
             Ok(tx) => tx,
-            Err(e @ sqlx::Error::BeginFailed) if self.compat() => return Ok(self.unpin(&e)),
+            Err(e) if self.compat() && refusal(&e) => return Ok(self.unpin(&e)),
             Err(e) => return Err(db(e)),
         };
         match Self::pin(&mut tx, token, timeout_ms, tid_scan).await {
@@ -515,7 +531,7 @@ impl PgDriver {
                 }
                 Ok(Some(tx))
             }
-            Err(e @ sqlx::Error::Database(_)) if self.compat() => Ok(self.unpin(&e)),
+            Err(e) if self.compat() && refusal(&e) => Ok(self.unpin(&e)),
             Err(e) => Err(db(e)),
         }
     }
@@ -1017,7 +1033,9 @@ impl SqlDriver for PgDriver {
                 let outcome = {
                     let begun = sqlx::Connection::begin_with(&mut *conn, begin).await;
                     match begun {
-                        Ok(mut tx) => Ok(match tokio::time::timeout(bound, make().fetch_one(&mut *tx)).await {
+                        // The server's own bound fires first; this one only catches a server
+                        // that ignored the SET LOCAL.
+                        Ok(mut tx) => Ok(match tokio::time::timeout(bound + std::time::Duration::from_millis(1500), make().fetch_one(&mut *tx)).await {
                             Ok(r) => r.map_err(Some),
                             Err(_) => Err(None),
                         }),
@@ -1031,14 +1049,17 @@ impl SqlDriver for PgDriver {
                         }
                         res
                     }
-                    Err(e @ (sqlx::Error::BeginFailed | sqlx::Error::Database(_))) => {
+                    Err(e) if refusal(&e) => {
                         // Released before the fallback takes its own: never two at once.
                         conn.close_on_drop();
                         drop(conn);
                         self.unpin::<()>(&e);
                         self.bounded_count(make()).await?
                     }
-                    Err(e) => return Err(db(e)),
+                    Err(e) => {
+                        conn.close_on_drop();
+                        return Err(db(e));
+                    }
                 }
             }
         };
@@ -1193,9 +1214,9 @@ impl SqlDriver for PgDriver {
         match fetch(sql("array_position(i.indkey, a.attnum)")).await {
             // openGauss has no `array_position`: key columns in table order instead. QuestDB has
             // no `= ANY(int2vector)` either, and so, as in `introspect`, no primary key.
-            Err(sqlx::Error::Database(e)) if self.compat() && !gone_or_denied(e.as_ref()) => {
+            Err(sqlx::Error::Database(e)) if self.compat() && unsupported(e.as_ref()) => {
                 match fetch(sql("a.attnum")).await {
-                    Err(sqlx::Error::Database(e)) if !gone_or_denied(e.as_ref()) => Ok(Vec::new()),
+                    Err(sqlx::Error::Database(e)) if unsupported(e.as_ref()) => Ok(Vec::new()),
                     r => r.map_err(db),
                 }
             }

@@ -89,13 +89,18 @@ export function ErdView({
   const profile = useConnections((s) => s.active?.profile);
   /** Named when a wire-compatible product has no foreign-key catalog; a base engine's error stays silent. */
   const [fkNote, setFkNote] = useState<{ named: string; raw: string } | null>(null);
+  // A late answer for a connection this view has since left is dropped.
+  const connRef = useRef(connId);
+  connRef.current = connId;
   const refresh = () =>
     foreignKeys(connId)
       .then((f) => {
+        if (connRef.current !== connId) return;
         setFks(f);
         setFkNote(null);
       })
       .catch((e: unknown) => {
+        if (connRef.current !== connId) return;
         setFks([]);
         const named = catalogUnavailable("Relationships", engine, profile);
         setFkNote(named ? { named, raw: String((e as { message?: string })?.message ?? e) } : null);

@@ -647,9 +647,16 @@ impl MySqlDriver {
             if matches!(mysql_cell(&r, 1).map_err(db)?.as_deref(), Some("distributed" | "template")) {
                 continue;
             }
-            let columns = self
-                .manticore_columns(&table)
-                .await?
+            // One table that cannot be described (dropped since SHOW TABLES) is left out, not
+            // the whole tree.
+            let described = match self.manticore_columns(&table).await {
+                Ok(c) => c,
+                Err(e) => {
+                    crate::applog::log("warn", &format!("Manticore: DESCRIBE {table} failed: {e}"));
+                    continue;
+                }
+            };
+            let columns = described
                 .into_iter()
                 .map(|(name, data_type)| ColumnInfo { name, data_type, nullable: true, pk: false })
                 .collect();
