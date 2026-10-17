@@ -23,7 +23,7 @@ import {
   type Engine,
 } from "../lib/commands";
 import { defaultSshConfig, type SshConfig } from "../lib/ssh";
-import { connNameFor, isServerUrlEngine, isUrlHost, normalizeUrlSecrets, toConnUrl, validateConn } from "../lib/connUrl";
+import { connNameFor, isServerUrlEngine, isUrlHost, normalizeUrlSecrets, toConnUrl, validateConn, withName } from "../lib/connUrl";
 import { PROFILES, applyPreset, presetFor } from "../lib/profiles";
 import { confirmDialog } from "../lib/confirmDialog";
 import { cancelConnecting, openConnection, useConnections, type ConnectingState } from "../state/connectionStore";
@@ -326,7 +326,7 @@ export function ConnectionManager() {
     if (connecting) return; // one connect at a time — ConnRow disables other rows too
     setStatus({ kind: "busy", msg: "Connecting…" });
     try {
-      const { cfg, pw } = pw0 === undefined ? { cfg: cfg0, pw: undefined } : settle(cfg0, pw0);
+      const { cfg, pw } = pw0 === undefined ? { cfg: cfg0, pw: undefined } : settle(withName(cfg0), pw0);
       if (pw !== undefined) {
         await saveConnection(cfg, pw || undefined, effectiveSshSecret || undefined);
         // Saved even if the connect below fails, so the sheet reads clean.

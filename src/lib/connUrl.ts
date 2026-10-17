@@ -22,6 +22,11 @@ export interface ParsedConnUrl {
 export const connNameFor = (p: Pick<ParsedConnUrl, "host" | "database">): string =>
   p.database || p.host.replace(/^[a-z+]+:\/\//i, "").replace(/[?#].*$/, "").replace(/\/+$/, "") || p.host;
 
+/** A connection to be saved under a name: the typed one, else what a pasted URL would have been called (its database, else its host).
+ *  A blank Name would otherwise be saved as "(unnamed)" and show as an empty title-bar breadcrumb. */
+export const withName = <T extends { name: string; host: string; database: string }>(cfg: T): T =>
+  cfg.name.trim() ? cfg : { ...cfg, name: connNameFor(cfg) };
+
 /** SSL spellings (Postgres `sslmode`, MySQL `ssl-mode`) → the form's six modes. */
 const SSL_MODES: Record<string, string> = {
   disable: "disable", disabled: "disable", allow: "allow", prefer: "prefer", preferred: "prefer", require: "require", required: "require",
@@ -69,9 +74,8 @@ const isQdrantHttp = (sc: string | undefined, rest: string): boolean =>
 const isChromaHttp = (sc: string | undefined, rest: string): boolean =>
   (sc === "http" || sc === "https") && /^[^/?@]*@?[^/?@]*:8000(?:[/?]|$)/.test(rest);
 
-/** `http(s)://host:8080/…`: Weaviate's REST port. Only that port is claimed; any other http URL is not ours. */
-const isWeaviateHttp = (sc: string | undefined, rest: string): boolean =>
-  (sc === "http" || sc === "https") && /^[^/?@]*@?[^/?@]*:8080(?:[/?]|$)/.test(rest);
+/** Weaviate's REST port is 8080, which is also where a local Turso `sqld` listens: `http(s)://…:8080` is left alone and only `weaviate://` selects Weaviate. */
+const isWeaviateHttp = (_sc: string | undefined, _rest: string): boolean => false;
 
 /** `http(s)://host:8181/…`: InfluxDB 3's HTTP port. Only that port is claimed; any other http URL is not ours. */
 const isInfluxHttp = (sc: string | undefined, rest: string): boolean =>

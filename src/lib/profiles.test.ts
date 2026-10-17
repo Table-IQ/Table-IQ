@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ENGINE_COLORS, ENGINE_MONOGRAMS } from "../components/ui/EngineIcon";
 import cases from "./agentAccessCases.json";
-import { AGENT_REV, MONGODB_AGENT_SINCE, PROFILES, REDIS_AGENT_SINCE, applyPreset, capsOf, explainUnavailable, presetFor, profileForUrl, profileOf, profilesFor } from "./profiles";
+import { AGENT_REV, MONGODB_AGENT_SINCE, PROFILES, REDIS_AGENT_SINCE, applyPreset, capsOf, explainUnavailable, isReadOnlyEngine, presetFor, profileForUrl, profileOf, profilesFor } from "./profiles";
 
 /** WCAG relative luminance of a `#rrggbb` colour. */
 function luminance(hex: string): number {
@@ -136,6 +136,13 @@ describe("agent access", () => {
     expect(AGENT_REV).toBe(REDIS_AGENT_SINCE);
     expect(MONGODB_AGENT_SINCE).toBeGreaterThan(PROFILES.cockroachdb.agentSince ?? 0);
     expect(REDIS_AGENT_SINCE).toBeGreaterThan(MONGODB_AGENT_SINCE);
+  });
+});
+
+describe("isReadOnlyEngine", () => {
+  it("is true for the read-only browsers and false for engines with a write path", () => {
+    for (const e of ["clickhouse", "libsql", "elasticsearch", "rqlite", "meilisearch", "qdrant", "chroma", "weaviate", "influxdb"]) expect(isReadOnlyEngine(e), e).toBe(true);
+    for (const e of ["postgres", "mysql", "sqlite", "duckdb", "mongodb", "redis", "sqlserver"]) expect(isReadOnlyEngine(e), e).toBe(false);
   });
 });
 

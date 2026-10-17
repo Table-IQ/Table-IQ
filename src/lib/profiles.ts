@@ -89,6 +89,10 @@ export const REDIS_AGENT_SINCE = 3;
  *  (`agent_rev` in `profiles.rs`). */
 export const AGENT_REV = Math.max(MONGODB_AGENT_SINCE, REDIS_AGENT_SINCE, ...Object.values(PROFILES).map((p) => p.agentSince ?? 0));
 
+/** The engines TableIQ only reads (no write path at all): nothing that creates, imports, alters or edits is offered for them. */
+const READ_ONLY_ENGINES = new Set(["clickhouse", "libsql", "elasticsearch", "rqlite", "meilisearch", "qdrant", "chroma", "weaviate", "influxdb"]);
+export const isReadOnlyEngine = (engine: string): boolean => READ_ONLY_ENGINES.has(engine);
+
 export interface SheetCaps { transactions: boolean; backup: boolean; userMgmt: boolean; agents: boolean }
 
 /** What the UI may offer for a saved connection (the saved value only; a live session also
@@ -98,7 +102,7 @@ export function capsOf(engine: string, profile?: string | null): SheetCaps {
   const p = profileOf(engine, profile);
   if (p) return { transactions: p.transactions, backup: p.backup, userMgmt: p.userMgmt, agents: p.agent ?? p.real };
   // ClickHouse, Turso, Elasticsearch, rqlite, Meilisearch, Qdrant, ChromaDB, Weaviate and InfluxDB are read-only browsers with no MCP guard: the backend's `caps()` and `agent_access()`.
-  if (engine === "clickhouse" || engine === "libsql" || engine === "elasticsearch" || engine === "rqlite" || engine === "meilisearch" || engine === "qdrant" || engine === "chroma" || engine === "weaviate" || engine === "influxdb") return { transactions: false, backup: false, userMgmt: false, agents: false };
+  if (isReadOnlyEngine(engine)) return { transactions: false, backup: false, userMgmt: false, agents: false };
   return { transactions: true, backup: true, userMgmt: true, agents: !profile };
 }
 

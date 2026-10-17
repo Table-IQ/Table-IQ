@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { connNameFor, isMongoUrlHost, isUrlHost, looksLikeConnUrl, normalizeUrlSecrets, parseConnUrl, toConnUrl, urlQuerySecret, validateConn } from "./connUrl";
+import { connNameFor, withName, isMongoUrlHost, isUrlHost, looksLikeConnUrl, normalizeUrlSecrets, parseConnUrl, toConnUrl, urlQuerySecret, validateConn } from "./connUrl";
 
 describe("parseConnUrl", () => {
   it("parses a Postgres URL with an encoded password and sslmode", () => {
@@ -475,18 +475,16 @@ describe("ChromaDB URLs", () => {
 });
 
 describe("Weaviate URLs", () => {
-  it("claims weaviate:// and http(s) on 8080 only", () => {
+  it("claims weaviate:// only: http(s) on 8080 is also a local Turso sqld, so it is left alone", () => {
     expect(looksLikeConnUrl("weaviate://h:8080")).toBe(true);
-    expect(looksLikeConnUrl("http://127.0.0.1:8080")).toBe(true);
-    expect(looksLikeConnUrl("https://:key@h.example.com:8080/")).toBe(true);
+    expect(looksLikeConnUrl("http://127.0.0.1:8080")).toBe(false);
+    expect(looksLikeConnUrl("https://:key@h.example.com:8080/")).toBe(false);
     expect(looksLikeConnUrl("https://my-cluster.weaviate.cloud")).toBe(false); // plain https is not ours to claim
     expect(looksLikeConnUrl("http://localhost:8081")).toBe(false);
   });
   it("a pasted URL keeps its host as typed and moves the key to the password, never to the user", () => {
-    expect(parseConnUrl("http://:k%40y@127.0.0.1:8080")).toEqual({
-      engine: "weaviate", host: "http://127.0.0.1:8080", port: 8080, username: "", password: "k@y", database: "",
-    });
-    expect(parseConnUrl("https://abc123@h.example.com:8080")).toMatchObject({ engine: "weaviate", host: "https://h.example.com:8080", username: "", password: "abc123" });
+    expect(parseConnUrl("weaviate://:k%40y@127.0.0.1:8080")).toMatchObject({ engine: "weaviate", host: "weaviate://127.0.0.1:8080", username: "", password: "k@y" });
+    expect(parseConnUrl("http://127.0.0.1:8080")).toBeNull();
     expect(parseConnUrl("weaviate://h:8080")).toMatchObject({ engine: "weaviate", host: "weaviate://h:8080", username: "", password: "" });
     expect(connNameFor(parseConnUrl("weaviate://h:8080?api_key=s3cret")!)).toBe("h:8080");
   });
@@ -553,5 +551,14 @@ describe("connNameFor", () => {
     expect(connNameFor(parseConnUrl("meilisearch://127.0.0.1:7700?api_key=s3cret")!)).toBe("127.0.0.1:7700");
     expect(connNameFor(parseConnUrl("qdrant://h:6333?api-key=s3cret")!)).toBe("h:6333");
     expect(connNameFor(parseConnUrl("influxdb://h:8181?token=s3cret")!)).toBe("h:8181");
+  });
+});
+
+describe("withName", () => {
+  it("keeps a typed name and names a blank one after its database, else its host (never the query)", () => {
+    expect(withName({ name: "Mine", host: "h", database: "d" }).name).toBe("Mine");
+    expect(withName({ name: "  ", host: "h", database: "d" }).name).toBe("d");
+    expect(withName({ name: "", host: "http://127.0.0.1:58181", database: "" }).name).toBe("127.0.0.1:58181");
+    expect(withName({ name: "", host: "chroma://h:8000?token=s3cret", database: "" }).name).toBe("h:8000");
   });
 });

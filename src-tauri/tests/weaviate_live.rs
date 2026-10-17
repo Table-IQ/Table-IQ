@@ -707,3 +707,72 @@ async fn unsupported_schemes_are_refused() {
     let e = WeaviateDriver::connect("ftp://127.0.0.1:8080", "", "").await.err().unwrap().to_string();
     assert!(e.contains("http://"), "{e}");
 }
+
+#[tokio::test]
+async fn only_the_objects_that_hold_a_big_int_are_read_again() {
+    let Some((d, _)) = drv().await else { return };
+    let log = Arc::new(SqlLog::default());
+    // All 501 objects, through GraphQL (a sort): 498 have no `big`, three have one past 32 bits.
+    let o = FindOpts { sort: r#"{"year": 1}"#.into(), limit: 600, ..Default::default() };
+    let docs = CURRENT.scope(log.clone(), async { parse(&d.find("Place", &o).await.unwrap()) }).await;
+    assert_eq!(docs.len(), 501);
+    let bigs: Vec<(&str, &Value)> = docs.iter().filter(|p| p.get("big").is_some()).map(|p| (p["name"].as_str().unwrap(), &p["big"])).collect();
+    assert_eq!(bigs.len(), 3, "{bigs:?}");
+    for (name, want) in [("Place 50", json!("9007199254740994")), ("Place 51", json!(3_000_000_000i64)), ("Place 500", json!("9007199254740998"))] {
+        assert!(bigs.contains(&(name, &want)), "{bigs:?}");
+    }
+    let all: String = log.since(0).into_iter().map(|e| e.sql).collect::<Vec<_>>().join("\n");
+    assert_eq!(all.matches("GET /v1/objects/Place/").count(), 3, "one read per big int, not one per null:\n{all}");
+    assert!(all.contains("valueInt:2147483647"), "{all}");
+    // A page without a null int asks nothing more.
+    let log = Arc::new(SqlLog::default());
+    let f = leaf("city", "Equal", "valueText", json!("London"));
+    let o = FindOpts { filter: f, projection: r#"{"city": 1}"#.into(), limit: 100, ..Default::default() };
+    CURRENT.scope(log.clone(), async { d.find("Place", &o).await.unwrap() }).await;
+    let all: String = log.since(0).into_iter().map(|e| e.sql).collect::<Vec<_>>().join("\n");
+    assert!(!all.contains("GET /v1/objects/") && !all.contains("valueInt"), "{all}");
+}
+
+#[tokio::test]
+async fn a_failed_read_again_leaves_the_value_null_and_the_page_whole() {
+    let rows = r#"{"data": {"Get": {"Place": [
+        {"city": "a", "n": null, "_additional": {"id": "u1"}},
+        {"city": "b", "n": null, "_additional": {"id": "u2"}},
+        {"city": "c", "n": null, "_additional": {"id": "u3"}}]}}}"#;
+    let serve_with = |probe: &'static str| {
+        serve(move |req| {
+            let line = req.lines().next().unwrap_or("");
+            if line.starts_with("GET /v1/.well-known/ready ") {
+                http("200 OK", "")
+            } else if line.starts_with("GET /v1/meta ") {
+                http("200 OK", r#"{"version": "1.37.0", "hostname": "h"}"#)
+            } else if line.starts_with("GET /v1/schema ") {
+                http("200 OK", r#"{"classes": []}"#)
+            } else if line.starts_with("GET /v1/schema/Place ") {
+                http("200 OK", r#"{"class": "Place", "properties": [{"name": "city", "dataType": ["text"]}, {"name": "n", "dataType": ["int"]}]}"#)
+            } else if line.starts_with("POST /v1/graphql ") {
+                http("200 OK", if req.contains("GreaterThan") { probe } else { rows })
+            } else if line.starts_with("GET /v1/objects/Place/u1 ") {
+                http("200 OK", r#"{"id": "u1", "properties": {"city": "a", "n": 5000000000}}"#)
+            } else if line.starts_with("GET /v1/objects/Place/u2 ") {
+                http("500 Internal Server Error", r#"{"error": [{"message": "boom"}]}"#)
+            } else {
+                http("404 Not Found", "{}")
+            }
+        })
+    };
+    let f = leaf("city", "Like", "valueText", json!("*"));
+    // u1 and u2 hold one; u1 reads again, u2's read fails, u3 holds none and is never read.
+    let (url, seen) = serve_with(r#"{"data": {"Get": {"Place": [{"_additional": {"id": "u1"}}, {"_additional": {"id": "u2"}}]}}}"#);
+    let d = WeaviateDriver::connect(&url, "", "").await.unwrap();
+    let docs = parse(&d.find("Place", &opts(&f, 0, 10)).await.unwrap());
+    assert_eq!(docs, [json!({"_id": "u1", "city": "a", "n": 5_000_000_000i64}), json!({"_id": "u2", "city": "b"}), json!({"_id": "u3", "city": "c"})]);
+    let reqs = seen.lock().unwrap().clone();
+    assert!(reqs.iter().all(|r| !r.starts_with("GET /v1/objects/Place/u3 ")));
+    // The question of which objects hold one failing leaves them all null, too.
+    let (url, _) = serve_with(r#"{"data": null, "errors": [{"message": "no"}]}"#);
+    let d = WeaviateDriver::connect(&url, "", "").await.unwrap();
+    let docs = parse(&d.find("Place", &opts(&f, 0, 10)).await.unwrap());
+    assert_eq!(docs.len(), 3);
+    assert!(docs.iter().all(|p| p.get("n").is_none()));
+}

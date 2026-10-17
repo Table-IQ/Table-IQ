@@ -75,6 +75,7 @@ import {
   type ObjectInfo,
   type SavedQuery,
 } from "../lib/commands";
+import { isReadOnlyEngine } from "../lib/profiles";
 import {
   buildTableScript,
   quoteIdent,
@@ -825,6 +826,8 @@ export function MainShell() {
           }),
           // The pill names the session's profile: the saved one when known, else the detected product.
           profile: active.profile,
+          // …and the database the session is on now: a switch changes it, the saved one stays as typed.
+          database: active.database || saved.find((c) => c.id === active.id)?.database || "",
         }}
         activeObject={
           activeTab?.kind === "table" && activeTab.schema && activeTab.table
@@ -1016,17 +1019,19 @@ export function MainShell() {
                 className="flex shrink-0 items-center gap-1 border-t border-border px-2 text-[10px] text-muted"
                 style={{ height: "var(--statusbar-h)" }}
               >
-                <button
-                  onClick={(e) => {
-                    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                    setSidebarMenu({ x: r.left, y: r.top - 4 });
-                  }}
-                  title="New table, view, function, schema…"
-                  aria-label="New object"
-                  className="inline-flex h-[18px] w-[18px] items-center justify-center rounded text-muted transition-colors hover:bg-surface-2 hover:text-text"
-                >
-                  <IconPlus size={12} />
-                </button>
+                {!isReadOnlyEngine(engine) && (
+                  <button
+                    onClick={(e) => {
+                      const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                      setSidebarMenu({ x: r.left, y: r.top - 4 });
+                    }}
+                    title="New table, view, function, schema…"
+                    aria-label="New object"
+                    className="inline-flex h-[18px] w-[18px] items-center justify-center rounded text-muted transition-colors hover:bg-surface-2 hover:text-text"
+                  >
+                    <IconPlus size={12} />
+                  </button>
+                )}
                 {schema.schemas.length > 1 ? (
                   <select
                     value={activeSchema ?? ""}

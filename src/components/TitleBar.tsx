@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { ConnConfig } from "../lib/commands";
+import { isReadOnlyEngine } from "../lib/profiles";
 import { envTone, pillSegments, type PillSegments } from "../lib/connEnv";
 import { useStaged } from "../state/stagedStore";
 import { useSettingsUi } from "./Settings";
@@ -213,8 +214,13 @@ export function TitleBar(p: TitleBarProps) {
             title="New table, import, diff, backup…"
             onClick={() =>
               menuBelow(moreRef.current, [
-                { id: "new-table", label: "New Table…", onSelect: p.onNewTable },
-                { id: "import", label: "Import CSV / JSON…", onSelect: p.onImport },
+                // A read-only engine has no write path: nothing to create or import into.
+                ...(isReadOnlyEngine(p.cfg.engine)
+                  ? []
+                  : [
+                      { id: "new-table", label: "New Table…", onSelect: p.onNewTable },
+                      { id: "import", label: "Import CSV / JSON…", onSelect: p.onImport },
+                    ]),
                 { id: "diff", label: "Diff with another connection…", onSelect: p.onDiff },
                 ...((p.canBackup || p.canRestore ? ["separator"] : []) as "separator"[]),
                 ...(p.canBackup ? [{ id: "backup", label: "Backup Database…", onSelect: p.onBackup }] : []),

@@ -93,7 +93,7 @@ fn http_error(status: u16, body: &[u8], host: &str) -> DriverError {
     let missing = String::from_utf8_lossy(body).contains("Must provide");
     DriverError::Db(match (status, reason) {
         (401, _) if missing => "this Qdrant server needs an API key (HTTP 401): enter it in the API key field".into(),
-        (401 | 403, _) => format!("Qdrant rejected the API key (HTTP {status}): it is wrong or expired, or it may not read"),
+        (401 | 403, _) => format!("Qdrant rejected the API key (HTTP {status}): it is wrong or expired, or it lacks permission to read"),
         (301..=308, _) => format!("{host} redirected the request (HTTP {status}); TableIQ does not follow redirects: connect to the final address"),
         (_, Some(r)) => r,
         (s, None) => format!("Qdrant answered HTTP {s}"),

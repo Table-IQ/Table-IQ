@@ -48,6 +48,7 @@ import { isNumericType } from "../lib/autoFit";
 import { ColumnProfilePanel } from "./ColumnProfilePanel";
 import { AlterTablePanel } from "./AlterTablePanel";
 import type { Engine } from "../lib/commands";
+import { isReadOnlyEngine } from "../lib/profiles";
 import { Toolbar, ToolbarButton, ToolbarSpacer } from "./ui/Toolbar";
 import { SegmentedToggle, StatusBar, StatusBarButton, StatusDot } from "./ui/StatusBar";
 import { Chip } from "./ui/Chip";
@@ -835,6 +836,15 @@ export function TableView({ connId, schema, object, view }: Props) {
                 Clear filters
               </button>
             )}
+            {/* A table the server refuses to read whole (InfluxDB 3 Core's file limit) is reached by narrowing it. */}
+            {filters.length === 0 && !barOpen && /filter/i.test(error) && (
+              <button
+                onClick={openBar}
+                className="rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-white hover:opacity-90"
+              >
+                Add a filter
+              </button>
+            )}
             <button
               onClick={refresh}
               className="rounded-md border border-border px-2.5 py-1 text-[11px] text-muted hover:text-text"
@@ -868,7 +878,7 @@ export function TableView({ connId, schema, object, view }: Props) {
           onClick={() => !blockedByEdits() && refresh()}
         />
         <ToolbarButton label="Profile" onClick={() => setShowProfile(true)} />
-        {object.kind === "Table" && (
+        {object.kind === "Table" && !isReadOnlyEngine(engine) && (
           <ToolbarButton label="Alter" onClick={() => !blockedByEdits() && setShowAlter(true)} />
         )}
         <ToolbarSpacer />
@@ -1003,7 +1013,9 @@ export function TableView({ connId, schema, object, view }: Props) {
             <span>Read-only — a {object.kind.toLowerCase()} can't be edited.</span>
           ) : reason === "no-transactions" ? (
             <span>
-              Read-only: {productLabel} has no multi-statement transactions. Run INSERT or UPDATE from a query tab.
+              {isReadOnlyEngine(engine)
+                ? `Read-only: ${productLabel} is a read-only connection in TableIQ.`
+                : `Read-only: ${productLabel} has no multi-statement transactions. Run INSERT or UPDATE from a query tab.`}
             </span>
           ) : (
             <span>Read-only — this table has no primary key, so cells can't be edited.</span>
@@ -1200,7 +1212,9 @@ export function TableView({ connId, schema, object, view }: Props) {
                 className={`inline-flex items-center gap-1 ${pkError && !noTx ? "text-warn" : "text-muted"}`}
                 title={
                   noTx
-                    ? `${productLabel} has no multi-statement transactions — editing disabled`
+                    ? isReadOnlyEngine(engine)
+                      ? `${productLabel} is a read-only connection — editing disabled`
+                      : `${productLabel} has no multi-statement transactions — editing disabled`
                     : pkError
                       ? `Couldn't read the primary key, so editing is disabled — this table may well have one. ${pkError}`
                       : pk && pk.length === 0
@@ -1211,7 +1225,7 @@ export function TableView({ connId, schema, object, view }: Props) {
                 <StatusDot tone={pkError && !noTx ? "warn" : "muted"} />
                 <span>
                   read-only
-                  {noTx ? " · no transactions" : pkError ? " · PK unknown" : pk && pk.length === 0 ? " · no PK" : ""}
+                  {noTx ? (isReadOnlyEngine(engine) ? "" : " · no transactions") : pkError ? " · PK unknown" : pk && pk.length === 0 ? " · no PK" : ""}
                 </span>
               </span>
             )}

@@ -209,9 +209,10 @@ jobs:
       # docker/weaviate/docker-compose.yml: API-key authentication, no anonymous access, so the (throwaway) key is really needed — tests/weaviate_live.rs.
       TIQ_WEAVIATE_URL: http://127.0.0.1:58090
       TIQ_WEAVIATE_KEY: tableiq-fixture-weaviate-key-0001
-      # docker/influxdb/docker-compose.yml: one server without auth, one that needs the (throwaway, pinned) admin token — tests/influxdb_live.rs.
+      # docker/influxdb/docker-compose.yml: one server without auth, one that needs the (throwaway, pinned) admin token, one with Core's default file limit — tests/influxdb_live.rs.
       TIQ_INFLUX_URL: http://127.0.0.1:58181
       TIQ_INFLUX_AUTH_URL: http://127.0.0.1:58182
+      TIQ_INFLUX_LIMITED_URL: http://127.0.0.1:58183
       TIQ_INFLUX_TOKEN: apiv3_tableiq-fixture-token-for-tests-only-0123456789abcdefghijklmnopqrstuvwxyz-ABCDEFGHIJKLMNOP
       # Same disk and debug-info settings as `rust` (the bundled DuckDB build fills the runner).
       CARGO_INCREMENTAL: "0"
@@ -233,16 +234,11 @@ jobs:
 
       # Compose, not `services:` — the healthchecks seed each server once. The ClickHouse image
       # is ~1 GB, Elasticsearch ~1.2 GB (heap pinned to 512 MB) and the slowest to come up.
-      - name: Start ClickHouse, Turso (libSQL), Elasticsearch, rqlite, Meilisearch, Qdrant, ChromaDB, Weaviate and InfluxDB
+      - name: Start ClickHouse, Turso (libSQL), rqlite and Elasticsearch
         run: |
           docker compose -f docker/clickhouse/docker-compose.yml up -d --wait --wait-timeout 300
           docker compose -f docker/libsql/docker-compose.yml up -d --wait --wait-timeout 300
           docker compose -f docker/rqlite/docker-compose.yml up -d --wait --wait-timeout 300
-          docker compose -f docker/meilisearch/docker-compose.yml up -d --wait --wait-timeout 300
-          docker compose -f docker/qdrant/docker-compose.yml up -d --wait --wait-timeout 300
-          docker compose -f docker/chroma/docker-compose.yml up -d --wait --wait-timeout 300
-          docker compose -f docker/weaviate/docker-compose.yml up -d --wait --wait-timeout 300
-          docker compose -f docker/influxdb/docker-compose.yml up -d --wait --wait-timeout 300
           docker compose -f docker/elasticsearch/docker-compose.yml up -d --wait --wait-timeout 420
 
       - uses: dtolnay/rust-toolchain@stable
@@ -253,4 +249,76 @@ jobs:
 
       - name: Live tests that must not skip
         working-directory: src-tauri
-        run: TIQ_REQUIRE_LIVE=1 cargo test --locked --test clickhouse_live --test libsql_live --test elasticsearch_live --test rqlite_live --test meilisearch_live --test qdrant_live --test chroma_live --test weaviate_live --test influxdb_live
+        run: TIQ_REQUIRE_LIVE=1 cargo test --locked --test clickhouse_live --test libsql_live --test elasticsearch_live --test rqlite_live
+
+  # The other half of the HTTP engines, in a second job: all nine servers next to the DuckDB link
+  # would leave a 7 GB runner too little memory for it.
+  search-engines:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 75
+    env:
+      # docker/clickhouse/docker-compose.yml: the HTTP interface — tests/clickhouse_live.rs.
+      TIQ_CLICKHOUSE_URL: http://default:tableiq@127.0.0.1:58123/tableiq
+      # docker/libsql/docker-compose.yml: Turso's sqld over Hrana-HTTP (open, and one that wants a JWT) — tests/libsql_live.rs.
+      TIQ_LIBSQL_URL: http://127.0.0.1:58080
+      TIQ_LIBSQL_AUTH_URL: http://127.0.0.1:58081
+      # docker/elasticsearch/docker-compose.yml: one single-node server, security off — tests/elasticsearch_live.rs.
+      TIQ_ES_URL: http://127.0.0.1:59200
+      # docker/rqlite/docker-compose.yml: rqlite over HTTP (open, and one with Basic auth) — tests/rqlite_live.rs.
+      TIQ_RQLITE_URL: http://127.0.0.1:54001
+      TIQ_RQLITE_AUTH_URL: http://127.0.0.1:54002
+      # docker/meilisearch/docker-compose.yml: production mode, so the (throwaway) master key is really needed — tests/meilisearch_live.rs.
+      TIQ_MEILI_URL: http://127.0.0.1:57700
+      TIQ_MEILI_KEY: tableiq-fixture-master-key-0001
+      # docker/qdrant/docker-compose.yml: an API key is set, so the (throwaway) key is really needed — tests/qdrant_live.rs.
+      TIQ_QDRANT_URL: http://127.0.0.1:56333
+      TIQ_QDRANT_KEY: tableiq-fixture-qdrant-key-0001
+      # docker/chroma/docker-compose.yml: Chroma 1.x has no auth of its own, so 58000 is an nginx gate that needs the (throwaway) token, 58001 the server direct — tests/chroma_live.rs.
+      TIQ_CHROMA_URL: http://127.0.0.1:58000
+      TIQ_CHROMA_OPEN_URL: http://127.0.0.1:58001
+      TIQ_CHROMA_TOKEN: tableiq-fixture-chroma-token-0001
+      # docker/weaviate/docker-compose.yml: API-key authentication, no anonymous access, so the (throwaway) key is really needed — tests/weaviate_live.rs.
+      TIQ_WEAVIATE_URL: http://127.0.0.1:58090
+      TIQ_WEAVIATE_KEY: tableiq-fixture-weaviate-key-0001
+      # docker/influxdb/docker-compose.yml: one server without auth, one that needs the (throwaway, pinned) admin token, one with Core's default file limit — tests/influxdb_live.rs.
+      TIQ_INFLUX_URL: http://127.0.0.1:58181
+      TIQ_INFLUX_AUTH_URL: http://127.0.0.1:58182
+      TIQ_INFLUX_LIMITED_URL: http://127.0.0.1:58183
+      TIQ_INFLUX_TOKEN: apiv3_tableiq-fixture-token-for-tests-only-0123456789abcdefghijklmnopqrstuvwxyz-ABCDEFGHIJKLMNOP
+      # Same disk and debug-info settings as `rust` (the bundled DuckDB build fills the runner).
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Free runner disk
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL || true
+          df -h / | tail -1
+
+      # Compose, not `services:` — the healthchecks seed each server once. The ClickHouse image
+      # is ~1 GB, Elasticsearch ~1.2 GB (heap pinned to 512 MB) and the slowest to come up.
+      - name: Start Meilisearch, Qdrant, ChromaDB, Weaviate and InfluxDB
+        run: |
+          docker compose -f docker/meilisearch/docker-compose.yml up -d --wait --wait-timeout 300
+          docker compose -f docker/qdrant/docker-compose.yml up -d --wait --wait-timeout 300
+          docker compose -f docker/chroma/docker-compose.yml up -d --wait --wait-timeout 300
+          docker compose -f docker/weaviate/docker-compose.yml up -d --wait --wait-timeout 300
+          docker compose -f docker/influxdb/docker-compose.yml up -d --wait --wait-timeout 300
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+          key: search-engines
+
+      - name: Live tests that must not skip
+        working-directory: src-tauri
+        run: TIQ_REQUIRE_LIVE=1 cargo test --locked --test meilisearch_live --test qdrant_live --test chroma_live --test weaviate_live --test influxdb_live

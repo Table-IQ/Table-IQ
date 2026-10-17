@@ -1,14 +1,19 @@
-# InfluxDB 3 Core for tests/influxdb_live.rs and the InfluxDB QA. Two servers:
-#   influxdb       no auth, on 58181 — TIQ_INFLUX_URL=http://127.0.0.1:58181
-#   influxdb-auth  on 58182, every request needs the admin token in admin-token.json
-#                  (a throwaway fixture: the server loads that file at start-up, so the token
-#                  is pinned, with nothing to discover) — TIQ_INFLUX_AUTH_URL=http://127.0.0.1:58182
-#                  TIQ_INFLUX_TOKEN=apiv3_tableiq-fixture-token-for-tests-only-0123456789abcdefghijklmnopqrstuvwxyz-ABCDEFGHIJKLMNOP
+# InfluxDB 3 Core for tests/influxdb_live.rs and the InfluxDB QA. Three servers:
+#   influxdb          no auth, on 58181, --query-file-limit 5000 — TIQ_INFLUX_URL=http://127.0.0.1:58181
+#   influxdb-auth     on 58182, every request needs the admin token in admin-token.json (a throwaway
+#                     fixture: the server loads that file at start-up, so the token is pinned, with
+#                     nothing to discover), same raised limit — TIQ_INFLUX_AUTH_URL=http://127.0.0.1:58182
+#                     TIQ_INFLUX_TOKEN=apiv3_tableiq-fixture-token-for-tests-only-0123456789abcdefghijklmnopqrstuvwxyz-ABCDEFGHIJKLMNOP
+#   influxdb-limited  no auth, on 58183, Core's DEFAULT file limit (432) — TIQ_INFLUX_LIMITED_URL=http://127.0.0.1:58183
+#                     The seed is ~1000 Parquet files, so `SELECT count(*) FROM cpu` is refused here, as it is
+#                     on any long-lived Core server; the driver's time window is for this state.
+# The two with the raised limit can be read whole, so the tests can check the data against itself.
 # The healthcheck is seed.sh (the image has bash, curl and awk). It writes the fixture once and
 # passes only once the marker is there, so `up -d --wait` returns when the data is there and later
 # edits to it are never undone. The data lives in the container: `down` resets it.
-# The image is pinned (3.12.0) by its multi-architecture index digest (amd64 and arm64),
-# like docker/mongo. Ports bind to 127.0.0.1 only.
+# All servers snapshot every WAL file (`--wal-files-per-snapshot 1`, a 100 ms flush): the seed's
+# 7 days of points then become ~1000 Parquet files within seconds, over Core's 432-file query
+# limit. (By default that takes ten minutes of writes, so a fresh runner would never see it.)
 x-influx: &influx
   image: influxdb:3-core@sha256:624d69bca6bf6fb174aca5a974e1d96e5c5486994e6ae35bc9b4fe02b9520076
   volumes:
@@ -25,14 +30,20 @@ services:
   influxdb:
     <<: *influx
     container_name: tableiq-influxdb
-    command: ["serve", "--node-id", "tiq", "--object-store", "file", "--data-dir", "/var/lib/influxdb3", "--without-auth"]
+    command: ["serve", "--node-id", "tiq", "--object-store", "file", "--data-dir", "/var/lib/influxdb3", "--without-auth", "--wal-files-per-snapshot", "1", "--wal-flush-interval", "100ms", "--query-file-limit", "5000"]
     ports:
       - "127.0.0.1:58181:8181"
   influxdb-auth:
     <<: *influx
     container_name: tableiq-influxdb-auth
-    command: ["serve", "--node-id", "tiq", "--object-store", "file", "--data-dir", "/var/lib/influxdb3", "--admin-token-file", "/admin-token.json"]
+    command: ["serve", "--node-id", "tiq", "--object-store", "file", "--data-dir", "/var/lib/influxdb3", "--admin-token-file", "/admin-token.json", "--wal-files-per-snapshot", "1", "--wal-flush-interval", "100ms", "--query-file-limit", "5000"]
     environment:
       INFLUX_TOKEN: apiv3_tableiq-fixture-token-for-tests-only-0123456789abcdefghijklmnopqrstuvwxyz-ABCDEFGHIJKLMNOP
     ports:
       - "127.0.0.1:58182:8181"
+  influxdb-limited:
+    <<: *influx
+    container_name: tableiq-influxdb-limited
+    command: ["serve", "--node-id", "tiq", "--object-store", "file", "--data-dir", "/var/lib/influxdb3", "--without-auth", "--wal-files-per-snapshot", "1", "--wal-flush-interval", "100ms"]
+    ports:
+      - "127.0.0.1:58183:8181"

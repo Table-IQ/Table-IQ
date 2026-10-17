@@ -26,8 +26,12 @@
 //! is left out unless the projection names `_vector`, then a short summary (`dim=4 [0.1, 0.2, …]`), never the
 //! full vector; `_created` (ISO time) likewise.
 //!
-//! **Big integers.** GraphQL answers an `int` that does not fit 32 bits as `null`. Such a row's `int`
-//! properties are read again, exactly, by `GET /v1/objects/{class}/{id}`. A number past ±2^53 is returned as
+//! **Big integers.** GraphQL answers an `int` that does not fit 32 bits as `null`, which a missing value is too.
+//! When a filtered or sorted page holds a null `int` / `int[]`, one more GraphQL query (the same filter, and
+//! an `int` outside 32 bits) names which of the objects really hold one, and only those are read again,
+//! exactly, by `GET /v1/objects/{class}/{id}` (at most [`REREAD_MAX`] a page, [`REREAD_PARALLEL`] at a time; the
+//! rest stay null). Any failure there leaves the value null, never the page lost. An `int` inside a nested
+//! object is not read again. A number past ±2^53 is returned as
 //! a JSON *string*: the UI's `JSON.parse` would round it. (Weaviate itself reads a request's JSON number as a
 //! float, so only an `int` written by gRPC or through a larger-than-float-precision path holds more than 2^53.)
 //!
@@ -69,6 +73,10 @@ const MAX_OUT_BYTES: usize = 64 << 20;
 const DEFAULT_PORT: u16 = 8080;
 /// Objects read again at a time, for an `int` GraphQL could not carry.
 const REREAD_PARALLEL: usize = 8;
+/// Most objects of a page read again for a big `int`.
+const REREAD_MAX: usize = 1000;
+/// The `int`s GraphQL can carry.
+const GQL_INT: std::ops::RangeInclusive<i64> = i32::MIN as i64..=i32::MAX as i64;
 const FILTER_EXAMPLE: &str = r#"{"path": ["city"], "operator": "Equal", "valueText": "London"}"#;
 const OPERATORS: [&str; 15] = [
     "Equal", "NotEqual", "GreaterThan", "GreaterThanEqual", "LessThan", "LessThanEqual", "Like", "And", "Or", "Not", "WithinGeoRange", "IsNull", "ContainsAny", "ContainsAll", "ContainsNone",
@@ -91,7 +99,7 @@ pub struct WeaviateDriver {
 fn http_error(status: u16, body: &[u8], host: &str, sent: bool) -> DriverError {
     DriverError::Db(match (status, reason_of(body)) {
         (401 | 403, _) if !sent => format!("this Weaviate server needs an API key (HTTP {status}): enter it in the API key field"),
-        (401 | 403, _) => format!("Weaviate rejected the API key (HTTP {status}): it is wrong, or it may not read"),
+        (401 | 403, _) => format!("Weaviate rejected the API key (HTTP {status}): it is wrong, or it lacks permission to read"),
         (301..=308, _) => format!("{host} redirected the request (HTTP {status}); TableIQ does not follow redirects: connect to the final address"),
         (503, _) => "Weaviate is not ready (HTTP 503)".into(),
         (_, Some(r)) => r,
@@ -141,9 +149,9 @@ fn prop_type(p: &Value) -> &str {
     p["dataType"][0].as_str().unwrap_or("")
 }
 
-/// Whether the property holds an `int` anywhere (GraphQL returns `null` for one past 32 bits).
-fn holds_int(p: &Value) -> bool {
-    matches!(prop_type(p), "int" | "int[]") || p["nestedProperties"].as_array().is_some_and(|n| n.iter().any(holds_int))
+/// Whether the property is an `int` or an `int[]` (GraphQL returns `null` for one past 32 bits).
+fn is_int(p: &Value) -> bool {
+    matches!(prop_type(p), "int" | "int[]")
 }
 
 fn has_null(v: &Value) -> bool {
@@ -574,6 +582,7 @@ impl WeaviateDriver {
 
     /// One object by id, whole and exact (REST); None when it is gone.
     async fn object(&self, c: &Class, tenant: Option<&str>, id: &str) -> DResult<Option<Obj>> {
+        note(&format!("GET /v1/objects/{}/{id}", c.name));
         let q: Vec<(&str, &str)> = tenant.map(|t| ("tenant", t)).into_iter().collect();
         let (status, bytes) = self.send(Method::GET, &["v1", "objects", &c.name, id], &q, None, CLIENT_TIMEOUT).await?;
         match status {
@@ -583,25 +592,35 @@ impl WeaviateDriver {
         }
     }
 
-    /// GraphQL answers an `int` past 32 bits as `null`: read those objects' integers again, exactly.
-    async fn reread_ints(&self, c: &Class, tenant: Option<&str>, rows: &[Value], objs: &mut [Obj]) -> DResult<()> {
-        let wants = |row: &Value, p: &Value| holds_int(p) && p["name"].as_str().is_some_and(|n| row.get(n).is_some_and(has_null));
-        let ids: Vec<String> = rows.iter().zip(objs.iter()).filter(|(row, _)| c.props().iter().any(|p| wants(row, p))).filter_map(|(_, o)| o.id.as_str().map(String::from)).collect();
-        let fresh: Vec<(String, Option<Obj>)> = stream::iter(ids)
-            .map(|id| async move { self.object(c, tenant, &id).await.map(|o| (id, o)) })
+    /// GraphQL answers an `int` past 32 bits as `null`: read the page's big integers again, exactly (see the
+    /// module docs). Best effort: whatever fails leaves the value null.
+    async fn reread_ints(&self, c: &Class, tenant: Option<&str>, filter: Option<&str>, rows: &[Value], objs: &mut [Obj]) {
+        let wants = |row: &Value, p: &Value| is_int(p) && p["name"].as_str().is_some_and(|n| row.get(n).is_some_and(has_null));
+        let props: Vec<&str> = c.props().iter().filter(|p| rows.iter().any(|r| wants(r, p))).filter_map(|p| p["name"].as_str()).filter(|n| is_name(n)).collect();
+        if props.is_empty() {
+            return;
+        }
+        // Which objects of the filter really hold an int outside 32 bits.
+        let outside = |n: &str| format!("{{operator:Or,operands:[{{path:[\"{n}\"],operator:GreaterThan,valueInt:{}}},{{path:[\"{n}\"],operator:LessThan,valueInt:{}}}]}}", GQL_INT.end(), GQL_INT.start());
+        let any = format!("{{operator:Or,operands:[{}]}}", props.iter().map(|n| outside(n)).collect::<Vec<_>>().join(","));
+        let w = filter.map_or(any.clone(), |f| format!("{{operator:And,operands:[{f},{any}]}}"));
+        let args = [format!("where:{w}"), format!("limit:{WINDOW}")];
+        let Ok(hit) = self.query("Get", c, &args, tenant, "_additional { id }").await else { return };
+        let hit: std::collections::HashSet<&str> = hit.as_array().into_iter().flatten().filter_map(|h| h["_additional"]["id"].as_str()).collect();
+        let ids: Vec<String> = objs.iter().filter_map(|o| o.id.as_str()).filter(|id| hit.contains(id)).take(REREAD_MAX).map(String::from).collect();
+        let fresh: std::collections::HashMap<String, Obj> = stream::iter(ids)
+            .map(|id| async move { self.object(c, tenant, &id).await.ok().flatten().map(|o| (id, o)) })
             .buffer_unordered(REREAD_PARALLEL)
-            .collect::<Vec<_>>()
-            .await
-            .into_iter()
-            .collect::<DResult<_>>()?;
+            .filter_map(|o| async move { o })
+            .collect()
+            .await;
         for (row, o) in rows.iter().zip(objs.iter_mut()) {
-            let Some((_, Some(f))) = fresh.iter().find(|(id, _)| o.id.as_str() == Some(id)) else { continue };
+            let Some(f) = o.id.as_str().and_then(|id| fresh.get(id)) else { continue };
             for p in c.props().iter().filter(|p| wants(row, p)) {
                 let n = p["name"].as_str().unwrap_or_default();
                 o.props.insert(n.into(), f.props.get(n).cloned().unwrap_or(Value::Null));
             }
         }
-        Ok(())
     }
 }
 
@@ -662,14 +681,14 @@ impl DocumentDriver for WeaviateDriver {
                 extra.push_str(&if named.is_empty() { " vector".to_string() } else { format!(" vectors {{ {} }}", named.join(" ")) });
             }
             let mut args = Vec::new();
-            args.extend(filter.map(|w| format!("where:{w}")));
+            args.extend(filter.as_ref().map(|w| format!("where:{w}")));
             args.extend(sort.map(|s| format!("sort:{s}")));
             args.push(format!("limit:{limit}"));
             args.push(format!("offset:{}", o.skip));
             let rows = self.query("Get", &c, &args, tenant, &format!("{} _additional {{ {extra} }}", fields_of(shown.into_iter()))).await?;
             let rows = rows.as_array().cloned().unwrap_or_default();
             let mut objs: Vec<Obj> = rows.iter().map(|r| gql_obj(r, &c)).collect();
-            self.reread_ints(&c, tenant, &rows, &mut objs).await?;
+            self.reread_ints(&c, tenant, filter.as_deref(), &rows, &mut objs).await;
             objs
         };
         Ok(objs.into_iter().map(|o| pretty(doc(o, &order, &proj, created))).collect())
@@ -896,8 +915,8 @@ mod tests {
             fields_of(props.as_array().unwrap().iter()),
             "city location { latitude longitude } country { code eu } friends { ... on Person { _additional { id } } ... on Pet { _additional { id } } } year"
         );
-        assert!(holds_int(&props[6]) && !holds_int(&props[0]));
-        assert!(holds_int(&json!({"dataType": ["object"], "nestedProperties": [{"name": "n", "dataType": ["int"]}]})));
+        assert!(is_int(&props[6]) && !is_int(&props[0]));
+        assert!(!is_int(&json!({"dataType": ["object"], "nestedProperties": [{"name": "n", "dataType": ["int"]}]})));
         assert!(has_null(&json!([1, null])) && has_null(&json!({"a": {"b": null}})) && !has_null(&json!({"a": [1, "x"]})));
     }
 

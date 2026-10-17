@@ -541,6 +541,7 @@ pub(crate) async fn connect_session(
     let mut session = (None, crate::profiles::effective_caps(None, None));
     let mut read_only = false;
     let mut aggregate = true;
+    let mut used_db: Option<String> = None;
     let result: Result<(), String> = async {
         if eff.engine == "redis" {
             let drv = RedisDriver::connect(&eff.url_with_password(&password))
@@ -575,6 +576,10 @@ pub(crate) async fn connect_session(
         } else {
             let drv = open_driver(&eff, &password).await?;
             session = (drv.product(), drv.caps());
+            // A connection that named no database (InfluxDB takes the server's first) reports the one in use.
+            if eff.database.is_empty() {
+                used_db = drv.database().filter(|d| !d.is_empty());
+            }
             let drv = Arc::new(Logged { inner: drv, log: state.sql_log_for(&id) });
             // Checked again under the sessions lock: a restore that began while this was
             // opening takes the session out after marking the connection, so it never finds
@@ -599,7 +604,7 @@ pub(crate) async fn connect_session(
     Ok(ConnectedInfo {
         id,
         name: cfg.name,
-        database: cfg.database,
+        database: used_db.unwrap_or(cfg.database),
         engine: cfg.engine,
         profile: session.0,
         caps: session.1,

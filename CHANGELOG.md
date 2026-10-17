@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.8.9 — 2026-10-17
+
+Three more read-only engines over HTTP, again with no new crate: InfluxDB 3, ChromaDB and Weaviate. None of them can be shared with agents over MCP.
+
+### Added
+- **InfluxDB 3** (Core or Enterprise) over its SQL API: databases, tables and columns, paging newest-first, filters, counts, and the SQL editor (one statement per call, stopping at the first error). Results come back as Parquet so int64, uint64, NULL and timestamps stay exact. The token goes in the Token field. A table too big for InfluxDB 3 Core's per-query file limit opens on its newest data and says so, and the error points to a time filter.
+- **ChromaDB** in the document shell: collections and documents, a plain-text filter (`$contains`), a `where` / `where_document` / `ids` JSON filter, optional embedding summary, a Mapping tab, and exact counts (a filtered count caps at 10,000+). Token auth works through a proxy or Chroma Cloud.
+- **Weaviate** in the document shell: classes and objects with exact counts, a `where` filter sent as typed GraphQL (nothing is interpolated into the query), sort, tenant, a Mapping tab, and a group-by Aggregate pane. Integers past 32 bits show exactly.
+- **Connection sheet:** three new tiles. A URL's key or token moves to the Token / API key field and is never saved in the host or the connection name.
+- **Read-only engines no longer offer writes:** Import CSV, New Table and Alter are hidden for all nine read-only engines.
+- **Live tests and CI:** InfluxDB (open, token and file-limited servers), ChromaDB behind a token gate, and Weaviate in `docker/`, in a second CI job (`search-engines`) next to the first, so the DuckDB link has room on a 7 GB runner.
+
+### Changed
+- A pasted `http(s)://host:8080` URL is no longer taken as Weaviate (it is also a local Turso server); use `weaviate://`.
+- The pager shows "—" with disabled arrows after a failed page instead of the last range, a zero-row SQL result says "no rows", and the title bar follows a database switch.
+
+### Not included
+- Writes, similarity search, agent access, a private CA for HTTPS servers, and Milvus.
+
 ## 0.8.8 — 2026-10-09
 
 Three more read-only engines over HTTP, again with no new crate: rqlite, Meilisearch and Qdrant. None of them can be shared with agents over MCP.

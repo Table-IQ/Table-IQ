@@ -62,8 +62,10 @@ export const CHROMA_COUNT_CAP = 10_000;
 const EXACT = new Intl.NumberFormat("en-US");
 
 /** `1–300 of 1,234 docs` (`noun` "point": `points`); an estimate (empty filter, from collection metadata) reads
- *  `of ~1,234 (est.)`; a count that stopped at its cap (`more`) reads `of 10,000+`; an unknown total drops the "of …" half. */
-export function docPagerLabel(skip: number, shown: number, total: number | null, exact: boolean, noun = "doc", more = false): string {
+ *  `of ~1,234 (est.)`; a count that stopped at its cap (`more`) reads `of 10,000+`; an unknown total drops the "of …" half.
+ *  A failed load (`failed`) has no range: the error banner above is the answer, the previous page's range would be stale. */
+export function docPagerLabel(skip: number, shown: number, total: number | null, exact: boolean, noun = "doc", more = false, failed = false): string {
+  if (failed) return "—";
   if (shown <= 0) return `0 ${noun}s`;
   const range = `${EXACT.format(skip + 1)}–${EXACT.format(skip + shown)}`;
   if (total === null) return `${range} ${noun}s`;

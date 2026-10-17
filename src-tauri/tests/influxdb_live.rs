@@ -78,7 +78,7 @@ async fn connect_probes_the_server_and_the_token_without_leaking_either_secret()
     assert!(InfluxDriver::connect("", "tiq", "").await.is_err());
     // A token in the query string is refused (it would be saved in plaintext), without echoing it.
     let e = InfluxDriver::connect(&format!("{url}?token=apiv3_hunter2-s3cret"), "tiq", "").await.err().expect("refused").to_string();
-    assert!(e.contains("Password field") && !e.contains("hunter2-s3cret"), "{e}");
+    assert!(e.contains("Token field") && !e.contains("Password") && !e.contains("hunter2-s3cret"), "{e}");
     // The influxdb:// form maps to https for a remote host: nothing there speaks it, and the error is clean.
     let e = InfluxDriver::connect("influxdb://127.0.0.1:1?x=1", "tiq", "apiv3_hunter2-s3cret").await.err().expect("refused").to_string();
     assert!(!e.contains("hunter2-s3cret"), "{e}");
@@ -88,6 +88,7 @@ async fn connect_probes_the_server_and_the_token_without_leaking_either_secret()
     assert!(e.contains("database not found: no_such_db"), "{e}");
     let d = InfluxDriver::connect(&url, "", "").await.expect("blank database");
     assert_eq!(count(&d, "events", &[]).await, Some(5000), "blank means `tiq`, the first one");
+    assert_eq!(d.database().as_deref(), Some("tiq"), "the session says which database it took, for the picker to mark");
     let d = InfluxDriver::connect(&format!("{url}/tiq_other"), "", "").await.expect("database from the path");
     assert_eq!(d.introspect().await.unwrap().schemas[0].objects[0].name, "ledger");
     assert_eq!(d.list_databases().await.unwrap(), ["tiq", "tiq_other"], "the server's own _internal is not listed");
@@ -96,9 +97,9 @@ async fn connect_probes_the_server_and_the_token_without_leaking_either_secret()
     let Some(auth) = live_url("TIQ_INFLUX_AUTH_URL") else { return };
     let token = std::env::var("TIQ_INFLUX_TOKEN").expect("TIQ_INFLUX_TOKEN");
     let e = InfluxDriver::connect(&auth, "tiq", "").await.err().expect("needs a token").to_string();
-    assert!(e.contains("needs a token") && e.contains("Password"), "{e}");
+    assert!(e.contains("needs a token") && e.contains("Token field") && !e.contains("Password"), "{e}");
     let e = InfluxDriver::connect(&auth, "tiq", "apiv3_wrong-s3cret").await.err().expect("bad token").to_string();
-    assert!(e.contains("authentication failed") && !e.contains("s3cret"), "{e}");
+    assert!(e.contains("authentication failed") && e.contains("Token field") && !e.contains("s3cret"), "{e}");
     let d = InfluxDriver::connect(&auth, "tiq", &token).await.expect("token");
     assert_eq!(count(&d, "cpu", &[]).await, Some(CPU as i64));
     let in_url = auth.replacen("http://", &format!("http://:{token}@"), 1);
@@ -245,7 +246,8 @@ async fn counts_are_exact_and_bounded() {
     assert_eq!(d.estimate_rows("system", "queries").await.unwrap(), None);
     assert!(d.table_stats("iox").await.unwrap().is_empty());
     // A count that would not finish gives up after the client timeout and shows no total (forced, it would wait).
-    let slow = f("*", FilterOp::Raw, "(SELECT count(*) FROM cpu a CROSS JOIN cpu b CROSS JOIN cpu c) > 0");
+    // (A bare cross-join count is answered from the Parquet statistics; the join condition makes it really run.)
+    let slow = f("*", FilterOp::Raw, "(SELECT count(*) FROM cpu a CROSS JOIN cpu b CROSS JOIN cpu c WHERE a.cores + b.cores + c.cores = -3) > 0");
     let start = Instant::now();
     let c = d.count_rows("iox", "cpu", &[slow], None).await.unwrap();
     assert_eq!((c.count, c.exact), (None, false), "count unavailable");
@@ -408,7 +410,7 @@ async fn results_are_capped_and_say_so() {
 async fn cancel_drops_the_request_and_the_server_stops() {
     let Some(d) = drv().await else { return };
     let d = Arc::new(d);
-    let slow = "SELECT count(*) FROM cpu a CROSS JOIN cpu b CROSS JOIN cpu c";
+    let slow = "SELECT count(*) FROM cpu a CROSS JOIN cpu b CROSS JOIN cpu c WHERE a.cores + b.cores + c.cores = -3";
     let token = CancelToken::new();
     let (d2, t2) = (d.clone(), token.clone());
     let start = Instant::now();
@@ -428,7 +430,7 @@ async fn cancel_drops_the_request_and_the_server_stops() {
     let token = CancelToken::new();
     let (d2, t2) = (d.clone(), token.clone());
     let h = tokio::spawn(async move {
-        let sleepy = f("*", FilterOp::Raw, "(SELECT count(*) FROM cpu a CROSS JOIN cpu b CROSS JOIN cpu c) > 0");
+        let sleepy = f("*", FilterOp::Raw, "(SELECT count(*) FROM cpu a CROSS JOIN cpu b CROSS JOIN cpu c WHERE a.cores + b.cores + c.cores = -3) > 0");
         d2.open_window_cancellable("iox", "cpu", 0, 10, &[sleepy], &[], None, &t2).await
     });
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -490,4 +492,73 @@ async fn logged_forwards_every_call_and_records_statements() {
     let has = |p: &str| all.iter().any(|s| s.contains(p));
     assert!(has("information_schema.tables") && has("FROM \"iox\".\"cpu\" AS _t") && has("SELECT count(*)") && has("SELECT 42"), "{all:#?}");
     assert_eq!(all.iter().filter(|s| *s == "SELECT 42").count(), 1, "{all:#?}");
+}
+
+/// The server with Core's default file limit: the seed is over it, so nothing may read the whole table.
+async fn limited() -> Option<InfluxDriver> {
+    let url = live_url("TIQ_INFLUX_LIMITED_URL")?;
+    Some(InfluxDriver::connect(&url, "tiq", "").await.expect("connect"))
+}
+
+#[tokio::test]
+async fn a_server_that_refuses_the_whole_table_gets_a_window_and_advice() {
+    let Some(d) = limited().await else { return };
+    let none: &[ColumnFilter] = &[];
+    // The premise: the server refuses a whole-table read, and the editor says what to do about it.
+    let outs = d.run_statements(&v(&["SELECT count(*) FROM cpu", "SELECT 1"]), 10, &CancelToken::new()).await.unwrap();
+    assert_eq!(outs.len(), 1, "stops at the failure");
+    let m = &outs[0].error.as_ref().expect("over the file limit").message;
+    assert!(m.contains("Parquet files") && m.contains("Filter by time") && m.contains("time > '2026-01-01'"), "{m}");
+    assert!(!m.contains("Enterprise") && !m.contains("upgrade") && !m.contains("--query-file-limit 5"), "{m}");
+
+    // The default page opens anyway: the newest points, newest first.
+    let b = page(&d, "cpu", 0, 4, none, &[]).await;
+    assert_eq!(col(&b, "cores")[..2], ["19998", "19999"]);
+    assert_eq!(col(&b, "time")[0], "2023-11-21T20:52:20");
+    assert_eq!(b.num_columns(), 8);
+    // Its count is the window's, inexact, and the pages hold exactly that many rows.
+    let c = d.count_rows("iox", "cpu", none, None).await.unwrap();
+    let n = c.count.expect("a windowed count");
+    assert!(!c.exact && n > 1000 && n < CPU as i64, "{c:?}");
+    let (mut seen, mut offset) = (0usize, 0usize);
+    loop {
+        let b = page(&d, "cpu", offset, 1000, none, &[]).await;
+        if b.num_rows() == 0 {
+            break;
+        }
+        seen += b.num_rows();
+        offset += b.num_rows();
+    }
+    assert_eq!(seen as i64, n, "the pager and the pages agree");
+    // A sort and a filter apply inside the window, with the same inexact count.
+    let b = page(&d, "cpu", 0, 2, &[f("host", FilterOp::Eq, "host-3")], &[sort("cores", true)]).await;
+    assert_eq!(col(&b, "cores"), ["19995", "19987"]);
+    let c = d.count_rows("iox", "cpu", &[f("host", FilterOp::Eq, "host-3")], None).await.unwrap();
+    assert!(!c.exact && c.count.is_some_and(|k| k > 0 && k < n), "{c:?}");
+
+    // "Count exactly" asks for the whole table, which the server refuses: said as advice, not as a crash.
+    let e = d.count_rows("iox", "cpu", none, Some(&CancelToken::new())).await.unwrap_err().to_string();
+    assert!(e.contains("Filter by time"), "{e}");
+    // The catalog's estimate is a metadata read and is the whole table's.
+    assert_eq!(d.estimate_rows("iox", "cpu").await.unwrap(), Some(CPU as i64));
+
+    // A time bound of the user's own is respected as it is: no window, an exact count.
+    let since = [f("time", FilterOp::Ge, "2023-11-21")];
+    let c = d.count_rows("iox", "cpu", &since, None).await.unwrap();
+    let want: i64 = scalar(&d, "SELECT count(*) FROM cpu WHERE time >= '2023-11-21'::timestamp").await.parse().unwrap();
+    assert_eq!((c.count, c.exact), (Some(want), true));
+    assert_eq!(page(&d, "cpu", 0, 3, &since, &[]).await.num_rows(), 3);
+    // ...even when that bound is too wide for the server: the page fails with the advice, the count (unforced) gives no total.
+    let wide = [f("time", FilterOp::Ge, "2000-01-01")];
+    let e = d.open_window_filtered("iox", "cpu", 0, 5, &wide, &[], None).await.unwrap_err().to_string();
+    assert!(e.contains("Filter by time"), "{e}");
+    assert!(d.count_rows("iox", "cpu", &wide, None).await.is_err());
+    let raw = [f("*", FilterOp::Raw, "time > '2000-01-01'::timestamp")];
+    assert!(d.open_window_filtered("iox", "cpu", 0, 5, &raw, &[], None).await.is_err(), "a raw time expression is the user's bound too");
+
+    // A table within the limit is read whole: exact, no window.
+    let c = d.count_rows("iox", "events", none, None).await.unwrap();
+    assert_eq!((c.count, c.exact), (Some(5000), true));
+    let other = InfluxDriver::connect(&live_url("TIQ_INFLUX_LIMITED_URL").unwrap(), "tiq_other", "").await.unwrap();
+    assert_eq!(other.count_rows("iox", "ledger", none, None).await.unwrap().count, Some(2));
 }

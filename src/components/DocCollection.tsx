@@ -134,7 +134,7 @@ export function DocCollection({ connId, collection, visible, readOnly = false, e
       .then((n) => {
         if (!live) return;
         // ChromaDB has no filtered count: it reads up to the cap and sends one more when there are more.
-        if (engine === "chroma" && n > CHROMA_COUNT_CAP) setTotal({ n: CHROMA_COUNT_CAP, exact: false, more: true });
+        if (engine === "chroma" && q.filter.trim() !== "" && n > CHROMA_COUNT_CAP) setTotal({ n: CHROMA_COUNT_CAP, exact: false, more: true });
         else setTotal({ n, exact: readOnly ? !isEstimatedSearch(engine, q.filter) : q.filter.trim() !== "" });
       })
       .catch(() => live && setTotal(null));
@@ -554,16 +554,16 @@ export function DocCollection({ connId, collection, visible, readOnly = false, e
         center={
           <>
             <span className="inline-flex items-center gap-1 text-[11px] text-muted">
-              <StatusBarButton onClick={() => goTo(Math.max(0, skip - q.limit))} disabled={skip === 0 || fetching || committing} title="Previous page">
+              <StatusBarButton onClick={() => goTo(Math.max(0, skip - q.limit))} disabled={skip === 0 || fetching || committing || !!error} title="Previous page">
                 <IconChevronLeft size={10} />
               </StatusBarButton>
               <span
                 className="whitespace-nowrap tabular-nums text-text"
                 title={total?.more ? "ChromaDB has no filtered count: it counts up to 10,000 matches. Narrow the filter for an exact count." : total && !total.exact ? (readOnly ? "Meilisearch estimates the hits of a full-text query. Use a filter alone for an exact count." : "Estimated from collection metadata. Add a filter for an exact count.") : undefined}
               >
-                {page ? docPagerLabel(skip, docs.length, total?.n ?? null, total?.exact ?? false, unit, total?.more ?? false) : "Opening…"}
+                {page ? docPagerLabel(skip, docs.length, total?.n ?? null, total?.exact ?? false, unit, total?.more ?? false, !!error) : "Opening…"}
               </span>
-              <StatusBarButton onClick={() => goTo(skip + q.limit)} disabled={!hasNext || fetching || committing} title="Next page">
+              <StatusBarButton onClick={() => goTo(skip + q.limit)} disabled={!hasNext || fetching || committing || !!error} title="Next page">
                 <IconChevronRight size={10} />
               </StatusBarButton>
             </span>

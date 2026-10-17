@@ -22,6 +22,16 @@
 //! tags and its `time`, so a page is ordered `time DESC` (or the user's sort) with the tags as
 //! the tiebreaker, which keeps OFFSET stable; a deep OFFSET still reads the rows it skips.
 //!
+//! **File limit.** InfluxDB 3 Core refuses any query that would read more than `--query-file-limit`
+//! Parquet files (432 by default), and a table that has been written to for a while has more: even
+//! `ORDER BY time DESC LIMIT 5` fails, and so does `count(*)`. A page or count is asked for the
+//! whole table first; when the server refuses it for that reason (and the user has put no bound on
+//! `time` themselves) it is asked again **windowed** to the newest [`FILE_BUDGET`] files, found from
+//! `system.parquet_files` (a metadata read): `time >= <oldest start among them>`. Such a count is
+//! the window's, reported inexact (the grid then offers "Count exactly", which runs unbounded and,
+//! past the limit, fails with advice). Older rows are reached with a time filter. A server whose
+//! limit allows the table never windows.
+//!
 //! **Filters** bind as `params` (`$p1`, …). A text bind is typed by its column (`CAST($p1 AS
 //! BIGINT)`): left alone DataFusion would cast the *column* to text and compare as text (so
 //! `usage > '10'` would be true for 3.0), and it could not use the time pruning either. LIKE has
@@ -34,7 +44,7 @@
 //! the request; the server stops a query whose client has gone.
 //!
 //! **Auth.** `Authorization: Bearer <token>`, sent as a sensitive header and never in a URL, a
-//! log line or an error. The token goes in the Password field (Username stays blank). Redirects
+//! log line or an error. The token goes in the Token field (the sheet's Password box; Username stays blank). Redirects
 //! are never followed. An explicit `http://` URL to a host that is not this machine sends the
 //! token in the clear: the user typed `http`, so it is allowed (like Elasticsearch);
 //! `influxdb://` and a bare host use TLS unless the host is exactly loopback.
@@ -74,6 +84,13 @@ const MAX_BODY: usize = 64 << 20;
 const DEFAULT_PORT: u16 = 8181;
 /// The server's own database: not the user's data.
 const INTERNAL_DB: &str = "_internal";
+/// The newest Parquet files a default page or count may read: well under the server's default
+/// limit of 432, and a window of this many is minutes to days of recent data.
+const FILE_BUDGET: usize = 100;
+/// How long a table's window is reused before it is read again (new files only move it forward).
+/// How a file-limit refusal begins once [`file_limit_message`] has made it readable.
+const FILE_LIMIT_PREFIX: &str = "InfluxDB 3 Core will not read ";
+const WINDOW_TTL: Duration = Duration::from_secs(60);
 const READ_ONLY: &str = "InfluxDB tables are read-only in TableIQ's grid: write points as line protocol \
      (POST /api/v3/write_lp, or the influxdb3 CLI)";
 const ONE_AT_A_TIME: &str = "InfluxDB runs one SQL statement per request and has no transactions, so there is \
@@ -98,6 +115,8 @@ struct TableMeta {
     /// The tag columns, in table order: with `time` they make a point unique.
     key: Vec<String>,
     has_time: bool,
+    /// The table's window and when it was read; see [`InfluxDriver::window_of`].
+    window: std::sync::Mutex<Option<(Instant, Option<i64>)>>,
 }
 
 /// The rows of one reply, as text.
@@ -141,6 +160,24 @@ fn cast_for(ty: &str) -> Option<&'static str> {
         t if t.starts_with("Timestamp") => Some("TIMESTAMP"),
         _ => None,
     }
+}
+
+/// The server's refusal to read that many files, as advice a person can act on (`None` for any other text).
+fn file_limit_message(reason: &str) -> Option<String> {
+    let n = reason.split_once("Query would scan ")?.1.split_whitespace().next()?;
+    n.parse::<u32>().ok().filter(|_| reason.contains("file limit"))?;
+    Some(format!(
+        "{FILE_LIMIT_PREFIX}{n} Parquet files in one query (its --query-file-limit). Filter by time, for \
+         example time > '2026-01-01' (in the filter bar, or a WHERE clause in a query tab), to reach older data"
+    ))
+}
+
+/// Whether the user's own filters already bound `time`, so no window is added: a filter on the
+/// `time` column, or a raw expression that mentions it.
+fn bounds_time(filters: &[ColumnFilter]) -> bool {
+    filters.iter().any(|f| {
+        f.column == "time" || (f.op == super::FilterOp::Raw && f.value.as_deref().is_some_and(|v| v.to_ascii_lowercase().contains("time")))
+    })
 }
 
 fn qualified(schema: &str, table: &str) -> String {
@@ -207,7 +244,14 @@ impl InfluxDriver {
     /// which says what the server is, and runs `SELECT 1` on the database, which proves the
     /// token can query it.
     pub async fn connect(url: &str, database: &str, token: &str) -> DResult<Self> {
-        let (mut base, url_token) = parse_base_as(url, "InfluxDB", "influxdb", DEFAULT_PORT)?;
+        let (mut base, url_token) = parse_base_as(url, "InfluxDB", "influxdb", DEFAULT_PORT).map_err(|e| match e {
+            // The shared message names the field for a key; here the box is labelled Token.
+            DriverError::Db(m) => DriverError::Db(match m.split_once(" and enter the key in") {
+                Some((head, _)) => format!("{head} and enter the token in the Token field"),
+                None => m,
+            }),
+            e => e,
+        })?;
         // `influxdb://host:8181/mydb`: the path names the database when the field does not.
         let from_path = base.path().trim_matches('/').split('/').next().unwrap_or("").to_string();
         base.set_path("/");
@@ -287,11 +331,14 @@ impl InfluxDriver {
             .ok()
             .and_then(|v| v.get("error")?.as_str().map(String::from))
             .unwrap_or_else(|| text.trim().to_string());
+        if let Some(m) = file_limit_message(&reason) {
+            return m;
+        }
         match status {
             401 if self.token.is_empty() => {
-                "this server needs a token: enter it in the Password field (leave Username blank)".into()
+                "this server needs a token: enter it in the Token field".into()
             }
-            401 => "authentication failed (HTTP 401): the server rejected the token in the Password field".into(),
+            401 => "authentication failed (HTTP 401): the server rejected the token in the Token field".into(),
             403 => self.redact(format!("the token may not do that (HTTP 403){}", if reason.is_empty() { String::new() } else { format!(": {reason}") })),
             301..=308 => format!(
                 "{} redirected the request (HTTP {status}); TableIQ does not follow redirects: connect to the final address",
@@ -358,19 +405,76 @@ impl InfluxDriver {
         let (cols, types): (Vec<String>, Vec<String>) = rows.iter().map(|r| (s(&r[0]), s(&r[1]))).unzip();
         let key = cols.iter().zip(&types).filter(|(_, t)| schema_type(t) == "Tag").map(|(c, _)| c.clone()).collect();
         let has_time = cols.iter().zip(&types).any(|(c, t)| c == "time" && t.starts_with("Timestamp"));
-        let m = Arc::new(TableMeta { cols, types, key, has_time });
+        let m = Arc::new(TableMeta { cols, types, key, has_time, window: std::sync::Mutex::new(None) });
         self.meta.put(schema, table, m.clone());
         Ok(m)
     }
 
-    /// `WHERE` text and binds for `filters` on a table.
-    fn where_of(&self, meta: &TableMeta, filters: &[ColumnFilter]) -> (String, Vec<Option<String>>) {
+    /// The oldest `time` (ns) a page or count may start at to stay within [`FILE_BUDGET`] files, or
+    /// `None` when the table has no more files than that (or is not an `iox` table). One metadata
+    /// query, reused for [`WINDOW_TTL`]: new files can only move it forward, and it is a lower bound.
+    async fn window_of(&self, schema: &str, table: &str, meta: &TableMeta) -> DResult<Option<i64>> {
+        if schema != "iox" || !meta.has_time {
+            return Ok(None);
+        }
+        if let Some((at, w)) = *crate::lk(&meta.window) {
+            if at.elapsed() < WINDOW_TTL {
+                return Ok(w);
+            }
+        }
+        let sql = format!(
+            "SELECT min_time FROM system.parquet_files WHERE table_name = $p1 ORDER BY max_time DESC LIMIT {}",
+            FILE_BUDGET + 1
+        );
+        let rows = self.catalog(&sql, &[table]).await?;
+        // More files than the budget: start at the oldest start among the newest [`FILE_BUDGET`].
+        let w = (rows.len() > FILE_BUDGET)
+            .then(|| rows.iter().take(FILE_BUDGET).filter_map(|r| r[0].as_deref()?.parse::<i64>().ok()).min())
+            .flatten();
+        *crate::lk(&meta.window) = Some((Instant::now(), w));
+        Ok(w)
+    }
+
+    /// The user's filters as `WHERE` text (no keyword) and binds, each bind typed by its column.
+    fn predicate(meta: &TableMeta, filters: &[ColumnFilter]) -> (String, Vec<Option<String>>) {
         let placeholder = |i: usize, col: &str| {
             let ty = meta.cols.iter().position(|c| c == col).and_then(|p| cast_for(&meta.types[p]));
             ty.map_or_else(|| format!("$p{i}"), |t| format!("CAST($p{i} AS {t})"))
         };
-        let (sql, binds) = build_where_clause_esc(filters, &meta.cols, &quote_ident, &placeholder, &text_expr, 1, false);
-        (if sql.is_empty() { sql } else { format!(" WHERE {sql}") }, binds)
+        build_where_clause_esc(filters, &meta.cols, &quote_ident, &placeholder, &text_expr, 1, false)
+    }
+
+    /// Runs the statement `build` makes from a `WHERE` clause over the user's `filters`. A server
+    /// that refuses it for reading too many files is asked again with the window added (unless the
+    /// user bound `time` themselves, or `windowing` is off): `(outcome, windowed)`.
+    #[allow(clippy::too_many_arguments)]
+    async fn bounded(
+        &self,
+        schema: &str,
+        table: &str,
+        meta: &TableMeta,
+        filters: &[ColumnFilter],
+        windowing: bool,
+        cap: usize,
+        timeout: Duration,
+        build: impl Fn(&str) -> String,
+    ) -> DResult<(Result<Rows, String>, bool)> {
+        let (pred, binds) = Self::predicate(meta, filters);
+        let clause = |bound: Option<&str>| match (pred.is_empty(), bound) {
+            (true, None) => String::new(),
+            (true, Some(b)) => format!(" WHERE {b}"),
+            (false, None) => format!(" WHERE {pred}"),
+            (false, Some(b)) => format!(" WHERE ({pred}) AND {b}"),
+        };
+        let first = self.query(&build(&clause(None)), &binds, cap, timeout).await?;
+        let refused = matches!(&first, Err(m) if m.starts_with(FILE_LIMIT_PREFIX));
+        if !refused || !windowing || bounds_time(filters) {
+            return Ok((first, false));
+        }
+        let Some(lo) = self.window_of(schema, table, meta).await? else { return Ok((first, false)) };
+        // An integer from the catalog, never text: nothing to quote.
+        let bound = format!("\"time\" >= arrow_cast({lo}, 'Timestamp(Nanosecond, None)')");
+        Ok((self.query(&build(&clause(Some(&bound))), &binds, cap, timeout).await?, true))
     }
 
     /// One page. `token` makes it cancellable and bounded at [`WINDOW_TIMEOUT_MS`] client-side.
@@ -394,15 +498,14 @@ impl InfluxDriver {
             key.push("time".into());
         }
         let order_sql = build_order_by(order, &key, &meta.cols, &quote_ident)?;
-        let (where_sql, binds) = self.where_of(&meta, filters);
-        let sql = format!("SELECT * FROM {} AS _t{where_sql}{order_sql} LIMIT {len} OFFSET {offset}", qualified(schema, table));
+        let build = |where_sql: &str| format!("SELECT * FROM {} AS _t{where_sql}{order_sql} LIMIT {len} OFFSET {offset}", qualified(schema, table));
         let timeout = match token {
             Some(_) => Duration::from_millis(if filters.is_empty() { 2 * WINDOW_TIMEOUT_MS } else { WINDOW_TIMEOUT_MS }),
             None => Duration::from_secs(QUERY_TIMEOUT_S),
         };
-        let r = match cancellable(token, self.query(&sql, &binds, len, timeout)).await? {
-            Ok(r) => r,
-            Err(m) => return Err(DriverError::Db(m)),
+        let r = match cancellable(token, self.bounded(schema, table, &meta, filters, true, len, timeout, build)).await? {
+            (Ok(r), _) => r,
+            (Err(m), _) => return Err(DriverError::Db(m)),
         };
         // A page of no rows has no schema in the reply: the headers are the catalog's.
         let names = if r.names.is_empty() { meta.cols.clone() } else { r.names };
@@ -474,6 +577,11 @@ impl SqlDriver for InfluxDriver {
 
     fn product(&self) -> Option<String> {
         Some("influxdb".into())
+    }
+
+    /// The database in use, which the connection may not have named (the first on the server was taken).
+    fn database(&self) -> Option<String> {
+        Some(self.db.clone())
     }
 
     async fn run_statements(&self, stmts: &[String], cap: usize, token: &CancelToken) -> DResult<Vec<StmtOutput>> {
@@ -555,15 +663,17 @@ impl SqlDriver for InfluxDriver {
             }
         }
         let meta = self.browse_meta(schema, table).await?;
-        let (where_sql, binds) = self.where_of(&meta, filters);
-        let sql = format!("SELECT count(*) FROM {}{where_sql}", qualified(schema, table));
+        // Unforced, a server that refuses the whole table is asked about the same window the pages
+        // read, so the pager and the pages agree; forced ("Count exactly") it is the whole table's,
+        // and the server may refuse it, with advice.
         let timeout = match force_exact {
             Some(_) => Duration::from_secs(QUERY_TIMEOUT_S),
             None => Duration::from_millis(COUNT_TIMEOUT_MS),
         };
-        match cancellable(force_exact, self.query(&sql, &binds, 1, timeout)).await {
-            Ok(Ok(r)) => Ok(RowCount { count: r.rows.first().and_then(|r| r[0].as_deref()?.parse().ok()), exact: true }),
-            Ok(Err(m)) => Err(DriverError::Db(m)),
+        let build = |where_sql: &str| format!("SELECT count(*) FROM {}{where_sql}", qualified(schema, table));
+        match cancellable(force_exact, self.bounded(schema, table, &meta, filters, force_exact.is_none(), 1, timeout, build)).await {
+            Ok((Ok(r), windowed)) => Ok(RowCount { count: r.rows.first().and_then(|r| r[0].as_deref()?.parse().ok()), exact: !windowed }),
+            Ok((Err(m), _)) => Err(DriverError::Db(m)),
             Err(DriverError::Db(m)) if force_exact.is_none() && m.starts_with("timed out") => Ok(RowCount { count: None, exact: false }),
             Err(e) => Err(e),
         }
@@ -739,21 +849,81 @@ mod tests {
             types: ["Dictionary(Int32, Utf8)", "Int64", "Float64", "Boolean", "Timestamp(ns)", "Utf8"].map(String::from).to_vec(),
             key: vec!["host".into()],
             has_time: true,
+            window: Default::default(),
         };
-        let d = bare("");
         let f = |c: &str, op, v: &str| ColumnFilter { column: c.into(), op, value: Some(v.into()) };
         use crate::drivers::FilterOp::*;
-        let (sql, binds) = d.where_of(&meta, &[f("cores", Gt, "9"), f("usage", Le, "2"), f("online", Eq, "true"), f("time", Ge, "2023-11-14"), f("host", Eq, "h1"), f("label", Like, "x%")]);
+        let (sql, binds) = InfluxDriver::predicate(&meta, &[f("cores", Gt, "9"), f("usage", Le, "2"), f("online", Eq, "true"), f("time", Ge, "2023-11-14"), f("host", Eq, "h1"), f("label", Like, "x%")]);
         assert_eq!(
             sql,
-            " WHERE \"cores\" > CAST($p1 AS BIGINT) AND \"usage\" <= CAST($p2 AS DOUBLE) AND \"online\" = CAST($p3 AS BOOLEAN) \
+            "\"cores\" > CAST($p1 AS BIGINT) AND \"usage\" <= CAST($p2 AS DOUBLE) AND \"online\" = CAST($p3 AS BOOLEAN) \
              AND \"time\" >= CAST($p4 AS TIMESTAMP) AND \"host\" = $p5 AND CAST(\"label\" AS VARCHAR) LIKE $p6"
         );
         assert_eq!(binds.len(), 6);
         // A search matches the text, with a backslash escape and no ESCAPE clause (DataFusion has only that).
-        let (sql, binds) = d.where_of(&meta, &[f("*", Search, "50%_")]);
+        let (sql, binds) = InfluxDriver::predicate(&meta, &[f("*", Search, "50%_")]);
         assert!(sql.contains("LOWER(CAST(\"label\" AS VARCHAR)) LIKE LOWER($p6)") && !sql.contains("ESCAPE"), "{sql}");
         assert_eq!(binds[0].as_deref(), Some("%50\\%\\_%"));
+    }
+
+    #[test]
+    fn the_file_limit_is_advice_and_a_time_filter_stops_the_window() {
+        let server = "External error: Query would scan 432 Parquet files, exceeding the file limit. InfluxDB 3 Core caps file access.\n\nTo remove this limitation, upgrade to InfluxDB 3 Enterprise";
+        let m = file_limit_message(server).unwrap();
+        assert!(m.contains("432") && m.contains("Filter by time") && m.contains("time > '2026-01-01'") && !m.contains("Enterprise"), "{m}");
+        assert!(bare("").http_error(500, server.as_bytes()).contains("Filter by time"));
+        assert!(file_limit_message("Query would scan lots of rows").is_none() && file_limit_message("syntax error").is_none());
+        let f = |c: &str, op, v: &str| ColumnFilter { column: c.into(), op, value: Some(v.into()) };
+        use crate::drivers::FilterOp::*;
+        assert!(bounds_time(&[f("time", Gt, "2023-01-01")]) && bounds_time(&[f("*", Raw, "x = 1 AND Time < now()")]));
+        assert!(!bounds_time(&[f("host", Eq, "a")]) && !bounds_time(&[f("*", Search, "time")]) && !bounds_time(&[]));
+    }
+
+    /// `n` rows of a `min_time` column, as `system.parquet_files` answers.
+    fn min_times(times: &[i64]) -> Vec<u8> {
+        let schema = Arc::new(Schema::new(vec![Field::new("min_time", DataType::Int64, true)]));
+        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(Int64Array::from(times.to_vec()))]).unwrap();
+        let mut out = Vec::new();
+        let mut w = parquet::arrow::ArrowWriter::try_new(&mut out, schema, None).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+        out
+    }
+
+    /// The server refuses the whole-table page; the files are listed; the page is asked again from the
+    /// oldest start among the newest [`FILE_BUDGET`] files (not from the first row listed).
+    #[tokio::test]
+    async fn a_refused_page_is_asked_again_from_the_window() {
+        let refusal = http("500 Internal Server Error", "text/plain", b"External error: Query would scan 432 Parquet files, exceeding the file limit. caps file access.");
+        let parquet = "application/vnd.apache.parquet";
+        // File 7 starts earliest of the newest 100; the 101st listed is older still and must not count.
+        let times: Vec<i64> = (0..=FILE_BUDGET as i64).map(|i| if i == 7 { 1_000 } else if i == FILE_BUDGET as i64 { 5 } else { 9_000 - i }).collect();
+        let describe = {
+            let schema = Arc::new(Schema::new(vec![Field::new("column_name", DataType::Utf8, true), Field::new("data_type", DataType::Utf8, true), Field::new("is_nullable", DataType::Utf8, true)]));
+            let col = |v: &[&str]| -> ArrayRef { Arc::new(StringArray::from(v.to_vec())) };
+            let batch = RecordBatch::try_new(schema.clone(), vec![col(&["host", "time"]), col(&["Dictionary(Int32, Utf8)", "Timestamp(ns)"]), col(&["YES", "NO"])]).unwrap();
+            let mut out = Vec::new();
+            let mut w = parquet::arrow::ArrowWriter::try_new(&mut out, schema, None).unwrap();
+            w.write(&batch).unwrap();
+            w.close().unwrap();
+            out
+        };
+        let (port, seen) = mock(vec![
+            http("200 OK", "application/json", PING.as_bytes()),
+            http("200 OK", parquet, &parquet_reply(1)),            // connect: SELECT 1
+            http("200 OK", parquet, &describe),                    // DESCRIBE
+            refusal,                                               // the page, whole
+            http("200 OK", parquet, &min_times(&times)),           // system.parquet_files
+            http("200 OK", parquet, &parquet_reply(2)),            // the page, windowed
+        ])
+        .await;
+        let d = InfluxDriver::connect(&format!("http://127.0.0.1:{port}"), "d", "").await.unwrap();
+        let b = d.open_window_filtered("iox", "cpu", 0, 2, &[], &[], None).await.unwrap();
+        assert_eq!(b.num_rows(), 2);
+        let sent = seen.lock().unwrap().clone();
+        assert!(!sent[3].contains("arrow_cast"), "the first ask is the whole table: {}", sent[3]);
+        assert!(sent[5].contains("WHERE \\\"time\\\" >= arrow_cast(1000, 'Timestamp(Nanosecond, None)')"), "{}", sent[5]);
+        assert!(sent[5].contains("ORDER BY") && sent[5].contains("LIMIT 2"), "{}", sent[5]);
     }
 
     #[test]
@@ -782,8 +952,8 @@ mod tests {
     #[test]
     fn errors_are_readable_and_never_carry_the_token() {
         let d = bare("apiv3_s3cret");
-        assert!(d.http_error(401, br#"{"error": "the request was not authenticated"}"#).contains("rejected the token"));
-        assert!(bare("").http_error(401, b"").contains("needs a token"));
+        assert!(d.http_error(401, br#"{"error": "the request was not authenticated"}"#).contains("rejected the token in the Token field"));
+        assert!(bare("").http_error(401, b"").contains("Token field"));
         assert_eq!(d.http_error(404, br#"{"error":"query error: database not found: nodb"}"#), "query error: database not found: nodb");
         assert!(d.http_error(404, b"Not found").contains("not an InfluxDB 3 server"));
         assert_eq!(d.http_error(400, b"SQL error: ParserError(\"Expected: an SQL statement, found: SELEC\")\n"), "SQL error: ParserError(\"Expected: an SQL statement, found: SELEC\")");

@@ -54,6 +54,10 @@ describe("docTabs", () => {
 });
 
 describe("docPagerLabel", () => {
+  it("has no range after a failed load: the previous page's range would be stale", () => {
+    expect(docPagerLabel(0, 2, 2, true, "document", false, true)).toBe("—");
+    expect(docPagerLabel(300, 0, null, false, "object", false, true)).toBe("—");
+  });
   it("exact, estimated and unknown totals", () => {
     expect(docPagerLabel(0, 0, 0, true)).toBe("0 docs");
     expect(docPagerLabel(0, 300, 1234, true)).toBe("1–300 of 1,234 docs");

@@ -52,6 +52,10 @@ const render = (over: Partial<LobbyViewProps> = {}) => renderToStaticMarkup(<Lob
 const count = (html: string, needle: string) => html.split(needle).length - 1;
 
 describe("LobbyView", () => {
+  it("offers Import CSV on a writable engine and not on a read-only one", () => {
+    expect(render()).toContain("Import CSV");
+    expect(render({ cfg: { name: "m", engine: "influxdb", database: "tiq", host: "http://h:8181", port: 8181, env: "development" } })).not.toContain("Import CSV");
+  });
   it("shows fixed-height skeletons while every source is still loading", () => {
     const html = render({ pins: ["public.orders"], pinKinds: { "public.orders": "Table" } });
     expect(html).toContain("animate-pulse");

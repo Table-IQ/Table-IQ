@@ -102,7 +102,7 @@ fn http_error(status: u16, body: &[u8], host: &str, sent: bool) -> DriverError {
     });
     DriverError::Db(match (status, reason) {
         (401 | 403, _) if !sent => format!("this Chroma server needs a token (HTTP {status}): enter it in the Token field"),
-        (401 | 403, _) => format!("Chroma rejected the token (HTTP {status}): it is wrong or expired, or it may not read"),
+        (401 | 403, _) => format!("Chroma rejected the token (HTTP {status}): it is wrong or expired, or it lacks permission to read"),
         (301..=308, _) => format!("{host} redirected the request (HTTP {status}); TableIQ does not follow redirects: connect to the final address"),
         (_, Some(r)) => r,
         (s, None) => format!("Chroma answered HTTP {s}"),
