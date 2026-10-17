@@ -303,6 +303,51 @@ async fn a_saved_profile_applies_to_a_genuine_mysql() {
     assert!(future.agent_access().unwrap_err().contains("saved by a newer TableIQ"));
 }
 
+/// The ids of a sorted page at offset 1, length 2, read plain and through the grid's pinned
+/// path, over a five-row `table` in `schema`.
+async fn page_ids(drv: &dyn SqlDriver, schema: &str, table: &str) -> [Vec<String>; 2] {
+    use arrow::array::{Array, StringArray};
+    use tableiq_lib::drivers::SortKey;
+    let ids = |b: arrow::record_batch::RecordBatch| -> Vec<String> {
+        let col = b.column(b.schema().index_of("id").unwrap()).clone();
+        let a = col.as_any().downcast_ref::<StringArray>().expect("a text page");
+        (0..a.len()).map(|r| a.value(r).to_string()).collect()
+    };
+    let by_id = [SortKey { column: "id".into(), desc: false }];
+    let plain = drv.open_window_filtered(schema, table, 1, 2, &[], &by_id, None).await.expect("page");
+    let pinned = drv
+        .open_window_cancellable(schema, table, 1, 2, &[], &by_id, None, &CancelToken::new())
+        .await
+        .expect("pinned page");
+    [ids(plain), ids(pinned)]
+}
+
+/// Value: protects=RisingWave's page, which inlines OFFSET/LIMIT (no placeholder there), plain and pinned; fails_when=the inlined text swaps offset and length or drops one (a leftover bind is not caught: the genuine engines accept it); why_new=that page ran only by hand (any_profile_smoke) — a genuine Postgres saved as RisingWave takes the same branch in CI; seam=none
+#[tokio::test]
+async fn a_risingwave_page_inlines_its_bounds() {
+    let Some(url) = live_url("TIQ_PG_URL") else { return };
+    let drv = PgDriver::connect_as(&url, Some("risingwave")).await.expect("connect");
+    assert_eq!(drv.product().as_deref(), Some("risingwave"));
+    drv.run_script("DROP TABLE IF EXISTS tiq_inline_pg").await.expect("drop");
+    drv.run_script("CREATE TABLE tiq_inline_pg (id INT PRIMARY KEY, name TEXT)").await.expect("create");
+    drv.run_script("INSERT INTO tiq_inline_pg VALUES (1,'a'),(2,'b'),(3,'c'),(4,'d'),(5,'e')").await.expect("seed");
+    assert_eq!(page_ids(&drv, "public", "tiq_inline_pg").await, [["2", "3"], ["2", "3"]]);
+    drv.run_script("DROP TABLE tiq_inline_pg").await.ok();
+}
+
+/// Value: protects=StarRocks's page, which inlines LIMIT/OFFSET (no placeholder there), plain and pinned; fails_when=the inlined text swaps offset and length or drops one (a leftover bind is not caught: the genuine engines accept it); why_new=that page ran only by hand (any_profile_smoke) — a genuine MySQL saved as StarRocks takes the same branch in CI; seam=none
+#[tokio::test]
+async fn a_starrocks_page_inlines_its_bounds() {
+    let Some(url) = live_url("TIQ_MYSQL_URL") else { return };
+    let drv = MySqlDriver::connect_as(&url, Some("starrocks")).await.expect("connect");
+    assert_eq!(drv.product().as_deref(), Some("starrocks"));
+    drv.run_script("DROP TABLE IF EXISTS tiq_inline_my").await.expect("drop");
+    drv.run_script("CREATE TABLE tiq_inline_my (id INT PRIMARY KEY, name VARCHAR(5))").await.expect("create");
+    drv.run_script("INSERT INTO tiq_inline_my VALUES (1,'a'),(2,'b'),(3,'c'),(4,'d'),(5,'e')").await.expect("seed");
+    assert_eq!(page_ids(&drv, &mysql_db(&url), "tiq_inline_my").await, [["2", "3"], ["2", "3"]]);
+    drv.run_script("DROP TABLE tiq_inline_my").await.ok();
+}
+
 /// A Metrics widget on TiDB, which rejects `START TRANSACTION READ ONLY`, says so by name; on
 /// MariaDB, which accepts it, an error in the user's own SQL stays the driver's.
 #[tokio::test]

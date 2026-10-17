@@ -190,6 +190,27 @@ async fn pg_filtered_count_that_times_out_is_unknown() {
     assert_eq!((c.count, c.exact), (None, false), "not the ~1T whole-table estimate");
 }
 
+/// Value: protects=a filtered count past its 2s statement_timeout answers "unknown", not an
+/// error; fails_when=the 57014 is no longer told apart from other errors in `count_rows`;
+/// why_new=the big.sql case above skips in CI, which never loads that seed; seam=none
+#[tokio::test]
+async fn pg_filtered_count_past_its_timeout_on_a_slow_view_is_unknown() {
+    let Some(url) = pg() else {
+        return;
+    };
+    let a = admin(&url).await;
+    // ~5s to count: every row's search column runs a 1ms sleep.
+    run(&a, "DROP SCHEMA IF EXISTS tiq_slowcount CASCADE; CREATE SCHEMA tiq_slowcount; \
+             CREATE VIEW tiq_slowcount.v AS \
+               SELECT g AS id, (pg_sleep(0.001))::text || g AS s FROM generate_series(1, 5000) g;")
+        .await;
+    let drv = PgDriver::connect(&url).await.unwrap();
+    let search = [ColumnFilter { column: "*".into(), op: FilterOp::Search, value: Some("zzz".into()) }];
+    let c = drv.count_rows("tiq_slowcount", "v", &search, None).await.unwrap();
+    run(&a, "DROP SCHEMA tiq_slowcount CASCADE").await;
+    assert_eq!((c.count, c.exact), (None, false));
+}
+
 /// Never ANALYZEd (`reltuples = -1`): the estimate comes from the relation's size and its
 /// column widths, never from a scan. 20k rows of two ints is ~88 pages of ~226 tuples.
 #[tokio::test]

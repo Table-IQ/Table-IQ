@@ -136,8 +136,8 @@ Not run, and why: **SelectDB, PlanetScale, Amazon Redshift, Neon, Supabase, Allo
 cloud services with no local image. The official openGauss image (`opengauss/opengauss`) exits
 at start (`libopenblas.so.0` missing), so its run used `enmotech/opengauss-lite`.
 
-Driver changes made for the 2026-10-17 runs (compat sessions only; the base engines run
-exactly as before):
+Driver changes made for the 2026-10-17 runs (compat sessions only, except that MySQL catalog
+names are now read from bytes on every session, which reads the same text where sqlx could):
 
 - **PostgreSQL wire.** The catalog pass falls back to a form without `= ANY(int2vector)` and
   takes the type name from `pg_type` when `format_type` answers NULL (QuestDB); the primary key
