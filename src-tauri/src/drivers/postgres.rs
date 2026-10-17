@@ -237,8 +237,9 @@ pub struct PgDriver {
     /// it on afterwards (compat sessions only): a backslash may be an escape here, so import
     /// is refused.
     scs_rejected: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// The server rejected `pin`'s `set_config` (QuestDB, Materialize; compat sessions only):
-    /// pages run unpinned from then on, bounded on the client instead.
+    /// A compat server refused a pinned page's BEGIN or its `set_config` (RisingWave, QuestDB,
+    /// Materialize; see `begin_pinned`): pages and counts run unpinned from then on, bounded on
+    /// the client instead.
     pin_unsupported: std::sync::atomic::AtomicBool,
 }
 
@@ -258,6 +259,15 @@ fn session_sets() -> impl Iterator<Item = &'static str> {
 /// A failed cancellable page: 57014 is a cancel when the token says so or the server says
 /// "due to user request" (someone else's `pg_cancel_backend`), and otherwise the statement
 /// timeout.
+/// The bound on a count the grid asks for on its own (`count_rows` without `force_exact`).
+const COUNT_TIMEOUT_MS: u64 = 2000;
+
+/// A missing relation (42P01) or a refused privilege (42501): an answer about the table, never
+/// a catalog the product lacks, so no compat fallback may swallow it.
+fn gone_or_denied(e: &dyn sqlx::error::DatabaseError) -> bool {
+    matches!(e.code().as_deref(), Some("42P01" | "42501"))
+}
+
 fn window_err(e: sqlx::Error, token: &CancelToken, timeout_ms: u64) -> DriverError {
     if !is_cancel(&e) {
         db(e)
@@ -415,7 +425,7 @@ impl PgDriver {
         self
     }
 
-    /// Set up a page's transaction in ONE round trip and record the PID in `token`: the
+    /// Set up a page's transaction in ONE round trip and return the PID: the
     /// session is named after the token (`application_name`, which `cancel` matches — the
     /// page SQL itself stays the same text for every token, so it is prepared once per
     /// connection), a timeout bounds the statement, and `tid_scan` turns seq scans off (see
@@ -631,7 +641,8 @@ impl PgDriver {
             quote_ident(table),
             if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },
         );
-        let mut qy = sqlx::query(&q);
+        // An inlined page is new text at every offset: not worth a slot in the statement cache.
+        let mut qy = sqlx::query(&q).persistent(!inline);
         for b in &binds {
             qy = qy.bind(b.clone());
         }
@@ -737,7 +748,7 @@ impl SqlDriver for PgDriver {
         match sqlx::query_scalar::<_, i64>("SELECT pg_backend_pid()::int8").fetch_one(&mut *conn).await {
             Ok(pid) => token.set_backend_id(pid),
             // QuestDB has no backend PID: the script runs, and Stop cannot reach it.
-            Err(sqlx::Error::Database(_)) if self.compat() => {}
+            Err(sqlx::Error::Database(_)) if self.product().as_deref() == Some("questdb") => {}
             Err(e) => return Err(db(e)),
         }
         // Recorded, then the flag checked (the `CancelToken` protocol): a caller that gave up
@@ -908,7 +919,27 @@ impl SqlDriver for PgDriver {
             // in a transaction, as a page is (see `pin`).
             let res = match self.begin_pinned(Some(token), None, false).await? {
                 Some(mut tx) => super::recheck_cancel(self, token, qy.fetch_one(&mut *tx)).await,
-                None => qy.fetch_one(&self.pool).await,
+                // Unpinned: Stop cannot reach the server, so it drops the count here and
+                // closes the connection instead of handing it back mid-statement.
+                None => {
+                    let mut conn = self.pool.acquire().await.map_err(db)?;
+                    let watch = async {
+                        while !token.is_cancelled() {
+                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        }
+                    };
+                    let done = tokio::select! {
+                        r = qy.fetch_one(&mut *conn) => Some(r),
+                        () = watch => None,
+                    };
+                    match done {
+                        Some(r) => r,
+                        None => {
+                            conn.close_on_drop();
+                            return Err(DriverError::Cancelled);
+                        }
+                    }
+                }
             };
             return match res {
                 Ok(n) => Ok(RowCount { count: Some(n), exact: true }),
@@ -918,40 +949,53 @@ impl SqlDriver for PgDriver {
         }
         // SET LOCAL needs a transaction; it also reverts on its own when this one ends. Sent
         // with the BEGIN in one round trip; the ROLLBACK is queued on drop (see `window`).
-        // A compat product that refuses this BEGIN (see `begin_pinned`) counts under a client-side
-        // bound of the same 2s instead.
-        let tx = if self.pin_unsupported.load(std::sync::atomic::Ordering::Relaxed) {
-            None
+        let begin = format!("BEGIN; SET LOCAL statement_timeout = {COUNT_TIMEOUT_MS}");
+        let res: Result<i64, Option<sqlx::Error>> = if !self.compat() {
+            let mut tx = self.pool.begin_with(begin).await.map_err(db)?;
+            qy.fetch_one(&mut *tx).await.map_err(Some)
         } else {
-            match self.pool.begin_with("BEGIN; SET LOCAL statement_timeout = 2000").await {
-                Ok(tx) => Some(tx),
-                Err(e @ (sqlx::Error::BeginFailed | sqlx::Error::Database(_))) if self.compat() => self.unpin(&e),
-                Err(e) => return Err(db(e)),
-            }
-        };
-        let res = match tx {
-            Some(mut tx) => qy.fetch_one(&mut *tx).await.map_err(Some),
-            None => {
+            // A compat session sends the BEGIN as plain text on a connection that is closed
+            // afterwards: sqlx would not roll back a transaction it did not open, so the
+            // connection must never go back to the pool (a refused SET LOCAL leaves it aborted).
+            // A product that refuses it (see `begin_pinned`) counts under a client-side bound
+            // of the same length instead.
+            let mut held = None;
+            if !self.pin_unsupported.load(std::sync::atomic::Ordering::Relaxed) {
                 let mut conn = self.pool.acquire().await.map_err(db)?;
-                match tokio::time::timeout(std::time::Duration::from_millis(2000), qy.fetch_one(&mut *conn)).await {
-                    Ok(r) => r.map_err(Some),
-                    Err(_) => {
-                        conn.close_on_drop();
-                        Err(None)
+                conn.close_on_drop();
+                match conn.execute(begin.as_str()).await {
+                    Ok(_) => held = Some(conn),
+                    Err(e @ sqlx::Error::Database(_)) => {
+                        self.unpin::<()>(&e);
+                    }
+                    Err(e) => return Err(db(e)),
+                }
+            }
+            match held {
+                Some(mut conn) => qy.fetch_one(&mut *conn).await.map_err(Some),
+                None => {
+                    let mut conn = self.pool.acquire().await.map_err(db)?;
+                    let bound = std::time::Duration::from_millis(COUNT_TIMEOUT_MS);
+                    match tokio::time::timeout(bound, qy.fetch_one(&mut *conn)).await {
+                        Ok(r) => r.map_err(Some),
+                        Err(_) => {
+                            conn.close_on_drop();
+                            Err(None)
+                        }
                     }
                 }
             }
         };
+        // 57014 is the statement_timeout firing — this query carries no cancel token; `None` is
+        // the client-side bound. The catalog estimate is the whole table's, so a filtered count
+        // has none.
         match res {
             Ok(n) => Ok(RowCount { count: Some(n), exact: true }),
-            // 57014 here is the statement_timeout firing — this query carries no cancel token;
-            // `None` is the client-side bound. The catalog estimate is the whole table's, so a
-            // filtered count has none.
-            Err(e) if e.as_ref().is_none_or(is_cancel) => Ok(RowCount {
+            Err(Some(e)) if !is_cancel(&e) => Err(db(e)),
+            Err(_) => Ok(RowCount {
                 count: if filters.is_empty() { self.estimate_rows(schema, table).await? } else { None },
                 exact: false,
             }),
-            Err(e) => Err(db(e.expect("a server error"))),
         }
     }
 
@@ -1093,10 +1137,12 @@ impl SqlDriver for PgDriver {
         match fetch(sql("array_position(i.indkey, a.attnum)")).await {
             // openGauss has no `array_position`: key columns in table order instead. QuestDB has
             // no `= ANY(int2vector)` either, and so, as in `introspect`, no primary key.
-            Err(sqlx::Error::Database(_)) if self.compat() => match fetch(sql("a.attnum")).await {
-                Err(sqlx::Error::Database(_)) => Ok(Vec::new()),
-                r => r.map_err(db),
-            },
+            Err(sqlx::Error::Database(e)) if self.compat() && !gone_or_denied(e.as_ref()) => {
+                match fetch(sql("a.attnum")).await {
+                    Err(sqlx::Error::Database(e)) if !gone_or_denied(e.as_ref()) => Ok(Vec::new()),
+                    r => r.map_err(db),
+                }
+            }
             r => r.map_err(db),
         }
     }

@@ -1606,7 +1606,9 @@ function StructNote({ children, detail }: { children: ReactNode; detail?: string
       {detail && (
         <details className="mt-2 text-[11px]">
           <summary className="cursor-pointer">Details</summary>
-          <p className="mt-1 break-words font-mono">{detail}</p>
+          <p className="mx-auto mt-1 max-h-[74px] max-w-xl overflow-auto rounded-[7px] border border-border bg-bg px-[9px] py-[7px] text-left font-mono leading-[1.45] whitespace-pre-wrap break-words text-text">
+            {detail}
+          </p>
         </details>
       )}
     </div>

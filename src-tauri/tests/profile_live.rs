@@ -178,6 +178,12 @@ async fn cockroachdb_smoke() {
     assert_eq!(drv.product().as_deref(), Some("cockroachdb"));
     assert!(drv.literals_safe(), "CockroachDB reports standard_conforming_strings on");
     assert_eq!(smoke(&drv, "public", true, None).await, expected("cockroachdb"));
+    // A compat product that takes `set_config` stays pinned, so Stop can still reach its pages.
+    drv.run_script("CREATE TABLE IF NOT EXISTS tiq_pinned (id INT PRIMARY KEY)").await.expect("create");
+    let token = CancelToken::new();
+    drv.open_window_cancellable("public", "tiq_pinned", 0, 10, &[], &[], None, &token).await.expect("page");
+    drv.run_script("DROP TABLE tiq_pinned").await.ok();
+    assert!(token.backend_id().is_some(), "a compat session that accepts set_config stays pinned");
 }
 
 #[tokio::test]
@@ -346,6 +352,61 @@ async fn a_starrocks_page_inlines_its_bounds() {
     drv.run_script("INSERT INTO tiq_inline_my VALUES (1,'a'),(2,'b'),(3,'c'),(4,'d'),(5,'e')").await.expect("seed");
     assert_eq!(page_ids(&drv, &mysql_db(&url), "tiq_inline_my").await, [["2", "3"], ["2", "3"]]);
     drv.run_script("DROP TABLE tiq_inline_my").await.ok();
+}
+
+/// Value: protects=a compat session whose server refuses `set_config` (QuestDB, Materialize)
+/// still pages, bounds its counts on the client, and lets Stop end an exact count; a missing
+/// table is still an error, not "no primary key"; fails_when=the unpin fallback, the client
+/// bounds or the 42P01 carve-out break; why_new=those paths ran only against products with no
+/// CI image; seam=none (a genuine Postgres whose role may not run set_config takes them)
+#[tokio::test]
+async fn a_compat_session_without_set_config_runs_unpinned() {
+    use tableiq_lib::drivers::{ColumnFilter, DriverError, FilterOp};
+    let Some(url) = live_url("TIQ_PG_URL") else { return };
+    let (base, _) = url.rsplit_once('/').expect("a database in the URL");
+    let host = base.rsplit_once('@').map_or(base, |(_, h)| h);
+    let admin = |db: &str| sqlx::postgres::PgPoolOptions::new().max_connections(1).connect_lazy(&format!("{base}/{db}")).unwrap();
+    let run = |pool: sqlx::PgPool, sql: &'static str| async move { sqlx::raw_sql(sql).execute(&pool).await.unwrap() };
+    let root = admin("postgres");
+    run(root.clone(), "DROP DATABASE IF EXISTS tiq_unpin WITH (FORCE)").await;
+    run(root.clone(), "DROP ROLE IF EXISTS tiq_nopin").await;
+    run(root.clone(), "CREATE ROLE tiq_nopin LOGIN PASSWORD 'tiq'").await;
+    run(root.clone(), "CREATE DATABASE tiq_unpin OWNER tiq_nopin").await;
+    let db = admin("tiq_unpin");
+    // pg_proc is per database, so the revoke stays in this one.
+    run(db.clone(), "REVOKE EXECUTE ON FUNCTION pg_catalog.set_config(text, text, boolean) FROM PUBLIC").await;
+    db.close().await;
+
+    let drv = PgDriver::connect_as(&format!("postgres://tiq_nopin:tiq@{host}/tiq_unpin"), Some("materialize"))
+        .await
+        .expect("connect");
+    drv.run_script("CREATE TABLE t (id INT PRIMARY KEY); INSERT INTO t SELECT generate_series(1, 5); \
+                    CREATE VIEW slow AS SELECT g AS id, (pg_sleep(0.001))::text || g AS s FROM generate_series(1, 5000) g;")
+        .await
+        .expect("fixture");
+    let token = CancelToken::new();
+    let page = drv.open_window_cancellable("public", "t", 0, 10, &[], &[], None, &token).await.expect("unpinned page");
+    assert_eq!(page.num_rows(), 5);
+    assert!(token.backend_id().is_none(), "set_config was refused, so the page ran unpinned");
+
+    let search = [ColumnFilter { column: "*".into(), op: FilterOp::Search, value: Some("zzz".into()) }];
+    let c = drv.count_rows("public", "slow", &search, None).await.expect("bounded count");
+    assert_eq!((c.count, c.exact), (None, false), "the client-side bound answered");
+
+    let stop = CancelToken::new();
+    let started = std::time::Instant::now();
+    let stopper = async {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        stop.mark_cancelled();
+    };
+    let (exact, ()) = tokio::join!(drv.count_rows("public", "slow", &search, Some(&stop)), stopper);
+    assert!(matches!(exact, Err(DriverError::Cancelled)), "{exact:?}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(3), "Stop ended the exact count");
+
+    assert!(drv.primary_key("public", "no_such_table").await.is_err(), "a missing table is not 'no primary key'");
+    drop(drv);
+    run(root.clone(), "DROP DATABASE tiq_unpin WITH (FORCE)").await;
+    run(root, "DROP ROLE tiq_nopin").await;
 }
 
 /// A Metrics widget on TiDB, which rejects `START TRANSACTION READ ONLY`, says so by name; on

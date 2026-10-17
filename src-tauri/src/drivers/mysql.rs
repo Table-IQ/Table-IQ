@@ -88,8 +88,13 @@ async fn run_changes(
 /// A catalog name as text, whatever the server types it: PolarDB-X answers `CAST(… AS CHAR)`
 /// as BINARY, which sqlx refuses to decode as `String`.
 fn catalog_text(row: &MySqlRow, col: &str) -> DResult<String> {
+    Ok(catalog_opt(row, col)?.unwrap_or_default())
+}
+
+/// [`catalog_text`] that keeps a NULL apart from an empty string.
+fn catalog_opt(row: &MySqlRow, col: &str) -> DResult<Option<String>> {
     let bytes = row.try_get_unchecked::<Option<Vec<u8>>, _>(col).map_err(db)?;
-    Ok(bytes.map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default())
+    Ok(bytes.map(|b| String::from_utf8_lossy(&b).into_owned()))
 }
 
 /// `KILL QUERY <id>` issued from a second connection to stop a running statement.
@@ -551,7 +556,8 @@ impl MySqlDriver {
         // MySQL placeholders are positional in statement order: the filters, the keyset,
         // then LIMIT/OFFSET.
         let qy = || {
-            let mut qy = sqlx::query(&q);
+            // An inlined page is new text at every offset: not worth a slot in the statement cache.
+            let mut qy = sqlx::query(&q).persistent(!inline);
             for b in &binds {
                 qy = qy.bind(b.clone());
             }
@@ -636,6 +642,11 @@ impl MySqlDriver {
         let mut objects = Vec::new();
         for r in self.pool.fetch_all("SHOW TABLES").await.map_err(db)? {
             let table = mysql_cell(&r, 0).map_err(db)?.unwrap_or_default();
+            // A distributed or template table has no columns to DESCRIBE (it answers with its
+            // agents), so it is not listed.
+            if matches!(mysql_cell(&r, 1).map_err(db)?.as_deref(), Some("distributed" | "template")) {
+                continue;
+            }
             let columns = self
                 .manticore_columns(&table)
                 .await?
@@ -997,11 +1008,13 @@ impl SqlDriver for MySqlDriver {
             };
         }
         // sqlx's `begin` also checks the server's in-transaction status flag, which PolarDB-X
-        // never sets although its BEGIN works (`BeginFailed` after the BEGIN ran). Only for a
-        // product whose profile says it has transactions does the batch go on as plain text on
-        // that connection; it is closed when dropped, so it never goes back to the pool open.
+        // never sets although its BEGIN works (`BeginFailed` after the BEGIN ran). For PolarDB-X
+        // the batch goes on as plain text on that connection, which is closed when dropped, so
+        // it never goes back to the pool open.
+        // ponytail: only PolarDB-X is known to need it; a server that took BEGIN as a no-op would
+        // look the same, so another product joins only after a run proves its rollback.
         let mut conn = self.pool.acquire().await.map_err(db)?;
-        let known_tx = self.product().and_then(|id| crate::profiles::lookup(&id)).is_some_and(|p| p.transactions);
+        let known_tx = self.product().as_deref() == Some("polardbx");
         let failed = match sqlx::Connection::begin(&mut *conn).await {
             Ok(mut tx) => {
                 return match run_changes(&mut tx, &stmts, changes).await {
@@ -1076,18 +1089,35 @@ impl SqlDriver for MySqlDriver {
         .fetch_all(&self.pool)
         .await
         .map_err(db)?;
-        Ok(rows
+        let mut fks = rows
             .iter()
-            .map(|r| ForeignKey {
-                constraint: r.try_get("constraint_name").unwrap_or_default(),
-                from_schema: r.try_get("from_schema").unwrap_or_default(),
-                from_table: r.try_get("from_table").unwrap_or_default(),
-                from_column: r.try_get("from_column").unwrap_or_default(),
-                to_schema: r.try_get("to_schema").unwrap_or_default(),
-                to_table: r.try_get("to_table").unwrap_or_default(),
-                to_column: r.try_get("to_column").unwrap_or_default(),
+            .map(|r| {
+                Ok(ForeignKey {
+                    constraint: catalog_text(r, "constraint_name")?,
+                    from_schema: catalog_text(r, "from_schema")?,
+                    from_table: catalog_text(r, "from_table")?,
+                    from_column: catalog_text(r, "from_column")?,
+                    to_schema: catalog_text(r, "to_schema")?,
+                    to_table: catalog_text(r, "to_table")?,
+                    to_column: catalog_text(r, "to_column")?,
+                })
             })
-            .collect())
+            .collect::<DResult<Vec<_>>>()?;
+        // As in `introspect`: Vitess names its shard's schema here (`vt_tiq_0`), so those edges
+        // take the gateway's name, the one the tree shows.
+        if let (true, Some(shard)) = (self.compat(), fks.first().map(|f| f.from_schema.clone())) {
+            let row = self.pool.fetch_one("SELECT DATABASE()").await.map_err(db)?;
+            if let Some(name) = mysql_cell(&row, 0).map_err(db)?.filter(|n| *n != shard) {
+                for f in &mut fks {
+                    for s in [&mut f.from_schema, &mut f.to_schema] {
+                        if *s == shard {
+                            *s = name.clone();
+                        }
+                    }
+                }
+            }
+        }
+        Ok(fks)
     }
 
     /// Structure tab, from `information_schema`. Schema + table are bound, never
@@ -1147,13 +1177,13 @@ impl SqlDriver for MySqlDriver {
         // index name -> position in `indexes`, so appending a key part is O(1).
         let mut index_ix: HashMap<String, usize> = HashMap::new();
         for r in &idx {
-            let name: String = r.try_get("name").map_err(db)?;
+            let name = catalog_text(r, "name")?;
             let i = match index_ix.get(&name) {
                 Some(i) => *i,
                 None => {
                     indexes.push(IndexInfo {
                         primary: name == "PRIMARY",
-                        unique: r.try_get::<String, _>("non_unique").map_err(db)? == "0",
+                        unique: catalog_text(r, "non_unique")? == "0",
                         name: name.clone(),
                         columns: Vec::new(),
                         // MySQL exposes no per-index DDL (only SHOW CREATE TABLE, whole).
@@ -1163,7 +1193,7 @@ impl SqlDriver for MySqlDriver {
                     indexes.len() - 1
                 }
             };
-            indexes[i].columns.push(r.try_get("column_name").map_err(db)?);
+            indexes[i].columns.push(catalog_text(r, "column_name")?);
         }
 
         Ok(TableStructure {
@@ -1171,16 +1201,13 @@ impl SqlDriver for MySqlDriver {
                 .iter()
                 .map(|r| {
                     Ok(ColumnDetail {
-                        name: r.try_get("name").map_err(db)?,
-                        data_type: r.try_get("data_type").map_err(db)?,
-                        nullable: r.try_get::<String, _>("is_nullable").map_err(db)? == "YES",
-                        default: r.try_get("default_expr").map_err(db)?,
-                        is_pk: r.try_get::<String, _>("column_key").map_err(db)? == "PRI",
+                        name: catalog_text(r, "name")?,
+                        data_type: catalog_text(r, "data_type")?,
+                        nullable: catalog_text(r, "is_nullable")? == "YES",
+                        default: catalog_opt(r, "default_expr")?,
+                        is_pk: catalog_text(r, "column_key")? == "PRI",
                         // MySQL stores '' for "no comment"; the UI wants None.
-                        comment: r
-                            .try_get::<Option<String>, _>("comment")
-                            .map_err(db)?
-                            .filter(|c| !c.is_empty()),
+                        comment: catalog_opt(r, "comment")?.filter(|c| !c.is_empty()),
                     })
                 })
                 .collect::<DResult<Vec<_>>>()?,
@@ -1189,9 +1216,9 @@ impl SqlDriver for MySqlDriver {
                 .iter()
                 .map(|r| {
                     Ok(TriggerInfo {
-                        name: r.try_get("name").map_err(db)?,
-                        timing_event: r.try_get("timing_event").map_err(db)?,
-                        definition: r.try_get("definition").map_err(db)?,
+                        name: catalog_text(r, "name")?,
+                        timing_event: catalog_text(r, "timing_event")?,
+                        definition: catalog_opt(r, "definition")?,
                     })
                 })
                 .collect::<DResult<Vec<_>>>()?,

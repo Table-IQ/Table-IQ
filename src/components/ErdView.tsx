@@ -319,7 +319,9 @@ export function ErdView({
       <Toolbar>
         <span className="inline-flex items-center gap-1.5 text-xs text-muted">
           <span className="text-text">Schema diagram</span>
-          <span title={fkNote?.raw}>· {fkNote?.named ?? `${edges.length} relationships`}</span>
+          <span title={fkNote?.raw} className={fkNote ? "cursor-help underline decoration-dotted" : undefined}>
+            · {fkNote?.named ?? `${edges.length} relationships`}
+          </span>
         </span>
         <ToolbarSpacer />
         <label className="flex h-7 items-center gap-1.5 rounded-md border border-border bg-bg px-2 focus-within:border-primary">
