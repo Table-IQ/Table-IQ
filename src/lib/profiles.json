@@ -59,7 +59,7 @@
     "detect": [
       "OceanBase"
     ],
-    "tested": false
+    "tested": true
   },
   "doris": {
     "base": "mysql",
@@ -95,7 +95,7 @@
     "backup": false,
     "userMgmt": false,
     "detect": [],
-    "tested": false
+    "tested": true
   },
   "selectdb": {
     "base": "mysql",
@@ -132,7 +132,7 @@
     "backup": false,
     "userMgmt": false,
     "detect": [],
-    "tested": false
+    "tested": true
   },
   "greatsql": {
     "base": "mysql",
@@ -225,7 +225,7 @@
     "backup": false,
     "userMgmt": false,
     "detect": [],
-    "tested": false
+    "tested": true
   },
   "cockroachdb": {
     "base": "postgres",
@@ -397,7 +397,7 @@
     "backup": false,
     "userMgmt": false,
     "detect": [],
-    "tested": false
+    "tested": true
   },
   "questdb": {
     "base": "postgres",
@@ -418,7 +418,8 @@
     "detect": [
       "QuestDB"
     ],
-    "tested": false
+    "tested": true,
+    "explain": false
   },
   "materialize": {
     "base": "postgres",
@@ -441,7 +442,8 @@
     "detect": [
       "Materialize"
     ],
-    "tested": false
+    "tested": true,
+    "explain": false
   },
   "risingwave": {
     "base": "postgres",
@@ -462,7 +464,8 @@
     "detect": [
       "RisingWave"
     ],
-    "tested": false
+    "tested": true,
+    "explain": false
   },
   "rds-postgres": {
     "base": "postgres",

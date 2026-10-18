@@ -48,7 +48,7 @@ import { isNumericType } from "../lib/autoFit";
 import { ColumnProfilePanel } from "./ColumnProfilePanel";
 import { AlterTablePanel } from "./AlterTablePanel";
 import type { Engine } from "../lib/commands";
-import { isReadOnlyEngine } from "../lib/profiles";
+import { catalogUnavailable, isReadOnlyEngine } from "../lib/profiles";
 import { Toolbar, ToolbarButton, ToolbarSpacer } from "./ui/Toolbar";
 import { SegmentedToggle, StatusBar, StatusBarButton, StatusDot } from "./ui/StatusBar";
 import { Chip } from "./ui/Chip";
@@ -1422,23 +1422,31 @@ function StructureView({
   const [structure, setStructure] = useState<TableStructure | null>(null);
   /** Why there is nothing to show: the engine can't answer, or the call failed. */
   const [note, setNote] = useState<string | null>(null);
+  /** The driver's own error behind a named `note`. */
+  const [detail, setDetail] = useState<string | null>(null);
+  const engine = useConnections((s) => s.active?.engine ?? "postgres");
+  const profile = useConnections((s) => s.active?.profile);
 
   const columnsKey = object.columns.map((c) => `${c.name}:${c.data_type}:${c.nullable}`).join("|");
   useEffect(() => {
     let live = true;
     setStructure(null);
     setNote(null);
+    setDetail(null);
     describeTable(connId, schema, object.name)
       .then((s) => {
         if (live) setStructure(s);
       })
       .catch((e: unknown) => {
         if (!live) return;
-        setNote(
-          isNotImplementedError(e)
-            ? "This connection doesn't report indexes or triggers."
-            : String((e as { message?: string })?.message ?? e),
-        );
+        if (isNotImplementedError(e)) {
+          setNote("This connection doesn't report indexes or triggers.");
+          return;
+        }
+        const raw = String((e as { message?: string })?.message ?? e);
+        const named = catalogUnavailable("Indexes and triggers", engine, profile);
+        setNote(named ?? raw);
+        setDetail(named ? raw : null);
       });
     return () => {
       live = false;
@@ -1521,7 +1529,7 @@ function StructureView({
 
         {tab === "indexes" &&
           (note ? (
-            <StructNote>{note}</StructNote>
+            <StructNote detail={detail}>{note}</StructNote>
           ) : !structure ? (
             <StructNote>Loading…</StructNote>
           ) : structure.indexes.length === 0 ? (
@@ -1547,7 +1555,7 @@ function StructureView({
 
         {tab === "triggers" &&
           (note ? (
-            <StructNote>{note}</StructNote>
+            <StructNote detail={detail}>{note}</StructNote>
           ) : !structure ? (
             <StructNote>Loading…</StructNote>
           ) : structure.triggers.length === 0 ? (
@@ -1591,10 +1599,18 @@ function StructTable({ head, children }: { head: string[]; children: ReactNode }
 }
 
 /** Loading / empty / "this engine can't answer" — never a blank panel. */
-function StructNote({ children }: { children: ReactNode }) {
+function StructNote({ children, detail }: { children: ReactNode; detail?: string | null }) {
   return (
     <div className="rounded-md border border-dashed border-border p-6 text-center text-[12px] text-muted">
       {children}
+      {detail && (
+        <details className="mt-2 text-[11px]">
+          <summary className="cursor-pointer">Details</summary>
+          <p className="mx-auto mt-1 max-h-[74px] max-w-xl overflow-auto rounded-[7px] border border-border bg-bg px-[9px] py-[7px] text-left font-mono leading-[1.45] whitespace-pre-wrap break-words text-text">
+            {detail}
+          </p>
+        </details>
+      )}
     </div>
   );
 }

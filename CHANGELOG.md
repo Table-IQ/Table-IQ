@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.8.10 — 2026-10-18
+
+Fifteen of the 23 PostgreSQL- and MySQL-compatible products are now verified, up from seven. Every product with a local image was run against the real server, and the drivers learned what each one lacks, on wire-compatible sessions only.
+
+### Added
+- **Eight more verified products:** OceanBase, StarRocks, PolarDB-X, Vitess, openGauss, QuestDB, Materialize and RisingWave connect, browse, count and run queries; OceanBase, PolarDB-X, Vitess and openGauss also commit staged edits in one transaction. They drop "(Beta)" in the picker.
+- **Named "not available" states:** on a compatible product, Structure says "Indexes and triggers aren't available on {product} yet." and the ERD says "Relationships aren't available on {product} yet." instead of a raw driver error, with the error itself under Details or on hover.
+
+### Changed
+- On a product without `set_config` or a reported `BEGIN` (QuestDB, Materialize, RisingWave), pages and the automatic row count run with a time limit on TableIQ's side, and Stop ends a page or an exact count; the server is not told to cancel.
+- Explain says it isn't available on QuestDB, Materialize and RisingWave.
+
+### Fixed
+- QuestDB browses (its catalog has no `= ANY(int2vector)` and no `OFFSET`); openGauss reads primary keys without `array_position`; RisingWave and StarRocks page without placeholders in `LIMIT`; PolarDB-X catalog names and staged commits work; Vitess tables and foreign keys use the database name you connected to, not the shard's.
+
+### Not included
+- Apache Doris and Manticore Search stay Beta (Doris prepares only point queries; Manticore's SQL cannot run the grid's page query), and so do the cloud-only Neon, Supabase, AlloyDB, PlanetScale, Amazon Redshift and SelectDB.
+
 ## 0.8.9 — 2026-10-17
 
 Three more read-only engines over HTTP, again with no new crate: InfluxDB 3, ChromaDB and Weaviate. None of them can be shared with agents over MCP.

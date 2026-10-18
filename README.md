@@ -30,10 +30,10 @@ than the SQL grid and ERD.
 
 Products that speak the PostgreSQL or MySQL wire protocol run on the same drivers, as engine
 profiles. **Verified** (every hard check of the live smoke test passed against the real
-product): MariaDB, TiDB, CockroachDB, GreatSQL, Dolt, YugabyteDB and TimescaleDB. **Beta**
-(in the picker, marked "(Beta)", not verified): Neon, Supabase, AlloyDB, PlanetScale, Vitess,
-Amazon Redshift, OceanBase, Apache Doris, StarRocks, SelectDB, PolarDB-X, Manticore Search,
-openGauss, QuestDB, Materialize and RisingWave. Products without transactions open read-only
+product): MariaDB, TiDB, CockroachDB, GreatSQL, Dolt, YugabyteDB, TimescaleDB, OceanBase,
+StarRocks, PolarDB-X, Vitess, openGauss, QuestDB, Materialize and RisingWave. **Beta** (in the
+picker, marked "(Beta)", not verified): Apache Doris and Manticore Search, which fail a check,
+and the cloud-only Neon, Supabase, AlloyDB, PlanetScale, Amazon Redshift and SelectDB. Products without transactions open read-only
 in the grid, and a compatible product cannot be shared over MCP yet, except CockroachDB (MariaDB,
 Neon, Supabase, TimescaleDB and AlloyDB can: they are the base engine under another name). A compatible
 product also has no Backup / Restore or User Management; MariaDB keeps backup but has no

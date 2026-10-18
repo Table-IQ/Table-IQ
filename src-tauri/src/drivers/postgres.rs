@@ -237,6 +237,12 @@ pub struct PgDriver {
     /// it on afterwards (compat sessions only): a backslash may be an escape here, so import
     /// is refused.
     scs_rejected: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// A compat server refused a pinned page's BEGIN or its `set_config` (RisingWave, QuestDB,
+    /// Materialize; see `begin_pinned`): pages and counts run unpinned from then on, bounded on
+    /// the client instead.
+    pin_unsupported: std::sync::atomic::AtomicBool,
+    /// A compat session's BEGIN reported its transaction once (see `begin_pinned`).
+    begin_checked: std::sync::atomic::AtomicBool,
 }
 
 /// The session GUCs every pooled connection pins (see `connect_as`).
@@ -250,6 +256,35 @@ const SCS: &str = "standard_conforming_strings";
 /// [`SESSION_SETS`] one statement at a time, as a compat session sends them.
 fn session_sets() -> impl Iterator<Item = &'static str> {
     SESSION_SETS.split(';').map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// The bound on a count the grid asks for on its own (`count_rows` without `force_exact`).
+const COUNT_TIMEOUT_MS: u64 = 2000;
+
+/// The server lacks a function, type or syntax the base engine has: undefined function
+/// (42883), feature not supported (0A000), syntax (42601), datatype mismatch (42804), and
+/// QuestDB, which answers every error with 00000. Only these let a compat catalog read fall
+/// back; anything else (a missing table, a denied privilege, a retry, an outage) is an error.
+fn unsupported(e: &dyn sqlx::error::DatabaseError) -> bool {
+    matches!(e.code().as_deref(), Some("42883" | "0A000" | "42601" | "42804" | "00000"))
+}
+
+/// A compat server's own refusal of a pinned page's BEGIN or `set_config`, which unpins the
+/// session: `BeginFailed`, or a server error outside the transient classes (connection 08,
+/// transaction rollback 40, resources 53, operator intervention 57, system 58, internal XX).
+fn refusal(e: &sqlx::Error) -> bool {
+    match e {
+        sqlx::Error::BeginFailed => true,
+        sqlx::Error::Database(d) => !d.code().is_some_and(|c| ["08", "40", "53", "57", "58", "XX"].iter().any(|k| c.starts_with(k))),
+        _ => false,
+    }
+}
+
+/// Wait until `token` is cancelled (polled: nothing on the server can be told to stop).
+async fn cancelled(token: &CancelToken) {
+    while !token.is_cancelled() {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
 }
 
 /// A failed cancellable page: 57014 is a cancel when the token says so or the server says
@@ -396,6 +431,8 @@ impl PgDriver {
             tx_probe,
             degrade_logged: Default::default(),
             scs_rejected,
+            pin_unsupported: Default::default(),
+            begin_checked: Default::default(),
         })
     }
 
@@ -411,18 +448,18 @@ impl PgDriver {
         self
     }
 
-    /// Set up a page's transaction in ONE round trip and record the PID in `token`: the
+    /// Set up a page's transaction in ONE round trip and return the PID: the
     /// session is named after the token (`application_name`, which `cancel` matches — the
     /// page SQL itself stays the same text for every token, so it is prepared once per
     /// connection), a timeout bounds the statement, and `tid_scan` turns seq scans off (see
     /// `window`). `set_config(…, true)` is `SET LOCAL`: it needs the caller's transaction and
-    /// reverts when it ends. A token already cancelled stops the page here.
+    /// reverts when it ends. Returns the PID; the caller records it (see `begin_pinned`).
     async fn pin(
         conn: &mut sqlx::PgConnection,
         token: Option<&CancelToken>,
         timeout_ms: Option<u64>,
         tid_scan: bool,
-    ) -> DResult<()> {
+    ) -> Result<i64, sqlx::Error> {
         // `::int8`: CockroachDB's pg_backend_pid() is an INT8, which does not decode as i32.
         let pid: i64 = sqlx::query_scalar(
             "SELECT pg_backend_pid()::int8 FROM \
@@ -435,15 +472,92 @@ impl PgDriver {
         .bind(timeout_ms.map(|ms| ms.to_string()))
         .bind(tid_scan)
         .fetch_one(&mut *conn)
-        .await
-        .map_err(db)?;
-        if let Some(token) = token {
-            token.set_backend_id(pid);
-            if token.is_cancelled() {
-                return Err(DriverError::Cancelled);
+        .await?;
+        Ok(pid)
+    }
+
+    /// [`Self::pin`] in a new transaction, or `None` on a compat product without `set_config`:
+    /// the caller then runs unpinned, so the Stop button cannot reach the server and only a
+    /// client-side bound ends the statement.
+    // ponytail: unpinned pages are not cancelled server-side (a timed-out one closes its
+    // connection instead), and any server error from `pin` unpins a compat session, not only
+    // a missing `set_config`; a product-specific cancel and a SQLSTATE match if either matters.
+    async fn begin_pinned(
+        &self,
+        token: Option<&CancelToken>,
+        timeout_ms: Option<u64>,
+        tid_scan: bool,
+    ) -> DResult<Option<sqlx::Transaction<'static, sqlx::Postgres>>> {
+        use std::sync::atomic::Ordering::Relaxed;
+        if token.is_some_and(CancelToken::is_cancelled) {
+            return Err(DriverError::Cancelled);
+        }
+        if self.pin_unsupported.load(Relaxed) {
+            return Ok(None);
+        }
+        // Only the server's own refusal unpins the session: RisingWave answers BEGIN without the
+        // in-transaction status sqlx checks for (`BeginFailed`), QuestDB and Materialize have no
+        // `set_config` (a database error). A dropped link or a pool timeout is just an error.
+        // The BEGIN is first tried once on a held connection: after `BeginFailed` the server may
+        // still be in a transaction sqlx never counted, so that connection is closed, not pooled.
+        if self.compat() && !self.begin_checked.load(Relaxed) {
+            let mut conn = self.pool.acquire().await.map_err(db)?;
+            let r = sqlx::Connection::begin(&mut *conn).await.map(drop);
+            match r {
+                Ok(()) => self.begin_checked.store(true, Relaxed),
+                Err(e) if refusal(&e) => {
+                    conn.close_on_drop();
+                    return Ok(self.unpin(&e));
+                }
+                Err(e) => {
+                    conn.close_on_drop();
+                    return Err(db(e));
+                }
             }
         }
-        Ok(())
+        let mut tx = match self.pool.begin().await {
+            Ok(tx) => tx,
+            Err(e) if self.compat() && refusal(&e) => return Ok(self.unpin(&e)),
+            Err(e) => return Err(db(e)),
+        };
+        match Self::pin(&mut tx, token, timeout_ms, tid_scan).await {
+            Ok(pid) => {
+                // Recorded, then the flag checked (the `CancelToken` protocol).
+                if let Some(token) = token {
+                    token.set_backend_id(pid);
+                    if token.is_cancelled() {
+                        return Err(DriverError::Cancelled);
+                    }
+                }
+                Ok(Some(tx))
+            }
+            Err(e) if self.compat() && refusal(&e) => Ok(self.unpin(&e)),
+            Err(e) => Err(db(e)),
+        }
+    }
+
+    /// A count under the client-side bound alone, on one connection that is closed if the bound
+    /// is reached (the server may still be counting). `Err(None)` is the bound.
+    async fn bounded_count(
+        &self,
+        qy: sqlx::query::QueryScalar<'_, Postgres, i64, sqlx::postgres::PgArguments>,
+    ) -> DResult<Result<i64, Option<sqlx::Error>>> {
+        let mut conn = self.pool.acquire().await.map_err(db)?;
+        let bound = std::time::Duration::from_millis(COUNT_TIMEOUT_MS);
+        Ok(match tokio::time::timeout(bound, qy.fetch_one(&mut *conn)).await {
+            Ok(r) => r.map_err(Some),
+            Err(_) => {
+                conn.close_on_drop();
+                Err(None)
+            }
+        })
+    }
+
+    /// Unpin the rest of this session (see `begin_pinned`); always `None`.
+    fn unpin<T>(&self, why: &sqlx::Error) -> Option<T> {
+        crate::applog::log("warn", &format!("pages run unpinned on this session: {why}"));
+        self.pin_unsupported.store(true, std::sync::atomic::Ordering::Relaxed);
+        None
     }
 
     /// [`PgMeta`] for one relation, from the cache after the first page. A missing
@@ -564,36 +678,71 @@ impl PgDriver {
         } else {
             ("*".to_string(), select_list)
         };
-        let off_ph = format!("${}", binds.len() + 1);
-        let lim_ph = format!("${}", binds.len() + 2);
+        // RisingWave takes no placeholder in OFFSET/LIMIT, so its page inlines the two integers;
+        // QuestDB has no OFFSET at all, and its `LIMIT lo, hi` takes row bounds.
+        let product = self.product();
+        let inline = matches!(product.as_deref(), Some("questdb" | "risingwave"));
+        let paging = if product.as_deref() == Some("questdb") {
+            format!("LIMIT {offset}, {}", offset.saturating_add(len))
+        } else if inline {
+            format!("OFFSET {offset} LIMIT {len}")
+        } else {
+            format!("OFFSET ${} LIMIT ${}", binds.len() + 1, binds.len() + 2)
+        };
         // Order (and filter) on the REAL columns inside the subquery, THEN cast to text —
         // ordering by the text cast would sort numbers lexicographically.
         let q = format!(
             "SELECT {select_list} FROM \
-             (SELECT {inner} FROM {}.{} AS _t{}{order_sql} OFFSET {off_ph} LIMIT {lim_ph}) AS _w",
+             (SELECT {inner} FROM {}.{} AS _t{}{order_sql} {paging}) AS _w",
             quote_ident(schema),
             quote_ident(table),
             if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },
         );
-        let mut qy = sqlx::query(&q);
+        // An inlined page is new text at every offset: not worth a slot in the statement cache.
+        let mut qy = sqlx::query(&q).persistent(!inline);
         for b in &binds {
             qy = qy.bind(b.clone());
         }
-        qy = qy.bind(offset as i64).bind(len as i64);
+        if !inline {
+            qy = qy.bind(offset as i64).bind(len as i64);
+        }
         let ms = self.window_timeout_ms * if filters.is_empty() { 2 } else { 1 };
-        let res = if token.is_none() && !by_ctid {
-            qy.fetch_all(&self.pool).await
+        // Pinned, so `cancel` can target the PID, and bounded — both SET LOCAL, so in a
+        // transaction. Dropping it (rather than awaiting `rollback`) queues the ROLLBACK,
+        // which the pool flushes as the connection comes back: the page's answer does
+        // not wait a round trip for it, and nobody gets the connection before it lands.
+        let mut tx = if token.is_none() && !by_ctid {
+            None
         } else {
-            // Pinned, so `cancel` can target the PID, and bounded — both SET LOCAL, so in a
-            // transaction. Dropping it (rather than awaiting `rollback`) queues the ROLLBACK,
-            // which the pool flushes as the connection comes back: the page's answer does
-            // not wait a round trip for it, and nobody gets the connection before it lands.
-            let mut tx = self.pool.begin().await.map_err(db)?;
-            Self::pin(&mut tx, token, token.map(|_| ms), by_ctid).await?;
-            match token {
-                Some(t) => super::recheck_cancel(self, t, qy.fetch_all(&mut *tx)).await,
-                None => qy.fetch_all(&mut *tx).await,
+            self.begin_pinned(token, token.map(|_| ms), by_ctid).await?
+        };
+        let res = match (tx.as_mut(), token) {
+            (Some(tx), Some(t)) => super::recheck_cancel(self, t, qy.fetch_all(&mut **tx)).await,
+            (Some(tx), None) => qy.fetch_all(&mut **tx).await,
+            (None, Some(_)) => {
+                // Bounded here, and a page that runs past it closes its connection rather than
+                // hold it until the server finishes.
+                // Stop (or a newer page) drops it the same way.
+                let mut conn = self.pool.acquire().await.map_err(db)?;
+                let t = token.expect("this arm has a token");
+                let bound = std::time::Duration::from_millis(ms);
+                let done = tokio::select! {
+                    r = tokio::time::timeout(bound, qy.fetch_all(&mut *conn)) => r.ok(),
+                    () = cancelled(t) => None,
+                };
+                match done {
+                    Some(r) => r,
+                    None => {
+                        conn.close_on_drop();
+                        return Err(if t.is_cancelled() {
+                            DriverError::Cancelled
+                        } else {
+                            DriverError::Db(format!("query timed out after {ms} ms"))
+                        });
+                    }
+                }
             }
+            (None, None) => qy.fetch_all(&self.pool).await,
         };
         let rows = res.map_err(|e| {
             // A column or the table itself is gone (42703 / 42P01): the cached list is stale.
@@ -664,11 +813,12 @@ impl SqlDriver for PgDriver {
         // and so BEGIN/…/COMMIT actually land on the same session.
         let mut conn = self.pool.acquire().await.map_err(db)?;
         // `::int8`: see `pin`.
-        let pid: i64 = sqlx::query_scalar("SELECT pg_backend_pid()::int8")
-            .fetch_one(&mut *conn)
-            .await
-            .map_err(db)?;
-        token.set_backend_id(pid);
+        match sqlx::query_scalar::<_, i64>("SELECT pg_backend_pid()::int8").fetch_one(&mut *conn).await {
+            Ok(pid) => token.set_backend_id(pid),
+            // QuestDB has no backend PID: the script runs, and Stop cannot reach it.
+            Err(sqlx::Error::Database(_)) if self.product().as_deref() == Some("questdb") => {}
+            Err(e) => return Err(db(e)),
+        }
         // Recorded, then the flag checked (the `CancelToken` protocol): a caller that gave up
         // while this waited for a pooled connection has said it was cancelled — never run it.
         if token.is_cancelled() {
@@ -705,28 +855,45 @@ impl SqlDriver for PgDriver {
     /// detail (`character varying` with no length, `ARRAY`, `USER-DEFINED`) and needed an
     /// O(n²) scan to attach each column to its table.
     async fn introspect(&self) -> DResult<SchemaModel> {
-        let rows = sqlx::query(
-            "SELECT n.nspname AS schema_name, \
-                    c.relname AS object_name, \
-                    c.relkind::text AS relkind, \
-                    a.attname AS column_name, \
-                    format_type(a.atttypid, a.atttypmod) AS data_type, \
-                    a.attnotnull AS notnull, \
-                    COALESCE(i.indisprimary, false) AS is_pk \
-             FROM pg_namespace n \
-             LEFT JOIN pg_class c \
-               ON c.relnamespace = n.oid AND c.relkind IN ('r', 'p', 'v', 'm', 'f') \
-             LEFT JOIN pg_attribute a \
-               ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped \
-             LEFT JOIN pg_index i \
-               ON i.indrelid = c.oid AND i.indisprimary AND a.attnum = ANY(i.indkey) \
-             WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') \
-               AND n.nspname NOT LIKE 'pg\\_toast%' \
-             ORDER BY n.nspname, c.relname, a.attnum",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db)?;
+        let sql = |pk_sel: &str, ty: &str, join: &str| {
+            format!(
+                "SELECT n.nspname AS schema_name, \
+                        c.relname AS object_name, \
+                        c.relkind::text AS relkind, \
+                        a.attname AS column_name, \
+                        {ty} AS data_type, \
+                        a.attnotnull AS notnull, \
+                        {pk_sel} AS is_pk \
+                 FROM pg_namespace n \
+                 LEFT JOIN pg_class c \
+                   ON c.relnamespace = n.oid AND c.relkind IN ('r', 'p', 'v', 'm', 'f') \
+                 LEFT JOIN pg_attribute a \
+                   ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped \
+                 {join} \
+                 WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') \
+                   AND n.nspname NOT LIKE 'pg\\_toast%' \
+                 ORDER BY n.nspname, c.relname, a.attnum"
+            )
+        };
+        let full = sql(
+            "COALESCE(i.indisprimary, false)",
+            "format_type(a.atttypid, a.atttypmod)",
+            "LEFT JOIN pg_index i ON i.indrelid = c.oid AND i.indisprimary AND a.attnum = ANY(i.indkey)",
+        );
+        let rows = match sqlx::query(&full).fetch_all(&self.pool).await {
+            // QuestDB has no `= ANY(int2vector)` and its `format_type` answers NULL: a compat
+            // product without them browses with no primary keys rather than not at all.
+            Err(sqlx::Error::Database(e)) if self.compat() => {
+                crate::applog::log("warn", &format!("catalog read without primary keys: {e}"));
+                let plain = sql(
+                    "false",
+                    "COALESCE(format_type(a.atttypid, a.atttypmod), t.typname, 'unknown')",
+                    "LEFT JOIN pg_type t ON t.oid = a.atttypid",
+                );
+                sqlx::query(&plain).fetch_all(&self.pool).await.map_err(db)?
+            }
+            r => r.map_err(db)?,
+        };
 
         // The rows arrive grouped by the ORDER BY; the two maps index into the vectors so
         // attaching a column is O(1) instead of a linear scan of the schema's objects.
@@ -811,16 +978,37 @@ impl SqlDriver for PgDriver {
             quote_ident(table),
             if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },
         );
-        let mut qy = sqlx::query_scalar::<_, i64>(&q);
-        for b in &binds {
-            qy = qy.bind(b.clone());
-        }
+        let make = || {
+            let mut qy = sqlx::query_scalar::<_, i64>(&q);
+            for b in &binds {
+                qy = qy.bind(b.clone());
+            }
+            qy
+        };
+        let qy = make();
         if let Some(token) = force_exact {
             // Unbounded, so pinned to one connection whose PID `cancel` can target — named
             // in a transaction, as a page is (see `pin`).
-            let mut tx = self.pool.begin().await.map_err(db)?;
-            Self::pin(&mut tx, Some(token), None, false).await?;
-            return match super::recheck_cancel(self, token, qy.fetch_one(&mut *tx)).await {
+            let res = match self.begin_pinned(Some(token), None, false).await? {
+                Some(mut tx) => super::recheck_cancel(self, token, qy.fetch_one(&mut *tx)).await,
+                // Unpinned: Stop cannot reach the server, so it drops the count here and
+                // closes the connection instead of handing it back mid-statement.
+                None => {
+                    let mut conn = self.pool.acquire().await.map_err(db)?;
+                    let done = tokio::select! {
+                        r = qy.fetch_one(&mut *conn) => Some(r),
+                        () = cancelled(token) => None,
+                    };
+                    match done {
+                        Some(r) => r,
+                        None => {
+                            conn.close_on_drop();
+                            return Err(DriverError::Cancelled);
+                        }
+                    }
+                }
+            };
+            return match res {
                 Ok(n) => Ok(RowCount { count: Some(n), exact: true }),
                 Err(e) if is_cancel(&e) => Err(DriverError::Cancelled),
                 Err(e) => Err(db(e)),
@@ -828,22 +1016,63 @@ impl SqlDriver for PgDriver {
         }
         // SET LOCAL needs a transaction; it also reverts on its own when this one ends. Sent
         // with the BEGIN in one round trip; the ROLLBACK is queued on drop (see `window`).
-        let mut tx = self
-            .pool
-            .begin_with("BEGIN; SET LOCAL statement_timeout = 2000")
-            .await
-            .map_err(db)?;
-        let res = qy.fetch_one(&mut *tx).await;
-        drop(tx);
+        let begin = format!("BEGIN; SET LOCAL statement_timeout = {COUNT_TIMEOUT_MS}");
+        let bound = std::time::Duration::from_millis(COUNT_TIMEOUT_MS);
+        let res: Result<i64, Option<sqlx::Error>> = if !self.compat() {
+            let mut tx = self.pool.begin_with(begin).await.map_err(db)?;
+            qy.fetch_one(&mut *tx).await.map_err(Some)
+        } else {
+            // A compat session begins on a connection it holds, so one whose BEGIN or SET LOCAL
+            // the server refused (an aborted or uncounted transaction) is closed, not pooled; a
+            // product that refuses it (see `begin_pinned`) counts under a client-side bound of
+            // the same length instead. The server's own bound is not trusted alone either.
+            if self.pin_unsupported.load(std::sync::atomic::Ordering::Relaxed) {
+                self.bounded_count(make()).await?
+            } else {
+                let mut conn = self.pool.acquire().await.map_err(db)?;
+                let outcome = {
+                    let begun = sqlx::Connection::begin_with(&mut *conn, begin).await;
+                    match begun {
+                        // The server's own bound fires first; this one only catches a server
+                        // that ignored the SET LOCAL.
+                        Ok(mut tx) => Ok(match tokio::time::timeout(bound + std::time::Duration::from_millis(1500), make().fetch_one(&mut *tx)).await {
+                            Ok(r) => r.map_err(Some),
+                            Err(_) => Err(None),
+                        }),
+                        Err(e) => Err(e),
+                    }
+                };
+                match outcome {
+                    Ok(res) => {
+                        if matches!(res, Err(None)) {
+                            conn.close_on_drop();
+                        }
+                        res
+                    }
+                    Err(e) if refusal(&e) => {
+                        // Released before the fallback takes its own: never two at once.
+                        conn.close_on_drop();
+                        drop(conn);
+                        self.unpin::<()>(&e);
+                        self.bounded_count(make()).await?
+                    }
+                    Err(e) => {
+                        conn.close_on_drop();
+                        return Err(db(e));
+                    }
+                }
+            }
+        };
+        // 57014 is the statement_timeout firing — this query carries no cancel token; `None` is
+        // the client-side bound. The catalog estimate is the whole table's, so a filtered count
+        // has none.
         match res {
             Ok(n) => Ok(RowCount { count: Some(n), exact: true }),
-            // 57014 here is the statement_timeout firing — this query carries no cancel token.
-            // The catalog estimate is the whole table's, so a filtered count has none.
-            Err(e) if is_cancel(&e) => Ok(RowCount {
+            Err(Some(e)) if !is_cancel(&e) => Err(db(e)),
+            Err(_) => Ok(RowCount {
                 count: if filters.is_empty() { self.estimate_rows(schema, table).await? } else { None },
                 exact: false,
             }),
-            Err(e) => Err(db(e)),
         }
     }
 
@@ -971,17 +1200,28 @@ impl SqlDriver for PgDriver {
 
     async fn primary_key(&self, schema: &str, table: &str) -> DResult<Vec<String>> {
         let qualified = format!("{}.{}", quote_ident(schema), quote_ident(table));
-        let cols: Vec<String> = sqlx::query_scalar(
-            "SELECT a.attname FROM pg_index i \
-             JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) \
-             WHERE i.indrelid = $1::regclass AND i.indisprimary \
-             ORDER BY array_position(i.indkey, a.attnum)",
-        )
-        .bind(qualified)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db)?;
-        Ok(cols)
+        let sql = |order: &str| {
+            format!(
+                "SELECT a.attname FROM pg_index i \
+                 JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) \
+                 WHERE i.indrelid = $1::regclass AND i.indisprimary ORDER BY {order}"
+            )
+        };
+        let fetch = |q: String| {
+            let qualified = qualified.clone();
+            async move { sqlx::query_scalar::<_, String>(&q).bind(qualified).fetch_all(&self.pool).await }
+        };
+        match fetch(sql("array_position(i.indkey, a.attnum)")).await {
+            // openGauss has no `array_position`: key columns in table order instead. QuestDB has
+            // no `= ANY(int2vector)` either, and so, as in `introspect`, no primary key.
+            Err(sqlx::Error::Database(e)) if self.compat() && unsupported(e.as_ref()) => {
+                match fetch(sql("a.attnum")).await {
+                    Err(sqlx::Error::Database(e)) if unsupported(e.as_ref()) => Ok(Vec::new()),
+                    r => r.map_err(db),
+                }
+            }
+            r => r.map_err(db),
+        }
     }
 
     async fn apply_edit(&self, schema: &str, table: &str, edit: &EditSpec) -> DResult<u64> {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ENGINE_COLORS, ENGINE_MONOGRAMS } from "../components/ui/EngineIcon";
 import cases from "./agentAccessCases.json";
-import { AGENT_REV, MONGODB_AGENT_SINCE, PROFILES, REDIS_AGENT_SINCE, applyPreset, capsOf, explainUnavailable, isReadOnlyEngine, presetFor, profileForUrl, profileOf, profilesFor } from "./profiles";
+import { AGENT_REV, MONGODB_AGENT_SINCE, PROFILES, REDIS_AGENT_SINCE, applyPreset, capsOf, catalogUnavailable, explainUnavailable, isReadOnlyEngine, presetFor, profileForUrl, profileOf, profilesFor } from "./profiles";
 
 /** WCAG relative luminance of a `#rrggbb` colour. */
 function luminance(hex: string): number {
@@ -119,6 +119,20 @@ describe("explainUnavailable", () => {
     expect(explainUnavailable("mysql", "tidb")).toBeNull();
     expect(explainUnavailable("mysql", "cockroachdb")).toBeNull();
     expect(explainUnavailable("postgres", "from-the-future")).toBeNull();
+  });
+});
+
+describe("catalogUnavailable", () => {
+  it("names the feature on a wire-compatible product", () => {
+    expect(catalogUnavailable("Indexes and triggers", "postgres", "questdb")).toBe("Indexes and triggers aren't available on QuestDB yet.");
+    expect(catalogUnavailable("Relationships", "mysql", "polardbx")).toBe("Relationships aren't available on PolarDB-X yet.");
+  });
+
+  it("is null on the base engines, a vendor name for one, and unknown or foreign ids", () => {
+    expect(catalogUnavailable("Relationships", "postgres")).toBeNull();
+    expect(catalogUnavailable("Relationships", "postgres", "neon")).toBeNull();
+    expect(catalogUnavailable("Relationships", "postgres", "from-the-future")).toBeNull();
+    expect(catalogUnavailable("Relationships", "mysql", "questdb")).toBeNull();
   });
 });
 

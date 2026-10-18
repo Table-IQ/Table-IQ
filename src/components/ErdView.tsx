@@ -13,6 +13,8 @@ import {
   type NodeBox,
 } from "../lib/erdLayout";
 import { tabGuard } from "../state/tabGuard";
+import { useConnections } from "../state/connectionStore";
+import { catalogUnavailable } from "../lib/profiles";
 import { Toolbar, ToolbarButton, ToolbarSpacer } from "./ui/Toolbar";
 import { IconRefresh, IconSearch } from "./ui/Icon";
 
@@ -83,7 +85,26 @@ export function ErdView({
   // arrangement or snap the viewport back to fit.
   const userArrangedRef = useRef(false);
 
-  const refresh = () => foreignKeys(connId).then(setFks).catch(() => setFks([]));
+  const engine = useConnections((s) => s.active?.engine ?? "postgres");
+  const profile = useConnections((s) => s.active?.profile);
+  /** Named when a wire-compatible product has no foreign-key catalog; a base engine's error stays silent. */
+  const [fkNote, setFkNote] = useState<{ named: string; raw: string } | null>(null);
+  // A late answer for a connection this view has since left is dropped.
+  const connRef = useRef(connId);
+  connRef.current = connId;
+  const refresh = () =>
+    foreignKeys(connId)
+      .then((f) => {
+        if (connRef.current !== connId) return;
+        setFks(f);
+        setFkNote(null);
+      })
+      .catch((e: unknown) => {
+        if (connRef.current !== connId) return;
+        setFks([]);
+        const named = catalogUnavailable("Relationships", engine, profile);
+        setFkNote(named ? { named, raw: String((e as { message?: string })?.message ?? e) } : null);
+      });
   useEffect(() => {
     refresh();
   }, [connId]);
@@ -303,7 +324,9 @@ export function ErdView({
       <Toolbar>
         <span className="inline-flex items-center gap-1.5 text-xs text-muted">
           <span className="text-text">Schema diagram</span>
-          <span>· {edges.length} relationships</span>
+          <span title={fkNote?.raw} className={fkNote ? "cursor-help underline decoration-dotted" : undefined}>
+            · {fkNote?.named ?? `${edges.length} relationships`}
+          </span>
         </span>
         <ToolbarSpacer />
         <label className="flex h-7 items-center gap-1.5 rounded-md border border-border bg-bg px-2 focus-within:border-primary">

@@ -178,6 +178,12 @@ async fn cockroachdb_smoke() {
     assert_eq!(drv.product().as_deref(), Some("cockroachdb"));
     assert!(drv.literals_safe(), "CockroachDB reports standard_conforming_strings on");
     assert_eq!(smoke(&drv, "public", true, None).await, expected("cockroachdb"));
+    // A compat product that takes `set_config` stays pinned, so Stop can still reach its pages.
+    drv.run_script("CREATE TABLE IF NOT EXISTS tiq_pinned (id INT PRIMARY KEY)").await.expect("create");
+    let token = CancelToken::new();
+    drv.open_window_cancellable("public", "tiq_pinned", 0, 10, &[], &[], None, &token).await.expect("page");
+    drv.run_script("DROP TABLE tiq_pinned").await.ok();
+    assert!(token.backend_id().is_some(), "a compat session that accepts set_config stays pinned");
 }
 
 #[tokio::test]
@@ -301,6 +307,141 @@ async fn a_saved_profile_applies_to_a_genuine_mysql() {
     let future = MySqlDriver::connect_as(&url, Some("from-the-future")).await.expect("connect");
     assert_eq!(future.product(), None);
     assert!(future.agent_access().unwrap_err().contains("saved by a newer TableIQ"));
+}
+
+/// The ids of a sorted page at offset 1, length 2, read plain and through the grid's pinned
+/// path, over a five-row `table` in `schema`.
+async fn page_ids(drv: &dyn SqlDriver, schema: &str, table: &str) -> [Vec<String>; 2] {
+    use arrow::array::{Array, StringArray};
+    use tableiq_lib::drivers::SortKey;
+    let ids = |b: arrow::record_batch::RecordBatch| -> Vec<String> {
+        let col = b.column(b.schema().index_of("id").unwrap()).clone();
+        let a = col.as_any().downcast_ref::<StringArray>().expect("a text page");
+        (0..a.len()).map(|r| a.value(r).to_string()).collect()
+    };
+    let by_id = [SortKey { column: "id".into(), desc: false }];
+    let plain = drv.open_window_filtered(schema, table, 1, 2, &[], &by_id, None).await.expect("page");
+    let pinned = drv
+        .open_window_cancellable(schema, table, 1, 2, &[], &by_id, None, &CancelToken::new())
+        .await
+        .expect("pinned page");
+    [ids(plain), ids(pinned)]
+}
+
+/// Value: protects=RisingWave's page, which inlines OFFSET/LIMIT (no placeholder there), plain and pinned; fails_when=the inlined text swaps offset and length or drops one (a leftover bind is not caught: the genuine engines accept it); why_new=that page ran only by hand (any_profile_smoke) — a genuine Postgres saved as RisingWave takes the same branch in CI; seam=none
+#[tokio::test]
+async fn a_risingwave_page_inlines_its_bounds() {
+    let Some(url) = live_url("TIQ_PG_URL") else { return };
+    let drv = PgDriver::connect_as(&url, Some("risingwave")).await.expect("connect");
+    assert_eq!(drv.product().as_deref(), Some("risingwave"));
+    drv.run_script("DROP TABLE IF EXISTS tiq_inline_pg").await.expect("drop");
+    drv.run_script("CREATE TABLE tiq_inline_pg (id INT PRIMARY KEY, name TEXT)").await.expect("create");
+    drv.run_script("INSERT INTO tiq_inline_pg VALUES (1,'a'),(2,'b'),(3,'c'),(4,'d'),(5,'e')").await.expect("seed");
+    assert_eq!(page_ids(&drv, "public", "tiq_inline_pg").await, [["2", "3"], ["2", "3"]]);
+    drv.run_script("DROP TABLE tiq_inline_pg").await.ok();
+}
+
+/// Value: protects=StarRocks's page, which inlines LIMIT/OFFSET (no placeholder there), plain and pinned; fails_when=the inlined text swaps offset and length or drops one (a leftover bind is not caught: the genuine engines accept it); why_new=that page ran only by hand (any_profile_smoke) — a genuine MySQL saved as StarRocks takes the same branch in CI; seam=none
+#[tokio::test]
+async fn a_starrocks_page_inlines_its_bounds() {
+    let Some(url) = live_url("TIQ_MYSQL_URL") else { return };
+    let drv = MySqlDriver::connect_as(&url, Some("starrocks")).await.expect("connect");
+    assert_eq!(drv.product().as_deref(), Some("starrocks"));
+    drv.run_script("DROP TABLE IF EXISTS tiq_inline_my").await.expect("drop");
+    drv.run_script("CREATE TABLE tiq_inline_my (id INT PRIMARY KEY, name VARCHAR(5))").await.expect("create");
+    drv.run_script("INSERT INTO tiq_inline_my VALUES (1,'a'),(2,'b'),(3,'c'),(4,'d'),(5,'e')").await.expect("seed");
+    assert_eq!(page_ids(&drv, &mysql_db(&url), "tiq_inline_my").await, [["2", "3"], ["2", "3"]]);
+    drv.run_script("DROP TABLE tiq_inline_my").await.ok();
+}
+
+/// Value: protects=a compat session's own count (BEGIN; SET LOCAL on a connection it holds)
+/// counts exactly, answers "unknown" past its 2s bound, and leaves the pool usable;
+/// fails_when=the held-connection transaction or its bounds break; why_new=CI's compat counts
+/// ran only on fast tables; seam=none
+#[tokio::test]
+async fn a_compat_count_counts_and_is_bounded() {
+    use tableiq_lib::drivers::{ColumnFilter, FilterOp};
+    let Some(url) = live_url("TIQ_PG_URL") else { return };
+    let drv = PgDriver::connect_as(&url, Some("yugabytedb")).await.expect("connect");
+    drv.run_script("DROP SCHEMA IF EXISTS tiq_cc CASCADE; CREATE SCHEMA tiq_cc; \
+                    CREATE TABLE tiq_cc.t (id INT PRIMARY KEY); INSERT INTO tiq_cc.t SELECT generate_series(1, 7); \
+                    CREATE VIEW tiq_cc.slow AS SELECT g AS id, (pg_sleep(0.001))::text || g AS s FROM generate_series(1, 5000) g;")
+        .await
+        .expect("fixture");
+    let c = drv.count_rows("tiq_cc", "t", &[], None).await.expect("count");
+    assert_eq!((c.count, c.exact), (Some(7), true));
+    let search = [ColumnFilter { column: "*".into(), op: FilterOp::Search, value: Some("zzz".into()) }];
+    let c = drv.count_rows("tiq_cc", "slow", &search, None).await.expect("bounded count");
+    assert_eq!((c.count, c.exact), (None, false));
+    for _ in 0..5 {
+        assert_eq!(drv.run_query("SELECT 1", 1).await.expect("a pooled connection still works").batch.num_rows(), 1);
+    }
+    drv.run_script("DROP SCHEMA tiq_cc CASCADE").await.ok();
+}
+
+/// Value: protects=a compat session whose server refuses `set_config` (QuestDB, Materialize)
+/// still pages, bounds its counts on the client, and lets Stop end an exact count; a missing
+/// table is still an error, not "no primary key"; fails_when=the unpin fallback, the client
+/// bounds or the 42P01 carve-out break; why_new=those paths ran only against products with no
+/// CI image; seam=none (a genuine Postgres whose role may not run set_config takes them)
+#[tokio::test]
+async fn a_compat_session_without_set_config_runs_unpinned() {
+    use tableiq_lib::drivers::{ColumnFilter, DriverError, FilterOp};
+    let Some(url) = live_url("TIQ_PG_URL") else { return };
+    let (base, _) = url.rsplit_once('/').expect("a database in the URL");
+    let host = base.rsplit_once('@').map_or(base, |(_, h)| h);
+    let admin = |db: &str| sqlx::postgres::PgPoolOptions::new().max_connections(1).connect_lazy(&format!("{base}/{db}")).unwrap();
+    let run = |pool: sqlx::PgPool, sql: &'static str| async move { sqlx::raw_sql(sql).execute(&pool).await.unwrap() };
+    let root = admin("postgres");
+    run(root.clone(), "DROP DATABASE IF EXISTS tiq_unpin WITH (FORCE)").await;
+    run(root.clone(), "DROP ROLE IF EXISTS tiq_nopin").await;
+    run(root.clone(), "CREATE ROLE tiq_nopin LOGIN PASSWORD 'tiq'").await;
+    run(root.clone(), "CREATE DATABASE tiq_unpin OWNER tiq_nopin").await;
+    let db = admin("tiq_unpin");
+    // pg_proc is per database, so the revoke stays in this one.
+    run(db.clone(), "REVOKE EXECUTE ON FUNCTION pg_catalog.set_config(text, text, boolean) FROM PUBLIC").await;
+    db.close().await;
+
+    let drv = PgDriver::connect_as(&format!("postgres://tiq_nopin:tiq@{host}/tiq_unpin"), Some("materialize"))
+        .await
+        .expect("connect");
+    drv.run_script("CREATE TABLE t (id INT PRIMARY KEY); INSERT INTO t SELECT generate_series(1, 5); \
+                    CREATE VIEW slow AS SELECT g AS id, (pg_sleep(0.001))::text || g AS s FROM generate_series(1, 5000) g;")
+        .await
+        .expect("fixture");
+    let token = CancelToken::new();
+    let page = drv.open_window_cancellable("public", "t", 0, 10, &[], &[], None, &token).await.expect("unpinned page");
+    assert_eq!(page.num_rows(), 5);
+    assert!(token.backend_id().is_none(), "set_config was refused, so the page ran unpinned");
+
+    let search = [ColumnFilter { column: "*".into(), op: FilterOp::Search, value: Some("zzz".into()) }];
+    let c = drv.count_rows("public", "slow", &search, None).await.expect("bounded count");
+    assert_eq!((c.count, c.exact), (None, false), "the client-side bound answered");
+    // Four bounded counts and a page at once fit the pool of four: each count holds one
+    // connection, never two (a count that held two left every one waiting on the pool).
+    let started = std::time::Instant::now();
+    let count = || drv.count_rows("public", "slow", &search, None);
+    let (a, b, c, d, p) = tokio::join!(count(), count(), count(), count(), drv.open_window_filtered("public", "t", 0, 10, &[], &[], None));
+    for r in [a, b, c, d] {
+        assert_eq!(r.map(|c| (c.count, c.exact)).expect("no pool timeout"), (None, false));
+    }
+    assert_eq!(p.expect("page").num_rows(), 5);
+    assert!(started.elapsed() < std::time::Duration::from_secs(8), "{:?}", started.elapsed());
+
+    let stop = CancelToken::new();
+    let started = std::time::Instant::now();
+    let stopper = async {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        stop.mark_cancelled();
+    };
+    let (exact, ()) = tokio::join!(drv.count_rows("public", "slow", &search, Some(&stop)), stopper);
+    assert!(matches!(exact, Err(DriverError::Cancelled)), "{exact:?}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(3), "Stop ended the exact count");
+
+    assert!(drv.primary_key("public", "no_such_table").await.is_err(), "a missing table is not 'no primary key'");
+    drop(drv);
+    run(root.clone(), "DROP DATABASE tiq_unpin WITH (FORCE)").await;
+    run(root, "DROP ROLE tiq_nopin").await;
 }
 
 /// A Metrics widget on TiDB, which rejects `START TRANSACTION READ ONLY`, says so by name; on

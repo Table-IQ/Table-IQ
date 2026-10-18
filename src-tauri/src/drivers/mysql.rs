@@ -58,6 +58,45 @@ fn parse_at_line(message: &str) -> Option<u32> {
         .ok()
 }
 
+/// `CONNECTION_ID()`: BIGINT UNSIGNED on MySQL, a signed BIGINT on StarRocks.
+async fn connection_id(conn: &mut sqlx::MySqlConnection) -> DResult<u64> {
+    let row = sqlx::query("SELECT CONNECTION_ID()").fetch_one(&mut *conn).await.map_err(db)?;
+    row.try_get::<u64, _>(0).or_else(|_| row.try_get::<i64, _>(0).map(|n| n as u64)).map_err(db)
+}
+
+/// A staged batch's statements in `change_order`, on a connection already in a transaction.
+async fn run_changes(
+    conn: &mut sqlx::MySqlConnection,
+    stmts: &[(String, Vec<Option<String>>)],
+    changes: &[Change],
+) -> DResult<ChangesResult> {
+    let mut out = ChangesResult::default();
+    for i in super::change_order(changes) {
+        let (sql, binds) = &stmts[i];
+        let mut q = sqlx::query(sql);
+        for b in binds {
+            q = q.bind(b.clone());
+        }
+        match q.execute(&mut *conn).await {
+            Ok(r) => super::tally(&mut out, i, &changes[i], r.rows_affected())?,
+            Err(e) => return Err(super::change_err(i, db(e))),
+        }
+    }
+    Ok(out)
+}
+
+/// A catalog name as text, whatever the server types it: PolarDB-X answers `CAST(… AS CHAR)`
+/// as BINARY, which sqlx refuses to decode as `String`.
+fn catalog_text(row: &MySqlRow, col: &str) -> DResult<String> {
+    Ok(catalog_opt(row, col)?.unwrap_or_default())
+}
+
+/// [`catalog_text`] that keeps a NULL apart from an empty string.
+fn catalog_opt(row: &MySqlRow, col: &str) -> DResult<Option<String>> {
+    let bytes = row.try_get_unchecked::<Option<Vec<u8>>, _>(col).map_err(db)?;
+    Ok(bytes.map(|b| String::from_utf8_lossy(&b).into_owned()))
+}
+
 /// `KILL QUERY <id>` issued from a second connection to stop a running statement.
 /// `id` comes from `CONNECTION_ID()` (trusted, numeric).
 fn kill_query_sql(connection_id: u64) -> String {
@@ -403,8 +442,7 @@ impl MySqlDriver {
     /// Record this connection's id in `token`, so `cancel` can KILL QUERY it. A token
     /// already cancelled stops the statement here.
     async fn pin(conn: &mut sqlx::MySqlConnection, token: &CancelToken) -> DResult<()> {
-        let cid: u64 =
-            sqlx::query_scalar("SELECT CONNECTION_ID()").fetch_one(&mut *conn).await.map_err(db)?;
+        let cid = connection_id(conn).await?;
         token.set_backend_id(cid as i64);
         if token.is_cancelled() {
             return Err(DriverError::Cancelled);
@@ -505,9 +543,12 @@ impl MySqlDriver {
             None => String::new(),
         };
         // No per-token comment: that made every page's text unique, so each one was
-        // prepared anew (an extra round trip) and churned sqlx's statement cache.
+        // prepared anew (an extra round trip) and churned sqlx's statement cache. StarRocks
+        // takes no placeholder in LIMIT/OFFSET, so its page inlines the two integers.
+        let inline = self.product().as_deref() == Some("starrocks");
+        let paging = if inline { format!("LIMIT {len} OFFSET {offset}") } else { "LIMIT ? OFFSET ?".into() };
         let q = format!(
-            "SELECT {hint}{select_list} FROM (SELECT * FROM {}.{} AS _t{}{order_sql} LIMIT ? OFFSET ?) AS _w",
+            "SELECT {hint}{select_list} FROM (SELECT * FROM {}.{} AS _t{}{order_sql} {paging}) AS _w",
             quote_ident(schema),
             quote_ident(table),
             if where_sql.is_empty() { String::new() } else { format!(" WHERE {where_sql}") },
@@ -515,11 +556,16 @@ impl MySqlDriver {
         // MySQL placeholders are positional in statement order: the filters, the keyset,
         // then LIMIT/OFFSET.
         let qy = || {
-            let mut qy = sqlx::query(&q);
+            // An inlined page is new text at every offset: not worth a slot in the statement cache.
+            let mut qy = sqlx::query(&q).persistent(!inline);
             for b in &binds {
                 qy = qy.bind(b.clone());
             }
-            qy.bind(len as i64).bind(offset as i64)
+            if inline {
+                qy
+            } else {
+                qy.bind(len as i64).bind(offset as i64)
+            }
         };
         let res = match token {
             None => qy().fetch_all(&self.pool).await,
@@ -561,15 +607,62 @@ impl MySqlDriver {
 
     /// Ordered `(column, DATA_TYPE)` for one relation (empty ⇒ no such relation).
     async fn columns_of(&self, schema: &str, table: &str) -> DResult<Vec<(String, String)>> {
-        sqlx::query_as(
-            "SELECT CAST(COLUMN_NAME AS CHAR), CAST(DATA_TYPE AS CHAR) FROM information_schema.columns \
+        if self.manticore() {
+            return self.manticore_columns(table).await;
+        }
+        let rows = sqlx::query(
+            "SELECT CAST(COLUMN_NAME AS CHAR) AS c, CAST(DATA_TYPE AS CHAR) AS t FROM information_schema.columns \
              WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
         )
         .bind(schema)
         .bind(table)
         .fetch_all(&self.pool)
         .await
-        .map_err(db)
+        .map_err(db)?;
+        rows.iter().map(|r| Ok((catalog_text(r, "c")?, catalog_text(r, "t")?))).collect()
+    }
+
+    /// Manticore answers any filtered `information_schema` query with no rows (its Buddy
+    /// helper serves only a bare `SELECT *`), so its tables come from `SHOW TABLES` and their
+    /// columns from `DESCRIBE`, sent as plain text.
+    fn manticore(&self) -> bool {
+        self.product().as_deref() == Some("manticore")
+    }
+
+    async fn manticore_columns(&self, table: &str) -> DResult<Vec<(String, String)>> {
+        let rows = self.pool.fetch_all(format!("DESCRIBE {}", quote_ident(table)).as_str()).await.map_err(db)?;
+        rows.iter()
+            .map(|r| Ok((mysql_cell(r, 0).map_err(db)?.unwrap_or_default(), mysql_cell(r, 1).map_err(db)?.unwrap_or_default())))
+            .collect()
+    }
+
+    async fn manticore_introspect(&self) -> DResult<SchemaModel> {
+        let db_name = self.pool.fetch_one("SELECT DATABASE()").await.map_err(db)?;
+        let name = mysql_cell(&db_name, 0).map_err(db)?.unwrap_or_else(|| "Manticore".into());
+        let mut objects = Vec::new();
+        for r in self.pool.fetch_all("SHOW TABLES").await.map_err(db)? {
+            let table = mysql_cell(&r, 0).map_err(db)?.unwrap_or_default();
+            // A distributed or template table has no columns to DESCRIBE (it answers with its
+            // agents), so it is not listed.
+            if matches!(mysql_cell(&r, 1).map_err(db)?.as_deref(), Some("distributed" | "template")) {
+                continue;
+            }
+            // One table that cannot be described (dropped since SHOW TABLES) is left out, not
+            // the whole tree.
+            let described = match self.manticore_columns(&table).await {
+                Ok(c) => c,
+                Err(e) => {
+                    crate::applog::log("warn", &format!("Manticore: DESCRIBE {table} failed: {e}"));
+                    continue;
+                }
+            };
+            let columns = described
+                .into_iter()
+                .map(|(name, data_type)| ColumnInfo { name, data_type, nullable: true, pk: false })
+                .collect();
+            objects.push(ObjectInfo { name: table, kind: ObjectKind::Table, columns });
+        }
+        Ok(SchemaModel { schemas: vec![SchemaInfo { name, objects }] })
     }
 }
 
@@ -616,10 +709,7 @@ impl SqlDriver for MySqlDriver {
         // Pin one pooled connection so KILL QUERY can target its CONNECTION_ID(), and so
         // BEGIN/…/COMMIT land on the same session.
         let mut conn = self.pool.acquire().await.map_err(db)?;
-        let cid: u64 = sqlx::query_scalar("SELECT CONNECTION_ID()")
-            .fetch_one(&mut *conn)
-            .await
-            .map_err(db)?;
+        let cid = connection_id(&mut conn).await?;
         token.set_backend_id(cid as i64);
         // Recorded, then the flag checked (the `CancelToken` protocol): a caller that gave up
         // while this waited for a pooled connection has said it was cancelled — never run it.
@@ -658,6 +748,9 @@ impl SqlDriver for MySqlDriver {
     /// dictionary also hands several of them over as VARBINARY/LONGBLOB (charset 63), which
     /// sqlx refuses to decode as String, so they are CAST to CHAR as well.
     async fn introspect(&self) -> DResult<SchemaModel> {
+        if self.manticore() {
+            return self.manticore_introspect().await;
+        }
         let tables = sqlx::query(
             "SELECT CAST(TABLE_SCHEMA AS CHAR) AS table_schema, CAST(TABLE_NAME AS CHAR) AS table_name, \
                     CAST(TABLE_TYPE AS CHAR) AS table_type FROM information_schema.tables \
@@ -684,9 +777,9 @@ impl SqlDriver for MySqlDriver {
         // table name -> index into `objects`, so attaching a column is O(1).
         let mut object_ix: HashMap<String, usize> = HashMap::new();
         for r in &tables {
-            schema_name = r.try_get::<String, _>("table_schema").map_err(db)?;
-            let name: String = r.try_get("table_name").map_err(db)?;
-            let kind = if r.try_get::<String, _>("table_type").map_err(db)? == "VIEW" {
+            schema_name = catalog_text(r, "table_schema")?;
+            let name = catalog_text(r, "table_name")?;
+            let kind = if catalog_text(r, "table_type")? == "VIEW" {
                 ObjectKind::View
             } else {
                 ObjectKind::Table
@@ -695,14 +788,23 @@ impl SqlDriver for MySqlDriver {
             objects.push(ObjectInfo { name, kind, columns: vec![] });
         }
         for r in &columns {
-            let t: String = r.try_get("table_name").map_err(db)?;
+            let t = catalog_text(r, "table_name")?;
             if let Some(&i) = object_ix.get(&t) {
                 objects[i].columns.push(ColumnInfo {
-                    name: r.try_get("column_name").map_err(db)?,
-                    data_type: r.try_get("data_type").map_err(db)?,
-                    nullable: r.try_get::<String, _>("is_nullable").map_err(db)? == "YES",
-                    pk: r.try_get::<String, _>("column_key").map_err(db)? == "PRI",
+                    name: catalog_text(r, "column_name")?,
+                    data_type: catalog_text(r, "data_type")?,
+                    nullable: catalog_text(r, "is_nullable")? == "YES",
+                    pk: catalog_text(r, "column_key")? == "PRI",
                 });
+            }
+        }
+        // Vitess runs that query on the shard, which names its own schema (`vt_tiq_0`), a name
+        // the gateway does not accept: a compat session takes the name the gateway gives.
+        if self.compat() && !objects.is_empty() {
+            // Plain text: PolarDB-X will not prepare it.
+            let row = self.pool.fetch_one("SELECT DATABASE()").await.map_err(db)?;
+            if let Some(name) = mysql_cell(&row, 0).map_err(db)? {
+                schema_name = name;
             }
         }
         Ok(SchemaModel { schemas: vec![SchemaInfo { name: schema_name, objects }] })
@@ -854,7 +956,7 @@ impl SqlDriver for MySqlDriver {
     }
 
     async fn primary_key(&self, schema: &str, table: &str) -> DResult<Vec<String>> {
-        let cols: Vec<String> = sqlx::query_scalar(
+        let rows = sqlx::query(
             "SELECT COLUMN_NAME AS column_name FROM information_schema.key_column_usage \
              WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND CONSTRAINT_NAME = 'PRIMARY' \
              ORDER BY ORDINAL_POSITION",
@@ -864,7 +966,7 @@ impl SqlDriver for MySqlDriver {
         .fetch_all(&self.pool)
         .await
         .map_err(db)?;
-        Ok(cols)
+        rows.iter().map(|r| catalog_text(r, "column_name")).collect()
     }
 
     async fn apply_edit(&self, schema: &str, table: &str, edit: &EditSpec) -> DResult<u64> {
@@ -899,25 +1001,58 @@ impl SqlDriver for MySqlDriver {
     async fn apply_changes(&self, schema: &str, table: &str, changes: &[Change]) -> DResult<ChangesResult> {
         super::check_keys(changes)?;
         let stmts: Vec<_> = changes.iter().map(|c| change_sql(schema, table, c)).collect();
-        let mut tx = self.pool.begin().await.map_err(db)?;
-        let mut out = ChangesResult::default();
-        for i in super::change_order(changes) {
-            let (sql, binds) = &stmts[i];
-            let mut q = sqlx::query(sql);
-            for b in binds {
-                q = q.bind(b.clone());
-            }
-            let step = match q.execute(&mut *tx).await {
-                Ok(r) => super::tally(&mut out, i, &changes[i], r.rows_affected()),
-                Err(e) => Err(super::change_err(i, db(e))),
+        if !self.compat() {
+            let mut tx = self.pool.begin().await.map_err(db)?;
+            return match run_changes(&mut tx, &stmts, changes).await {
+                Ok(out) => {
+                    tx.commit().await.map_err(db)?;
+                    Ok(out)
+                }
+                Err(e) => {
+                    let _ = tx.rollback().await;
+                    Err(e)
+                }
             };
-            if let Err(e) = step {
-                let _ = tx.rollback().await;
-                return Err(e);
+        }
+        // sqlx's `begin` also checks the server's in-transaction status flag, which PolarDB-X
+        // never sets although its BEGIN works (`BeginFailed` after the BEGIN ran). For PolarDB-X
+        // the batch goes on as plain text on that connection, which is closed when dropped, so
+        // it never goes back to the pool open.
+        // ponytail: only PolarDB-X is known to need it; a server that took BEGIN as a no-op would
+        // look the same, so another product joins only after a run proves its rollback.
+        let mut conn = self.pool.acquire().await.map_err(db)?;
+        let known_tx = self.product().as_deref() == Some("polardbx");
+        let failed = match sqlx::Connection::begin(&mut *conn).await {
+            Ok(mut tx) => {
+                return match run_changes(&mut tx, &stmts, changes).await {
+                    Ok(out) => {
+                        tx.commit().await.map_err(db)?;
+                        Ok(out)
+                    }
+                    Err(e) => {
+                        let _ = tx.rollback().await;
+                        Err(e)
+                    }
+                };
+            }
+            Err(e) => e,
+        };
+        // A BEGIN that ran but did not report a transaction may have left one open, so this
+        // connection is closed when dropped in either case.
+        conn.close_on_drop();
+        if !(matches!(failed, sqlx::Error::BeginFailed) && known_tx) {
+            return Err(db(failed));
+        }
+        match run_changes(&mut conn, &stmts, changes).await {
+            Ok(out) => {
+                conn.execute("COMMIT").await.map_err(db)?;
+                Ok(out)
+            }
+            Err(e) => {
+                let _ = conn.execute("ROLLBACK").await;
+                Err(e)
             }
         }
-        tx.commit().await.map_err(db)?;
-        Ok(out)
     }
 
     async fn run_script(&self, sql: &str) -> DResult<u64> {
@@ -961,18 +1096,35 @@ impl SqlDriver for MySqlDriver {
         .fetch_all(&self.pool)
         .await
         .map_err(db)?;
-        Ok(rows
+        let mut fks = rows
             .iter()
-            .map(|r| ForeignKey {
-                constraint: r.try_get("constraint_name").unwrap_or_default(),
-                from_schema: r.try_get("from_schema").unwrap_or_default(),
-                from_table: r.try_get("from_table").unwrap_or_default(),
-                from_column: r.try_get("from_column").unwrap_or_default(),
-                to_schema: r.try_get("to_schema").unwrap_or_default(),
-                to_table: r.try_get("to_table").unwrap_or_default(),
-                to_column: r.try_get("to_column").unwrap_or_default(),
+            .map(|r| {
+                Ok(ForeignKey {
+                    constraint: catalog_text(r, "constraint_name")?,
+                    from_schema: catalog_text(r, "from_schema")?,
+                    from_table: catalog_text(r, "from_table")?,
+                    from_column: catalog_text(r, "from_column")?,
+                    to_schema: catalog_text(r, "to_schema")?,
+                    to_table: catalog_text(r, "to_table")?,
+                    to_column: catalog_text(r, "to_column")?,
+                })
             })
-            .collect())
+            .collect::<DResult<Vec<_>>>()?;
+        // As in `introspect`: Vitess names its shard's schema here (`vt_tiq_0`), so those edges
+        // take the gateway's name, the one the tree shows.
+        if let (true, Some(shard)) = (self.compat(), fks.first().map(|f| f.from_schema.clone())) {
+            let row = self.pool.fetch_one("SELECT DATABASE()").await.map_err(db)?;
+            if let Some(name) = mysql_cell(&row, 0).map_err(db)?.filter(|n| *n != shard) {
+                for f in &mut fks {
+                    for s in [&mut f.from_schema, &mut f.to_schema] {
+                        if *s == shard {
+                            *s = name.clone();
+                        }
+                    }
+                }
+            }
+        }
+        Ok(fks)
     }
 
     /// Structure tab, from `information_schema`. Schema + table are bound, never
@@ -1032,13 +1184,13 @@ impl SqlDriver for MySqlDriver {
         // index name -> position in `indexes`, so appending a key part is O(1).
         let mut index_ix: HashMap<String, usize> = HashMap::new();
         for r in &idx {
-            let name: String = r.try_get("name").map_err(db)?;
+            let name = catalog_text(r, "name")?;
             let i = match index_ix.get(&name) {
                 Some(i) => *i,
                 None => {
                     indexes.push(IndexInfo {
                         primary: name == "PRIMARY",
-                        unique: r.try_get::<String, _>("non_unique").map_err(db)? == "0",
+                        unique: catalog_text(r, "non_unique")? == "0",
                         name: name.clone(),
                         columns: Vec::new(),
                         // MySQL exposes no per-index DDL (only SHOW CREATE TABLE, whole).
@@ -1048,7 +1200,7 @@ impl SqlDriver for MySqlDriver {
                     indexes.len() - 1
                 }
             };
-            indexes[i].columns.push(r.try_get("column_name").map_err(db)?);
+            indexes[i].columns.push(catalog_text(r, "column_name")?);
         }
 
         Ok(TableStructure {
@@ -1056,16 +1208,13 @@ impl SqlDriver for MySqlDriver {
                 .iter()
                 .map(|r| {
                     Ok(ColumnDetail {
-                        name: r.try_get("name").map_err(db)?,
-                        data_type: r.try_get("data_type").map_err(db)?,
-                        nullable: r.try_get::<String, _>("is_nullable").map_err(db)? == "YES",
-                        default: r.try_get("default_expr").map_err(db)?,
-                        is_pk: r.try_get::<String, _>("column_key").map_err(db)? == "PRI",
+                        name: catalog_text(r, "name")?,
+                        data_type: catalog_text(r, "data_type")?,
+                        nullable: catalog_text(r, "is_nullable")? == "YES",
+                        default: catalog_opt(r, "default_expr")?,
+                        is_pk: catalog_text(r, "column_key")? == "PRI",
                         // MySQL stores '' for "no comment"; the UI wants None.
-                        comment: r
-                            .try_get::<Option<String>, _>("comment")
-                            .map_err(db)?
-                            .filter(|c| !c.is_empty()),
+                        comment: catalog_opt(r, "comment")?.filter(|c| !c.is_empty()),
                     })
                 })
                 .collect::<DResult<Vec<_>>>()?,
@@ -1074,9 +1223,9 @@ impl SqlDriver for MySqlDriver {
                 .iter()
                 .map(|r| {
                     Ok(TriggerInfo {
-                        name: r.try_get("name").map_err(db)?,
-                        timing_event: r.try_get("timing_event").map_err(db)?,
-                        definition: r.try_get("definition").map_err(db)?,
+                        name: catalog_text(r, "name")?,
+                        timing_event: catalog_text(r, "timing_event")?,
+                        definition: catalog_opt(r, "definition")?,
                     })
                 })
                 .collect::<DResult<Vec<_>>>()?,
@@ -1087,7 +1236,7 @@ impl SqlDriver for MySqlDriver {
         // information_schema.schemata is the portable form of SHOW DATABASES that
         // also gives stable ordering and excludes the internal `information_schema`
         // pseudo-schema by user request.
-        let names: Vec<String> = sqlx::query_scalar(
+        let rows = sqlx::query(
             "SELECT CAST(SCHEMA_NAME AS CHAR) AS schema_name FROM information_schema.schemata \
              WHERE SCHEMA_NAME NOT IN ('information_schema', 'performance_schema', 'mysql', 'sys') \
              ORDER BY SCHEMA_NAME",
@@ -1095,7 +1244,7 @@ impl SqlDriver for MySqlDriver {
         .fetch_all(&self.pool)
         .await
         .map_err(db)?;
-        Ok(names)
+        rows.iter().map(|r| catalog_text(r, "schema_name")).collect()
     }
 }
 
