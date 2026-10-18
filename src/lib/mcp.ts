@@ -89,7 +89,7 @@ export function mcpRowState(conn: Pick<ConnConfig, "engine" | "profile">, shared
   }
   const p = profileOf(conn.engine, conn.profile);
   const note = p
-    ? `Not available over MCP yet: ${p.agentNote ?? AGENT_NOTE}`
+    ? `Not available over MCP yet: ${AGENT_NOTE}`
     : conn.engine === "clickhouse"
       ? "Not available over MCP yet: TableIQ's agent guard has not been reviewed for ClickHouse."
       : conn.engine === "libsql"

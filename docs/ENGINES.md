@@ -224,7 +224,7 @@ detected product differ, the saved one stays and the more restrictive capabiliti
   it, a server whose version query failed so TableIQ could not identify it, or a profile id saved
   by a newer build cannot be shared over MCP at all, for reads or writes. MariaDB, Neon,
   Supabase, TimescaleDB and AlloyDB are the base engine under a vendor name and keep MCP access;
-  CockroachDB has `agent: true` with `real: false`. A product's `agentNote` is the reason the
+  CockroachDB has `agent: true` with `real: false`. `AGENT_NOTE` is the reason the
   UI and the MCP error give for a refusal.
 - **An entry shared before a product opened to agents is not served.** `agentSince` on a
   profile dates its opening (`agent_rev()` is the latest); an allowlist entry (`McpConn.rev`,
@@ -276,7 +276,7 @@ refuse DML ("only support read-only statement during read-only staleness transac
 it reads a snapshot (a row committed a moment before was not visible in a manual run), DDL
 and `SET GLOBAL` run through it, and TiDB's own function and statement list (`ADMIN`,
 `IMPORT INTO`, `PLAN REPLAYER`, `BATCH`, …) has not been reviewed. Opening TiDB needs a decision
-on snapshot reads and a TiDB dialect in the guard; its `agentNote` says why it is closed.
+on snapshot reads and a TiDB dialect in the guard; `AGENT_NOTE` says why it is closed.
 
 ## How detection works, and its limits
 

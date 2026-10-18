@@ -648,7 +648,7 @@ async fn an_unlabelled_cockroachdb_is_guarded_as_cockroachdb_and_old_entries_are
 /// and `SET … transaction_read_only` are refused unless `tidb_enable_noop_functions` is on (then
 /// they do nothing). `START TRANSACTION READ ONLY AS OF TIMESTAMP` is a real one: it refuses
 /// DML. But DDL runs through it, and what it reads is a snapshot, not what was just committed,
-/// so it is not a drop-in for the wrapper. TiDB stays closed to agents (`agentNote`).
+/// so it is not a drop-in for the wrapper. TiDB stays closed to agents.
 #[tokio::test]
 async fn tidb_has_no_default_read_only_transaction() {
     let Some(url) = live_url("TIQ_TIDB_URL") else { return };
