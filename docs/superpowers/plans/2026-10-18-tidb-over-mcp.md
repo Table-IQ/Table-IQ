@@ -698,7 +698,7 @@ CODE PATHS                                                   USER FLOWS
   ├── steps 1-4 ordering              [★★★ PLANNED] live mcp_live
   ├── guarded(tidb, _, true) wraps    [★★ PLANNED] unit
   └── list_connections enum/notes     [★★★ PLANNED] unit (4 engines)
-[+] profiles.rs                                                 
+[+] profiles.rs
   ├── agent_rev 4 / reconfirm text    [★★ PLANNED] unit + live
   ├── guard_engine tidb cases         [★★ PLANNED] unit (E8)
   └── risky_grants                    [★★★ PLANNED] unit (role, other db, clean)
