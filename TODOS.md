@@ -33,7 +33,7 @@ Deferred from the Connected Home plan review (2026-09-27, `docs/superpowers/plan
   - Let Test fall back to the saved keychain password when the field is blank. **Implemented; typed override, missing entry and keychain-error regressions pass.**
 - **Staged changes follow-ups** (2026-09-28):
   - Merge a row's edits into one UPDATE. **Implemented; original composite keys and conflict rollback verified on all five SQL drivers.**
-  - Refresh the Inspector after a commit. **Implemented by clearing its row selection before reload; reselect a fresh row. Selection preservation is not implemented.**
+  - Refresh the Inspector after a commit. **Implemented by clearing its row selection after commit and uncertain-commit recovery; reselect a fresh row. Inspector writes also respect staged/recovery blocks. Selection preservation is not implemented.**
   - Hide the UPDATE footnote in a delete-only Review.
   - Add a "Delete rows" menu item for multi-row selection.
   - Guard against repeated inserts when retrying a commit whose outcome was uncertain. **Implemented, 2026-10-20; real UI/Rust IPC lost-response and failed-reload checks pass. Native recovery QA remains.**
