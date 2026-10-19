@@ -84,7 +84,9 @@ line or table) that refresh on a timer and reject any query that would write dat
 
 **Backup / Restore Database** (⌘K) use `pg_dump` / `pg_restore` / `psql`, `mysqldump` / `mysql`,
 SQL Server `BACKUP` / `RESTORE`, or a file copy for SQLite and DuckDB. Restore asks you to type
-the database name and refuses a backup that would write to another database.
+the database name. Plain Postgres dumps are checked for explicit database-switch, include
+and shell meta-commands before psql starts. Restore only trusted dumps: validation is not
+a sandbox for arbitrary SQL or other client commands.
 
 **MCP server** (Settings → MCP): Claude Code or Claude Desktop can list and query the connections
 you tick, over `http://127.0.0.1:7431/mcp` with a bearer token. It's local only and read-only by

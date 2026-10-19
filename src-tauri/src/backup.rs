@@ -633,20 +633,247 @@ fn scan_lines(path: &Path, mut f: impl FnMut(&str) -> Option<String>) -> Result<
     Ok(None)
 }
 
-/// The first psql meta-command line in a plain SQL file that would leave the confirmed
-/// database: `\c` / `\connect` (switch database), `\i` / `\ir` / `\include` /
-/// `\include_relative` (run another file), `\!` (a shell). `pg_dump` writes none of them;
-/// `\copy`, `\conninfo` and PG 17.6+'s `\restrict` / `\unrestrict` pass, and a COPY data line
-/// can't match (its backslashes are doubled).
+/// Find database-switch, include and shell meta-commands anywhere psql accepts them,
+/// including after SQL or another meta-command on the same line. Stream the file, keeping
+/// SQL lexical state across lines and treating COPY payloads as data. This is a check for
+/// these specific client commands, not a sandbox for arbitrary SQL or psql scripts.
 pub fn psql_forbidden_meta(path: &Path) -> Result<Option<String>, String> {
+    let mut scans = vec![PgMetaScan::new()];
     scan_lines(path, |line| {
-        let rest = line.trim_start_matches('\u{feff}').trim_start().strip_prefix('\\')?;
-        if rest.starts_with('!') {
-            return Some("\\!".into());
+        let mut pending: Vec<_> = std::mem::take(&mut scans).into_iter().map(|s| (0, s)).collect();
+        while let Some((at, _)) = pending.iter().enumerate().min_by_key(|(_, (offset, _))| offset) {
+            let (offset, mut scan) = pending.remove(at);
+            let next = match scan.advance(line, offset, &mut pending) {
+                Ok(next) => next,
+                Err(command) => return Some(command),
+            };
+            if next == line.len() {
+                if !scans.contains(&scan) {
+                    scans.push(scan);
+                }
+            } else if !pending.contains(&(next, scan.clone())) {
+                pending.push((next, scan));
+            }
+            // A script may change standard_conforming_strings between queries. Keep both
+            // quote interpretations, merging when they meet, rather than guessing that
+            // setting. Bound ambiguous input without buffering the whole dump.
+            if scans.len() + pending.len() > 64 {
+                return Some("ambiguous SQL quoting; use explicit E'...' escape strings".into());
+            }
         }
-        let cmd = rest.split(char::is_whitespace).next().unwrap_or("");
-        matches!(cmd, "c" | "connect" | "i" | "ir" | "include" | "include_relative").then(|| format!("\\{cmd}"))
+        None
     })
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum PgMetaState {
+    Code,
+    Quote { quote: u8, escapes: bool },
+    Dollar(Vec<u8>),
+    Comment(usize),
+}
+
+/// Only lexical context and COPY FROM STDIN framing are needed here. No SQL is executed
+/// or rewritten; command names and the three COPY keywords are the only tokens inspected.
+#[derive(Clone, PartialEq, Eq)]
+struct PgMetaScan {
+    state: PgMetaState,
+    meta: bool,
+    copy_data: bool,
+    copy_statement: Option<bool>,
+    previous_from: bool,
+    copy_stdin: bool,
+    parens: usize,
+}
+
+impl PgMetaScan {
+    fn new() -> Self {
+        Self {
+            state: PgMetaState::Code,
+            meta: false,
+            copy_data: false,
+            copy_statement: None,
+            previous_from: false,
+            copy_stdin: false,
+            parens: 0,
+        }
+    }
+
+    fn end_statement(&mut self) {
+        self.copy_data = self.copy_stdin;
+        self.copy_statement = None;
+        self.previous_from = false;
+        self.copy_stdin = false;
+        self.parens = 0;
+    }
+
+    /// Advance to a quote boundary or line end, where equivalent interpretations merge.
+    /// Ordinary strings fork because their escape setting is session-dependent; explicit
+    /// E-strings and meta-command arguments have fixed escaping rules.
+    fn advance(&mut self, line: &str, start: usize, pending: &mut Vec<(usize, Self)>) -> Result<usize, String> {
+        let b = line.as_bytes();
+        if start == 0 && self.copy_data && line.trim_end_matches(['\r', '\n']) == "\\." {
+            self.copy_data = false;
+            return Ok(b.len());
+        }
+        let mut i = start;
+        while i < b.len() {
+            // pg_dump escapes every payload backslash. Ignore pairs, but still refuse a
+            // raw forbidden command: conditional psql scripts might skip the COPY itself.
+            if !self.copy_data {
+                match &mut self.state {
+                    PgMetaState::Quote { quote, escapes } => {
+                        if (*escapes && b[i] == b'\\') || (b[i] == *quote && b.get(i + 1) == Some(quote)) {
+                            i = (i + 2).min(b.len());
+                        } else {
+                            if b[i] == *quote {
+                                self.state = PgMetaState::Code;
+                                // At EOF, still run meta-command line cleanup below.
+                                if i + 1 < b.len() {
+                                    return Ok(i + 1);
+                                }
+                            }
+                            i += 1;
+                        }
+                        continue;
+                    }
+                    PgMetaState::Dollar(tag) => {
+                        if b[i..].starts_with(tag) {
+                            i += tag.len();
+                            self.state = PgMetaState::Code;
+                        } else {
+                            i += 1;
+                        }
+                        continue;
+                    }
+                    PgMetaState::Comment(depth) => {
+                        if b[i..].starts_with(b"/*") {
+                            *depth += 1;
+                            i += 2;
+                        } else if b[i..].starts_with(b"*/") {
+                            *depth -= 1;
+                            if *depth == 0 {
+                                self.state = PgMetaState::Code;
+                            }
+                            i += 2;
+                        } else {
+                            i += 1;
+                        }
+                        continue;
+                    }
+                    PgMetaState::Code => {}
+                }
+            }
+            if b[i] == b'\\' {
+                if b.get(i + 1) == Some(&b'\\') {
+                    self.meta = false; // psql's separator resumes SQL parsing.
+                    i += 2;
+                    continue;
+                }
+                let start = i + 1;
+                let mut end = start;
+                while end < b.len() && !b[end].is_ascii_whitespace() && b[end] != b'\\' {
+                    end += 1;
+                }
+                let command = &line[start..end];
+                if command.starts_with('!')
+                    || matches!(command, "c" | "connect" | "i" | "ir" | "include" | "include_relative")
+                {
+                    return Err(if command.starts_with('!') { "\\!".into() } else { format!("\\{command}") });
+                }
+                if !self.copy_data {
+                    self.meta = true;
+                    if command == "copy" {
+                        self.copy_statement = Some(true);
+                        self.previous_from = false;
+                        self.copy_stdin = false;
+                        self.parens = 0;
+                    }
+                }
+                i = end;
+                continue;
+            }
+            if self.copy_data {
+                i += 1;
+                continue;
+            }
+            if i == 0 && b.starts_with(b"\xef\xbb\xbf") {
+                i += 3;
+                continue;
+            }
+            if !self.meta && b[i..].starts_with(b"--") {
+                break;
+            }
+            if !self.meta && b[i..].starts_with(b"/*") {
+                self.state = PgMetaState::Comment(1);
+                i += 2;
+                continue;
+            }
+            if matches!(b[i], b'\'' | b'"') {
+                let e_string = i > 0 && matches!(b[i - 1], b'e' | b'E') && (i == 1 || !pg_meta_ident(b[i - 2]));
+                self.state = PgMetaState::Quote { quote: b[i], escapes: b[i] == b'\'' && (self.meta || e_string) };
+                if b[i] == b'\'' && !self.meta && !e_string {
+                    let mut escaped = self.clone();
+                    escaped.state = PgMetaState::Quote { quote: b'\'', escapes: true };
+                    pending.push((i + 1, escaped));
+                }
+                i += 1;
+                continue;
+            }
+            if !self.meta && b[i] == b'$' {
+                let mut end = i + 1;
+                while end < b.len()
+                    && (b[end].is_ascii_alphabetic()
+                        || b[end] == b'_'
+                        || b[end] >= 0x80
+                        || (end > i + 1 && b[end].is_ascii_digit()))
+                {
+                    end += 1;
+                }
+                if b.get(end) == Some(&b'$') {
+                    self.state = PgMetaState::Dollar(b[i..=end].to_vec());
+                    i = end + 1;
+                    continue;
+                }
+            }
+            if pg_meta_ident(b[i]) {
+                let start = i;
+                while i < b.len() && pg_meta_ident(b[i]) {
+                    i += 1;
+                }
+                let word = &b[start..i];
+                if self.meta && self.copy_statement != Some(true) {
+                    continue;
+                }
+                let copy = *self.copy_statement.get_or_insert_with(|| !self.meta && word.eq_ignore_ascii_case(b"copy"));
+                if copy && self.parens == 0 {
+                    self.copy_stdin |= self.previous_from && word.eq_ignore_ascii_case(b"stdin");
+                    self.previous_from = word.eq_ignore_ascii_case(b"from");
+                }
+                continue;
+            }
+            match b[i] {
+                b'(' => self.parens += 1,
+                b')' => self.parens = self.parens.saturating_sub(1),
+                b';' if !self.meta => self.end_statement(),
+                _ => {}
+            }
+            i += 1;
+        }
+        // Meta-command arguments cannot continue past a newline, even with an open quote.
+        if self.meta {
+            if self.copy_stdin {
+                self.end_statement();
+            }
+            self.meta = false;
+            self.state = PgMetaState::Code;
+        }
+        Ok(b.len())
+    }
+}
+
+fn pg_meta_ident(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'_' | b'$') || b >= 0x80
 }
 
 /// A token of a MySQL script, as the database-switch scan sees it.
@@ -1137,8 +1364,8 @@ pub async fn tool_restore(
                 let meta = tokio::task::spawn_blocking(move || psql_forbidden_meta(&p)).await.map_err(|e| e.to_string())??;
                 if let Some(found) = meta {
                     return Err(format!(
-                        "{file} has a psql meta-command that could leave {:?} ({found}) — only a \
-                         single-database plain dump can be restored. Nothing was restored",
+                        "{file} has unsupported psql input ({found}) — only a single-database \
+                         plain dump can be restored into {:?}. Nothing was restored",
                         t.database
                     ));
                 }
@@ -1782,6 +2009,26 @@ mod tests {
         assert_eq!(s.lines[2], "stdin=[CREAT]", "the dump is mysql's stdin");
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn tool_restore_refuses_inline_psql_commands_before_starting_the_client() {
+        use std::os::unix::fs::PermissionsExt;
+        let tools = tempfile::tempdir().unwrap();
+        let client = tools.path().join("psql");
+        std::fs::write(&client, "#!/bin/sh\n: > \"$0.started\"\n").unwrap();
+        std::fs::set_permissions(&client, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let files = tempfile::tempdir().unwrap();
+        let dump = files.path().join("inline.sql");
+        let t =
+            Target { host: "h".into(), port: 1, user: "u".into(), database: "shop".into(), sslmode: "prefer".into() };
+        for command in ["\\connect other", "\\i other.sql", "\\! printf restore_bypass"] {
+            std::fs::write(&dump, format!("CREATE TABLE would_write (id int); {command}\n")).unwrap();
+            let e = tool_restore("postgres", &t, "", dump.to_str().unwrap(), tools.path().to_str()).await.unwrap_err();
+            assert!(e.contains("line 1:") && e.contains("Nothing was restored"), "{e}");
+            assert!(!tools.path().join("psql.started").exists(), "even the earlier SQL must not run");
+        }
+    }
+
     #[tokio::test]
     async fn tool_restore_rejects_unsupported_engines_bad_names_and_tool_dirs() {
         let t = |db: &str| Target {
@@ -1881,6 +2128,86 @@ mod tests {
             assert_eq!(check(no), None, "{no:?}");
         }
         assert!(psql_forbidden_meta(&dir.path().join("missing.sql")).is_err());
+    }
+
+    #[test]
+    fn plain_dumps_refuse_meta_commands_after_sql_on_the_same_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("inline.sql");
+        for (sql, command) in [
+            ("SELECT 1; \\! printf restore_bypass\n", "\\!"),
+            ("SELECT 1; \\connect other\n", "\\connect"),
+            ("SELECT 1 \\c other\n", "\\c"),
+            ("/* comment */ \\i other.sql\n", "\\i"),
+            ("SELECT 1; \\ir other.sql\n", "\\ir"),
+            ("SELECT 1; \\include other.sql\n", "\\include"),
+            ("SELECT 1; \\include_relative other.sql\n", "\\include_relative"),
+            ("\\echo ok \\connect other\n", "\\connect"),
+            ("\\echo 'it\\'s fine' \\i other.sql\n", "\\i"),
+            ("\\echo ok \\\\ SELECT 1; \\connect other\n", "\\connect"),
+            ("SELECT 'it''s fine'; \\! printf restore_bypass\n", "\\!"),
+            ("SELECT E'it\\'s fine'; \\connect other\n", "\\connect"),
+        ] {
+            std::fs::write(&path, sql).unwrap();
+            assert_eq!(psql_forbidden_meta(&path).unwrap(), Some(format!("line 1: {command}")), "{sql:?}");
+        }
+    }
+
+    #[test]
+    fn plain_dump_meta_scan_preserves_sql_literals_comments_and_copy_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("quoted.sql");
+        for sql in [
+            "SELECT '\\connect other', E'\\\\i other.sql', \"\\c\";\n",
+            "SELECT 'multiline\n\\connect other\ntext';\n",
+            "SELECT $body$multiline\n\\connect other\n$body$;\n",
+            "SELECT $é$\\! quoted$é$;\n",
+            "-- \\connect other\n/* outer /* \\! */ \\i */ SELECT 1;\n",
+            "\\echo 'literal \\connect other'\n",
+            "\\restrict AbC123\nSELECT 1;\n\\unrestrict AbC123\n",
+            "COPY public.t (v) FROM stdin;\n'\n\"\n/*\n$body$\n\\\\connect other\n\\.\nSELECT 1;\n",
+            "COPY public.t (v)\nFROM stdin;\n\\\\! data\n\\.\n",
+            "\\restrict AbC123\nCOPY public.t (v) FROM stdin;\n'\n\\.\n\\unrestrict AbC123\n",
+            "\u{feff}COPY public.t (v) FROM stdin;\n'\n\\.\nSELECT 1;\n",
+            // Real pg_dump 17.11 output uses an ordinary string for this comment.
+            "SET standard_conforming_strings = on;\nCOMMENT ON TABLE t IS 'quoted'' and backslash\\';\n",
+        ] {
+            std::fs::write(&path, sql).unwrap();
+            assert_eq!(psql_forbidden_meta(&path).unwrap(), None, "{sql:?}");
+        }
+        for sql in [
+            "SELECT 'multiline\ntext'; \\connect other\n",
+            "SELECT $body$multiline\n$body$; \\connect other\n",
+            "/* outer\n/* nested */ end */ \\connect other\n",
+            "SELECT name$tag$ FROM t;\n\\connect other\n",
+            "COPY public.t (v) FROM stdin;\n'\n\\.\nSELECT 1; \\connect other\n",
+        ] {
+            std::fs::write(&path, sql).unwrap();
+            assert!(psql_forbidden_meta(&path).unwrap().is_some_and(|m| m.contains("\\connect")), "{sql:?}");
+        }
+    }
+
+    #[test]
+    fn plain_dump_meta_scan_cannot_hide_commands_by_changing_string_escaping() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ambiguous.sql");
+        // Neither an always-on nor an always-off lexer can safely scan a script that
+        // changes this setting: both can be left inside a string before the command.
+        let sql = "SET standard_conforming_strings = off;\nSELECT 'a\\'b';\n\
+                   SET standard_conforming_strings = on;\nSELECT 'a\\'; \\connect other\n";
+        std::fs::write(&path, sql).unwrap();
+        assert!(psql_forbidden_meta(&path).unwrap().unwrap().contains("\\connect"));
+    }
+
+    #[test]
+    fn plain_dump_meta_scan_merges_equivalent_quotes_in_large_inserts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("insert.sql");
+        let values = vec!["('quoted''value', E'escaped\\\\value')"; 2000].join(",");
+        std::fs::write(&path, format!("INSERT INTO t VALUES {values};\n")).unwrap();
+        assert_eq!(psql_forbidden_meta(&path).unwrap(), None);
+        std::fs::write(&path, format!("INSERT INTO t VALUES {values}; \\connect other\n")).unwrap();
+        assert_eq!(psql_forbidden_meta(&path).unwrap(), Some("line 1: \\connect".into()));
     }
 
     /// Run the MySQL scan over `body` with target `target`.

@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Fixed
+- Plain Postgres restores reject database-switch, include and shell meta-commands after SQL or other commands on the same line, before starting psql. Validation preserves quoted SQL, comments and pg_dump COPY data.
 - Staged commits with an unknown outcome block grid editing and resubmission until the local batch is explicitly discarded and fresh rows load. Review and copying remain available; discarding does not undo database changes.
 - SQL-log password redaction handles nested comments, MySQL `#` comments, adjacent literals, complex function arguments and unquoted conninfo assignments.
 
