@@ -62,7 +62,9 @@ import { engineLabel } from "./ui/EngineIcon";
 import {
   buildBatch,
   buildPreviewSql,
-  commitErrorMessage,
+  attemptCommit,
+  UNCERTAIN_COMMIT,
+  type CommitState,
   NO_STAGED,
   stagedLock,
   totalStaged,
@@ -134,6 +136,9 @@ export function TableView({ connId, schema, object, view }: Props) {
   const [pkError, setPkError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const commitState = useRef<CommitState>({ inFlight: false, uncertain: false });
+  const [uncertainCommit, setUncertainCommit] = useState(false);
+  const recoveryRequested = useRef(false);
   const [fks, setFks] = useState<ForeignKey[]>([]);
   const [showProfile, setShowProfile] = useState(false);
   const [showAlter, setShowAlter] = useState(false);
@@ -202,7 +207,7 @@ export function TableView({ connId, schema, object, view }: Props) {
   // anything that swaps that page (search, filter, sort, paging, refresh) would
   // silently drop them. Those actions are refused until they are committed or
   // discarded, and the unsaved-changes bar says so. Not while the fetch errored.
-  const locked = stagedLock(error, committing, counts);
+  const locked = uncertainCommit || stagedLock(error, committing, counts);
   const lockedRef = useRef(locked);
   lockedRef.current = locked;
   // Published so leaving this connection (rail, ⌘O, Disconnect) can ask first.
@@ -389,6 +394,7 @@ export function TableView({ connId, schema, object, view }: Props) {
   useEffect(() => {
     let cancelled = false;
     if (cursors.current.key !== pageKey) cursors.current = { key: pageKey, map: new Map() };
+    const recovering = recoveryRequested.current;
     const after = cursors.current.map.get(page);
     setFetching(true);
     retrySuperseded(
@@ -413,6 +419,12 @@ export function TableView({ connId, schema, object, view }: Props) {
         // the grid for its cells. Two decodes of one page are cheaper than a
         // second round trip; upgrade path is to hand the grid this window.
         const win = decodeWindow(bytes);
+        if (recovering) {
+          recoveryRequested.current = false;
+          commitState.current.uncertain = false;
+          setUncertainCommit(false);
+          setNotice("Reloaded after an uncertain commit. Check the database rows before staging new changes.");
+        }
         setPageData((prev) => ({
           bytes,
           win,
@@ -553,17 +565,34 @@ export function TableView({ connId, schema, object, view }: Props) {
         return false;
       }
       const batch = buildBatch(snap, pk, firstRow);
-      setNotice(null);
-      try {
-        await applyChanges(connId, schema, object.name, batch.changes);
-        return true;
-      } catch (e) {
-        setNotice(commitErrorMessage(e, batch.labels));
-        return false;
-      }
+      const result = await attemptCommit(
+        commitState.current,
+        () => applyChanges(connId, schema, object.name, batch.changes),
+        batch.labels,
+      );
+      setNotice(result.message);
+      setUncertainCommit(commitState.current.uncertain);
+      return result.ok;
     },
     [connId, schema, object.name, pk, firstRow],
   );
+
+  const discardPending = useCallback(async () => {
+    if (commitState.current.inFlight) return;
+    if (commitState.current.uncertain) {
+      const yes = await confirmDialog(UNCERTAIN_COMMIT, "Commit outcome unknown", {
+        ok: "Discard local batch and reload",
+        cancel: "Keep pending changes",
+      });
+      if (!yes) return;
+      gridRef.current?.discardPending();
+      recoveryRequested.current = true;
+      setFetching(true);
+      refresh();
+    } else {
+      gridRef.current?.discardPending();
+    }
+  }, [refresh]);
 
   // The titlebar's Discard / Review / Commit (G2) act on this tab's staged edits.
   // `preview` builds the Review SQL from the grid's snapshot.
@@ -571,14 +600,15 @@ export function TableView({ connId, schema, object, view }: Props) {
   const unregisterStaged = useStaged((s) => s.unregister);
   useEffect(() => {
     publishStaged(requestKey, stagedTotal, committing, {
+      commitBlockedReason: uncertainCommit ? UNCERTAIN_COMMIT : fetching ? "Loading rows…" : undefined,
       preview: () => {
         const snap = gridRef.current?.snapshot();
         return snap && pk ? buildPreviewSql(schema, object.name, buildBatch(snap, pk, firstRow).changes, engine) : "";
       },
       commit: () => gridRef.current?.commitPending(),
-      discard: () => gridRef.current?.discardPending(),
+      discard: () => void discardPending(),
     });
-  }, [requestKey, stagedTotal, committing, publishStaged, firstRow, pk, schema, object.name, engine]);
+  }, [requestKey, stagedTotal, committing, publishStaged, firstRow, pk, schema, object.name, engine, discardPending, uncertainCommit, fetching]);
   useEffect(() => () => unregisterStaged(requestKey), [requestKey, unregisterStaged]);
 
   // Production connections confirm every commit (⌘S, the in-grid and titlebar Commit).
@@ -968,6 +998,15 @@ export function TableView({ connId, schema, object, view }: Props) {
       {/* Staged-changes Commit/Discard bar — TablePlus batch model. Appears whenever
           anything is staged (edits, deletes, inserts); Commit (⌘S) writes it all in
           one transaction, Discard reverts the display. */}
+      {uncertainCommit && (
+        <div className="flex items-center gap-3 border-b border-warn bg-surface px-3 py-2 text-xs text-warn" role="alert">
+          <span>{UNCERTAIN_COMMIT}</span>
+          <button type="button" onClick={() => void discardPending()} disabled={fetching}
+            className="shrink-0 rounded border border-warn px-2 py-1 disabled:opacity-50">
+            {fetching ? "Reloading…" : "Discard local batch and reload"}
+          </button>
+        </div>
+      )}
       {stagedTotal > 0 && (
         <div className="tiq-rail flex items-center gap-2 border-b border-l-2 border-l-primary border-border bg-primary-soft px-3 py-1.5">
           <span className="text-[11px] font-medium text-primary">
@@ -980,7 +1019,7 @@ export function TableView({ connId, schema, object, view }: Props) {
           )}
           <ToolbarSpacer />
           <button
-            onClick={() => gridRef.current?.discardPending()}
+            onClick={() => void discardPending()}
             disabled={committing}
             className="rounded-md border border-border px-2 py-0.5 text-[11px] text-muted hover:text-text disabled:opacity-40"
           >
@@ -988,7 +1027,7 @@ export function TableView({ connId, schema, object, view }: Props) {
           </button>
           <button
             onClick={() => gridRef.current?.commitPending()}
-            disabled={committing}
+            disabled={committing || uncertainCommit}
             className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-0.5 text-[11px] font-medium text-white hover:opacity-90 disabled:opacity-70"
           >
             {committing ? (
@@ -1047,7 +1086,7 @@ export function TableView({ connId, schema, object, view }: Props) {
             // Read-only while a page is in flight: the grid stays live for
             // scrolling and copying, but an edit staged now would be wiped when
             // the new page lands.
-            onCommitChanges={editable && !fetching ? commitChanges : undefined}
+            onCommitChanges={editable && !fetching && !uncertainCommit ? commitChanges : undefined}
             fkByColumn={fkByColumn}
             onFkClick={(toTable) => {
               const fk = fks.find((f) => f.to_table === toTable);

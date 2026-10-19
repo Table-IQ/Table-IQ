@@ -1,12 +1,18 @@
 # TableIQ
 
-TableIQ is a fast, local-first, AI-assisted database client — a TablePlus-style desktop app
-built on Tauri v2, Rust, and React 19. Connection credentials go straight to the OS keychain,
+**Your database and coding agent, in one inspectable workflow.**
+
+TableIQ is a free, open-source, local-first database client with read-only MCP defaults,
+connection controls, and a local agent activity view. Investigate a data issue with your
+coding agent, then inspect the SQL and results in TableIQ. The desktop app is built on
+Tauri v2, Rust, and React 19. Connection credentials go straight to the OS keychain,
 never to a config file, and the app talks to your databases directly (or through an SSH
 bastion, with host-key verification) — no required cloud dependency.
 
 See [`DESIGN.md`](DESIGN.md) for the visual/design system and [`CHANGELOG.md`](CHANGELOG.md)
-for release history.
+for release history. Start with the [Postgres investigation walkthrough](docs/launch/POSTGRES-WORKFLOW.md).
+The [roadmap](docs/ROADMAP.md) and [GTM strategy](docs/GTM.md) describe the Mac/Postgres launch focus;
+other engines retain the support levels documented below.
 
 ## Supported engines
 
@@ -64,8 +70,10 @@ macOS, native View and Help menus mirror the same shortcuts (toggle sidebar/insp
 Structure, Command Palette, SQL Log, Workspace Overview, appearance, Show Tour).
 
 AI features (NL→SQL, explain/optimize/fix) are opt-in and bring-your-own-key
-(Anthropic/OpenAI/Gemini), or local via Ollama — nothing is sent anywhere unless you
-configure a provider.
+(Anthropic/OpenAI/Gemini), or local via Ollama. The built-in AI sends context to the provider
+you configure when used. External agents connected through MCP can receive schema and query
+results even if TableIQ's built-in AI is unconfigured; their own provider settings govern
+where that data goes. A local MCP endpoint does not guarantee that data stays on your machine.
 
 The title bar (or ⌘K) also opens three diagnostic/admin surfaces: a **SQL log** (⌘⇧C)
 showing every statement the app just sent to your database, with passwords always
@@ -80,7 +88,10 @@ the database name and refuses a backup that would write to another database.
 
 **MCP server** (Settings → MCP): Claude Code or Claude Desktop can list and query the connections
 you tick, over `http://127.0.0.1:7431/mcp` with a bearer token. It's local only and read-only by
-default, and every call shows in **MCP Activity** (⌘K).
+default, and every call shows in **MCP Activity** (⌘K). Use a least-privilege database role
+and sanitized data for onboarding. Read-only access does not prevent sensitive-data disclosure
+or expensive queries; protections differ by engine. See [known limitations](#known-limitations)
+and the [MCP troubleshooting walkthrough](docs/launch/POSTGRES-WORKFLOW.md#troubleshoot-mcp-access).
 
 ## License and what stays free
 

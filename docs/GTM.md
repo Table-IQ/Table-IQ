@@ -1,210 +1,115 @@
 # TableIQ Go-To-Market
 
-_Last updated 2026-10-04 · companion doc: [ROADMAP.md](ROADMAP.md)_
+_Last updated 2026-10-19 · [Roadmap](ROADMAP.md) · [Validation kit](launch/VALIDATION.md) · [Launch copy](launch/ASSETS.md)_
 
-## 1. What we learned from dbx
+## 1. Decision and market evidence
 
-[dbx](https://github.com/t8y2/dbx) was created on 2026-04-29. By 2026-09-30 it had:
+TableIQ could become a useful niche product. Its current features do not establish a breakout advantage. Continue with a narrow launch and validate repeat usage before expanding features.
 
-- **22.3k stars** and 2.1k forks, still accelerating (about 3k stars in the last two weeks);
-- **2.69M** release downloads, peaking at about 800k in July;
-- 305 contributors, 1,278 open issues;
-- a #2 spot on GitHub Trending overall (2026-08-28);
-- v0.6.28 shipped 2026-09-29, still on a near-daily cadence.
+Assumptions: one founder, a small budget, equal adoption and revenue goals, and some beta users whose repeat usage is not yet measured. Day 1 starts when the founder enrolls the validation cohort; these dates are relative, not claims that work has happened.
 
-**Why it worked**
+Research snapshot: October 19, 2026. The following are vendor-documented capabilities, not independently tested guarantees. Recheck material claims and pricing before publishing comparisons.
 
-1. **A one-line hook it can keep upgrading.** The tagline is *"100+ databases in 25 MB."* Both numbers were bumped repeatedly: 40+ → 100+ databases, and 15 → 20 → 25 MB. Each bump was a new headline.
-2. **A named enemy in every README and article.** "DBeaver needs Java. TablePlus is freemium. Navicat costs ¥1,398." Articles titled "Goodbye Navicat" did the distribution.
-3. **Shipping as marketing.** 148 releases in 154 days (almost daily) and about 50 commits a day, mostly AI-assisted. The repo always looks alive.
-4. **Owning one home community.** HelloGitHub feature, a 1Panel partnership, QQ/WeChat/Feishu groups, CSDN articles, and a long list of domestic Chinese databases (Dameng, Kingbase, GaussDB…). **Hacker News and Product Hunt played almost no part.** The PH page has one upvote.
-5. **Riding the AI-agent wave.** A built-in agent that can drive Claude Code or Codex, an `npx @dbx-app/mcp-server` (also a native Rust binary), a CLI "agent skill", and an MCP-directory badge. **Its MCP already has** `read_only` / `safe_write` / `high_risk_write` modes, a connection allowlist and a central policy. We must not present those as our invention.
-6. **Free, with no catch.** Apache-2.0, no paid tier. It is funded by README sponsor slots (mostly Chinese cloud and AI-API resellers) and donations. That income does not transfer to a Western audience.
-7. **More surface than a desktop app.** Desktop, Docker and Web builds with the same feature set, a plugin marketplace (`dbx-store`, Go and TS SDKs), a Discord, and packages for 1Panel, fnOS and even Windows 7.
+| Competitor | Evidence | Implication |
+|---|---|---|
+| [dbx](https://github.com/t8y2/dbx) | Apache-2.0, 100+ database profiles, AI, MCP permission modes, desktop/web/Docker; roughly 27,200 stars at research time | Free, broad, lightweight and MCP-enabled are occupied positions. Stars show attention, not revenue or retention. |
+| [TablePro](https://tablepro.app/features/ai-mcp) | Free Mac AI/MCP features, per-connection read-only defaults for external clients, permission checks and local activity logging | Mac polish plus free agent access is not unique. |
+| [Tabularis](https://tabularis.dev/wiki/mcp-readonly-mode) | Database-enforced read-only sessions for built-in PostgreSQL, MySQL/MariaDB and SQLite drivers; plugin drivers have different protection | Database-level enforcement is not an exclusive distinction. |
+| [DataGrip](https://blog.jetbrains.com/datagrip/2026/08/26/ai-agents-in-datagrip/) | Built-in MCP tools and database skills for agents | Customers can gain agent access without switching clients. |
+| [Supabase MCP](https://supabase.com/docs/guides/ai-tools/mcp) | Direct project-scoped and read-only access | Some developers need no additional desktop client. |
+| [Bytebase](https://www.bytebase.com/database-mcp-server/) | Markets access controls, masking, SQL review, approvals and audit for agents | A future Team product also enters an established category. |
 
-**Where dbx is weak (our openings)**
+[TablePlus Basic](https://tableplus.com/pricing) was $99 for one device at research time: a perpetual license with one year of updates/support. Renewal buys further updates, not continued access. Do not frame it as a mandatory annual subscription.
 
-- **Quality debt:** 1,278 open issues, 3,655 labelled bug, grid lag (#9246), slow metadata on high-latency links (#6718), IME double input (#982).
-- **The Western developer audience is under-served.** Its community, sponsors and roadmap all lean toward China.
-- **The size claim is soft.** 25 MB is true only for the Windows NSIS installer. The macOS dmg is 36 MB and the AppImage 111 MB.
-- **Breadth over depth.** More than 100 profiles, many of them thin.
-- **Agent safety is a setting, not a guarantee.** Its modes are app-level policy. Nothing we found enforces read-only at the database transaction level or fails closed when the policy file is missing.
+Inference: demand for database and agent workflows exists, but TableIQ must make a recurring task easier enough to justify adoption. Reliability, onboarding and user trust may become advantages; the feature list alone is not one. Do not infer competitor quality from issue counts or an underserved audience from community language alone.
 
-**The rest of the market moved too (researched 2026-09-30)**
+## 2. Audience, task and message
 
-- **DataGrip 2026.2** embeds Claude Agent and Codex, ships an MCP server and three "database skills". $229/user/year.
-- **DBeaver PRO 26.0** added MCP; **Ultimate 26.1** lets you attach external MCP servers. Subscription only.
-- **Beekeeper Studio** (23.7k★, GPLv3 community + commercial Ultimate) gates engines and multi-device on paid tiers ($9–18/user/month). Profitable, no investors.
-- **DbGate** (7.3k★, GPLv3) charges $120/year Premium and $150/user/year Team.
-- **TablePlus** is $99 single, $129 for two seats, $59/device/year to renew, with a 2-tab free tier. No MCP or agent features as of its latest release notes.
-- **DB Pro's Show HN** (Dec 2025) got 33 points. "Another database client" does not win HN; the top comment demanded a one-time purchase over a subscription.
+**Initial audience:** Mac-based backend developers at small software teams who use PostgreSQL and a coding agent regularly. Other supported platforms and engines remain available with their existing support labels. Freeze new engine breadth during this validation period; fix failures in engines target users already need.
 
-**Takeaway:** "AI agent + database client" is now table stakes at the top of the market. The open lane is *free and provably safe*, sold to the English-speaking agent-builder audience that dbx doesn't reach.
+**Initial task:** investigate a data issue with a coding agent, then inspect the SQL and results in TableIQ.
 
-## 2. Positioning
-
-> **Give Claude Code your production database. Safely.**
+> **Your database and coding agent, in one inspectable workflow.**
 >
-> TableIQ is the free, open-source database client built for the agent era: every query your agent runs is visible, and writes are refused unless you say otherwise.
+> Free, open-source database client with read-only MCP defaults, connection controls, and a local agent activity view.
 
-One wedge, not three. The agent-safe story is the headline; polish and scale are the proof that it's a real client and not an MCP wrapper.
+This is a positioning hypothesis, not a claim of exclusivity. Compare completion of the task with users' existing client and connector. Lead demonstrations with a useful investigation; show a refused write afterward as supporting evidence. A refusal alone does not establish daily value.
 
-| Pillar | Proof we already have | What dbx has instead |
+Preserve the README's free-feature pledge: every engine, MCP and its guard, BYO-key AI, staged edits, SSH tunnels, unlimited connections, and every feature in the first public release remain free. Never gate engines or device count. A possible paid product must add value without taking these away.
+
+### Claims and evidence rules
+
+- Describe controls precisely. Read-only access does not prevent sensitive-data disclosure or expensive queries. A local MCP endpoint does not keep results local when an external agent sends them to its provider.
+- Use sanitized data and a least-privilege database role for onboarding. A production environment tag is not a database permission boundary.
+- Describe protection per engine using [ENGINES.md](ENGINES.md) and the [README limitations](../README.md#known-limitations). Do not generalize PostgreSQL read-only transactions to every driver or promise universal safety.
+- The [scale fixture](../docker/postgres/big.sql) has **20 million real rows**, with planner statistics altered to approximately one trillion, plus a separate two-million-row table without a primary key. It tests large estimates as well as real paging; it does not prove trillion-row performance.
+- Any performance publication must include release/commit, actual row count, schema/indexes, hardware, database version, network latency, cache conditions, query plans, repetitions, median/p95, and end-to-end UI timings separately from database timings. Report the synthetic-statistics test separately. Do not carry forward the old 2 ms headline without that evidence.
+- Publish versioned test methods, permissions, configurations, expected effects, passes, failures and exclusions. Do not condition publication on winning. Passing a suite supports only the tested claims. Report actual effects, not just whether a server returned an error.
+- Our own advertised protections need release evidence. A comprehensive cross-vendor runner is optional research, not a public-launch prerequisite.
+
+## 3. Launch sequence and release gates
+
+The founder owns execution. Use the [validation kit](launch/VALIDATION.md) to record evidence and decisions; no customer results are prefilled.
+
+| Period | Actions | Required outcome |
 |---|---|---|
-| **Agent-safe** (the wedge) | Fail-closed guard, `READ ONLY` transactions enforced at the DB, keychain-held token, MCP Activity log | App-level modes and an allowlist |
-| **Scale** (the credibility post) | Keyset paging to 1T rows (2.3 ms at row 15M vs 2.3 s with OFFSET), bounded and cancellable page fetches | Grid lag issues (#9246) |
-| **Polish** (why you keep it open) | macOS-native chrome, staged edits with SQL review, ⌘K parity, SQL log | Vue UI the maintainers say "can't sustain growth" |
+| Days 1–14 | Interview 10 existing beta users. Observe five doing a sanitized investigation in their current workflow and TableIQ. Begin buyer conversations. | A recurring task, setup obstacles and concrete reasons to return. |
+| Days 15–30 | Grow the target cohort to 20. Fix its three most common blockers. Prepare signed/notarized Mac distribution, a verified update path, setup instructions and security limitations. | Users install, connect, complete the task and return without live help. |
+| Days 31–45 | Publish a short task demo, one landing page and the two [Postgres walkthroughs](launch/POSTGRES-WORKFLOW.md). Submit to relevant MCP directories and one appropriate community per week. | Attribute activated users to their source channel. |
+| Days 46–60 | Launch on Show HN only after the usage and trust gates below pass. Include a working download, synthetic sample data, limitations and two user stories with publication consent. | Convert attention into completed workflows and subsequent returns. |
+| Days 61–90 | Focus on the channel producing retained users. Publish one useful workflow example weekly. Finish buyer interviews and seek paid-pilot commitments. | Evidence of sustained use and commercial interest. |
 
-We still need engine breadth, as table stakes: roadmap P1 (23 engine profiles, shipped in v0.8.3; 15 verified and 8 Beta since v0.8.10) and P3 bring us to about 50 without growing the binary. **We publish size honestly, per OS.**
+If a gate is unmet, move the dependent announcement; the calendar never overrides it. Installation failures count against activation. Fix them and validate a new, explicitly identified cohort rather than removing failed participants.
 
-**We do not claim "safer than dbx" until the guard test suite (§4) proves it.**
+### Public release checklist
 
-**The enemies we name:**
+- [ ] Public repository under Apache-2.0, with history checked for secrets and the free-feature pledge intact.
+- [ ] Signed/notarized Mac release installs and starts on supported clean Macs; publish actual architecture, OS requirements and artifact sizes.
+- [ ] A verified update path preserves connections/settings. Until an auto-updater ships, document and test manual replacement; never advertise automatic updates as available.
+- [ ] Real release-build checks cover the investigation, refused writes, unshared connections, stale/invalid tokens, disconnect/reconnect and error recovery. No unresolved critical data-loss or access-control defects in the advertised workflow.
+- [ ] Publish methods and engine limitations alongside the relevant test evidence. Mock-browser QA is insufficient for a native release.
+- [ ] Working download, setup walkthrough, useful task demo and two consented user stories. Download and package-manager links must work before being advertised.
+- [ ] Activation, repeat-use and switching gates in section 4 pass before Show HN.
 
-| Competitor | What we say |
-|---|---|
-| TablePlus | "Same feel, $0, and your agent can use it." |
-| DBeaver | "No Java, opens in under a second. MCP without the PRO licence." |
-| DataGrip | "Agent access without the $229/year." |
-| dbx | We never attack it by name. Our comparison table is enough. |
+Mac/Postgres is the launch focus. Windows/Linux packaging and Homebrew are useful follow-ups, not reasons to postpone a verified Mac release. Support labels must distinguish tested releases from source-build availability.
 
-**Comparison table columns** (README): price · size per OS · engines · MCP (free / paid only / none) · agent write protection · 1T-row paging · open source.
+### Distribution priorities
 
-## 3. Who we're for (ICP, in order)
+1. Existing beta users and voluntary referrals.
+2. Practical tutorials, relevant MCP directories and communities whose posting rules allow the contribution.
+3. Show HN after the gates pass. Use [draft copy](launch/ASSETS.md), a working artifact and reproducible examples.
+4. Product Hunt is optional; no arbitrary star threshold. Defer paid advertising until activation and retention work.
 
-1. **AI-agent builders** who want Claude Code, Cursor or Codex to query real databases without the risk of `DROP TABLE`. This is the wedge. **Where to reach them:** r/ClaudeAI, r/cursor, MCP directories, the Anthropic/Cursor Discords, Claude Code and Cursor docs.
-2. **Mac developers** who find TablePlus's paywall ($99, then $59/device/year) or DBeaver's weight annoying. They use Postgres/MySQL daily. **Where to reach them:** r/macapps, r/PostgreSQL, HN, X. SEO for "TablePlus alternative".
-3. **Data folks on DuckDB, Parquet and ClickHouse** who want a fast local grid. **Where to reach them:** the DuckDB Discord, r/dataengineering, the benchmark post.
-4. **(Later) Platform and security teams** whose developers already run agents against databases and who need to see and govern that. They are the buyers for the Team tier (§5). **Where they come from:** company domains that appear in our stars and issues.
+Publish useful workflow examples weekly. Release software when changes pass the relevant checks, not to manufacture an engine-count headline. Do not scrape company domains from stars/issues as a substitute for willing buyer contacts.
 
-## 4. Launch plan
+## 4. Success measures and the day-90 decision
 
-### Gate: roadmap P0
-The repo is private today; the Apache-2.0 LICENSE landed in v0.8.2. We launch only once all of these are true:
+These are chosen experiment thresholds, not industry benchmarks or forecasts.
 
-- LICENSE (Apache-2.0) is in place and the UI string matches;
-- the repo is **public**, with the "what stays free forever" pledge in the README (§5);
-- builds are signed and notarized;
-- the auto-updater works;
-- the Homebrew cask exists;
-- the README has real per-OS sizes;
-- the guard test suite passes on our MCP (below).
-
-A first-run crash on an unsigned build kills a launch. So does a guard bypass found in the HN comments.
-
-### Assets (build before launch day)
-- [ ] **The refusal demo** (30 s, hyperframes): Cursor runs a report through TableIQ's MCP, then tries a `DELETE`; the Activity log shows the refusal. This is the Show HN.
-- [ ] **A public guard test suite** (`tableiq/mcp-guard-tests`): SQL-injection, multi-statement, CTE-write, function-call and encoding cases for MCP database servers, with a runner for ours, dbx, the DBeaver MCP and the official Postgres MCP. **Any case we fail gets fixed before launch. We publish the table only if we win it.**
-- [ ] **A README that sells in 5 seconds:**
-  - a hero GIF;
-  - the hook line (*"Give Claude Code your production database. Safely."*) with the sub-line (*"Free, open source, 1-trillion-row tables."*);
-  - one-click MCP install snippets for Claude Code, Cursor and Codex;
-  - an engine badge row;
-  - the comparison table (§2 columns) against TablePlus, DBeaver, DataGrip, Navicat and dbx;
-  - `brew install --cask tableiq`.
-- [ ] **A one-page site:** hero, download buttons per OS, the comparison table, the guard results and the benchmarks.
-- [ ] **A benchmark post:** "Paging a trillion-row table in 2 ms", with reproducible scripts from `docker/postgres/big.sql`.
-- [ ] **An MCP listing** on mcp.so, Smithery, Glama, PulseMCP, awesome-mcp-servers, and in the Claude Code and Cursor docs PRs where accepted.
-
-### Sequence
-| Week | Channel | Angle |
+| Measure | Definition | Gate |
 |---|---|---|
-| L-2 | Private beta: 20–30 developers from our own network, plus the Discord | Find first-run bugs, collect quotes |
-| L-0 Tue | **Show HN** | "Show HN: TableIQ – open-source DB client whose MCP server can't be talked into a DELETE" (lead with the guard, not "TablePlus alternative") |
-| L-0 | X/Bluesky thread + refusal demo | Tag the Tauri, DuckDB and Anthropic dev-rel accounts |
-| L+1 | r/ClaudeAI, r/cursor, r/macapps, r/PostgreSQL, r/dataengineering (one post each, spread over days, tailored to each) | Agent-safety for the first two; polish and scale for the rest |
-| L+1 | dev.to/Hashnode "Why I built…" and the benchmark post | SEO for "TablePlus alternative" and "DBeaver alternative" |
-| L+2 | **Product Hunt** | Only once we have at least 500 stars and reviewers lined up |
-| L+2 | Awesome-lists: awesome-tauri, awesome-rust, awesome-postgres, awesome-mcp-servers, awesome-mcp-clients, awesome-macOS | Permanent backlinks |
-| Later | **zh launch** (needs zh-CN i18n and a community partner) | Moved out of the 90-day plan. dbx owns this market with 1Panel, QQ groups and a CNB mirror; a week-4 HelloGitHub submission would be noise. Revisit once we have 5k stars |
+| Activation | Target participant completes the investigation, inspects SQL/results and identifies the relevant MCP Activity entry within 15 minutes of first launch, without live help | At least 14 of the fixed 20-person cohort |
+| Repeat use | An activated participant repeats the workflow on a separate occasion during days 8–14 after their first launch | At least 8 activated participants |
+| Switching evidence | Participant names a recurring task for which they now prefer TableIQ over the prior workflow | At least 5 cohort participants |
+| Trust | Release-specific refusal, isolation and recovery evidence; critical defects resolved | Required before public launch |
+| Revenue | Completed buyer interviews and written, conditional paid-pilot commitments | 5 interviews and 2 commitments by day 90 |
 
-### Keep the momentum (the dbx engine without the churn)
-- **A weekly release**, each with a changelog post whose headline is a number or a feature ("+11 MySQL-wire databases", "Mongo editing is here").
-- **One roadmap phase = one announcement.** P1 → "TableIQ now speaks 27 databases". P4 → "We cut the binary by X MB".
-- **"Good first engine" issues.** The P1 profile table is a place contributors can add a database in about 30 lines. This is how dbx reached 305 contributors.
-- **A public roadmap** with `ROADMAP.md` linked from the README. Let users 👍 the next engine.
+Keep telemetry off by default. Use consented observation and scheduled follow-ups. Record nonresponses, incomplete windows and withdrawals separately; never silently remove them from denominators. Assisted sessions inform usability but do not count as unaided activation. The kit defines the recording fields and follow-up script.
 
-## 5. Monetization
+Stars, downloads, contributors and directory listings are secondary distribution signals. Downloads include upgrades/retries; npm downloads do not establish successful MCP use. Report each channel's enrolled, activated and returning users with sample size, not a conversion claim from tiny counts.
 
-**Decision: open core.** Apache-2.0 desktop client, free for individuals forever, plus a commercial Team tier added after launch.
+At day 90:
 
-**Why the core is open (Apache-2.0, not FSL/BSL/AGPL)**
+- Strong repeat use plus paid commitments: continue the focused workflow and scope one paid pilot.
+- Strong repeat use without payment: adoption has support; the business thesis remains unproven. Continue buyer discovery without a speculative Team build.
+- Weak repeat use: revisit the task and audience before adding engines or acquisition spend.
 
-- The free floor is dbx: 22k★, 100+ engines, AI and MCP, Apache-2.0. A closed freemium client from an unknown team has no distribution against that.
-- People will read the guard code before pointing an agent at production. That is only a selling point if they can.
-- FSL and BSL protect against someone hosting your software as a service. Nobody hosts a desktop client, so they cost OSI status and goodwill for no protection.
-- AGPL scares enterprise buyers and needs a CLA (Beekeeper's situation). Apache-2.0 contributions already permit proprietary reuse, so the Team layer needs no CLA.
+## 5. Commercial experiment
 
-**What stays free forever** (pledge in the README, PostHog-style)
+Begin conversations now with engineering leads and voluntary introductions from beta users. Ask about existing agent access, policy enforcement, audit needs, approval budgets and buying authority. Several buyers must identify the same problem before a commercial build is scoped.
 
-All engines, the MCP server and guard, BYO-key AI, staged edits, SSH tunnels, unlimited connections, and every feature that exists on launch day. We never gate engines or device count (Beekeeper does, and it is their most resented decision; dbx gives them away).
+Test **$99 per team per month for five users** as an interview hypothesis for a narrowly agreed future Team pilot. It is not a published plan, a working paid feature or validated willingness to pay. Seek two written commitments conditional on an agreed deliverable, acceptance test, delivery window and billing start. Record objections and alternatives; do not count polite interest or a free trial as a paid commitment.
 
-**The Team tier** (commercial licence, separate `ee/` tree, built at day 90+ only after the OSS launch has traction)
+SSO, shared vaults, central policy, audit export, web hosting and licensing are possible backlog items, not a bundle to build in advance. Select one paid problem from evidence and specify that pilot separately. Retain the free-feature pledge in every offer.
 
-Enterprises in 2026 buy governance around agents, not database features. The tier is the guard and the Activity log extended to a team:
-
-- shared connection vault with SSO;
-- central MCP policy: which agents, which connections, which mode;
-- audit export to SIEM, and an approval flow for agent writes;
-- web/Docker self-host for teams (roadmap P7);
-- offline licensing.
-
-**Pricing shape:** per seat, minimum 5 seats. Offer a perpetual licence with one year of updates alongside annual; HN attacked DB Pro for subscription-only until the founder added exactly that. Reference points: DbGate Team $150/user/year, TablePlus $99 + $59/device/year, DataGrip $229/user/year. Set the number with design partners, not before.
-
-**Enterprise motion (no sales team):** watch for company domains in stars and issues, offer three to five of them the Team tier free as design partners, price from what they use. The pitch: *your developers already run agents against your databases; this is the only client where security can see every agent query and set the policy.*
-
-**Community motion:** public roadmap, contributor credits in every release note, "good first engine" issues, a Discord, and the pledge above. When the Team tier ships, the announcement says "here is what we built for teams; everything you use today stays free".
-
-**Side income, not a plan:** GitHub Sponsors from day one. README slots only if a developer-relevant sponsor asks; dbx's slot income comes from Chinese AI-API resellers and does not transfer.
-
-## 6. Metrics
-
-We ship with zero telemetry, so we measure from the outside.
-
-| Metric | Source | 90-day target |
-|---|---|---|
-| Stars/week | GitHub, star-history | 5k total (1k in launch week is the realistic bar for a good Show HN; DB Pro's 33-point post is the floor to beat) |
-| Downloads/release | GitHub Releases API + Homebrew analytics | 20k cumulative |
-| Contributors | GitHub | 25 |
-| MCP installs | npm downloads (standalone MCP), directory listings | 2k |
-| Guard suite | public repo, CI badge | 0 failing cases; results table cited by at least one third party |
-| Design-partner leads | company domains in stars/issues | 5 conversations, 3 partners |
-| Qualitative | HN/Reddit comments, issues opened by non-team users | Top-3 complaints fixed within 2 weeks |
-
-Opt-in only, never default: a "send anonymous usage" toggle, if we ever need retention data.
-
-## 7. 30 / 60 / 90 days
-
-- **Day 0–30:**
-  - Finish P0 (licence, public repo, signing, updater, sizes).
-  - Guard test suite, refusal demo, README, site, benchmark post.
-  - Private beta.
-  - Show HN, X, Reddit.
-  - MCP directories and one-click install docs.
-- **Day 31–60:**
-  - Ship P1 (profiles) and P2 (Mongo and Redis) as two announcements.
-  - Product Hunt.
-  - Awesome-lists.
-  - Open "good first engine" issues.
-  - Discord.
-  - Start logging company domains from stars and issues.
-- **Day 61–90:**
-  - Ship P3 (ClickHouse, Turso, Elastic, vector databases).
-  - Start P4 (the agent runtime, with DuckDB moved out) and write the "we cut X MB" post.
-  - Three to five design-partner conversations for the Team tier.
-- **Day 90+:**
-  - P7 Team tier with design partners; announce with the pledge.
-  - zh-CN i18n and the zh launch, if stars justify it.
-
-## 8. Risks
-
-| Risk | Mitigation |
-|---|---|
-| dbx out-ships us on engine count | Don't fight on count. Lead with polish, scale and agent safety; use profiles for cheap breadth |
-| Launching with bugs burns our one HN shot | The P0 gate plus a private beta. QA through the IPC bridge, never the browser mock |
-| Daily releases turn into churn (dbx has 3.6k bug issues) | Release weekly, not daily. Every release passes CI and bridge QA |
-| MCP safety incident | The guard stays fail-closed. Any relaxation needs its own review. Read-only is the default. The public guard suite runs in CI |
-| We claim "safer than dbx" and someone finds a bypass on HN | No comparative safety claim until the guard suite is public and we pass every case. Fix before publish |
-| DataGrip and DBeaver PRO make "agent + DB client" feel solved | We don't sell the feature, we sell free + provable safety. Comparison table shows their MCP as "paid only" |
-| Open-core suspicion ("they'll paywall it later") | The "what stays free forever" pledge in the README from day one; Team tier gates only team-governance features |
-| License confusion (resolved in v0.8.2: `LICENSE`, `NOTICE`, both manifests and the UI string all say Apache-2.0) | Keep them in sync; the repo still has to go public in P0 |
+At the test price, 100 retained paying teams would produce $9,900 MRR before costs. This is arithmetic, not a forecast. Sponsorship can help support the open-source project but is not the revenue thesis.

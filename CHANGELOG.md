@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- Staged commits with an unknown outcome block grid editing and resubmission until the local batch is explicitly discarded and fresh rows load. Review and copying remain available; discarding does not undo database changes.
+- SQL-log password redaction handles nested comments, MySQL `#` comments, adjacent literals, complex function arguments and unquoted conninfo assignments.
+
+### Changed
+- Launch strategy focuses on a Mac/Postgres investigation workflow, measured beta usage and release-specific evidence. `TODOS.md` now orders the remaining work by launch risk and user impact.
+
 ## 0.8.10 — 2026-10-18
 
 Fifteen of the 23 PostgreSQL- and MySQL-compatible products are now verified, up from seven. Every product with a local image was run against the real server, and the drivers learned what each one lacks, on wire-compatible sessions only.
@@ -362,9 +371,12 @@ in tighter rows, black text, and TablePlus's syntax colours.
 
 ## 0.3.0 — 2026-09-26
 
-Tables open and page instantly at any size — a trillion-row Postgres table included —
-with a visible loader, a total row count, ⌘F search across every column, and smooth
-transitions for editing, saving and running queries. DuckDB is a new engine.
+Tables gain keyset paging, a visible loader, a total row count, ⌘F search across every
+column, and transitions for editing, saving and running queries. DuckDB is a new engine.
+
+Documentation correction (2026-10-19): the scale fixture contains 20 million real rows
+with planner statistics altered to approximately one trillion. It does not establish
+trillion-row performance or instant paging at every size.
 
 ### Added
 - **DuckDB engine.** Connect to a `.duckdb` file or `:memory:`; browse, sort, filter,

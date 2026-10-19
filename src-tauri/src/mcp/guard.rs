@@ -218,8 +218,16 @@ const TIDB_HINTS: [&str; 3] = ["SET_VAR", "MEMORY_QUOTA", "RESOURCE_GROUP"];
 const TIDB_CUSTOM_SNAPSHOT: &str =
     "TableIQ chooses the snapshot (query start); a custom read timestamp is not supported over MCP.";
 
-/// The one refusal for a TiDB catalog table, `METRICS_SCHEMA` or a `SHOW` form agents may not use.
-fn tidb_family_refusal(name: &str) -> String {
+/// Why a catalog table or `METRICS_SCHEMA` is refused.
+const TIDB_CLUSTER_READS: &str = "it reads node log files, another server, or other sessions' SQL across the cluster";
+/// Why an off-list `SHOW` is refused.
+const TIDB_SHOW_REACHES: &str = "it reaches cluster placement, regions, jobs or configuration";
+/// Why `mysql.*` and `sys.*` are refused.
+const TIDB_INTERNAL_HOLDS: &str = "TiDB's internal tables hold other sessions' SQL and cluster jobs";
+
+/// The one refusal for what agents may not read on TiDB: a catalog table, `METRICS_SCHEMA`, an
+/// internal schema or a `SHOW` form.
+fn tidb_family_refusal(name: &str, reason: &str) -> String {
     let alternative = if name.starts_with("CLUSTER_STATEMENTS_SUMMARY") || matches!(name, "CLUSTER_SLOW_QUERY" | "SLOW_QUERY") {
         Some("INFORMATION_SCHEMA.STATEMENTS_SUMMARY")
     } else if name == "CLUSTER_PROCESSLIST" {
@@ -232,15 +240,20 @@ fn tidb_family_refusal(name: &str) -> String {
         None => "There is no agent alternative; the user can see it in TableIQ's Metrics widgets.".into(),
     };
     format!(
-        "{name} is not available to agents on TiDB: it reads node log files, another server, or other sessions' \
-         SQL across the cluster. {rest} See docs/ENGINES.md#tidb-over-mcp"
+        "{name} is not available to agents on TiDB: {reason}. {rest} See docs/ENGINES.md#tidb-over-mcp"
     )
 }
 
-/// A TiDB connection whose current database is a system schema reads its tables unqualified,
-/// past the name check, so agents cannot use it at all.
+/// TiDB's internal schemas: `mysql` holds other sessions' SQL (`tidb_runaway_queries`,
+/// `tidb_mdl_view`), DDL text and cluster jobs, and `sys` has views over denied cluster tables
+/// (`schema_unused_indexes`). Over MCP any qualified reference to them is refused wholesale.
+const TIDB_INTERNAL_SCHEMAS: [&str; 2] = ["MYSQL", "SYS"];
+
+/// A TiDB connection whose current database is a system or internal schema reads its tables
+/// unqualified, past the name check, so agents cannot use it at all.
 pub fn tidb_database_block(db: &str) -> Option<String> {
-    TIDB_SYSTEM_SCHEMAS.iter().any(|s| db.eq_ignore_ascii_case(s)).then(|| {
+    let folded = fold_upper(db);
+    TIDB_SYSTEM_SCHEMAS.iter().chain(&TIDB_INTERNAL_SCHEMAS).any(|s| folded == *s).then(|| {
         format!(
             "This connection's database is {db}, which agents cannot query on TiDB; share a connection to an \
              application database."
@@ -259,50 +272,76 @@ pub fn explain_tidb_error(msg: &str) -> Option<String> {
 }
 
 /// What [`guard`] refuses on TiDB over MCP only: a denied catalog table, `METRICS_SCHEMA`, a
-/// `SHOW` off the allow list, or a hint from [`TIDB_HINTS`]. `upper`: the raw upper-cased text;
-/// `flat`: the scanned code with comments blanked. Names are read from the raw text with
-/// backticks stripped (`` information_schema.`CLUSTER_LOG` ``), and only when a system schema is
-/// named, so a user's own `metrics_daily` or `cluster_nodes` stays readable.
-fn tidb_agent_refusal(upper: &str, flat: &str) -> Option<String> {
-    let names = upper.replace('`', "");
-    if TIDB_SYSTEM_SCHEMAS.iter().any(|s| has_word(&names, s)) {
-        if has_word(&names, "METRICS_SCHEMA") {
-            return Some(tidb_family_refusal("METRICS_SCHEMA"));
+/// qualified `mysql.`/`sys.` name, a `SHOW` off the allow list, or a hint from [`TIDB_HINTS`].
+/// `names`: [`quoted_names`] of the raw text (`` information_schema.`CLUSTER_LOG` ``); `flat`:
+/// the scanned code with comments blanked. Catalog tables are looked for only when a system
+/// schema is named, so a user's own `metrics_daily` or `cluster_nodes` stays readable.
+fn tidb_agent_refusal(names: &str, flat: &str) -> Option<String> {
+    if TIDB_SYSTEM_SCHEMAS.iter().any(|s| has_word(names, s)) {
+        if has_word(names, "METRICS_SCHEMA") {
+            return Some(tidb_family_refusal("METRICS_SCHEMA", TIDB_CLUSTER_READS));
         }
-        let denied = TIDB_ONLY_TABLES.iter().filter(|t| !TIDB_ALLOWED_TABLES.contains(t));
-        if let Some(t) = denied.into_iter().find(|t| has_word(&names, t)) {
-            return Some(tidb_family_refusal(t));
+        let mut denied = TIDB_ONLY_TABLES.iter().filter(|t| !TIDB_ALLOWED_TABLES.contains(t));
+        if let Some(t) = denied.find(|t| has_word(names, t)) {
+            return Some(tidb_family_refusal(t, TIDB_CLUSTER_READS));
+        }
+    }
+    // `mysql.x`, `` `sys` /* c */ . x ``: the schema word, then (past blanks) a `.`.
+    for schema in TIDB_INTERNAL_SCHEMAS {
+        if after_word(names, schema).any(|(_, r)| skip_blank_mysql(r).starts_with('.')) {
+            return Some(tidb_family_refusal(&format!("{}.*", schema.to_lowercase()), TIDB_INTERNAL_HOLDS));
         }
     }
     let mut words = flat.split(|c: char| !word_char(c)).filter(|w| !w.is_empty());
     if words.next() == Some("SHOW") {
-        let after: Vec<&str> = words.take(2).collect();
+        let after: Vec<&str> = words.take(3).collect();
         if !tidb_show_allowed(&after) {
-            return Some(tidb_family_refusal(&format!("SHOW {}", after.first().unwrap_or(&""))));
+            return Some(tidb_family_refusal(&format!("SHOW {}", after.first().unwrap_or(&"")), TIDB_SHOW_REACHES));
         }
     }
-    let mut hints = upper.match_indices("/*+").map(|(i, _)| &upper[i..upper[i..].find("*/").map_or(upper.len(), |e| i + e)]);
+    let mut hints = names.match_indices("/*+").map(|(i, _)| &names[i..names[i..].find("*/").map_or(names.len(), |e| i + e)]);
     hints.find_map(|h| TIDB_HINTS.into_iter().find(|w| has_word(h, w))).map(|w| {
         format!("The `{w}` optimizer hint is not available to agents on TiDB: it changes a read's limits on a shared cluster.")
     })
 }
 
-/// The `SHOW` forms agents may run on TiDB, by the (first two) words after `SHOW`: what MySQL
+/// The `SHOW` forms agents may run on TiDB, by the (first three) words after `SHOW`: what MySQL
 /// shows too. TiDB's own (`CONFIG`, `PLACEMENT`, `TABLE t REGIONS`, `DDL JOBS`, `STATS_*`, …)
-/// read the cluster's configuration, other servers or other sessions' jobs.
+/// reach cluster placement, regions, jobs or configuration. (`SHOW CREATE …` and `SHOW
+/// CHARACTER SET` never get here: `CREATE` and `SET` are write keywords.)
 fn tidb_show_allowed(words: &[&str]) -> bool {
-    let second = words.get(1).copied().unwrap_or("");
-    match words.first().copied().unwrap_or("") {
-        "FULL" => matches!(second, "TABLES" | "COLUMNS" | "FIELDS" | "PROCESSLIST"),
-        "GLOBAL" | "SESSION" => matches!(second, "VARIABLES" | "STATUS"),
-        "CREATE" => matches!(second, "TABLE" | "VIEW" | "DATABASE" | "SCHEMA" | "SEQUENCE"),
-        "TABLE" => second == "STATUS",
-        "CHARACTER" => second == "SET",
+    let word = |i: usize| words.get(i).copied().unwrap_or("");
+    match word(0) {
+        "FULL" => matches!(word(1), "TABLES" | "COLUMNS" | "FIELDS" | "PROCESSLIST"),
+        "GLOBAL" | "SESSION" => matches!(word(1), "VARIABLES" | "STATUS"),
+        // `SHOW TABLE status REGIONS` is the regions of a table named `status`.
+        "TABLE" => word(1) == "STATUS" && matches!(word(2), "" | "FROM" | "IN" | "LIKE" | "WHERE"),
+        "OPEN" => word(1) == "TABLES",
+        "FUNCTION" | "PROCEDURE" => word(1) == "STATUS",
         first => matches!(
             first,
             "TABLES" | "COLUMNS" | "FIELDS" | "INDEX" | "INDEXES" | "KEYS" | "DATABASES" | "SCHEMAS" | "VARIABLES"
                 | "STATUS" | "WARNINGS" | "ERRORS" | "COLLATION" | "CHARSET" | "ENGINES" | "PROCESSLIST" | "GRANTS"
+                | "BUILTINS" | "PRIVILEGES" | "TRIGGERS"
         ),
+    }
+}
+
+/// `upper` with backticks and double quotes blanked, so a quoted name reads as the bare word
+/// TiDB resolves (`` `nextval`('s') ``, `` `mysql`.t ``). Blanked, not removed, so two quoted
+/// names never join into one word.
+fn quoted_names(upper: &str) -> String {
+    upper.replace(['`', '"'], " ")
+}
+
+/// [`skip_blank`] plus MySQL's `#` comments.
+fn skip_blank_mysql(mut s: &str) -> &str {
+    loop {
+        s = skip_blank(s);
+        match s.strip_prefix('#') {
+            Some(r) => s = r.find('\n').map_or("", |n| &r[n..]),
+            None => return s,
+        }
     }
 }
 
@@ -444,6 +483,23 @@ fn escape_pair(engine: &str, code: &str) -> Option<&'static str> {
     }
 }
 
+/// `s` upper-cased for matching, with the non-ASCII letters TiDB's Go case folding equates
+/// to ASCII folded too: `İ` (U+0130) is `I`, the Kelvin sign (U+212A) is `K`, `ſ` (U+017F) is
+/// `S`. Rust keeps the first two, so `GET_LOC\u{212A}` would pass a name check that TiDB then
+/// resolves to `GET_LOCK` (2026-10-18 review, live). Only ever makes matching stricter; the SQL
+/// sent to the server is untouched.
+fn fold_upper(s: &str) -> String {
+    s.to_uppercase()
+        .chars()
+        .map(|c| match c {
+            '\u{130}' => 'I',
+            '\u{212A}' => 'K',
+            '\u{17F}' => 'S',
+            c => c,
+        })
+        .collect()
+}
+
 fn word_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
@@ -512,7 +568,7 @@ fn guard(engine: &str, sql: &str, writes: bool, mcp: bool) -> Result<(), String>
     let engine = base_engine(engine);
     // `code`: the text with its literals and quoted identifiers blanked out.
     let code = scan(engine, sql)?;
-    let upper = sql.to_uppercase();
+    let upper = fold_upper(sql);
     let file_fns: &[&str] = if mcp && engine == "duckdb" { &DUCKDB_FILE_FUNCTIONS } else { &[] };
     let product_fns: &[&str] = if crdb {
         &CRDB_FUNCTIONS
@@ -548,7 +604,7 @@ fn guard(engine: &str, sql: &str, writes: bool, mcp: bool) -> Result<(), String>
                     PIVOT — a file path to DuckDB) is not allowed on this connection."
             .into());
     }
-    let code = code.to_uppercase();
+    let code = fold_upper(&code);
     // `EXPLAIN ANALYZE (DEBUG)` runs the statement and saves a diagnostics bundle on the
     // server, which survives the read-only transaction's rollback.
     if crdb && first_keyword(sql) == "EXPLAIN" && has_word(&code, "DEBUG") {
@@ -615,23 +671,31 @@ fn guard(engine: &str, sql: &str, writes: bool, mcp: bool) -> Result<(), String>
     }
     if engine == "mysql" {
         let flat = blank_comments(&code, true);
+        let names = quoted_names(&upper);
         // Sequences on MariaDB and TiDB: the value is taken even when the transaction rolls back
-        // (the 2026-10-18 probe allocated one inside TiDB's snapshot transaction).
+        // (the 2026-10-18 probe allocated one inside TiDB's snapshot transaction). The functions
+        // by their call (`nextval /* c */ (s)`, `` `nextval`('s') ``), so a `nextval` column is
+        // still a read.
+        let call = |f: &&str| after_word(&names, f).any(|(_, r)| skip_blank_mysql(r).starts_with('('));
         let sequence = if has_seq(&flat, &["NEXT", "VALUE", "FOR"]) {
             Some("NEXT VALUE FOR")
         } else {
-            SEQUENCE_FUNCTIONS.into_iter().find(|f| has_word(&upper, f))
+            SEQUENCE_FUNCTIONS.iter().find(|f| call(f)).copied()
         };
         if let Some(k) = sequence {
             return Err(format!(
                 "{WRITE_REFUSAL}: `{k}` is not allowed (it advances a sequence, which a rollback does not undo)."
             ));
         }
-        if tidb && has_seq(&flat, &["AS", "OF", "TIMESTAMP"]) {
-            return Err(TIDB_CUSTOM_SNAPSHOT.into());
-        }
-        if let Some(why) = if tidb && mcp { tidb_agent_refusal(&upper, &flat) } else { None } {
-            return Err(why);
+        // A Metrics widget needs neither: TiDB refuses a statement read timestamp inside the
+        // snapshot transaction itself (error 8135).
+        if tidb && mcp {
+            if has_seq(&flat, &["AS", "OF", "TIMESTAMP"]) {
+                return Err(TIDB_CUSTOM_SNAPSHOT.into());
+            }
+            if let Some(why) = tidb_agent_refusal(&names, &flat) {
+                return Err(why);
+            }
         }
     }
     Ok(())

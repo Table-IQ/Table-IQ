@@ -1,8 +1,12 @@
 # TableIQ Roadmap
 
-_Last updated 2026-10-18 · current version v0.8.10 · companion doc: [GTM.md](GTM.md)_
+_Last updated 2026-10-19 · current version v0.8.10 · companion doc: [GTM.md](GTM.md)_
 
-We are aiming for engine parity with [dbx](https://github.com/t8y2/dbx) (100+ database profiles, 22k★ in five months) while keeping the product TablePlus-grade and agent-safe. Each phase ships as one `/rudys-workflow` slice and one PR, and each merged phase gets its own release announcement (see GTM.md).
+The active priority is a reliable Mac/PostgreSQL investigation workflow with a coding agent. Validate repeat usage and buyer interest before expanding engine breadth. [GTM.md](GTM.md) owns the audience, launch gates and 90-day decision; the [validation kit](launch/VALIDATION.md) records evidence.
+
+[TODOS.md](../TODOS.md#active-order--launch-validation-2026-10-20) owns the engineering pick-up order and distinguishes workspace fixes from unverified release gates.
+
+P1–P5 preserve shipped work and technical backlog, not a launch sequence or engine-count target. Existing engines remain supported at their documented level. New engines, sidecars and broad product expansion are deferred during launch validation unless a measured blocker in the target workflow requires them.
 
 ## Where we are (v0.8.10)
 
@@ -12,45 +16,26 @@ We are aiming for engine parity with [dbx](https://github.com/t8y2/dbx) (100+ da
 | Engine profiles (PostgreSQL and MySQL wire) | 23 on the existing drivers: 15 verified, 8 Beta ([ENGINES.md](ENGINES.md)) |
 | Document and key-value browsers | MongoDB (`DocShell`, v0.8.5) and Redis (`KvShell`, v0.8.6), with staged edits and read-only MCP tools; Redis Cluster and Sentinel not yet |
 | HTTP engines (read-only, P3) | ClickHouse, Turso/libSQL, Elasticsearch/OpenSearch, rqlite, Meilisearch, Qdrant, InfluxDB 3, ChromaDB, Weaviate |
-| Built | Keyset paging to 1T rows, staged edits in one transaction, SQL log, user management, metrics board, backup/restore, ERD, schema/result diff, ⌘K, BYO-key AI (Anthropic/OpenAI/Gemini/Ollama), MCP server with a fail-closed guard and an in-repo adversarial guard suite, WASM plugins, SSH tunnels, keychain secrets, Apache-2.0 LICENSE |
-| Missing before launch | A public repo (private today), signing/notarization, auto-updater, any published release, the public cross-vendor guard test suite |
+| Built | Keyset paging with a 20M-real-row scale fixture and a separate synthetic ~1T planner-estimate test, staged edits in one transaction, SQL log, user management, metrics board, backup/restore, ERD, schema/result diff, ⌘K, BYO-key AI (Anthropic/OpenAI/Gemini/Ollama), MCP server with a fail-closed guard and an in-repo adversarial guard suite, WASM plugins, SSH tunnels, keychain secrets, Apache-2.0 LICENSE |
+| Release work still to verify | Repository publication, signed/notarized Mac release, tested update path, published download, release-specific trust evidence and usage gates; no public-release evidence recorded here yet |
 
-## How dbx gets 100+ databases into ~25 MB (and what we copy)
+## P0 · Validate and release the focused workflow
 
-1. **The Tauri system WebView means no Chromium.** We already have this.
-2. **An aggressive release profile.** dbx uses `opt-level="s"`, `lto=true`, `panic="abort"`, `strip=true` and `codegen-units=1`. We use `lto="thin"`, `opt-level=3` and `panic="unwind"`. `unwind` must stay because the applog panic hook depends on it.
-3. **Native Rust drivers only for the big six.** dbx uses tokio-postgres, mysql_async, tiberius, rusqlite, redis and mongodb. We cover the same set with sqlx and tiberius.
-4. **Protocol reuse.** One MySQL-wire driver serves about 10 profiles (TiDB, OceanBase, Doris, StarRocks…), and one PG-wire driver serves about 8 (CockroachDB, Redshift, openGauss…). That is how 88 connection types become 108 "databases".
-5. **HTTP engines are just `reqwest`.** ClickHouse, Elasticsearch, vector DBs, Turso, D1 and InfluxDB 3 add almost nothing to the binary.
-6. **Everything else is a downloaded "agent".** These are sidecar processes speaking JSON-RPC 2.0 over stdio, fetched on first use from a signed registry:
-   - Java/JDBC fat JARs, with a managed JRE 21 that is also downloaded;
-   - Go binaries for Oracle, Cassandra, Neo4j, Hive and others;
-   - DuckDB, which is a sidecar too, so libduckdb isn't in the app.
-7. **Beyond the desktop app** (not copied yet): Docker and Web builds with the same features, a plugin marketplace (`dbx-store`, Go/TS SDKs), and MCP modes `read_only` / `safe_write` / `high_risk_write` with a connection allowlist and central policy.
+- [x] Apache-2.0 license, NOTICE, manifests, UI license string and README free-feature pledge landed in v0.8.2.
+- [ ] Interview 10 beta users and observe five doing the task with their current tools and TableIQ. Begin buyer interviews immediately.
+- [ ] Enroll a fixed cohort of 20 target developers. Fix its three most common blockers; preserve failed attempts and nonresponses in the evidence.
+- [ ] Before public distribution, check repository history for secrets and make the repository public.
+- [ ] Produce a signed/notarized Mac release and verify installation on supported clean Macs. The release workflow contains signing hooks; that is not proof that credentials or signed artifacts exist.
+- [ ] Verify an update path that preserves settings/connections. A documented, tested manual replacement is acceptable until the auto-updater is implemented; do not claim automatic updates meanwhile.
+- [ ] Record actual Mac artifact sizes, supported OS versions and architectures. Optimize size only if measured onboarding or distribution problems justify it.
+- [ ] Verify the advertised Postgres workflow on the native release: successful reads, refused writes, isolation of unshared connections, token rejection/revocation, disconnect/reconnect and recovery. No unresolved critical data-loss or access-control defects.
+- [ ] Publish own-product test methods, versions, roles, results and limitations, including failures and exclusions. The existing in-repo adversarial suite and env-gated live tests are a starting point, not a universal safety proof.
+- [ ] Prepare the landing page, useful task demo, two setup/troubleshooting tutorials and two consented user stories. [Draft material](launch/ASSETS.md) is not a published asset.
+- [ ] Pass the GTM usage gates before Show HN: 14/20 unaided activations within 15 minutes, 8 activated users returning on days 8–14, and 5 concrete switching reasons.
 
-Only the Windows NSIS installer is actually 25 MB. The macOS dmg is 36 MB, the Linux deb 39 MB and the AppImage 111 MB. **We publish our real numbers per OS.**
+**Done** = a public, installable Mac release with accurate claims, a verified update path, trust evidence and the usage gates above. Windows/Linux packaging, Homebrew and cross-vendor guard comparisons are follow-ups, not prerequisites for this focused launch.
 
----
-
-## P0 · Launch-ready (the GTM gate)
-
-- [ ] **LICENSE: Apache-2.0** (patent grant; same as dbx; no CLA needed for a later commercial `ee/` tree, see GTM §5).
-  - Done in v0.8.2: `LICENSE` + `NOTICE` added; `license` set in `package.json` and `src-tauri/Cargo.toml`.
-  - Done in v0.8.2: the `src/components/ConnectionManager.tsx` string now reads "Open source · Apache-2.0".
-  - Done in v0.8.2: the "what stays free forever" pledge is in the README.
-  - **Make the repo public.** Scrub history for secrets first (`gitleaks detect`).
-- [ ] **Guard test suite:** a public `mcp-guard-tests` repo of injection, multi-statement, CTE-write, function-call and encoding cases, with a runner for our MCP, dbx, the DBeaver MCP and the official Postgres MCP. Runs in our CI. Every failing case is fixed before launch; the comparison table is published only if we pass all of them.
-  - Done in v0.8.2: the in-repo adversarial suite for our own MCP (`src-tauri/tests/guard_suite.rs`, plus env-gated live proofs in `guard_live.rs`), run by `cargo test` in CI.
-  - Still open: the public `mcp-guard-tests` repo with effect oracles and the cross-vendor runner (TODOS.md T3).
-- [ ] **Signing and updates:** Apple notarization plus Windows signing (the secrets are already wired in `.github/workflows/release.yml`), and the Tauri updater plugin.
-- [ ] **Size baseline:**
-  - Run `tauri build` on all three OSes and record the sizes.
-  - Try `lto="fat"` and a `[profile.release.package.tableiq] opt-level="s"` override.
-  - Use `cargo bloat --release --crates` to find the biggest crates.
-  - Keep whichever changes reduce size without a measurable slowdown on the scale fixture.
-- [ ] **Distribution:** a Homebrew cask, then Scoop/WinGet. The first public release is v0.9.0.
-
-**Done** = the repo is public under Apache-2.0, signed, notarized, auto-updating builds exist on GitHub Releases for mac, Windows and Linux, the README states the real size, and the guard suite is green.
+The [scale fixture](../docker/postgres/big.sql) contains 20M real rows plus a separate 2M-row table without a primary key. Its altered planner statistics are not a trillion-row performance result. Publish reproducible timings with actual cardinality, indexes, hardware, versions, cache/network conditions and UI versus database latency. Publish comparison methods and all outcomes if a cross-vendor study is undertaken; never require a win to publish.
 
 ## P1 · Engine profiles: about +22 databases, no new crates
 
@@ -88,7 +73,7 @@ A **profile** is a base driver plus default port and URL scheme, dialect quirks,
   - [x] A command console and SCAN-based key tree with the `:` separator.
 - **MCP:** done for both: read-only tools behind a fail-closed guard (Mongo v0.8.5, Redis v0.8.6).
 
-**Done** = parity with dbx's Mongo and Redis browsers, and live tests for `TIQ_MONGO_URL` and `TIQ_REDIS_URL` run in CI.
+**Done** = the listed Mongo and Redis workflows work, and live tests for `TIQ_MONGO_URL` and `TIQ_REDIS_URL` run in CI.
 
 ## P3 · HTTP-native engines (reqwest only, so the binary barely grows)
 
@@ -110,7 +95,7 @@ SQL-shaped engines (ClickHouse, Snowflake, BigQuery, Databricks, Turso, D1, rqli
 
 **Status, v0.8.7:** ClickHouse, Turso/libSQL (Hrana over HTTP) and Elasticsearch (also detects OpenSearch) ship read-only, each with live tests that CI must run (their own `http-engines` job). None of them can be shared over MCP. Everything else in the table (Snowflake, BigQuery, Databricks, D1, rqlite, Meilisearch, the vector databases, InfluxDB 3, VictoriaMetrics) is not started. Known gaps: no private CA for HTTPS servers, ClickHouse `OFFSET` paging is unstable on tables without a unique key, no cloud Turso run (local `sqld` only).
 
-## P4 · Sidecar agent runtime (the dbx trick)
+## P4 · Sidecar agent runtime (deferred)
 
 - **Protocol:** JSON-RPC 2.0 over stdio. Methods mirror `SqlDriver` (`introspect`, `open_window`, `run_statements`, `cancel`…).
 - **Adapter:** one Rust `AgentDriver` implements `SqlDriver` by forwarding calls to the child process.
@@ -119,7 +104,7 @@ SQL-shaped engines (ClickHouse, Snowflake, BigQuery, Databricks, Turso, D1, rqli
 
 **Done** = the core binary no longer links DuckDB, DuckDB still passes `tests/duckdb_live.rs` through the agent, and the size drop is published.
 
-## P5 · Long tail via agents
+## P5 · Long tail via agents (deferred)
 
 | Transport | Engines |
 |---|---|
@@ -129,29 +114,24 @@ SQL-shaped engines (ClickHouse, Snowflake, BigQuery, Databricks, Turso, D1, rqli
 
 **Deferred (YAGNI):** consoles for message queues and config stores (Kafka, RabbitMQ, RocketMQ, Pulsar, MQTT, Nacos, Consul, ZooKeeper). These are not database clients. We'll add them if users ask.
 
-## P6 · Differentiators (where we beat dbx, not just match it)
+## P6 · Improvements driven by validation
 
-dbx's weak points, taken from its issues: grid lag while dragging (#9246), slow metadata on high-latency links (#6718), 1.2k open issues, and a Vue UI that a discussion thread says "can't sustain growth".
+- [ ] **Onboarding and reliability:** fix the cohort's three most common blockers. Validate each through the native app and a real database.
+- [ ] **Inspectability:** confirm users can find the agent's SQL, outcome and corresponding rows without assistance. Improve the existing MCP Activity and grid workflow where observations show friction.
+- [ ] **Performance:** measure cold start, first useful result and page latency on real data. Add caching or introspection changes only when those measurements identify the cause.
+- [ ] **Connection setup:** consider importing existing connections or simplifying agent setup only when observed setup failures justify it. Do not promise a standalone MCP package or one-click integrations that have not shipped.
 
-- [ ] **Speed as a feature:** publish benchmarks for cold start, first page on a 20M-row table, and 1T-row keyset paging (2.3 ms, already measured). Add metadata caching plus lazy introspection for high-latency links.
-- [ ] **Agent-safe MCP:** dbx already has app-level modes and an allowlist, so those are parity, not a differentiator. What we ship on top: the guard test suite in CI (P0), per-connection write permission that is enforced with a DB-level `READ ONLY` transaction and fails closed when policy is missing, an `npx`/Homebrew-installable standalone MCP, one-click setup for Claude Code, Cursor and Codex, and an Activity log that shows every agent query with its verdict.
-- [ ] **AI chat panel and agentic mode:** a chat that writes, runs and explains SQL against the open connection, plus an option to drive a local Claude Code or Codex CLI the way dbx and DataGrip 2026.2 do.
-- [ ] **Read-only production mode:** enforced per connection env tag.
-- [ ] **Import connections** from TablePlus, DBeaver, Navicat, DataGrip and dbx.
-- [ ] **i18n:** en first; zh-CN, ja, es, pt-BR, de when the zh launch is scheduled (GTM moved it past day 90).
-- [ ] **Later:** cloud sync (Gist/WebDAV), Excel import/export, SQLCipher, plugin marketplace.
+Database-enforced read-only protection is not unique, and its implementation differs by engine. Preserve the SQL guard, role guidance, connection controls and documented limitations; security fixes remain eligible during the breadth freeze. A production environment label does not make the SQL editor read-only.
 
-## P7 · Team tier (commercial, `ee/` tree, day 90+)
+AI chat expansion, i18n, cloud sync, Excel improvements, SQLCipher and a plugin marketplace remain uncommitted backlog. They are not launch milestones.
 
-Built only after the open-source launch has traction and three to five design partners (GTM §5). Everything here is team governance; nothing that exists on launch day moves behind it.
+## P7 · Commercial discovery, then one scoped pilot
 
-- [ ] **Web/Docker build** of the client, so a team can self-host it. This is the substrate for the rest.
-- [ ] **Shared connection vault** with SSO (OIDC/SAML).
-- [ ] **Central MCP policy:** which agents, which connections, which mode, managed by an admin instead of each developer.
-- [ ] **Audit export** (SIEM/webhook) and an approval flow for agent writes.
-- [ ] **Offline licensing** and per-seat licence checks. Perpetual-with-one-year-updates and annual options.
+Begin buyer conversations during days 1–14, not after an arbitrary star target. Seek five completed buyer interviews and two written, conditional paid-pilot commitments by day 90. Test $99/team/month for five users as an interview hypothesis, not an announced plan.
 
-**Done** = a design partner runs the web build with SSO, sets an MCP policy centrally, and sees their developers' agent queries in one audit stream.
+Shared vaults, SSO, central policy, audit export, approval flows, web/Docker hosting and licensing are candidate problems to investigate, not a committed bundle. Build only after several buyers identify the same problem. Specify one pilot's deliverable, acceptance test, delivery window and billing start with those buyers. Choose its architecture then; a web build or separate `ee/` tree is not a prerequisite to discovery.
+
+**Discovery done** = the interviews and conditional commitments are recorded with buyer authority, repeated need and objections. **Pilot done** will be defined in that separate agreed scope. Preserve every feature covered by the free-feature pledge.
 
 ---
 
@@ -185,7 +165,9 @@ A product that speaks the PostgreSQL or MySQL wire protocol is a profile, not a 
 
 ---
 
-## dbx parity table
+## Historical engine comparison (reference backlog)
+
+This September research is retained for engineering context, not current competitor verification or a commitment to match engine count. The current TableIQ support matrix is [ENGINES.md](ENGINES.md).
 
 | dbx engine(s) | dbx transport | TableIQ |
 |---|---|---|

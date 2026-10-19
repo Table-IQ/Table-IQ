@@ -234,6 +234,18 @@ const REFUSE: &[(&str, &str, bool, &str)] = &[
     ("sequence", "mysql", RO_ONLY, "SELECT NEXT VALUE FOR s"),
     ("sequence", "mysql", RO_ONLY, "SELECT NEXT /**/ VALUE FOR s"),
     ("sequence", "mysql", RO_ONLY, "SELECT next\n  value # c\n for s"),
+    ("sequence", "mysql", RO_ONLY, "SELECT `nextval`('s')"),
+    ("sequence", "mysql", RO_ONLY, "SELECT nextval /* c */ (s)"),
+    // --- names TiDB folds to ASCII (Go case folding: İ is I, the Kelvin sign is K, ſ is S) ---
+    ("encoding", "mysql", ALWAYS, "SELECT GET_LOC\u{212a}('x', 0)"),
+    ("encoding", "mysql", ALWAYS, "SELECT LOAD_F\u{130}LE('x')"),
+    ("encoding", "tidb", ALWAYS, "SELECT * FROM \u{130}NFORMATION_SCHEMA.CLUSTER_CONFIG"),
+    ("encoding", "tidb", ALWAYS, "SELECT * FROM `\u{130}nformation_schema`.cluster_log"),
+    ("encoding", "tidb", ALWAYS, "SELECT T\u{130}DB_DECODE_SQL_DIGESTS('[]')"),
+    ("encoding", "tidb", ALWAYS, "SELECT * FROM METR\u{130}CS_SCHEMA.up"),
+    ("encoding", "tidb", ALWAYS, "SELECT * FROM performance_schema.T\u{130}DB_PROFILE_CPU"),
+    ("encoding", "tidb", ALWAYS, "SELECT * FROM performance_\u{17f}chema.tidb_profile_cpu"),
+    ("encoding", "tidb", ALWAYS, "SELECT * FROM mysql.tidb_\u{17f}napshot_\u{212a}"),
     // --- TiDB: statements of its own, all refused (it is read-only to agents) ---
     ("tidb-statement", "tidb", ALWAYS, "ADMIN CHECK TABLE t"),
     ("tidb-statement", "tidb", ALWAYS, "ADMIN CANCEL DDL JOBS 1"),
@@ -288,6 +300,16 @@ const REFUSE: &[(&str, &str, bool, &str)] = &[
     ("tidb-catalog", "tidb", ALWAYS, "SHOW BACKUPS"),
     ("tidb-catalog", "tidb", ALWAYS, "SHOW PUMP STATUS"),
     ("tidb-catalog", "tidb", ALWAYS, "SHOW SESSION_STATES"),
+    ("tidb-catalog", "tidb", ALWAYS, "SHOW TABLE status REGIONS"),
+    ("tidb-catalog", "tidb", ALWAYS, "SHOW TABLE status INDEX i REGIONS"),
+    ("tidb-catalog", "tidb", ALWAYS, "SHOW TABLE status NEXT_ROW_ID"),
+    // --- TiDB: its internal schemas hold other sessions' SQL and cluster jobs (MCP only) ---
+    ("tidb-catalog", "tidb", ALWAYS, "SELECT * FROM mysql.tidb_mdl_view"),
+    ("tidb-catalog", "tidb", ALWAYS, "SELECT * FROM `mysql`.`tidb_runaway_queries`"),
+    ("tidb-catalog", "tidb", ALWAYS, "SELECT * FROM sys.schema_unused_indexes"),
+    ("tidb-catalog", "tidb", ALWAYS, "SELECT * FROM mysql/**/.bind_info"),
+    ("tidb-catalog", "tidb", ALWAYS, "SELECT * FROM mysql # c\n.tidb_ddl_history"),
+    ("tidb-catalog", "tidb", ALWAYS, "SELECT * FROM t JOIN SYS . x USING (k)"),
     // --- TiDB: hints that raise a read's quota or leave its resource group (MCP only) ---
     ("tidb-hint", "tidb", ALWAYS, "SELECT /*+ SET_VAR(tidb_mem_quota_query=1) */ 1"),
     ("tidb-hint", "tidb", ALWAYS, "SELECT /*+ MEMORY_QUOTA(1024 MB) */ * FROM t"),
@@ -341,6 +363,19 @@ const ALLOW: &[(&str, &str)] = &[
     ("tidb", "SELECT TIDB_VERSION(), TIDB_PARSE_TSO(1), SLEEP(0)"),
     ("tidb", "SELECT /*+ USE_INDEX(t, i) */ * FROM t"),
     ("tidb", "SELECT @@tidb_snapshot"),
+    ("tidb", "SHOW TABLE STATUS LIKE 't%'"),
+    ("tidb", "SHOW TABLE STATUS FROM app"),
+    ("tidb", "SHOW BUILTINS"),
+    ("tidb", "SHOW PRIVILEGES"),
+    ("tidb", "SHOW TRIGGERS"),
+    ("tidb", "SHOW OPEN TABLES"),
+    ("tidb", "SHOW FUNCTION STATUS"),
+    ("tidb", "SHOW PROCEDURE STATUS"),
+    ("tidb", "SELECT 'mysql' AS s"),
+    ("tidb", "SELECT sys, mysql_version FROM mysql_users"),
+    // Sequence names that are not calls.
+    ("mysql", "SELECT nextval FROM t"),
+    ("mysql", "SELECT * FROM t WHERE c = 'nextval'"),
 ];
 
 /// Reads a read-only connection and a widget run as before, but a writes-allowed connection
@@ -497,6 +532,9 @@ fn tidb_catalog_limits_are_for_agents_only() {
         "SELECT * FROM METRICS_SCHEMA.up",
         "SHOW CONFIG",
         "SELECT /*+ SET_VAR(tidb_mem_quota_query=1) */ 1",
+        "SELECT * FROM mysql.tidb_ddl_history",
+        // TiDB itself refuses a statement read timestamp inside the snapshot transaction.
+        "SELECT * FROM t AS OF TIMESTAMP NOW()",
     ] {
         assert!(widget_stmts(TIDB, sql).is_ok(), "widget: {sql:?}: {:?}", widget_stmts(TIDB, sql));
         assert!(guard_sql(TIDB, sql, false).is_err(), "MCP: {sql:?} must be refused");
@@ -511,6 +549,7 @@ fn tidb_catalog_limits_are_for_agents_only() {
 
 const FAMILY: &str = " is not available to agents on TiDB: it reads node log files, another server, or other \
                       sessions' SQL across the cluster.";
+const NO_ALTERNATIVE: &str = " There is no agent alternative; the user can see it in TableIQ's Metrics widgets.";
 const SEE: &str = "See docs/ENGINES.md#tidb-over-mcp";
 
 /// One template for every denied catalog name and `SHOW`, naming the allowed alternative
@@ -532,7 +571,12 @@ fn a_tidb_catalog_refusal_names_the_alternative() {
     };
     assert_eq!(guard_sql(TIDB, "SELECT * FROM INFORMATION_SCHEMA.CLUSTER_CONFIG", false), Err(none("CLUSTER_CONFIG")));
     assert_eq!(guard_sql(TIDB, "SELECT * FROM metrics_schema.up", false), Err(none("METRICS_SCHEMA")));
-    assert_eq!(guard_sql(TIDB, "SHOW\nconfig", false), Err(none("SHOW CONFIG")));
+    let show = "SHOW CONFIG is not available to agents on TiDB: it reaches cluster placement, regions, jobs or \
+                configuration.";
+    assert_eq!(guard_sql(TIDB, "SHOW\nconfig", false), Err(format!("{show}{NO_ALTERNATIVE} {SEE}")));
+    let internal = "mysql.* is not available to agents on TiDB: TiDB's internal tables hold other sessions' SQL \
+                    and cluster jobs.";
+    assert_eq!(guard_sql(TIDB, "SELECT * FROM mysql.tidb_mdl_view", false), Err(format!("{internal}{NO_ALTERNATIVE} {SEE}")));
 }
 
 #[test]
@@ -542,6 +586,9 @@ fn a_tidb_connection_on_a_system_schema_is_blocked() {
     assert_eq!(tidb_database_block("metrics_schema").as_deref(), Some(want));
     assert!(tidb_database_block("INFORMATION_SCHEMA").is_some());
     assert!(tidb_database_block("Performance_Schema").is_some());
+    assert!(tidb_database_block("\u{130}nformation_schema").is_some());
+    assert!(tidb_database_block("mysql").is_some());
+    assert!(tidb_database_block("SYS").is_some());
     assert_eq!(tidb_database_block("app"), None);
     assert_eq!(tidb_database_block("metrics_daily"), None);
 }

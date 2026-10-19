@@ -1135,7 +1135,8 @@ export interface ChangesResult {
 }
 
 /** Run every staged change for one table in ONE transaction (updates → deletes →
- *  inserts). Rejects with `change {i}: {reason}` — nothing written — on any failure. */
+ *  inserts). Indexed `change {i}: {reason}` failures precede COMMIT. Other failures
+ *  may arrive after a successful commit and must not be blindly retried. */
 export async function applyChanges(
   id: string,
   schema: string,

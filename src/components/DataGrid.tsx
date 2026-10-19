@@ -854,8 +854,8 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
   }, []);
 
   /** Commit everything staged in ONE `onCommitChanges` call (one transaction). Success:
-   *  every staged change clears and `onSave` re-syncs the page. Failure: nothing was
-   *  written, so everything stays staged for the user to fix or discard. */
+   *  every staged change clears and `onSave` re-syncs the page. Failure: everything
+   *  stays staged; the owner blocks retries when the commit outcome is uncertain. */
   const doCommit = useCallback(async () => {
     if (!onCommitChanges) return;
     const snap = snapshotNow();
@@ -916,6 +916,7 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
 
   /** Drop every staged change and revert the display to each cell's saved value. */
   const discardPending = useCallback(() => {
+    if (committingRef.current) return;
     for (const e of discardAll(pending.current)) {
       overlay.current.delete(pendingKey(e.row, e.col));
       editState.current.delete(pendingKey(e.row, e.col));
