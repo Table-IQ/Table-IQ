@@ -475,6 +475,7 @@ pub fn delete_connection(state: State<ConnState>, id: String) -> Result<(), Stri
 
 #[tauri::command]
 pub async fn test_connection(cfg: ConnConfig, password: String) -> Result<(), String> {
+    let password = if cfg.is_file_engine() { password } else { connections::password_for_test(&cfg.id, &password)? };
     if cfg.engine == "redis" {
         RedisDriver::connect(&cfg.url_with_password(&password)).await.map(|_| ()).map_err(|e| e.to_string())
     } else if cfg.engine == "mongodb" {
@@ -726,37 +727,6 @@ fn session_target(
         new_cfg.clone()
     };
     Ok((new_cfg, eff, password))
-}
-
-/// A new SQL session for `id` on `database` (its saved one when `None`), through the
-/// connection's open SSH tunnel — opened, NOT installed: see [`replace_session`].
-pub(crate) async fn open_sql_session(
-    state: &ConnState,
-    id: &str,
-    database: Option<String>,
-) -> Result<Arc<dyn SqlDriver>, String> {
-    let (cfg, eff, password) = session_target(state, id, database)?;
-    if cfg.ssh.as_ref().is_some_and(|s| s.enabled) && !lk(&state.tunnels).contains_key(id) {
-        return Err("The SSH tunnel for this connection is not open — reconnect".into());
-    }
-    let drv = open_driver(&eff, &password).await?;
-    Ok(Arc::new(Logged { inner: drv, log: state.sql_log_for(id) }))
-}
-
-/// Install `new` as `id`'s SQL session — only if `old` is still the current one, so a
-/// session opened in the background never replaces one ⌘D or Reconnect installed while it
-/// was opening. Returns whether it did; the old session's results go with it.
-pub(crate) fn replace_session(state: &ConnState, id: &str, old: &Arc<dyn SqlDriver>, new: Arc<dyn SqlDriver>) -> bool {
-    {
-        let mut sessions = lk(&state.sessions);
-        match sessions.get_mut(id) {
-            // By address: the vtable half of the pointer is irrelevant.
-            Some(cur) if std::ptr::addr_eq(Arc::as_ptr(cur), Arc::as_ptr(old)) => *cur = new,
-            _ => return false, // `new` is dropped (closed) here
-        }
-    }
-    lk(&state.results).purge(id);
-    true
 }
 
 /// Remove `id`'s session only if it is still `old` (by address). False: it was replaced.

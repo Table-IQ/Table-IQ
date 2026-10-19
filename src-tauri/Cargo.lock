@@ -7342,6 +7342,7 @@ dependencies = [
  "extism",
  "futures-util",
  "keyring",
+ "libsqlite3-sys",
  "mongodb",
  "parquet",
  "redis",

@@ -112,6 +112,11 @@ fn pg_change_sql(
 ) -> (String, Vec<Option<String>>) {
     let udt = |c: &str| udts.get(c).cloned().unwrap_or_else(|| "text".into());
     match change {
+        Change::UpdateRow { pk, edits } => super::build_row_update_sql(
+            &format!("{}.{}", quote_ident(schema), quote_ident(table)), pk, edits, &quote_ident, &pg_placeholder(udts),
+            &|c, i| format!("{} = ${i}::{}", quote_ident(c), udt(c)),
+            &|c, i| format!("{}::text IS NOT DISTINCT FROM ${i}::text", quote_ident(c)),
+        ),
         Change::Update { edit } => {
             let pk: Vec<(String, String)> = edit.pk.iter().map(|(n, _)| (n.clone(), udt(n))).collect();
             let sql = build_update_sql(schema, table, &edit.column, &udt(&edit.column), &pk);

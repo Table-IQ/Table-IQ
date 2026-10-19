@@ -86,3 +86,36 @@ async fn mysql_outfile_was_real_and_is_refused() {
         assert!(guard_sql("mysql", &sql, true).is_err(), "refused even where writes are allowed");
     }
 }
+
+/// Refusal precedes execution on SQL Server too; the fixture proves no row was changed.
+#[tokio::test]
+async fn sqlserver_guards_refuse_writes_and_server_escape_commands() {
+    let Some(ado) = live_url("TIQ_MSSQL_URL") else { return };
+    let cfg = tiberius::Config::from_ado_string(&ado).expect("SQL Server test connection string");
+    // The driver accepts explicit parts; this test follows the repository's fixed CI fixture.
+    let mut user = String::new(); let mut password = String::new();
+    let mut database = "master".to_string();
+    for pair in ado.split(';') {
+        if let Some((k, v)) = pair.split_once('=') {
+            match k.trim().to_ascii_lowercase().as_str() {
+                "user id" | "uid" => user = v.trim().into(),
+                "password" | "pwd" => password = v.trim().into(),
+                "database" | "initial catalog" => database = v.trim().into(),
+                _ => {}
+            }
+        }
+    }
+    let address = cfg.get_addr();
+    let (host, port) = address.rsplit_once(':').expect("host:port");
+    let d = tableiq_lib::drivers::sqlserver::SqlServerDriver::connect(host, port.parse().unwrap(), &database, &user, &password, "prefer").await.unwrap();
+    let setup = d.run_statements(&["CREATE TABLE #guard_probe (n int)".into(), "INSERT INTO #guard_probe VALUES (7)".into()], 10, &CancelToken::new()).await.unwrap();
+    assert!(setup.iter().all(|o| o.error.is_none()));
+    for sql in ["SELECT 1 DELETE FROM #guard_probe", "EXEC xp_cmdshell 'echo forbidden'", "SELECT * FROM OPENROWSET(BULK '/tmp/secret', SINGLE_CLOB) t"] {
+        assert!(read_only_stmts("sqlserver", sql).is_err(), "{sql}");
+    }
+    let resolved = one(&d, "SELECT CASE WHEN OBJECT_ID(N'sys.ｓｐ_configure') IS NULL THEN 'width-sensitive' ELSE 'width-insensitive' END").await.unwrap();
+    eprintln!("SQL Server procedure resolution: {resolved:?}");
+    assert!(guard_sql("sqlserver", "EXEC [ｓｐ_configure]", true).is_err());
+    assert!(guard_sql("sqlserver", "EXEC sp_configure 'xp_cmdshell', 1", true).is_err());
+    assert_eq!(one(&d, "SELECT n FROM #guard_probe").await.unwrap().as_deref(), Some("7"));
+}

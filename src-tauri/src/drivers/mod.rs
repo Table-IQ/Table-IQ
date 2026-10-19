@@ -367,6 +367,14 @@ pub struct EditSpec {
     pub orig_value: Option<String>,
 }
 
+/// One column in a row-level optimistic update.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CellEdit {
+    pub column: String,
+    pub new_value: Option<String>,
+    pub orig_value: Option<String>,
+}
+
 /// One staged data change for [`SqlDriver::apply_changes`]. Tagged by `kind` so the
 /// frontend sends `{ "kind": "update", "edit": … }` / `{ "kind": "delete", "pk": … }` /
 /// `{ "kind": "insert", "values": … }`.
@@ -375,6 +383,8 @@ pub struct EditSpec {
 pub enum Change {
     /// A cell edit, exactly `apply_edit`'s payload (optimistic match on `orig_value`).
     Update { edit: EditSpec },
+    /// All changed columns in one UPDATE, matched against the original composite key.
+    UpdateRow { pk: Vec<(String, Option<String>)>, edits: Vec<CellEdit> },
     /// A row matched by its primary-key `(name, text_value)` pairs.
     Delete { pk: Vec<(String, Option<String>)> },
     /// A new row; columns left out take their DEFAULT.
@@ -398,7 +408,7 @@ pub const ROW_GONE: &str = "row no longer exists";
 /// Indexes into `changes`, so an error still names the change the caller sent.
 pub fn change_order(changes: &[Change]) -> Vec<usize> {
     let rank = |c: &Change| match c {
-        Change::Update { .. } => 0,
+        Change::Update { .. } | Change::UpdateRow { .. } => 0,
         Change::Delete { .. } => 1,
         Change::Insert { .. } => 2,
     };
@@ -417,8 +427,11 @@ pub fn change_err(i: usize, reason: impl std::fmt::Display) -> DriverError {
 /// An `Err` means the caller must roll the whole transaction back.
 pub fn tally(out: &mut ChangesResult, i: usize, change: &Change, rows_affected: u64) -> DResult<()> {
     match change {
-        Change::Update { .. } if rows_affected == 0 => Err(change_err(i, CHANGED_SINCE_LOADED)),
-        Change::Update { .. } => {
+        Change::Update { .. } | Change::UpdateRow { .. } if rows_affected == 0 => Err(change_err(i, CHANGED_SINCE_LOADED)),
+        Change::Update { .. } | Change::UpdateRow { .. } if rows_affected != 1 => {
+            Err(change_err(i, format!("matched {rows_affected} rows, not 1")))
+        }
+        Change::Update { .. } | Change::UpdateRow { .. } => {
             out.updated += 1;
             Ok(())
         }
@@ -442,6 +455,14 @@ pub fn tally(out: &mut ChangesResult, i: usize, change: &Change, rows_affected: 
 pub fn check_keys(changes: &[Change]) -> DResult<()> {
     for (i, c) in changes.iter().enumerate() {
         match c {
+            Change::UpdateRow { pk, edits } => {
+                if pk.is_empty() { return Err(change_err(i, "cannot edit without a primary key")); }
+                if edits.is_empty() { return Err(change_err(i, "cannot update without changed columns")); }
+                let mut columns = std::collections::HashSet::new();
+                if edits.iter().any(|e| !columns.insert(&e.column)) {
+                    return Err(change_err(i, "duplicate changed column"));
+                }
+            }
             Change::Update { edit } if edit.pk.is_empty() => {
                 return Err(change_err(i, "cannot edit without a primary key"))
             }
@@ -452,6 +473,34 @@ pub fn check_keys(changes: &[Change]) -> DResult<()> {
         }
     }
     Ok(())
+}
+
+/// Build one row UPDATE with dialect-specific binding/comparison rules. Parameters are
+/// ordered SET values, original PK values, then every original changed-column value.
+pub fn build_row_update_sql(
+    qualified: &str,
+    pk: &[(String, Option<String>)],
+    edits: &[CellEdit],
+    quote: &dyn Fn(&str) -> String,
+    placeholder: &dyn Fn(usize, &str) -> String,
+    pk_match: &dyn Fn(&str, usize) -> String,
+    original_match: &dyn Fn(&str, usize) -> String,
+) -> (String, Vec<Option<String>>) {
+    let mut binds = Vec::new();
+    let sets: Vec<_> = edits.iter().map(|e| {
+        binds.push(e.new_value.clone());
+        format!("{} = {}", quote(&e.column), placeholder(binds.len(), &e.column))
+    }).collect();
+    let mut wheres = Vec::new();
+    for (col, value) in pk {
+        binds.push(value.clone());
+        wheres.push(pk_match(col, binds.len()));
+    }
+    for e in edits {
+        binds.push(e.orig_value.clone());
+        wheres.push(original_match(&e.column, binds.len()));
+    }
+    (format!("UPDATE {qualified} SET {} WHERE {}", sets.join(", "), wheres.join(" AND ")), binds)
 }
 
 /// Per-column filter operator. NULL ops emit no bind; the rest emit one bind each.
@@ -981,6 +1030,12 @@ pub trait SqlDriver: Send + Sync {
     /// `USE`), so a replacement session can be opened there. Default: unknown.
     fn database(&self) -> Option<String> {
         None
+    }
+
+    /// A fresh session with the same endpoint, credentials and database. Pinned-session
+    /// engines use this for agent tools so BEGIN/ROLLBACK cannot touch a user's transaction.
+    async fn isolated_session(&self) -> DResult<Arc<dyn SqlDriver>> {
+        Err(DriverError::Db("This driver cannot open an isolated agent session".into()))
     }
 
     /// Release the session's hold on its database, waiting for in-flight work — Restore

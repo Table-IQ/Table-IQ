@@ -43,6 +43,21 @@ jobs:
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install
 
+      - name: Require Mac distribution credentials
+        if: matrix.platform == 'macos-latest'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        shell: bash
+        run: |
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [[ -z "${!name}" ]]; then echo "Missing required Mac signing secret: $name" >&2; exit 1; fi
+          done
+
       - name: Build + package (tauri-action)
         uses: tauri-apps/tauri-action@v0
         env:
@@ -61,3 +76,8 @@ jobs:
           releaseName: "TableIQ ${{ github.ref_name }}"
           releaseDraft: true
           args: ${{ matrix.args }}
+
+      - name: Verify signed and notarized Mac app
+        if: matrix.platform == 'macos-latest'
+        shell: bash
+        run: scripts/verify-macos-release.sh src-tauri/target/universal-apple-darwin/release/bundle/macos/TableIQ.app

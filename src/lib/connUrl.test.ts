@@ -562,3 +562,18 @@ describe("withName", () => {
     expect(withName({ name: "", host: "chroma://h:8000?token=s3cret", database: "" }).name).toBe("h:8000");
   });
 });
+
+it("strips file URL options before decoding the path", () => {
+  expect(parseConnUrl("sqlite:///tmp/a%3Fb.db?mode=ro#fragment")?.database).toBe("/tmp/a?b.db");
+});
+it("validates enabled SSH fields", () => {
+  const cfg = { engine: "postgres" as const, host: "db", port: 5432, database: "app",
+    ssh: { enabled: true, host: " ", port: 0, username: "u", auth: { mode: "agent" as const } } };
+  expect(validateConn(cfg)).toMatchObject({ sshhost: "Required", sshport: "1–65535" });
+  expect(validateConn({ ...cfg, ssh: { ...cfg.ssh, enabled: false } })).toEqual({});
+});
+
+it("round-trips literal query and fragment characters in file paths", () => {
+  const cfg = { id: "file", name: "file", engine: "sqlite" as const, host: "", port: 0, username: "", sslmode: "prefer", database: "/tmp/a?b#c%.db" };
+  expect(parseConnUrl(toConnUrl(cfg))?.database).toBe(cfg.database);
+});

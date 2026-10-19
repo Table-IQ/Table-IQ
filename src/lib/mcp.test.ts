@@ -68,7 +68,7 @@ describe("mcpRowState (a connection's row in Settings → MCP)", () => {
   const on = { id: "c1", writes: true };
 
   it("a compatible product cannot be shared, whatever the stored allowlist says", () => {
-    expect(mcpRowState({ engine: "mysql", profile: "tidb" }, undefined)).toMatchObject({
+    expect(mcpRowState({ engine: "mysql", profile: "doris" }, undefined)).toMatchObject({
       shareable: false,
       note: `Not available over MCP yet: ${AGENT_NOTE}`,
     });
@@ -76,7 +76,7 @@ describe("mcpRowState (a connection's row in Settings → MCP)", () => {
       `Not available over MCP yet: ${AGENT_NOTE}`,
     );
     // Shared with writes before the product was detected: unchecked, and never amber.
-    expect(mcpRowState({ engine: "mysql", profile: "tidb" }, on)).toMatchObject({ shareable: false, shared: false, writes: false });
+    expect(mcpRowState({ engine: "mysql", profile: "doris" }, on)).toMatchObject({ shareable: false, shared: false, writes: false });
   });
 
   it("a profile this build does not know cannot be shared, and the note names it", () => {
@@ -119,7 +119,7 @@ describe("mcpRowState (a connection's row in Settings → MCP)", () => {
 
 describe("pruneUnshareable (allowlist entries for connections that can no longer be shared)", () => {
   const saved = [
-    { id: "ti", engine: "mysql", profile: "tidb" },
+    { id: "ti", engine: "mysql", profile: "doris" },
     { id: "ne", engine: "postgres", profile: "neon" },
     { id: "pg", engine: "postgres", profile: null },
     { id: "fu", engine: "mysql", profile: "from-the-future" },
@@ -307,4 +307,10 @@ describe("mcpEmptyNote", () => {
       expect(mcpEmptyNote([{ engine }])).toContain("None of your saved connections can be shared with agents");
     }
   });
+});
+
+it("TiDB requires fresh sharing and never permits writes", () => {
+  const c = { engine: "mysql" as const, profile: "tidb" };
+  expect(mcpRowState(c, { id: "ti", writes: true, rev: 4 })).toMatchObject({ shareable: true, shared: true, writes: false, writable: false });
+  expect(mcpRowState(c, { id: "ti", writes: false, rev: 3 }).shared).toBe(false);
 });

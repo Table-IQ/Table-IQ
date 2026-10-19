@@ -38,7 +38,9 @@
     "detect": [
       "TiDB"
     ],
-    "tested": true
+    "tested": true,
+    "agent": true,
+    "agentSince": 4
   },
   "oceanbase": {
     "base": "mysql",

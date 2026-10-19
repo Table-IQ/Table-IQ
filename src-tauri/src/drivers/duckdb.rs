@@ -85,6 +85,11 @@ fn delete_sql(schema: &str, table: &str, pk: &[(String, Option<String>)]) -> (St
 /// One staged change as `(sql, binds)` — the same statements the single-row commands send.
 fn change_sql(schema: &str, table: &str, c: &Change) -> (String, Vec<Option<String>>) {
     match c {
+        Change::UpdateRow { pk, edits } => super::build_row_update_sql(
+            &qualified(schema, table), pk, edits, &quote_ident, &placeholder,
+            &|c, _| format!("{} = ?", quote_ident(c)),
+            &|c, _| format!("{} IS NOT DISTINCT FROM ?", quote_ident(c)),
+        ),
         Change::Update { edit } => update_sql(schema, table, edit),
         Change::Delete { pk } => delete_sql(schema, table, pk),
         Change::Insert { values } => build_insert_sql(schema, table, values, &quote_ident, &placeholder, true),
@@ -537,6 +542,7 @@ impl SqlDriver for DuckDriver {
         for (i, c) in changes.iter().enumerate() {
             match c {
                 Change::Update { edit } => reject_null_pk(&edit.pk),
+                Change::UpdateRow { pk, .. } => reject_null_pk(pk),
                 Change::Delete { pk } => reject_null_pk(pk),
                 Change::Insert { .. } => Ok(()),
             }

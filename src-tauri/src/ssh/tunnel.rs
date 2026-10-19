@@ -203,6 +203,7 @@ impl Tunnel {
         secret: &str,
         target: RemoteTarget,
     ) -> Result<Self, String> {
+        cfg.validate()?;
         let config = Arc::new(client::Config {
             inactivity_timeout: Some(Duration::from_secs(3600)),
             ..Default::default()

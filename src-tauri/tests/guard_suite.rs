@@ -59,6 +59,7 @@ const REFUSE: &[(&str, &str, bool, &str)] = &[
     ("session-state", "postgres", ALWAYS, "SELECT set_config('role', 'postgres', false)"),
     ("session-state", "mysql", ALWAYS, "SELECT GET_LOCK('x', 0)"),
     ("session-state", "*", RO_ONLY, "SET ROLE admin"),
+    ("fullwidth-system-procedure", "sqlserver", ALWAYS, "EXEC [ｓｐ_configure]"),
     ("session-state", "sqlserver", ALWAYS, "SELECT 1 SETUSER 'dbo'"),
     ("session-state", "sqlserver", RO_ONLY, "SELECT 1 REVERT"),
     ("session-state", "sqlserver", ALWAYS, "SETUSER 'dbo'"),

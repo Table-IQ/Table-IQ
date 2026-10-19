@@ -119,28 +119,43 @@ fn new_token() -> String {
 /// fails for any reason other than "no entry yet" is an error, never a silent replacement —
 /// that would break every agent already configured with the old token.
 pub fn token() -> Result<String, String> {
-    if let Some(t) = lk(&TOKEN).clone() {
-        return Ok(t);
-    }
-    let entry = keychain_entry()?;
-    let t = match entry.get_password() {
-        Ok(t) if !t.is_empty() => t,
-        Ok(_) | Err(keyring::Error::NoEntry) => {
-            let t = new_token();
-            entry.set_password(&t).map_err(|e| e.to_string())?;
-            t
-        }
-        Err(e) => return Err(format!("Could not read the MCP token from the keychain: {e}")),
-    };
-    *lk(&TOKEN) = Some(t.clone());
-    Ok(t)
+    load_or_rotate_token(false)
 }
 
 /// Replace the token; agents holding the old one get 401 from the next request on.
 pub fn regenerate_token() -> Result<String, String> {
+    load_or_rotate_token(true)
+}
+
+fn load_or_rotate_token(rotate: bool) -> Result<String, String> {
+    token_with(&TOKEN, rotate, || {
+        match keychain_entry()?.get_password() {
+            Ok(t) => Ok(Some(t)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(format!("Could not read the MCP token from the keychain: {e}")),
+        }
+    }, |t| keychain_entry()?.set_password(t).map_err(|e| e.to_string()))
+}
+
+/// One lock owns both persistent and cached state. Publish only after persistence succeeds;
+/// a concurrent initialization can never overwrite a newly rotated token with an old read.
+fn token_with(
+    cache: &Mutex<Option<String>>,
+    rotate: bool,
+    read: impl FnOnce() -> Result<Option<String>, String>,
+    write: impl FnOnce(&str) -> Result<(), String>,
+) -> Result<String, String> {
+    let mut cached = lk(cache);
+    if !rotate {
+        if let Some(t) = cached.as_ref() { return Ok(t.clone()); }
+        if let Some(t) = read()?.filter(|t| !t.is_empty()) {
+            *cached = Some(t.clone());
+            return Ok(t);
+        }
+    }
     let t = new_token();
-    keychain_entry()?.set_password(&t).map_err(|e| e.to_string())?;
-    *lk(&TOKEN) = Some(t.clone());
+    write(&t)?;
+    *cached = Some(t.clone());
     Ok(t)
 }
 
@@ -333,6 +348,50 @@ pub async fn mcp_set_config<R: Runtime>(app: AppHandle<R>, cfg: McpConfig) -> Re
     Ok(status())
 }
 
+/// Advisory privilege check for an already connected shared SQL connection. It never
+/// expands grants or changes a role. Unknown/inherited rights remain explicitly unknown.
+#[tauri::command]
+pub async fn mcp_role_warnings(state: tauri::State<'_, crate::ipc::connect::ConnState>, id: String) -> Result<Vec<String>, String> {
+    let cfg = state.configs().into_iter().find(|c| c.id == id).ok_or("Connection no longer exists")?;
+    let sql = match cfg.engine.as_str() {
+        "postgres" => "SELECT CASE WHEN rolsuper OR pg_has_role(current_user, 'pg_read_server_files', 'MEMBER') OR pg_has_role(current_user, 'pg_write_server_files', 'MEMBER') OR pg_has_role(current_user, 'pg_execute_server_program', 'MEMBER') THEN 'privileged' ELSE 'limited' END FROM pg_roles WHERE rolname = current_user",
+        "mysql" => "SHOW GRANTS FOR CURRENT_USER",
+        "sqlserver" => "SELECT CASE WHEN IS_SRVROLEMEMBER('sysadmin') = 1 OR IS_SRVROLEMEMBER('bulkadmin') = 1 THEN 'privileged' WHEN IS_SRVROLEMEMBER('sysadmin') = 0 AND IS_SRVROLEMEMBER('bulkadmin') = 0 THEN 'limited' ELSE 'unknown' END",
+        _ => return Ok(Vec::new()),
+    };
+    let driver = state.session(&id).map_err(|_| "Connect this database to check the shared role's privileges")?;
+    let driver = if cfg.engine == "sqlserver" { driver.isolated_session().await.map_err(|e| e.to_string())? } else { driver };
+    let rows = tokio::time::timeout(std::time::Duration::from_secs(5), driver.run_query(sql, 200))
+        .await.map_err(|_| "Privilege check timed out; effective permissions are unknown")?
+        .map_err(|e| e.to_string())?;
+    if rows.truncated { return Ok(vec!["Privilege results were truncated; effective permissions are unknown.".into()]); }
+    let grants: Vec<_> = (0..rows.batch.num_rows()).filter_map(|i| arrow::util::display::array_value_to_string(rows.batch.column(0), i).ok()).collect();
+    Ok(role_warnings(&cfg.engine, &grants))
+}
+
+fn role_warnings(engine: &str, grants: &[String]) -> Vec<String> {
+    if grants.is_empty() { return vec!["Could not determine this role's privileges.".into()]; }
+    if engine == "mysql" {
+        let mut warnings = Vec::new();
+        for grant in grants {
+            let upper = grant.to_ascii_uppercase();
+            let head = upper.split(" ON ").next().unwrap_or("");
+            if head.contains("ALL PRIVILEGES") || head.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .any(|p| matches!(p, "FILE" | "SUPER" | "SYSTEM_USER" | "SYSTEM_VARIABLES_ADMIN" | "CREATE" | "ALTER" | "DROP")) {
+                warnings.push("This role has server, file, or schema-changing privileges. Use a separate least-privilege agent login; SQL validation does not contain these privileges.".into());
+            }
+            if !upper.contains(" ON ") || upper.contains("WITH GRANT OPTION") {
+                warnings.push("Inherited roles or grant authority are present; this check does not establish effective least privilege. Have an administrator review the login.".into());
+            }
+        }
+        warnings.sort(); warnings.dedup(); warnings
+    } else if grants.iter().any(|g| g == "privileged") {
+        vec!["This login has elevated server or file privileges. Share a separate least-privilege login; the SQL guard is not a substitute for database permissions.".into()]
+    } else if grants.iter().any(|g| g != "limited") {
+        vec!["Effective role privileges could not be determined.".into()]
+    } else { Vec::new() }
+}
+
 #[tauri::command]
 pub fn mcp_status() -> McpStatus {
     status()
@@ -384,6 +443,60 @@ mod tests {
         assert!(a.starts_with("mcp:token:") && a.len() == "mcp:token:".len() + 8, "{a}");
         assert_ne!(a, b);
         assert_eq!(a, token_account(Some(std::ffi::OsStr::new("/tmp/tiq-qa"))), "stable");
+    }
+
+    #[test]
+    fn concurrent_first_use_creates_one_persisted_token() {
+        let cache = Mutex::new(None);
+        let stored = Mutex::new(None);
+        let writes = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..12).map(|_| scope.spawn(|| {
+                token_with(&cache, false, || {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    Ok(lk(&stored).clone())
+                }, |t| {
+                    writes.fetch_add(1, Ordering::SeqCst);
+                    *lk(&stored) = Some(t.to_owned());
+                    Ok(())
+                }).unwrap()
+            })).collect();
+            let values: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+            assert!(values.iter().all(|v| Some(v) == lk(&stored).as_ref()));
+        });
+        assert_eq!(writes.load(Ordering::SeqCst), 1);
+        assert_eq!(*lk(&cache), *lk(&stored));
+    }
+
+    #[test]
+    fn rotation_waits_for_initialization_and_failed_persistence_keeps_the_old_token() {
+        let cache = Mutex::new(None);
+        let stored = Mutex::new(Some("old".to_string()));
+        let (reading, started) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let initial = scope.spawn(|| token_with(&cache, false, || {
+                reading.send(()).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                Ok(lk(&stored).clone())
+            }, |_| unreachable!()).unwrap());
+            started.recv().unwrap();
+            let rotated = token_with(&cache, true, || unreachable!(), |t| {
+                *lk(&stored) = Some(t.to_owned()); Ok(())
+            }).unwrap();
+            assert_eq!(initial.join().unwrap(), "old");
+            assert_eq!(lk(&cache).as_deref(), Some(rotated.as_str()));
+        });
+        assert!(token_with(&cache, true, || unreachable!(), |_| Err("locked keychain".into())).is_err());
+        assert_eq!(*lk(&cache), *lk(&stored));
+    }
+
+    #[test]
+    fn privilege_warnings_include_inherited_roles_without_claiming_a_full_audit() {
+        assert!(!role_warnings("mysql", &["GRANT FILE, SUPER ON *.* TO user".into()]).is_empty());
+        assert!(!role_warnings("mysql", &["GRANT `reader_role`@`%` TO user".into()]).is_empty());
+        assert!(role_warnings("mysql", &["GRANT SELECT, SHOW VIEW ON app.* TO user".into()]).is_empty());
+        assert!(!role_warnings("postgres", &["privileged".into()]).is_empty());
+        assert!(!role_warnings("sqlserver", &["unknown".into()]).is_empty());
     }
 
     #[test]

@@ -1104,6 +1104,9 @@ export function TableView({ connId, schema, object, view }: Props) {
             }}
             rightAlignColumns={rightAlignColumns}
             onSave={(n) => {
+              // The row may have moved (key edits), been deleted, or changed in a trigger.
+              // Never keep pre-commit values editable in the Inspector during reload.
+              useSelectedRow.getState().clearIfFrom(schema, object.name);
               window.clearTimeout(savedTimer.current);
               setSaved((s) => ({ n, id: (s?.id ?? 0) + 1 }));
               savedTimer.current = window.setTimeout(() => setSaved(null), 2000);

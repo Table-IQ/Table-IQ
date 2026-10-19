@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   listConnections,
   mcpGetConfig,
+  mcpRoleWarnings,
   mcpRegenerateToken,
   mcpSetConfig,
   mcpStatus,
@@ -93,6 +94,7 @@ export function McpSettings() {
   const [savedAll, setSavedAll] = useState<ConnConfig[]>([]);
   const [token, setToken] = useState("");
   const [error, setError] = useState("");
+  const [roleWarnings, setRoleWarnings] = useState<Record<string, string[]>>({});
   const [busy, setBusy] = useState(false);
   const [confirmRegen, setConfirmRegen] = useState(false);
   const [copied, setCopied] = useState("");
@@ -115,6 +117,17 @@ export function McpSettings() {
       .catch((e) => setError(String(e)));
     return () => clearTimeout(copiedTimer.current);
   }, []);
+
+  useEffect(() => {
+    let current = true;
+    setRoleWarnings({});
+    for (const entry of cfg?.connections ?? []) {
+      void mcpRoleWarnings(entry.id)
+        .catch(() => ["Privileges could not be checked. Connect this database and reopen MCP settings; use a least-privilege login."])
+        .then((warnings) => { if (current) setRoleWarnings((old) => ({ ...old, [entry.id]: warnings })); });
+    }
+    return () => { current = false; };
+  }, [cfg]);
 
   // One restart at a time. Controls stay enabled (a disabled checkbox drops keyboard focus);
   // a change made while one is applying is ignored and the control snaps back. Every apply
@@ -245,6 +258,9 @@ export function McpSettings() {
                     {s.note}
                   </p>
                 )}
+                {s.shared && roleWarnings[c.id]?.map((warning) => (
+                  <p key={warning} role="status" className="basis-full text-xs text-warn">{warning}</p>
+                ))}
                 {c.engine === "mongodb" && <p className="basis-full text-xs text-muted">{MONGODB_SHARING_NOTE}</p>}
                 {c.engine === "redis" && <p className="basis-full text-xs text-muted">{REDIS_SHARING_NOTE}</p>}
                 {c.engine === "duckdb" && (
@@ -299,7 +315,7 @@ export function McpSettings() {
       <div className="space-y-1 rounded-md border border-border bg-surface p-3 text-xs leading-snug text-muted">
         <p className="font-medium text-text">Use a read-only database user for anything that matters.</p>
         <p>
-          Read-only here means a SQL guard plus a read-only transaction (or one that is rolled back).
+          Postgres and MySQL use read-only transactions plus SQL validation. SQLite, DuckDB and SQL Server use SQL validation plus rollback wrappers; these are not database-enforced read-only sessions.
           The guard refuses the known file, side-effect and SQL-executing functions (
           <span className="font-mono">pg_read_file</span>, <span className="font-mono">query_to_xml</span>,{" "}
           <span className="font-mono">dblink</span>, <span className="font-mono">LOAD_FILE</span>,{" "}
@@ -318,10 +334,9 @@ export function McpSettings() {
         </p>
         <p>
           On MySQL, DDL commits before the read-only transaction can refuse it — the guard is what
-          stops it. A query past 30 seconds is cancelled; on SQL Server the connection (which the grid
-          shares) is killed and reopened instead, and a DuckDB query cannot be stopped at all — it
+          stops it. After 30 seconds TableIQ requests cancellation where supported; completion is not guaranteed. SQL Server closes the separate agent session. A DuckDB query cannot be stopped — it
           runs to the end, holding one of four query slots. Agent queries also appear in the
-          connection's SQL log.
+          connection's SQL log. SQL Server write-enabled batches can run several statements and return only the first result set. MySQL CALL can merge result sets; a false truncated flag does not prove completeness.
         </p>
       </div>
     </div>

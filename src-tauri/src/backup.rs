@@ -883,6 +883,7 @@ enum MyTok {
     Word(String),
     /// A `backtick`-quoted name, or a string literal.
     Quoted(String),
+    Dot,
     Other,
 }
 
@@ -931,11 +932,12 @@ struct MyScan<'a> {
     /// The heads of statements (and lines) still being read, each until it is known whether
     /// it names a database.
     heads: Vec<Vec<MyTok>>,
+    qualifier: Option<MyTok>,
 }
 
 impl<'a> MyScan<'a> {
     fn new(target: &'a str) -> Self {
-        MyScan { target, st: MySt::Code, versioned: false, text: Vec::new(), line: 1, heads: vec![vec![]] }
+        MyScan { target, st: MySt::Code, versioned: false, text: Vec::new(), line: 1, heads: vec![vec![]], qualifier: None }
     }
 
     fn refuse(&self, what: String) -> Option<String> {
@@ -955,7 +957,7 @@ impl<'a> MyScan<'a> {
         let named = |t: &MyTok, what: &str| match t {
             MyTok::Word(n) | MyTok::Quoted(n) if n == self.target => Verdict::Fine,
             MyTok::Word(n) | MyTok::Quoted(n) => Verdict::Refuse(format!("{what} `{n}`")),
-            MyTok::Other => Verdict::Refuse(format!("{what} with an unreadable database name")),
+            MyTok::Other | MyTok::Dot => Verdict::Refuse(format!("{what} with an unreadable database name")),
         };
         let first = match toks.first() {
             None => return Verdict::Pending,
@@ -969,7 +971,7 @@ impl<'a> MyScan<'a> {
             },
             // mysql client commands: reconnect elsewhere, run another file, a shell.
             "CONNECT" | "SOURCE" | "SYSTEM" => Verdict::Refuse(format!("the mysql client command {first}")),
-            "DROP" | "CREATE" => {
+            "DROP" | "CREATE" | "ALTER" => {
                 let what = match toks.get(1) {
                     None => return if done { Verdict::Fine } else { Verdict::Pending },
                     Some(MyTok::Word(w)) if w.eq_ignore_ascii_case("DATABASE") || w.eq_ignore_ascii_case("SCHEMA") => {
@@ -1000,6 +1002,21 @@ impl<'a> MyScan<'a> {
 
     /// Feed a token to every open head.
     fn token(&mut self, t: MyTok) -> Option<String> {
+        // A restore dump has no need to name a foreign database. Be conservative about
+        // aliases too: resolving arbitrary SQL aliases/routines is not a security boundary.
+        if matches!(t, MyTok::Dot) {
+            if let Some(MyTok::Word(name) | MyTok::Quoted(name)) = &self.qualifier {
+                let decimal = matches!(&self.qualifier, Some(MyTok::Word(_)))
+                    && !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit());
+                if name != self.target && !decimal {
+                    return self.refuse(format!("qualified name outside the target database: `{name}`"));
+                }
+            }
+        }
+        self.qualifier = match &t {
+            MyTok::Word(_) | MyTok::Quoted(_) => Some(t.clone()),
+            _ => None,
+        };
         let mut heads = std::mem::take(&mut self.heads);
         let mut refused = None;
         heads.retain_mut(|h| {
@@ -1026,6 +1043,7 @@ impl<'a> MyScan<'a> {
 
     /// The statement ended: whatever is still undecided is decided now.
     fn end_statement(&mut self) -> Option<String> {
+        self.qualifier = None;
         for h in std::mem::take(&mut self.heads) {
             if let Verdict::Refuse(w) = self.verdict(&h, true) {
                 return self.refuse(w);
@@ -1038,7 +1056,9 @@ impl<'a> MyScan<'a> {
     /// Keep a word's or quoted name's bytes only while some statement head could use them —
     /// never a whole INSERT's multi-megabyte string literal.
     fn keep(&mut self, b: u8) {
-        if !self.heads.is_empty() {
+        // Keep bounded identifiers for qualifier checks even after the statement head.
+        // Large INSERT literals are not retained once the head is decided.
+        if (!self.heads.is_empty() || !matches!(self.st, MySt::Quoted(b'\'') | MySt::QuotedEsc(b'\''))) && self.text.len() < 512 {
             self.text.push(b);
         }
     }
@@ -1067,6 +1087,7 @@ impl<'a> MyScan<'a> {
                         b'*' if self.versioned => self.st = MySt::Star,
                         b'\\' => self.st = MySt::Backslash,
                         b';' => return self.end_statement(),
+                        b'.' => return self.token(MyTok::Dot),
                         _ if b.is_ascii_whitespace() => {}
                         _ => return self.token(MyTok::Other),
                     }
@@ -1496,6 +1517,11 @@ pub async fn file_restore(drv: Arc<dyn SqlDriver>, engine: &str, db_path: &str, 
 
     drv.close().await;
     drop(drv);
+    if engine == "sqlite" {
+        let (source, destination) = (backup.to_owned(), db_path.to_owned());
+        return tokio::task::spawn_blocking(move || crate::drivers::sqlite::restore_file(&destination, &source))
+            .await.map_err(|e| e.to_string())?;
+    }
     if engine == "duckdb" {
         // The instance closes with its last driver; one still running a query holds it open.
         let mut waited = 0;
@@ -2283,6 +2309,28 @@ mod tests {
         assert!(my_scan(&format!("{big}USE other;\n"), "target").unwrap().contains("line 2"));
         let dir = tempfile::tempdir().unwrap();
         assert!(mysql_foreign_database(&dir.path().join("missing.sql"), "t").is_err());
+    }
+
+    #[test]
+    fn mysql_restore_rejects_qualified_foreign_writes_and_alter_database() {
+        for sql in [
+            "INSERT INTO other.items VALUES (1)",
+            "UPDATE `other` /* comment */ . `items` SET x = 1",
+            "DELETE FROM other.items",
+            "DELETE FROM `123`.items",
+            "RENAME TABLE target.items TO other.items",
+            "/*!50000 ALTER DATABASE other CHARACTER SET latin1 */;",
+            "ALTER SCHEMA other DEFAULT CHARACTER SET latin1;",
+        ] {
+            assert!(my_scan(sql, "target").is_some(), "accepted {sql}");
+        }
+        for sql in [
+            "INSERT INTO target.items VALUES (1.25, 'other.items')",
+            "ALTER DATABASE target CHARACTER SET utf8mb4;",
+            "CREATE TABLE `target`.`items` (x decimal(5,2));",
+        ] {
+            assert_eq!(my_scan(sql, "target"), None, "{sql}");
+        }
     }
 
     #[test]

@@ -933,6 +933,7 @@ async fn sqlserver_apply_changes() {
     let _serialised = serialised().await;
     let Some(d) = connect().await else { return };
     use changes_common::*;
+    composite_row_updates(&d, "dbo").await;
     commits_all_in_order(&d, "dbo").await;
     same_value_update_is_not_a_conflict(&d, "dbo").await;
     null_and_empty_inserts_stay_distinct(&d, "dbo").await;

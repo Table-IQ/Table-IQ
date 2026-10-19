@@ -25,13 +25,13 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
-use super::guard::{guard_sql, read_only_stmts};
+use super::guard::{self, guard_sql, read_only_stmts};
 use super::{mongo, record, redis, Activity, McpConfig, McpConn};
 use crate::connections::ConnConfig;
 use crate::drivers::{DriverError, SqlDriver};
 use crate::profiles;
 use crate::ipc::connect::{
-    cancel_registered, ckey, connect_inner, not_restoring, open_sql_session, replace_session, rows_of, ConnState,
+    cancel_registered, ckey, connect_inner, not_restoring, rows_of, ConnState,
     Rows,
 };
 use crate::drivers::CancelToken;
@@ -355,11 +355,20 @@ async fn session(host: &dyn Host, conn: &ConnConfig, rev: u32) -> Result<Arc<dyn
         Ok(d) => d,
         Err(_) => connect_once(state, &conn.id).await?,
     };
+    // SQL Server pins one session; never run agent BEGIN/ROLLBACK on the user's session.
+    let drv = if conn.engine == "sqlserver" {
+        drv.isolated_session().await.map_err(|e| e.to_string())?
+    } else { drv };
     drv.agent_access()?;
     // What the server says it is can postdate the entry (saved as plain PostgreSQL, shared,
     // and only now known to be CockroachDB).
     if let Some(reason) = profiles::reconfirm_block(conn.profile.as_deref(), drv.detected_product().as_deref(), rev) {
         return Err(reason);
+    }
+    if profiles::guard_engine(&conn.engine, conn.profile.as_deref(), drv.detected_product().as_deref()) == "tidb" {
+        if let Some(reason) = guard::tidb_database_block(&drv.database().unwrap_or_else(|| conn.database.clone())) {
+            return Err(reason);
+        }
     }
     if conn.engine == "duckdb" {
         harden_duckdb(drv.as_ref()).await?;
@@ -445,7 +454,10 @@ fn list_connections_body(host: &dyn Host, cfg: &McpConfig) -> Done {
 async fn list_databases_body(host: Arc<dyn Host>, cfg: Arc<McpConfig>, id: String) -> Done {
     let (conn, entry) = allowed(host.as_ref(), &cfg, &id)?;
     let drv = session(host.as_ref(), &conn, entry.rev).await?;
-    let dbs = drv.list_databases().await.map_err(|e| e.to_string())?;
+    let mut dbs = drv.list_databases().await.map_err(|e| e.to_string())?;
+    if profiles::guard_engine(&conn.engine, conn.profile.as_deref(), drv.detected_product().as_deref()) == "tidb" {
+        dbs.retain(|db| guard::tidb_database_block(db).is_none());
+    }
     let n = dbs.len();
     Ok((json(&dbs)?, Some(n)))
 }
@@ -453,10 +465,12 @@ async fn list_databases_body(host: Arc<dyn Host>, cfg: Arc<McpConfig>, id: Strin
 async fn list_tables_body(host: Arc<dyn Host>, cfg: Arc<McpConfig>, a: ListTablesArgs) -> Done {
     let (conn, entry) = allowed(host.as_ref(), &cfg, &a.connection_id)?;
     let drv = session(host.as_ref(), &conn, entry.rev).await?;
+    let tidb = profiles::guard_engine(&conn.engine, conn.profile.as_deref(), drv.detected_product().as_deref()) == "tidb";
     let model = drv.introspect().await.map_err(|e| e.to_string())?;
     let tables: Vec<TableSummary> = model
         .schemas
         .into_iter()
+        .filter(|s| !tidb || guard::tidb_database_block(&s.name).is_none())
         .filter(|s| a.schema.as_ref().is_none_or(|want| *want == s.name))
         .flat_map(|s| {
             let schema = s.name;
@@ -470,6 +484,9 @@ async fn list_tables_body(host: Arc<dyn Host>, cfg: Arc<McpConfig>, a: ListTable
 async fn describe_table_body(host: Arc<dyn Host>, cfg: Arc<McpConfig>, a: DescribeArgs) -> Done {
     let (conn, entry) = allowed(host.as_ref(), &cfg, &a.connection_id)?;
     let drv = session(host.as_ref(), &conn, entry.rev).await?;
+    if profiles::guard_engine(&conn.engine, conn.profile.as_deref(), drv.detected_product().as_deref()) == "tidb" {
+        if let Some(reason) = guard::tidb_database_block(&a.schema) { return Err(reason); }
+    }
     match drv.describe_table(&a.schema, &a.table).await {
         Ok(t) => Ok((json(&t)?, Some(t.columns.len()))),
         // Engines without a Structure query still know the columns from introspection.
@@ -543,7 +560,9 @@ async fn run_query_body(
         return Err("Query cancelled".into());
     }
     *crate::lk(&started) = Some(drv.clone());
-    let rows = rows_of(drv.as_ref(), &stmts, cap, &token).await;
+    let rows = rows_of(drv.as_ref(), &stmts, cap, &token).await.map_err(|e| {
+        if live_engine == "tidb" { guard::explain_tidb_error(&e).unwrap_or(e) } else { e }
+    });
     if writes {
         drv.forget_meta(); // it may have been DDL, as in `run_query`
     }
@@ -556,7 +575,7 @@ async fn run_query_body(
 /// `sql` as the statements to run on a connection the guard knows as `engine`: itself where
 /// writes are allowed, else inside the read-only transaction.
 fn guarded(engine: &str, sql: &str, writes: bool) -> Result<Vec<String>, String> {
-    if writes {
+    if writes && engine != "tidb" {
         guard_sql(engine, sql, true)?;
         Ok(vec![sql.to_string()])
     } else {
@@ -582,39 +601,9 @@ fn fit_rows(rows: &mut Rows, budget: usize) {
     }
 }
 
-/// Put a SQL Server session back after a timeout: the driver has one pinned connection and
-/// no cancel, so `old` was abandoned (`SqlDriver::abandon` kills and closes it) and is
-/// replaced here, on the database it was on — unless the connection has a new session
-/// already (⌘D mid-query), which is left alone.
-async fn reconnect(host: Arc<dyn Host>, id: String, old: Arc<dyn SqlDriver>) {
-    let state = host.conns();
-    let open = open_sql_session(state, &id, old.database().filter(|db| !db.is_empty()));
-    reconnect_with(state, &id, &old, open).await;
-}
-
-/// [`reconnect`] with the opening of the new session passed in (tests race ⌘D against it).
-/// The new session is installed only if `old` is still current once it is open.
-async fn reconnect_with(
-    state: &ConnState,
-    id: &str,
-    old: &Arc<dyn SqlDriver>,
-    open: impl Future<Output = Result<Arc<dyn SqlDriver>, String>>,
-) {
-    if !state.session(id).is_ok_and(|cur| same_driver(&cur, old)) {
-        return; // replaced already: nothing to open
-    }
-    match open.await {
-        Ok(new) => {
-            replace_session(state, id, old, new);
-        }
-        Err(e) => crate::applog::log("error", &format!("MCP: reconnecting {id} after a timeout failed: {e}")),
-    }
-}
-
-/// A SQL Server query past its deadline, its `token` already flagged. Still queued behind
-/// another query (it never recorded that it runs): stop waiting, nothing ran — `None`.
-/// Holding the pinned connection: abandon the session, then abort, and return the session
-/// to replace.
+/// A SQL Server query past its deadline, its `token` already flagged. Before execution,
+/// abort the pending connection attempt. Otherwise abandon the disposable agent session
+/// before aborting; the user's installed session is never replaced or closed.
 fn sqlserver_timeout(token: &CancelToken, started: &Started, abort: impl FnOnce()) -> Option<Arc<dyn SqlDriver>> {
     // Looked at only now, after the flag: a query that got the connection before it was set
     // recorded that it runs (`SqlServerDriver::run_statements`) — and its session in
@@ -634,6 +623,7 @@ fn sqlserver_timeout(token: &CancelToken, started: &Started, abort: impl FnOnce(
 }
 
 /// The same session object (by address; the vtable half of the pointer is irrelevant).
+#[cfg(test)]
 fn same_driver(a: &Arc<dyn SqlDriver>, b: &Arc<dyn SqlDriver>) -> bool {
     std::ptr::addr_eq(Arc::as_ptr(a), Arc::as_ptr(b))
 }
@@ -681,11 +671,14 @@ impl TiqMcp {
         self.call(&ext, "describe_table", Some(&id), None, work, |_| NOTHING_TO_STOP.into()).await
     }
 
-    #[tool(description = "Run exactly one SQL statement on a shared SQL connection and return its rows as JSON \
+    #[tool(description = "Run a SQL query on a shared SQL connection and return its rows as JSON \
                           ({columns, rows, truncated}). Read-only unless the user allowed writes for that \
-                          connection: reads run inside a read-only transaction, and writes, DDL and \
+                          connection: PostgreSQL/MySQL use read-only transactions; SQLite/DuckDB/SQL Server use \
+                          rollback wrappers plus SQL validation. Writes, DDL and \
                           transaction control are refused. Returns at most max_rows rows (never more than \
-                          the user's row cap); `truncated` is true when rows were cut to max_rows, the row cap \
+                          the user's row cap). SQL Server write-enabled batches may contain multiple statements and return \
+                          only the first result set; MySQL CALL can merge multiple result sets. A false \
+                          truncated flag does not prove those multi-result responses are complete. `truncated` is true when rows were cut to max_rows, the row cap \
                           or the response size limit. The result is then partial: filter or aggregate in SQL, \
                           or select fewer columns, rather than treating it as complete. A call that takes \
                           longer than 30 seconds times out and the error says what TableIQ did about the \
@@ -693,7 +686,8 @@ impl TiqMcp {
                           effect, or may still take effect (a DuckDB query keeps running until it finishes), \
                           so confirm its outcome before running it again. The connection must be a server \
                           TableIQ recognises as PostgreSQL, MySQL, MariaDB, CockroachDB, SQL Server, SQLite or \
-                          DuckDB; other compatible engines such as TiDB are refused.")]
+                          DuckDB and TiDB. TiDB is always read-only for agents, even when writes are allowed; \
+                          reads use an AS OF TIMESTAMP NOW(6) snapshot. Schema-changing roles still require administrator review. Other unreviewed compatible engines are refused.")]
     async fn run_query(&self, ext: Extensions, Parameters(a): Parameters<RunQueryArgs>) -> Result<String, String> {
         let (id, sql) = (a.connection_id.clone(), a.sql.clone());
         let engine = allowed(self.host.as_ref(), &self.cfg, &id).map(|(c, _)| c.engine).unwrap_or_default();
@@ -713,17 +707,14 @@ impl TiqMcp {
             match engine.as_str() {
                 "sqlserver" => {
                     let Some(drv) = sqlserver_timeout(&token, &started, || task.abort()) else {
-                        // Only waiting behind someone else's query (the user's own tab): just
-                        // stop waiting. Nothing ran, and their query is theirs to finish.
-                        return "It was still waiting for the SQL Server connection, which another \
-                                query is using; nothing ran."
+                        // No statement started on the agent's separate connection.
+                        return "It was still opening the separate SQL Server agent session; no query ran."
                             .into();
                     };
-                    // Ours held the connection: everything queued behind it fails, it ends
-                    // server-side, and a new session opens in its place.
-                    tokio::spawn(reconnect(host, id, drv));
-                    "SQL Server cannot cancel a running query, so TableIQ closed its connection \
-                     (rolling back anything uncommitted) and is reconnecting."
+                    // Close only this call's disposable session; the next call opens its own.
+                    drop(drv);
+                    "SQL Server cannot cancel a running query, so TableIQ is closing the agent session. \
+                     The user session is separate. Confirm the outcome before retrying writes."
                         .into()
                 }
                 "duckdb" => "DuckDB cannot interrupt a running query: it keeps running, and keeps one \
@@ -737,7 +728,7 @@ impl TiqMcp {
                             let _ = cancel_registered(&host.conns().cancels, drv.as_ref(), &key).await;
                         });
                     }
-                    "The query was cancelled.".into()
+                    "TableIQ scheduled a cancellation request. The database has not confirmed cancellation; the query may still complete.".into()
                 }
             }
         };
@@ -1000,14 +991,14 @@ mod tests {
         let tools = TiqMcp::tool_router().list_all();
         let desc = tools.iter().find(|t| t.name == "run_query").and_then(|t| t.description.as_deref()).unwrap();
         assert!(desc.contains(&format!("{} seconds", TOOL_TIMEOUT.as_secs())), "{desc}");
-        assert!(desc.contains("other compatible engines such as TiDB are refused"), "{desc}");
+        assert!(desc.contains("TiDB is always read-only for agents"), "{desc}");
     }
 
     /// The saved profile alone decides, before anything connects: a known compatible product
     /// and an id this build has never heard of are both out of reach.
     #[test]
     fn a_compatible_saved_profile_is_refused_before_connecting() {
-        for (profile, engine) in [("tidb", "mysql"), ("from-the-future", "mysql")] {
+        for (profile, engine) in [("doris", "mysql"), ("from-the-future", "mysql")] {
             let mut c = cfg_of("c", engine, "d");
             c.profile = Some(profile.into());
             let m = mcp(vec![c], &[("c", true)]);
@@ -1057,7 +1048,7 @@ mod tests {
             c.profile = profile.map(Into::into);
             c
         };
-        let conns = vec![with("pg", None), with("neon", Some("neon")), with("my", Some("tidb"))];
+        let conns = vec![with("pg", None), with("neon", Some("neon")), with("my", Some("doris"))];
         let m = mcp(conns, &[("pg", false), ("neon", false), ("my", false)]);
         let out = m.list_connections(Extensions::new()).await.unwrap();
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
@@ -1343,7 +1334,7 @@ mod tests {
         m.timeout = Duration::from_millis(300);
         let t0 = Instant::now();
         let e = query(&m, "slow", RUNAWAY).await.unwrap_err();
-        assert!(e.starts_with("Timed out") && e.contains("cancelled"), "{e}");
+        assert!(e.starts_with("Timed out") && e.contains("cancellation request"), "{e}");
         let freed = async {
             while m.slots.query.available_permits() < MAX_IN_FLIGHT {
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -1468,6 +1459,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl SqlDriver for Abandons {
+        async fn isolated_session(&self) -> crate::drivers::DResult<Arc<dyn SqlDriver>> {
+            self.0.lock().unwrap().push("isolate");
+            Ok(Arc::new(Abandons(Arc::default())))
+        }
+
         fn agent_access(&self) -> Result<(), String> {
             Ok(())
         }
@@ -1517,6 +1513,21 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn sql_server_agent_session_never_reuses_the_user_driver() {
+        let conn = cfg_of("isolated", "sqlserver", "master");
+        let state = ConnState::with_configs(vec![conn.clone()]);
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let user: Arc<dyn SqlDriver> = Arc::new(Abandons(calls.clone()));
+        state.adopt_session("isolated", user.clone());
+        let user = state.session("isolated").unwrap();
+        let agent = session(&state, &conn, 0).await.unwrap();
+        assert!(!same_driver(&agent, &user));
+        agent.abandon();
+        assert_eq!(*calls.lock().unwrap(), ["isolate"], "agent timeout never abandons the user");
+        assert!(same_driver(&state.session("isolated").unwrap(), &user));
+    }
+
     /// SQL Server timeout order: a query holding the connection is abandoned BEFORE its task
     /// is aborted — aborting hands the connection's lock to the next waiter, which must find
     /// it abandoned, not read the half-read stream. One still queued is only aborted.
@@ -1529,7 +1540,7 @@ mod tests {
         running.set_backend_id(51);
         running.mark_cancelled();
         let abandoned = sqlserver_timeout(&running, &started, || log.lock().unwrap().push("abort"));
-        assert!(abandoned.is_some(), "returned for reconnecting");
+        assert!(abandoned.is_some(), "returns the disposable agent session");
         assert_eq!(*log.lock().unwrap(), ["abandon", "abort"]);
 
         log.lock().unwrap().clear();
@@ -1537,36 +1548,6 @@ mod tests {
         queued.mark_cancelled();
         assert!(sqlserver_timeout(&queued, &started, || log.lock().unwrap().push("abort")).is_none());
         assert_eq!(*log.lock().unwrap(), ["abort"], "a queued query's connection is someone else's: not abandoned");
-    }
-
-    /// A reconnect opens its new session first and installs it only if the old one is still
-    /// current: ⌘D (or Reconnect) landing while it opens keeps the session it installed.
-    #[tokio::test]
-    async fn a_reconnect_never_replaces_a_session_installed_while_it_opened() {
-        let tmp = tempfile::tempdir().unwrap();
-        let conn = sqlite(&tmp, "recon").await;
-        let open = || async {
-            let d = crate::drivers::sqlite::SqliteDriver::connect(&conn.database).await.unwrap();
-            Arc::new(d) as Arc<dyn SqlDriver>
-        };
-        let state = ConnState::with_configs(vec![conn.clone()]);
-        state.adopt_session("recon", open().await);
-        let old = state.session("recon").unwrap();
-
-        let mine = open().await;
-        let ours = mine.clone();
-        let racing = async {
-            state.adopt_session("recon", open().await); // ⌘D, mid-reconnect
-            Ok(ours)
-        };
-        reconnect_with(&state, "recon", &old, racing).await;
-        let cur = state.session("recon").unwrap();
-        assert!(!same_driver(&cur, &mine) && !same_driver(&cur, &old), "⌘D's session stays");
-
-        // Nothing racing: the reconnect's session goes in.
-        let old = cur;
-        reconnect_with(&state, "recon", &old, async { Ok(mine.clone()) }).await;
-        assert!(same_driver(&state.session("recon").unwrap(), &mine));
     }
 
     /// A query that times out while still waiting for a pooled connection must not run once
@@ -1620,7 +1601,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
         m.timeout = Duration::from_millis(500);
         let e = query(m, id, &format!("INSERT INTO {table} VALUES (99)")).await.unwrap_err();
-        assert!(e.starts_with("Timed out") && e.contains("cancelled"), "{e}");
+        assert!(e.starts_with("Timed out") && e.contains("cancellation request"), "{e}");
         for (t, _) in &holders {
             let _ = drv.cancel(t).await;
         }
@@ -1702,85 +1683,47 @@ mod tests {
         crate::drivers::sqlserver::SqlServerDriver::connect(&host, port, &db, &user, &pass, "prefer").await.unwrap()
     }
 
-    /// SQL Server can't cancel, so an MCP timeout abandons the pinned connection. A call
+    /// An agent timeout abandons only its dedicated SQL Server connection. A call
     /// already queued on it must fail fast instead of reading the half-read stream (it used
     /// to hang 90s+), and the old server session must end. Live, gated on `TIQ_MSSQL_URL`.
     #[tokio::test]
-    async fn a_sql_server_timeout_fails_queued_calls_fast_and_ends_the_session() {
-        let Ok(ado) = std::env::var("TIQ_MSSQL_URL") else {
-            eprintln!("skipping: TIQ_MSSQL_URL not set");
-            return;
-        };
-        let drv = mssql(&ado).await;
-        let spid = drv.run_query("SELECT CAST(@@SPID AS varchar(10))", 1).await.unwrap();
-        let spid = arrow::util::display::array_value_to_string(spid.batch.column(0), 0).unwrap();
+    async fn a_sql_server_agent_timeout_preserves_the_user_transaction() {
+        let Some(ado) = required_mssql_url() else { return };
         let state = ConnState::with_configs(vec![cfg_of("mssql-live", "sqlserver", "master")]);
-        state.adopt_session("mssql-live", Arc::new(drv));
+        let user = Arc::new(mssql(&ado).await);
+        let setup = user.run_statements(&["CREATE TABLE #user_work (n int)".into(), "SET IMPLICIT_TRANSACTIONS ON".into(), "INSERT INTO #user_work VALUES (7)".into()], 10, &CancelToken::new()).await.unwrap();
+        assert!(setup.iter().all(|o| o.error.is_none()));
+        // Negative control: the old shared-session wrapper rolls back the user's work.
+        rows_of(user.as_ref(), &read_only_stmts("sqlserver", "SELECT 1").unwrap(), 10, &CancelToken::new()).await.unwrap();
+        let lost = user.run_query("SELECT COUNT(*) FROM #user_work", 1).await.unwrap();
+        assert_eq!(arrow::util::display::array_value_to_string(lost.batch.column(0), 0).unwrap(), "0");
+        let pending = user.run_statements(&["INSERT INTO #user_work VALUES (7)".into()], 10, &CancelToken::new()).await.unwrap();
+        assert!(pending.iter().all(|o| o.error.is_none()));
+        state.adopt_session("mssql-live", user.clone());
         let host: Arc<dyn Host> = Arc::new(state);
         let cfg = McpConfig { connections: vec![McpConn { id: "mssql-live".into(), writes: false, rev: 0 }], ..McpConfig::default() };
         let mut m = TiqMcp::new(host.clone(), Arc::new(cfg), fresh_slots());
+        let normal = query(&m, "mssql-live", "SELECT @@TRANCOUNT AS n").await.unwrap();
+        assert!(normal.contains("1"), "agent has only its own wrapper: {normal}");
+        let before = user.run_query("SELECT @@TRANCOUNT", 1).await.unwrap();
+        assert_eq!(arrow::util::display::array_value_to_string(before.batch.column(0), 0).unwrap(), "1");
         m.timeout = Duration::from_millis(1500);
-
-        let runaway = "SELECT count_big(*) FROM sys.all_objects a CROSS JOIN sys.all_objects b \
-                       CROSS JOIN sys.all_objects c CROSS JOIN sys.all_objects d";
-        let mcp_call = tokio::spawn(async move { query(&m, "mssql-live", runaway).await });
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        // A UI call (the grid, a query tab) queued behind the stuck query on the same connection.
-        let old = host.conns().session("mssql-live").unwrap();
-        let waiter = tokio::spawn(async move {
-            let t0 = Instant::now();
-            (old.run_query("SELECT 1", 1).await.err().map(|e| e.to_string()), t0.elapsed())
-        });
-
-        let e = mcp_call.await.unwrap().unwrap_err();
-        assert!(e.starts_with("Timed out") && e.contains("reconnecting"), "{e}");
-        let (err, waited) = tokio::time::timeout(Duration::from_secs(10), waiter).await.expect("the waiter hung").unwrap();
-        let err = err.expect("the queued call must fail, not read the abandoned stream");
-        assert!(err.contains("closed"), "{err}");
-        assert!(waited < Duration::from_secs(8), "{waited:?}");
-
-        // The old server-side session ends once its connection is closed.
-        let probe = mssql(&ado).await;
-        let sql = format!("SELECT count(*) FROM sys.dm_exec_sessions WHERE session_id = {spid}");
-        let mut gone = false;
-        for _ in 0..40 {
-            let r = probe.run_query(&sql, 1).await.unwrap();
-            if arrow::util::display::array_value_to_string(r.batch.column(0), 0).unwrap() == "0" {
-                gone = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-        assert!(gone, "session {spid} still alive 10s after its connection was closed");
+        let runaway = "SELECT count_big(*) FROM sys.all_objects a CROSS JOIN sys.all_objects b CROSS JOIN sys.all_objects c CROSS JOIN sys.all_objects d";
+        let e = query(&m, "mssql-live", runaway).await.unwrap_err();
+        assert!(e.starts_with("Timed out") && e.contains("agent session"), "{e}");
+        let after = user.run_query("SELECT @@TRANCOUNT, n FROM #user_work", 1).await.unwrap();
+        assert_eq!(arrow::util::display::array_value_to_string(after.batch.column(0), 0).unwrap(), "1");
+        assert_eq!(arrow::util::display::array_value_to_string(after.batch.column(1), 0).unwrap(), "7");
+        user.run_statements(&["ROLLBACK".into(), "SET IMPLICIT_TRANSACTIONS OFF".into()], 10, &CancelToken::new()).await.unwrap();
     }
 
-    /// An MCP query that times out while still QUEUED behind the user's own query on the
-    /// pinned SQL Server connection must just give up its place: no abandon, no KILL — the
-    /// user's query finishes normally and the connection stays usable. Live, gated.
-    #[tokio::test]
-    async fn a_sql_server_timeout_while_queued_leaves_the_users_query_alone() {
-        let Ok(ado) = std::env::var("TIQ_MSSQL_URL") else {
-            eprintln!("skipping: TIQ_MSSQL_URL not set");
-            return;
-        };
-        let state = ConnState::with_configs(vec![cfg_of("mssql-q", "sqlserver", "master")]);
-        state.adopt_session("mssql-q", Arc::new(mssql(&ado).await));
-        let host: Arc<dyn Host> = Arc::new(state);
-        let cfg = McpConfig { connections: vec![McpConn { id: "mssql-q".into(), writes: false, rev: 0 }], ..McpConfig::default() };
-        let mut m = TiqMcp::new(host.clone(), Arc::new(cfg), fresh_slots());
-        m.timeout = Duration::from_millis(1500);
-
-        // The user's query tab holds the connection for 4s.
-        let users = host.conns().session("mssql-q").unwrap();
-        let user = tokio::spawn(async move { users.run_query("WAITFOR DELAY '00:00:04'; SELECT 7", 1).await.map(|r| r.batch.num_rows()) });
-        tokio::time::sleep(Duration::from_millis(300)).await;
-
-        let e = query(&m, "mssql-q", "SELECT 1").await.unwrap_err();
-        assert!(e.starts_with("Timed out") && e.contains("waiting"), "{e}");
-        let done = tokio::time::timeout(Duration::from_secs(10), user).await.expect("user query hung").unwrap();
-        assert_eq!(done.map_err(|e| e.to_string()), Ok(1), "the user's query finished normally");
-        let after = host.conns().session("mssql-q").unwrap().run_query("SELECT 2", 1).await;
-        assert!(after.is_ok(), "the connection was not abandoned: {:?}", after.err().map(|e| e.to_string()));
+    fn required_mssql_url() -> Option<String> {
+        let value = std::env::var("TIQ_MSSQL_URL").ok();
+        if value.is_none() {
+            assert!(std::env::var("TIQ_REQUIRE_LIVE").as_deref() != Ok("1"), "TIQ_MSSQL_URL unset and TIQ_REQUIRE_LIVE=1");
+            eprintln!("SKIP: TIQ_MSSQL_URL unset");
+        }
+        value
     }
 
     /// A DuckDB instance whose configuration was locked with file access still on can't be

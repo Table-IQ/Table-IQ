@@ -241,7 +241,7 @@ describe("ConnectionSheet compatible-database picker", () => {
     expect(h).toContain(">TiDB<");
     expect(h).not.toContain("TiDB · Beta");
     expect(h).toContain("SSL mode");
-    expect(h).toContain("Not available for TiDB: backup and restore, user management, agent access.");
+    expect(h).toContain("Not available for TiDB: backup and restore, user management.");
     expect(h).not.toContain("grid editing");
     expect(h).not.toContain("Beta: not yet verified");
     expect(h).toMatch(/<button[^>]*aria-pressed="false"[^>]*title="MySQL \/ MariaDB"/);

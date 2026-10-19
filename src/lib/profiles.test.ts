@@ -139,7 +139,7 @@ describe("catalogUnavailable", () => {
 describe("agent access", () => {
   it("follows `real` unless a profile sets `agent`, and only CockroachDB does", () => {
     const differing = Object.entries(PROFILES).filter(([, p]) => (p.agent ?? p.real) !== p.real).map(([id]) => id);
-    expect(differing).toEqual(["cockroachdb"]);
+    expect(differing).toEqual(["tidb", "cockroachdb"]);
     expect(PROFILES.cockroachdb.real).toBe(false);
   });
 
@@ -147,7 +147,7 @@ describe("agent access", () => {
     for (const [id, p] of Object.entries(PROFILES)) {
       expect((p.agent ?? p.real) && !p.real, id).toBe((p.agentSince ?? 0) > 0);
     }
-    expect(AGENT_REV).toBe(REDIS_AGENT_SINCE);
+    expect(AGENT_REV).toBe(4);
     expect(MONGODB_AGENT_SINCE).toBeGreaterThan(PROFILES.cockroachdb.agentSince ?? 0);
     expect(REDIS_AGENT_SINCE).toBeGreaterThan(MONGODB_AGENT_SINCE);
   });
@@ -165,7 +165,7 @@ describe("capsOf", () => {
     expect(capsOf("postgres")).toEqual({ transactions: true, backup: true, userMgmt: true, agents: true });
     expect(capsOf("mysql", "doris")).toEqual({ transactions: false, backup: false, userMgmt: false, agents: false });
     expect(capsOf("postgres", "neon").agents).toBe(true);
-    expect(capsOf("mysql", "tidb").agents).toBe(false);
+    expect(capsOf("mysql", "tidb").agents).toBe(true);
     expect(capsOf("postgres", "cockroachdb").agents).toBe(true);
     expect(capsOf("postgres", "cockroachdb").backup).toBe(false); // agent access is its own flag
   });

@@ -1,6 +1,13 @@
 # Launch copy and publication checklist
 
-Status: drafts, not published assets. Owner: founder. Use only after the relevant [GTM gates](../GTM.md#3-launch-sequence-and-release-gates) pass. No download URL, customer endorsement, release evidence or paid product is implied by this file.
+Status: copy drafts and local tutorials; not published assets. Website implementation belongs to the separate `tableiq-website` repository, with independent Cloudflare Pages deployment planned. Owner: founder. Use only after the relevant [GTM gates](../GTM.md#3-launch-sequence-and-release-gates) pass. No download URL, customer endorsement, release evidence or paid product is implied by this file.
+
+## Local assets
+
+- [Postgres investigation tutorial](POSTGRES-WORKFLOW.md).
+- [MCP permissions tutorial](MCP-PERMISSIONS.md).
+
+The website repository contains a local landing-page draft, a synthetic example, and rendered tutorial snapshots. Engine behavior and security claims remain owned by this app repository; reconcile the website with the shipped release before publication. Website hosting, artifact details, a recording of the signed release build, and two consented user stories remain pending. No stories or consent records were supplied for this batch.
 
 ## Landing-page copy
 

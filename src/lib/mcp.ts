@@ -84,8 +84,8 @@ export function mcpRowState(conn: Pick<ConnConfig, "engine" | "profile">, shared
   if (capsOf(conn.engine, conn.profile).agents) {
     // An entry from before the product opened to agents reads unshared: sharing it again confirms it.
     const live = shared && !entryStale(conn, shared);
-    const writable = conn.engine !== "mongodb" && conn.engine !== "redis";
-    return { shareable: true, shared: !!live, writes: writable && !!live && !!shared?.writes, writable, note: null };
+    const writable = conn.engine !== "mongodb" && conn.engine !== "redis" && conn.profile !== "tidb";
+    return { shareable: true, shared: !!live, writes: writable && !!live && !!shared?.writes, writable, note: conn.profile === "tidb" ? "Always read-only for agents. Queries use a snapshot at query start. DDL protection depends on the SQL guard: use a SELECT-only database role." : null };
   }
   const p = profileOf(conn.engine, conn.profile);
   const note = p
@@ -127,8 +127,8 @@ export function pruneUnshareable(cfg: McpConfig, saved: readonly Pick<ConnConfig
     const c = by.get(e.id);
     return !!c && (!capsOf(c.engine, c.profile).agents || entryStale(c, e));
   };
-  const connections = cfg.connections.filter((e) => !stale(e));
-  return connections.length === cfg.connections.length ? cfg : { ...cfg, connections };
+  const connections = cfg.connections.filter((e) => !stale(e)).map((e) => by.get(e.id)?.profile === "tidb" && e.writes ? { ...e, writes: false } : e);
+  return connections.length === cfg.connections.length && connections.every((e, i) => e === cfg.connections[i]) ? cfg : { ...cfg, connections };
 }
 
 export function validPort(n: number): boolean {

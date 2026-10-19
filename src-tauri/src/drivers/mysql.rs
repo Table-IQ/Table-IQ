@@ -162,6 +162,10 @@ fn delete_sql(schema: &str, table: &str, pk: &[(String, Option<String>)]) -> (St
 /// One staged change as `(sql, binds)` — the same statements the single-row commands send.
 fn change_sql(schema: &str, table: &str, c: &Change) -> (String, Vec<Option<String>>) {
     match c {
+        Change::UpdateRow { pk, edits } => super::build_row_update_sql(
+            &format!("{}.{}", quote_ident(schema), quote_ident(table)), pk, edits, &quote_ident, &mysql_placeholder,
+            &|c, _| pk_match(c), &|c, _| value_match(c),
+        ),
         Change::Update { edit } => update_sql(schema, table, edit),
         Change::Delete { pk } => delete_sql(schema, table, pk),
         Change::Insert { values } => insert_sql(schema, table, values),
@@ -695,7 +699,13 @@ impl SqlDriver for MySqlDriver {
     fn caps(&self) -> crate::profiles::Caps {
         crate::profiles::caps_with_probe(self.saved.as_deref(), self.detected.as_deref(), self.tx_probe)
     }
+    fn database(&self) -> Option<String> {
+        self.pool.connect_options().get_database().map(str::to_owned)
+    }
     fn agent_access(&self) -> Result<(), String> {
+        if self.saved.as_deref() == Some("tidb") && self.detected.as_deref() != Some("tidb") {
+            return Err("This connection is saved as TiDB but the server did not identify itself as TiDB. Correct the profile before sharing it.".into());
+        }
         crate::profiles::agent_block("mysql", self.saved.as_deref(), self.detected.as_deref(), self.detect_ok)
             .map_or(Ok(()), Err)
     }

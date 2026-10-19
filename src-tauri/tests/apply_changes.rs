@@ -19,6 +19,7 @@ async fn pg() -> Option<PgDriver> {
 #[tokio::test]
 async fn pg_apply_changes() {
     let Some(d) = pg().await else { return };
+    composite_row_updates(&d, "public").await;
     commits_all_in_order(&d, "public").await;
     same_value_update_is_not_a_conflict(&d, "public").await;
     null_and_empty_inserts_stay_distinct(&d, "public").await;
@@ -37,6 +38,7 @@ async fn mysql_apply_changes() {
     // Schema = database: the URL's path segment.
     let db = url.rsplit('/').next().unwrap().split('?').next().unwrap().to_string();
     let d = MySqlDriver::connect(&url).await.expect("connect");
+    composite_row_updates(&d, &db).await;
     commits_all_in_order(&d, &db).await;
     same_value_update_is_not_a_conflict(&d, &db).await;
     null_and_empty_inserts_stay_distinct(&d, &db).await;
@@ -50,6 +52,7 @@ async fn sqlite_apply_changes() {
     // In-process: always runs.
     let dir = tempfile::tempdir().unwrap();
     let d = SqliteDriver::connect(dir.path().join("c.db").to_str().unwrap()).await.unwrap();
+    composite_row_updates(&d, "main").await;
     commits_all_in_order(&d, "main").await;
     same_value_update_is_not_a_conflict(&d, "main").await;
     null_and_empty_inserts_stay_distinct(&d, "main").await;
@@ -64,6 +67,7 @@ async fn duckdb_apply_changes() {
     let d = tableiq_lib::drivers::duckdb::DuckDriver::connect(dir.path().join("c.duckdb").to_str().unwrap())
         .await
         .unwrap();
+    composite_row_updates(&d, "main").await;
     commits_all_in_order(&d, "main").await;
     same_value_update_is_not_a_conflict(&d, "main").await;
     null_and_empty_inserts_stay_distinct(&d, "main").await;

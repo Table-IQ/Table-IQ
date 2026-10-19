@@ -349,6 +349,23 @@ pub fn get_password(conn_id: &str) -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Testing an edited connection preserves its saved password when the input is blank.
+/// Missing credentials mean an empty password; a locked/unavailable keychain is an error.
+pub fn password_for_test(conn_id: &str, typed: &str) -> Result<String, String> {
+    resolve_test_password(typed, || {
+        match keyring::Entry::new(KEYRING_SERVICE, conn_id).and_then(|e| e.get_password()) {
+            Ok(value) => Ok(Some(value)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(format!("Could not read the saved database password: {e}")),
+        }
+    })
+}
+
+fn resolve_test_password(typed: &str, read: impl FnOnce() -> Result<Option<String>, String>) -> Result<String, String> {
+    if !typed.is_empty() { return Ok(typed.to_owned()); }
+    Ok(read()?.unwrap_or_default())
+}
+
 pub fn delete_password(conn_id: &str) -> Result<(), String> {
     let entry = keyring::Entry::new(KEYRING_SERVICE, conn_id).map_err(|e| e.to_string())?;
     match entry.delete_credential() {
@@ -360,6 +377,14 @@ pub fn delete_password(conn_id: &str) -> Result<(), String> {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn test_password_uses_saved_only_for_blank_input_and_preserves_keychain_errors() {
+        assert_eq!(super::resolve_test_password("typed", || panic!("must not read keychain")).unwrap(), "typed");
+        assert_eq!(super::resolve_test_password("", || Ok(Some("saved".into()))).unwrap(), "saved");
+        assert_eq!(super::resolve_test_password("", || Ok(None)).unwrap(), "");
+        assert_eq!(super::resolve_test_password("", || Err("locked".into())).unwrap_err(), "locked");
+    }
+
     use super::*;
 
     pub(crate) fn cfg(engine: &str) -> ConnConfig {

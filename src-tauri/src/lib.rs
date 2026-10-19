@@ -133,6 +133,7 @@ pub fn invoke_handler<R: tauri::Runtime>(
         detect_backup_tools,
         restore_database,
         mcp::mcp_get_config,
+        mcp::mcp_role_warnings,
         mcp::mcp_set_config,
         mcp::mcp_status,
         mcp::mcp_token,

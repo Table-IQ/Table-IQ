@@ -495,6 +495,8 @@ fn fold_upper(s: &str) -> String {
             '\u{130}' => 'I',
             '\u{212A}' => 'K',
             '\u{17F}' => 'S',
+            // SQL Server's width-insensitive collations resolve these to ASCII names.
+            '\u{ff01}'..='\u{ff5e}' => char::from_u32(c as u32 - 0xfee0).unwrap(),
             c => c,
         })
         .collect()

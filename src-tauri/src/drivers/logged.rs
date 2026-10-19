@@ -23,6 +23,11 @@ pub struct Logged {
 
 #[async_trait]
 impl SqlDriver for Logged {
+    async fn isolated_session(&self) -> DResult<Arc<dyn SqlDriver>> {
+        let inner = self.inner.isolated_session().await?;
+        Ok(Arc::new(Self { inner, log: self.log.clone() }))
+    }
+
     async fn introspect(&self) -> DResult<SchemaModel> {
         CURRENT.scope(self.log.clone(), self.inner.introspect()).await
     }

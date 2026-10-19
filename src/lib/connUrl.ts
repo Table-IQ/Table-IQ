@@ -217,7 +217,7 @@ export function parseConnUrl(input: string): ParsedConnUrl | null {
   const engine = SCHEME_ENGINE[sc] ?? (isClickHouseHttp(sc, m[2]) ? "clickhouse" : isElasticHttp(sc, m[2]) ? "elasticsearch" : isRqliteHttp(sc, m[2]) ? "rqlite" : isMeiliHttp(sc, m[2]) ? "meilisearch" : isQdrantHttp(sc, m[2]) ? "qdrant" : isChromaHttp(sc, m[2]) ? "chroma" : isWeaviateHttp(sc, m[2]) ? "weaviate" : isInfluxHttp(sc, m[2]) ? "influxdb" : undefined) ?? PROFILES[profileForUrl(sc, "", null) ?? ""]?.base;
   if (!engine) return null;
   if (engine === "sqlite" || engine === "duckdb") {
-    return { engine, host: "", port: 0, username: "", password: "", database: safeDecode(m[2]) };
+    return { engine, host: "", port: 0, username: "", password: "", database: safeDecode(m[2].split(/[?#]/, 1)[0]) };
   }
   if (engine === "elasticsearch" || engine === "rqlite") {
     // The URL as typed, minus any `user:password@`, which go to the form's own fields.
@@ -284,7 +284,7 @@ export function toConnUrl(cfg: Pick<ConnConfig, "engine" | "profile" | "host" | 
     return `${(i < 0 ? url : url.slice(0, i)).replace(/\/+$/, "")}/${encodeURIComponent(cfg.database)}${i < 0 ? "" : url.slice(i)}`;
   }
   if (isUrlHost(cfg.engine, cfg.host)) return cfg.host; // already a URL
-  if (cfg.engine === "sqlite" || cfg.engine === "duckdb") return `${scheme}://${cfg.database}`;
+  if (cfg.engine === "sqlite" || cfg.engine === "duckdb") return `${scheme}://${encodeURI(cfg.database).replace(/[?#]/g, encodeURIComponent)}`;
   const user = cfg.username ? `${encodeURIComponent(cfg.username)}@` : "";
   const q =
     cfg.engine === "postgres" && cfg.sslmode && cfg.sslmode !== "prefer" ? `?sslmode=${cfg.sslmode}`
@@ -293,14 +293,19 @@ export function toConnUrl(cfg: Pick<ConnConfig, "engine" | "profile" | "host" | 
   return `${scheme}://${user}${cfg.host}:${cfg.port}/${encodeURIComponent(cfg.database)}${q}`;
 }
 
-export type ConnFieldErrors = Partial<Record<"host" | "port" | "database", string>>;
+export type ConnFieldErrors = Partial<Record<"host" | "port" | "database" | "sshhost" | "sshport", string>>;
 
 /** Blocking field errors for Save / Connect (Test still runs so the backend can explain). */
-export function validateConn(cfg: Pick<ConnConfig, "engine" | "host" | "port" | "database">): ConnFieldErrors {
+export function validateConn(cfg: Pick<ConnConfig, "engine" | "host" | "port" | "database"> & Pick<Partial<ConnConfig>, "ssh">): ConnFieldErrors {
   if (cfg.engine === "sqlite" || cfg.engine === "duckdb") {
     return cfg.database.trim() ? {} : { database: "Choose a database file" };
   }
   const e: ConnFieldErrors = {};
+  if (cfg.ssh?.enabled) {
+    if (!cfg.ssh.host.trim()) e.sshhost = "Required";
+    else if (/\s|[\/\\]/.test(cfg.ssh.host)) e.sshhost = "Use a hostname, IP address, or SSH alias";
+    if (!Number.isInteger(cfg.ssh.port) || cfg.ssh.port < 1 || cfg.ssh.port > 65535) e.sshport = "1–65535";
+  }
   if (!cfg.host.trim()) e.host = "Required";
   else if (isUrlEngine(cfg.engine) || isServerUrlEngine(cfg.engine)) {
     const secret = urlQuerySecret(/^[a-z+]+:\/\//i.test(cfg.host) ? cfg.host : `libsql://${cfg.host}`);

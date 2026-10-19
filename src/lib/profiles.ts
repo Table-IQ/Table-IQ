@@ -80,7 +80,7 @@ export function catalogUnavailable(feature: string, engine: string, profile?: st
 
 /** Why a closed product is not shared. Mirrored in `profiles.rs` (`AGENT_NOTE`). */
 export const AGENT_NOTE =
-  "TableIQ's agent guard has been reviewed for PostgreSQL, MySQL, MariaDB and CockroachDB only.";
+  "TableIQ's agent guard has been reviewed for PostgreSQL, MySQL, MariaDB, CockroachDB and TiDB only.";
 
 /** The generation that opened MongoDB to agents (`MONGODB_AGENT_SINCE` in `profiles.rs`). MongoDB has no
  *  profile to carry an `agentSince`; an entry older than this is not served for a `mongodb` connection. */

@@ -40,7 +40,7 @@ product): MariaDB, TiDB, CockroachDB, GreatSQL, Dolt, YugabyteDB, TimescaleDB, O
 StarRocks, PolarDB-X, Vitess, openGauss, QuestDB, Materialize and RisingWave. **Beta** (in the
 picker, marked "(Beta)", not verified): Apache Doris and Manticore Search, which fail a check,
 and the cloud-only Neon, Supabase, AlloyDB, PlanetScale, Amazon Redshift and SelectDB. Products without transactions open read-only
-in the grid, and a compatible product cannot be shared over MCP yet, except CockroachDB (MariaDB,
+in the grid, and a compatible product cannot be shared over MCP yet, except CockroachDB and TiDB (MariaDB,
 Neon, Supabase, TimescaleDB and AlloyDB can: they are the base engine under another name). A compatible
 product also has no Backup / Restore or User Management; MariaDB keeps backup but has no
 User Management.
@@ -83,10 +83,15 @@ and a **Metrics Board**, a per-connection dashboard of read-only widgets (number
 line or table) that refresh on a timer and reject any query that would write data.
 
 **Backup / Restore Database** (⌘K) use `pg_dump` / `pg_restore` / `psql`, `mysqldump` / `mysql`,
-SQL Server `BACKUP` / `RESTORE`, or a file copy for SQLite and DuckDB. Restore asks you to type
-the database name. Plain Postgres dumps are checked for explicit database-switch, include
-and shell meta-commands before psql starts. Restore only trusted dumps: validation is not
-a sandbox for arbitrary SQL or other client commands.
+SQL Server `BACKUP` / `RESTORE`, SQLite's native online backup API, or a file copy for DuckDB.
+Restore asks you to type the database name. SQLite coordinates with other open connections;
+a busy writer causes refusal without unlinking the database or its WAL. Plain Postgres dumps
+are checked for explicit database-switch, include and shell meta-commands before psql starts.
+MySQL dumps reject foreign database names in USE/CREATE/DROP/ALTER and qualified references,
+including quoted numeric names. That conservative scan also rejects foreign-looking table
+aliases. Restore only trusted dumps with a role restricted to the target database: these
+checks are not a sandbox for arbitrary SQL, dynamic routines, SQL-mode ambiguity, other
+client commands, or replacement of the dump file after validation.
 
 **MCP server** (Settings → MCP): Claude Code or Claude Desktop can list and query the connections
 you tick, over `http://127.0.0.1:7431/mcp` with a bearer token. It's local only and read-only by
@@ -146,11 +151,12 @@ TIQ_MSSQL_URL="Server=tcp:127.0.0.1,51433;User Id=sa;Password=TableIQ_pw1;Databa
 ```
 
 CI (`.github/workflows/ci.yml`) runs `tsc`, `vitest`, `vite build`, `cargo test` (against
-live Postgres, MySQL, TiDB, CockroachDB and MariaDB containers), and
-`cargo clippy --all-targets -- -D warnings` on every pull request. It also re-runs
-`profile_live` and `mysql_ssl_live` with `TIQ_REQUIRE_LIVE=1`, which turns a missing URL into
-a failure instead of a skip. SQL Server is deliberately left out of CI (a 1.5 GB image for a
-handful of tests) and runs locally, where the container is already up.
+live Postgres, MySQL, TiDB, CockroachDB, MariaDB and SQL Server containers), and
+`cargo clippy --all-targets -- -D warnings` on every pull request. Required live suites run
+with `TIQ_REQUIRE_LIVE=1`, which turns a missing URL into a failure instead of a skip.
+SQL Server coverage includes guards, agent/user transaction isolation, backup and restore.
+The local validation record distinguishes executed cases from optional skips; a configured
+CI workflow is not evidence that a remote run has passed.
 
 ## Test databases
 
@@ -235,8 +241,9 @@ The MCP guard (`src-tauri/src/mcp/guard.rs`, adversarial suite in `src-tauri/tes
 refuses the common literal forms of statements that reach beyond the database, even on a connection
 that allows writes: server files (`COPY … TO PROGRAM`, `INTO OUTFILE`, `BULK INSERT`), plugins, other
 sessions (`KILL`, `FLUSH TABLES WITH READ LOCK`, `XA`), server configuration (`ALTER SYSTEM`,
-`SET GLOBAL`, `sp_configure`), and anything that would outlive the batch on the one session SQL
-Server shares with the app (`USE`, `BEGIN TRAN`, every `SET` session option but `NOCOUNT`). Those
+`SET GLOBAL`, `sp_configure`), and SQL Server session-changing statements (`USE`, `BEGIN TRAN`,
+every `SET` session option but `NOCOUNT`). Each SQL Server agent call uses its own connection,
+so its transaction wrapper and timeout cleanup do not touch the user's session. Those
 words are refused outside a string or quoted name, comments included, so a column named `load`
 or `restart` must be quoted (`"load"`, `` `restart` ``) on a writes-allowed connection (MariaDB's
 `ALTER SEQUENCE … RESTART` is refused there too). Dynamic SQL (`DO`/`EXEC('…')`), routine bodies
@@ -246,6 +253,20 @@ languages, CLR assemblies) are the database role's job: share a writes-allowed c
 least-privilege role. Bulk import (`COPY FROM STDIN`, `LOAD DATA LOCAL`) goes through the app's
 Import, not MCP. Known residuals: a MySQL user variable (`SELECT @a := 1`) persists on the pooled
 session, and SQL Server `NEXT VALUE FOR` advances a sequence (a gap, not a data change).
+
+MCP timeouts report a cancellation request, not confirmed cancellation. SQL Server abandons
+only the disposable agent session; server termination depends on completion or permission
+to kill it. Write-enabled SQL Server batches may contain multiple statements and return only
+the first result set; MySQL CALL can merge result sets. In those cases `truncated: false`
+does not prove a complete response. PostgreSQL/MySQL use read-only transactions plus SQL
+validation; SQLite/DuckDB/SQL Server use validation plus rollback wrappers. TiDB always uses
+a guarded read-only snapshot, even if an old policy requests writes; see the
+[engine matrix](docs/ENGINES.md#tidb-over-mcp-read-only-snapshots).
+
+MCP settings show advisory warnings for elevated Postgres/MySQL/SQL Server roles. No warning
+is not proof of least privilege; inherited/custom grants and functions still need review.
+See the [permissions guide](docs/launch/MCP-PERMISSIONS.md) and
+[release verification record](docs/launch/RELEASE-VALIDATION.md).
 
 ## Recommended IDE Setup
 

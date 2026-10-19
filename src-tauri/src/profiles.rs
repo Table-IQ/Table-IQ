@@ -149,7 +149,7 @@ pub fn agent_block(base: &str, saved: Option<&str>, detected: Option<&str>, dete
 
 /// Why a closed product is not shared. Mirrored in `mcp.ts`.
 pub const AGENT_NOTE: &str =
-    "TableIQ's agent guard has been reviewed for PostgreSQL, MySQL, MariaDB and CockroachDB only.";
+    "TableIQ's agent guard has been reviewed for PostgreSQL, MySQL, MariaDB, CockroachDB and TiDB only.";
 
 /// Why an allowlist entry confirmed under generation `rev` cannot be served yet: the product
 /// behind the connection (saved or detected) was opened to agents after it was shared, so
@@ -164,10 +164,11 @@ pub fn reconfirm_block(saved: Option<&str>, detected: Option<&str>, rev: u32) ->
     })
 }
 
-/// The engine the MCP guard runs for: `base`, or `"cockroachdb"` when the saved or the detected
-/// profile says so (the guard adds that product's own checks to the Postgres ones).
+/// The guard dialect: `base`, or CockroachDB/TiDB when either the saved or detected profile
+/// requires the product's additional checks and read-only transaction wrapper.
 pub fn guard_engine<'a>(base: &'a str, saved: Option<&str>, detected: Option<&str>) -> &'a str {
-    if base == "postgres" && [saved, detected].contains(&Some("cockroachdb")) { "cockroachdb" } else { base }
+    if base == "mysql" && [saved, detected].contains(&Some("tidb")) { "tidb" }
+    else if base == "postgres" && [saved, detected].contains(&Some("cockroachdb")) { "cockroachdb" } else { base }
 }
 
 #[cfg(test)]
@@ -217,10 +218,10 @@ mod tests {
 
     #[test]
     fn detect_is_deterministic() {
-        // MariaDB and TiDB both match. MariaDB is the longer marker, but it is the base
-        // engine and TiDB is not: the text must not read as a server agents may reach.
+        // MariaDB and TiDB both match. TiDB wins because it needs a stricter snapshot
+        // wrapper even though MariaDB has the longer marker.
         assert_eq!(detect("mysql", "5.7.0-TiDB-v1 MariaDB"), Some("tidb"));
-        assert!(agent_block("mysql", None, detect("mysql", "10.6.0-MariaDB TiDB Server"), true).is_some());
+        assert!(agent_block("mysql", None, detect("mysql", "10.6.0-MariaDB TiDB Server"), true).is_none());
         assert_eq!(detect("mysql", "11.4.2-MariaDB-ubu2404 mariadb.org binary distribution"), Some("mariadb"));
         // OceanBase (9) and TiDB (4), neither the base engine: the longest marker wins.
         assert_eq!(detect("mysql", "x TiDB OceanBase"), Some("oceanbase"));
@@ -292,8 +293,8 @@ mod tests {
         let m = agent_block("postgres", Some("neon"), None, false).unwrap();
         assert!(m.contains("could not identify this server"), "{m}");
         // A compatible product is named even when the version query also failed.
-        let m = agent_block("mysql", Some("tidb"), None, false).unwrap();
-        assert!(m.contains("TiDB cannot be shared over MCP yet"), "{m}");
+        let m = agent_block("mysql", Some("doris"), None, false).unwrap();
+        assert!(m.contains("Apache Doris cannot be shared over MCP yet"), "{m}");
         // The detected product alone blocks a connection saved as plain MySQL; MariaDB does not.
         assert!(agent_block("mysql", None, Some("mariadb"), true).is_none());
         // CockroachDB is open to agents (its guard is reviewed); a profile that is not stays refused.
@@ -309,9 +310,9 @@ mod tests {
     #[test]
     fn agent_follows_real_unless_set() {
         let differing: Vec<&str> = PROFILES.iter().filter(|(_, p)| p.agent() != p.real).map(|(id, _)| id.as_str()).collect();
-        assert_eq!(differing, ["cockroachdb"]);
+        assert_eq!(differing, ["cockroachdb", "tidb"]);
         assert!(!lookup("cockroachdb").unwrap().real, "the drivers still treat it as a compatible product");
-        assert!(lookup("neon").unwrap().agent() && !lookup("tidb").unwrap().agent());
+        assert!(lookup("neon").unwrap().agent() && lookup("tidb").unwrap().agent());
     }
 
     /// A product opened to agents without being the base engine says when, so entries older
@@ -321,7 +322,7 @@ mod tests {
         for (id, p) in PROFILES.iter() {
             assert_eq!(p.agent() && !p.real, p.agent_since > 0, "{id}");
         }
-        assert_eq!(agent_rev(), REDIS_AGENT_SINCE);
+        assert_eq!(agent_rev(), 4);
         assert!(MONGODB_AGENT_SINCE > lookup("cockroachdb").unwrap().agent_since, "a later opening than any product's");
         const { assert!(REDIS_AGENT_SINCE > MONGODB_AGENT_SINCE, "each opening is a generation of its own") };
     }
@@ -358,14 +359,14 @@ mod tests {
 
     #[test]
     fn agent_block_reasons() {
-        let m = agent_block("mysql", None, Some("tidb"), true).unwrap();
-        assert!(m.contains("TiDB cannot be shared over MCP yet"), "{m}");
+        let m = agent_block("mysql", None, Some("doris"), true).unwrap();
+        assert!(m.contains("Apache Doris cannot be shared over MCP yet"), "{m}");
         let m = agent_block("mysql", None, None, false).unwrap();
         assert!(m.contains("could not identify this server"), "{m}");
         let m = agent_block("mysql", Some("from-the-future"), None, true).unwrap();
         assert!(m.contains("was saved by a newer TableIQ"), "{m}");
         // An empty saved profile is no profile: what was detected still decides.
-        let m = agent_block("mysql", Some(""), Some("tidb"), true).unwrap();
-        assert!(m.contains("TiDB cannot be shared over MCP yet"), "{m}");
+        let m = agent_block("mysql", Some(""), Some("doris"), true).unwrap();
+        assert!(m.contains("Apache Doris cannot be shared over MCP yet"), "{m}");
     }
 }
