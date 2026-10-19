@@ -13,6 +13,7 @@ export function StagedReview({
   align = "left",
   footnote = "Each UPDATE also checks the row still holds the value it was loaded with. If any row changed, nothing is committed.",
   committing,
+  commitBlockedReason,
   onCommit,
   onDiscard,
   onClose,
@@ -27,6 +28,7 @@ export function StagedReview({
   /** Which edge of its wrapper the popover hangs from (default left). */
   align?: "left" | "right";
   committing: boolean;
+  commitBlockedReason?: string;
   onCommit: () => void;
   onDiscard: () => void;
   onClose: () => void;
@@ -82,7 +84,7 @@ export function StagedReview({
         dangerouslySetInnerHTML={{ __html: html ?? highlightSql(sql) }}
       />
       <div className="border-t border-border px-3 py-1.5 text-[10.5px] text-muted">
-        {footnote}
+        {commitBlockedReason ?? footnote}
       </div>
       <div className="flex items-center justify-end gap-2 border-t border-border px-3 py-2">
         <button
@@ -96,7 +98,8 @@ export function StagedReview({
         <button
           type="button"
           onClick={onCommit}
-          disabled={committing}
+          disabled={committing || !!commitBlockedReason}
+          title={commitBlockedReason}
           className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1 text-xs font-medium text-white hover:bg-primary-hover disabled:opacity-70"
         >
           {committing && (

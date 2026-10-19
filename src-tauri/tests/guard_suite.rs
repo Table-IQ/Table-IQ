@@ -10,11 +10,17 @@
 //! words: `mcp::server::harden_duckdb` turns external access off and locks the configuration
 //! (pinned by `a_shared_duckdb_instance_loses_external_access`).
 //!
+//! TiDB is shared read-only whatever the connection says (`guard_sql("tidb", s, true)` is
+//! `guard_sql("tidb", s, false)`), so for it the runner checks that parity instead of a
+//! writes-mode expectation, and every MySQL row runs against it too.
+//!
 //! Every wrong verdict is collected and reported at once, not just the first one.
 
-use tableiq_lib::mcp::guard::{guard_sql, read_only_stmts, widget_stmts};
+use tableiq_lib::mcp::guard::{
+    guard_sql, read_only_stmts, tidb_database_block, widget_stmts, TIDB, WRITE_REFUSAL,
+};
 
-const ENGINES: [&str; 6] = ["postgres", "cockroachdb", "mysql", "sqlite", "duckdb", "sqlserver"];
+const ENGINES: [&str; 7] = ["postgres", "cockroachdb", "mysql", "tidb", "sqlite", "duckdb", "sqlserver"];
 
 /// Refused on a read-only connection; a writes-allowed one may run it.
 const RO_ONLY: bool = false;
@@ -218,6 +224,96 @@ const REFUSE: &[(&str, &str, bool, &str)] = &[
     ("encoding", "*", ALWAYS, "SELECT 1 /* unterminated"),
     ("encoding", "postgres", ALWAYS, "SELECT U&\"pg\\005fread\\005ffile\"('/etc/passwd')"),
     ("encoding", "duckdb", ALWAYS, "SELECT U&'\\0027'"),
+    // --- the MySQL base (MySQL, MariaDB, TiDB): TiDB's executable comment runs its body ---
+    ("multi-statement", "mysql", ALWAYS, "SELECT 1 /*T![clustered_index] , 2 */"),
+    ("multi-statement", "mysql", ALWAYS, "SELECT 1 /*T! ; DROP TABLE t */"),
+    // --- sequences advance outside the transaction: a read-only connection refuses them ---
+    ("sequence", "mysql", RO_ONLY, "SELECT NEXTVAL(s)"),
+    ("sequence", "mysql", RO_ONLY, "SELECT SETVAL(s, 1)"),
+    ("sequence", "mysql", RO_ONLY, "SELECT LASTVAL(s)"),
+    ("sequence", "mysql", RO_ONLY, "SELECT NEXT VALUE FOR s"),
+    ("sequence", "mysql", RO_ONLY, "SELECT NEXT /**/ VALUE FOR s"),
+    ("sequence", "mysql", RO_ONLY, "SELECT next\n  value # c\n for s"),
+    ("sequence", "mysql", RO_ONLY, "SELECT `nextval`('s')"),
+    ("sequence", "mysql", RO_ONLY, "SELECT nextval /* c */ (s)"),
+    // --- names TiDB folds to ASCII (Go case folding: İ is I, the Kelvin sign is K, ſ is S) ---
+    ("encoding", "mysql", ALWAYS, "SELECT GET_LOC\u{212a}('x', 0)"),
+    ("encoding", "mysql", ALWAYS, "SELECT LOAD_F\u{130}LE('x')"),
+    ("encoding", "tidb", ALWAYS, "SELECT * FROM \u{130}NFORMATION_SCHEMA.CLUSTER_CONFIG"),
+    ("encoding", "tidb", ALWAYS, "SELECT * FROM `\u{130}nformation_schema`.cluster_log"),
+    ("encoding", "tidb", ALWAYS, "SELECT T\u{130}DB_DECODE_SQL_DIGESTS('[]')"),
+    ("encoding", "tidb", ALWAYS, "SELECT * FROM METR\u{130}CS_SCHEMA.up"),
+    ("encoding", "tidb", ALWAYS, "SELECT * FROM performance_schema.T\u{130}DB_PROFILE_CPU"),
+    ("encoding", "tidb", ALWAYS, "SELECT * FROM performance_\u{17f}chema.tidb_profile_cpu"),
+    ("encoding", "tidb", ALWAYS, "SELECT * FROM mysql.tidb_\u{17f}napshot_\u{212a}"),
+    // --- TiDB: statements of its own, all refused (it is read-only to agents) ---
+    ("tidb-statement", "tidb", ALWAYS, "ADMIN CHECK TABLE t"),
+    ("tidb-statement", "tidb", ALWAYS, "ADMIN CANCEL DDL JOBS 1"),
+    ("tidb-statement", "tidb", ALWAYS, "IMPORT INTO t FROM 's3://b/x.csv'"),
+    ("tidb-statement", "tidb", ALWAYS, "PLAN REPLAYER DUMP EXPLAIN SELECT 1"),
+    ("tidb-statement", "tidb", ALWAYS, "BATCH ON id LIMIT 10 DELETE FROM t"),
+    ("tidb-statement", "tidb", ALWAYS, "SPLIT TABLE t BETWEEN (0) AND (10) REGIONS 2"),
+    ("tidb-statement", "tidb", ALWAYS, "FLASHBACK TABLE t"),
+    ("tidb-statement", "tidb", ALWAYS, "RECOVER TABLE t"),
+    ("tidb-statement", "tidb", ALWAYS, "TRACE SELECT 1"),
+    ("tidb-statement", "tidb", ALWAYS, "RENAME TABLE a TO b"),
+    ("tidb-statement", "tidb", ALWAYS, "SET GLOBAL tidb_enable_noop_functions = ON"),
+    ("tidb-statement", "tidb", ALWAYS, "EXPLAIN ANALYZE INSERT INTO t VALUES (1)"),
+    ("tidb-statement", "tidb", ALWAYS, "CREATE TABLE x (a int)"),
+    ("tidb-statement", "tidb", ALWAYS, "SELECT 1; CREATE TABLE x (a int)"),
+    ("tidb-statement", "tidb", ALWAYS, "INSERT INTO t VALUES (1)"),
+    // --- TiDB: the snapshot is TableIQ's ---
+    ("tidb-snapshot", "tidb", ALWAYS, "SET @@tidb_snapshot = '2026-10-18 00:00:00'"),
+    ("tidb-snapshot", "tidb", ALWAYS, "SELECT * FROM t AS OF TIMESTAMP NOW()"),
+    ("tidb-snapshot", "tidb", ALWAYS, "SELECT * FROM t AS /* c */ OF\nTIMESTAMP NOW()"),
+    // --- TiDB: functions with side effects or outside the snapshot ---
+    ("side-effect-fn", "tidb", ALWAYS, "SELECT GET_LOCK('x', 1)"),
+    ("side-effect-fn", "tidb", ALWAYS, "SELECT RELEASE_LOCK('x')"),
+    ("side-effect-fn", "tidb", ALWAYS, "SELECT RELEASE_ALL_LOCKS()"),
+    ("side-effect-fn", "tidb", ALWAYS, "SELECT IS_USED_LOCK('x')"),
+    ("side-effect-fn", "tidb", ALWAYS, "SELECT IS_FREE_LOCK('x')"),
+    ("side-effect-fn", "tidb", ALWAYS, "SELECT TIDB_DECODE_SQL_DIGESTS('[]')"),
+    ("side-effect-fn", "tidb", ALWAYS, "SELECT TIDB_MVCC_INFO('x')"),
+    ("side-effect-fn", "tidb", ALWAYS, "SELECT * FROM t AS OF TIMESTAMP TIDB_BOUNDED_STALENESS(NOW() - INTERVAL 5 SECOND, NOW())"),
+    // --- TiDB: the cluster's logs, other servers and other sessions' SQL (MCP only) ---
+    ("tidb-catalog", "tidb", ALWAYS, "SELECT * FROM INFORMATION_SCHEMA.CLUSTER_SLOW_QUERY"),
+    ("tidb-catalog", "tidb", ALWAYS, "SELECT * FROM INFORMATION_SCHEMA.CLUSTER_CONFIG"),
+    ("tidb-catalog", "tidb", ALWAYS, "SELECT * FROM INFORMATION_SCHEMA.CLUSTER_LOG"),
+    ("tidb-catalog", "tidb", ALWAYS, "SELECT * FROM information_schema.`CLUSTER_LOG`"),
+    ("tidb-catalog", "tidb", ALWAYS, "SELECT * FROM `information_schema` . /* c */ `cluster_log`"),
+    ("tidb-catalog", "tidb", ALWAYS, "SELECT * FROM INFORMATION_SCHEMA.SLOW_QUERY"),
+    ("tidb-catalog", "tidb", ALWAYS, "SELECT * FROM INFORMATION_SCHEMA.DDL_JOBS"),
+    ("tidb-catalog", "tidb", ALWAYS, "SELECT * FROM performance_schema.tidb_profile_cpu"),
+    ("tidb-catalog", "tidb", ALWAYS, "SELECT * FROM METRICS_SCHEMA.up"),
+    ("tidb-catalog", "tidb", ALWAYS, "SELECT * FROM t JOIN metrics_schema.tidb_qps USING (k)"),
+    ("tidb-catalog", "tidb", ALWAYS, "SHOW CONFIG"),
+    ("tidb-catalog", "tidb", ALWAYS, "SHOW\nCONFIG"),
+    ("tidb-catalog", "tidb", ALWAYS, "SHOW /* c */ CONFIG"),
+    ("tidb-catalog", "tidb", ALWAYS, "SHOW PLACEMENT LABELS"),
+    ("tidb-catalog", "tidb", ALWAYS, "SHOW TABLE t REGIONS"),
+    ("tidb-catalog", "tidb", ALWAYS, "SHOW TABLE t NEXT_ROW_ID"),
+    ("tidb-catalog", "tidb", ALWAYS, "SHOW TABLE t INDEX i REGIONS"),
+    ("tidb-catalog", "tidb", ALWAYS, "SHOW TABLE `status` REGIONS"),
+    ("tidb-catalog", "tidb", ALWAYS, "SHOW DDL JOBS"),
+    ("tidb-catalog", "tidb", ALWAYS, "SHOW STATS_META"),
+    ("tidb-catalog", "tidb", ALWAYS, "SHOW IMPORT JOBS"),
+    ("tidb-catalog", "tidb", ALWAYS, "SHOW BACKUPS"),
+    ("tidb-catalog", "tidb", ALWAYS, "SHOW PUMP STATUS"),
+    ("tidb-catalog", "tidb", ALWAYS, "SHOW SESSION_STATES"),
+    ("tidb-catalog", "tidb", ALWAYS, "SHOW TABLE status REGIONS"),
+    ("tidb-catalog", "tidb", ALWAYS, "SHOW TABLE status INDEX i REGIONS"),
+    ("tidb-catalog", "tidb", ALWAYS, "SHOW TABLE status NEXT_ROW_ID"),
+    // --- TiDB: its internal schemas hold other sessions' SQL and cluster jobs (MCP only) ---
+    ("tidb-catalog", "tidb", ALWAYS, "SELECT * FROM mysql.tidb_mdl_view"),
+    ("tidb-catalog", "tidb", ALWAYS, "SELECT * FROM `mysql`.`tidb_runaway_queries`"),
+    ("tidb-catalog", "tidb", ALWAYS, "SELECT * FROM sys.schema_unused_indexes"),
+    ("tidb-catalog", "tidb", ALWAYS, "SELECT * FROM mysql/**/.bind_info"),
+    ("tidb-catalog", "tidb", ALWAYS, "SELECT * FROM mysql # c\n.tidb_ddl_history"),
+    ("tidb-catalog", "tidb", ALWAYS, "SELECT * FROM t JOIN SYS . x USING (k)"),
+    // --- TiDB: hints that raise a read's quota or leave its resource group (MCP only) ---
+    ("tidb-hint", "tidb", ALWAYS, "SELECT /*+ SET_VAR(tidb_mem_quota_query=1) */ 1"),
+    ("tidb-hint", "tidb", ALWAYS, "SELECT /*+ MEMORY_QUOTA(1024 MB) */ * FROM t"),
+    ("tidb-hint", "tidb", ALWAYS, "SELECT /*+ use_index(t, i) resource_group(rg) */ * FROM t"),
 ];
 
 /// Plain reads: allowed on both kinds of connection and in a Metrics widget.
@@ -244,6 +340,42 @@ const ALLOW: &[(&str, &str)] = &[
     ("cockroachdb", "EXPLAIN ANALYZE SELECT 1"),
     ("cockroachdb", "SELECT cluster_logical_timestamp(), gen_random_uuid()"),
     ("cockroachdb", "SELECT * FROM t@{FORCE_INDEX=idx} AS OF SYSTEM TIME '-1s'"),
+    // TiDB: what MySQL shows, its own per-node views, and a user's tables that merely
+    // share a prefix with a system family (no system schema named).
+    // (`SHOW CREATE …` and `SHOW CHARACTER SET` stay refused on every read-only MySQL-base
+    // connection: `CREATE` and `SET` are write keywords anywhere in the text.)
+    ("tidb", "SHOW TABLES"),
+    ("tidb", "SHOW FULL TABLES FROM app"),
+    ("tidb", "SHOW FULL COLUMNS FROM t"),
+    ("tidb", "SHOW TABLE STATUS"),
+    ("tidb", "SHOW INDEX FROM t"),
+    ("tidb", "SHOW SESSION VARIABLES LIKE 'tidb%'"),
+    ("tidb", "SHOW CHARSET"),
+    ("tidb", "SHOW FULL PROCESSLIST"),
+    ("tidb", "SHOW GRANTS"),
+    ("tidb", "SELECT * FROM INFORMATION_SCHEMA.STATEMENTS_SUMMARY"),
+    ("tidb", "SELECT * FROM information_schema.tidb_indexes WHERE table_name = 't'"),
+    ("tidb", "SELECT * FROM INFORMATION_SCHEMA.PROCESSLIST"),
+    ("tidb", "SELECT table_name FROM information_schema.tables"),
+    ("tidb", "SELECT * FROM metrics_daily"),
+    ("tidb", "SELECT * FROM cluster_nodes"),
+    ("tidb", "SELECT * FROM slow_query_log"),
+    ("tidb", "SELECT TIDB_VERSION(), TIDB_PARSE_TSO(1), SLEEP(0)"),
+    ("tidb", "SELECT /*+ USE_INDEX(t, i) */ * FROM t"),
+    ("tidb", "SELECT @@tidb_snapshot"),
+    ("tidb", "SHOW TABLE STATUS LIKE 't%'"),
+    ("tidb", "SHOW TABLE STATUS FROM app"),
+    ("tidb", "SHOW BUILTINS"),
+    ("tidb", "SHOW PRIVILEGES"),
+    ("tidb", "SHOW TRIGGERS"),
+    ("tidb", "SHOW OPEN TABLES"),
+    ("tidb", "SHOW FUNCTION STATUS"),
+    ("tidb", "SHOW PROCEDURE STATUS"),
+    ("tidb", "SELECT 'mysql' AS s"),
+    ("tidb", "SELECT sys, mysql_version FROM mysql_users"),
+    // Sequence names that are not calls.
+    ("mysql", "SELECT nextval FROM t"),
+    ("mysql", "SELECT * FROM t WHERE c = 'nextval'"),
 ];
 
 /// Reads a read-only connection and a widget run as before, but a writes-allowed connection
@@ -262,6 +394,9 @@ const ALLOW_WRITES: &[(&str, &str)] = &[
     ("postgres", "ALTER TABLE t ADD COLUMN \"system\" int"),
     ("mysql", "INSERT INTO notes VALUES ('Please restart, install guide, clone, kill, outfile, global')"),
     ("mysql", "SELECT `restart` FROM t"),
+    // A writes-allowed MySQL or MariaDB keeps its sequences.
+    ("mysql", "SELECT NEXTVAL(s)"),
+    ("mysql", "SELECT NEXT VALUE FOR s"),
     ("sqlserver", "INSERT INTO notes VALUES ('bulk order, backup, restore, kill, shutdown, dbcc, execute as')"),
     ("sqlserver", "EXEC dbo.sp_oauth_refresh"),
     ("sqlserver", "CREATE PROCEDURE p WITH EXECUTE AS OWNER AS SELECT 1"),
@@ -296,7 +431,17 @@ fn engines(e: &str) -> Vec<&str> {
         "*" => ENGINES.to_vec(),
         // CockroachDB is Postgres plus lists of its own: every Postgres case holds for it too.
         "postgres" => vec!["postgres", "cockroachdb"],
+        // TiDB is MySQL plus lists of its own: every MySQL attack is refused on it too.
+        "mysql" => vec!["mysql", TIDB],
         _ => vec![e],
+    }
+}
+
+/// TiDB never runs with writes: its writes-mode verdict must be its read-only one, for any row.
+fn tidb_parity(wrong: &mut Vec<String>, table: &str, sql: &str) {
+    let (ro, rw) = (guard_sql(TIDB, sql, false), guard_sql(TIDB, sql, true));
+    if ro != rw {
+        wrong.push(format!("[{table}] tidb writes-allowed differs from read-only {sql:?}: {rw:?} vs {ro:?}"));
     }
 }
 
@@ -308,7 +453,9 @@ fn every_attack_class_is_refused_and_plain_sql_is_not() {
             if read_only_stmts(e, sql).is_ok() {
                 wrong.push(format!("[{class}] {e} read-only ALLOWED {sql:?}"));
             }
-            if *always && guard_sql(e, sql, true).is_ok() {
+            if e == TIDB {
+                tidb_parity(&mut wrong, class, sql);
+            } else if *always && guard_sql(e, sql, true).is_ok() {
                 wrong.push(format!("[{class}] {e} writes-allowed ALLOWED {sql:?}"));
             }
         }
@@ -322,6 +469,10 @@ fn every_attack_class_is_refused_and_plain_sql_is_not() {
                 if let Err(m) = widget_stmts(e, sql) {
                     wrong.push(format!("[{table}] {e} widget REFUSED {sql:?}: {m}"));
                 }
+                if e == TIDB {
+                    tidb_parity(&mut wrong, table, sql);
+                    continue;
+                }
                 match (guard_sql(e, sql, true), writes_ok) {
                     (Err(m), true) => wrong.push(format!("[{table}] {e} writes-allowed REFUSED {sql:?}: {m}")),
                     (Ok(()), false) => wrong.push(format!("[{table}] {e} writes-allowed ALLOWED {sql:?}")),
@@ -332,7 +483,9 @@ fn every_attack_class_is_refused_and_plain_sql_is_not() {
     }
     for (e, sql) in ALLOW_WRITES {
         for e in engines(e) {
-            if let Err(m) = guard_sql(e, sql, true) {
+            if e == TIDB {
+                tidb_parity(&mut wrong, "allow-writes", sql);
+            } else if let Err(m) = guard_sql(e, sql, true) {
                 wrong.push(format!("[allow-writes] {e} REFUSED {sql:?}: {m}"));
             }
         }
@@ -368,4 +521,93 @@ fn a_huge_comment_line_is_checked_in_linear_time() {
         let _ = guard_sql(e, &sql, true);
     }
     assert!(started.elapsed() < std::time::Duration::from_secs(2), "took {:?}", started.elapsed());
+}
+
+/// A Metrics widget is the user's own SQL on their own connection: TiDB's cluster tables and
+/// `SHOW` forms are refused to agents only. Everything else holds for widgets too.
+#[test]
+fn tidb_catalog_limits_are_for_agents_only() {
+    for sql in [
+        "SELECT * FROM INFORMATION_SCHEMA.SLOW_QUERY",
+        "SELECT * FROM METRICS_SCHEMA.up",
+        "SHOW CONFIG",
+        "SELECT /*+ SET_VAR(tidb_mem_quota_query=1) */ 1",
+        "SELECT * FROM mysql.tidb_ddl_history",
+        // TiDB itself refuses a statement read timestamp inside the snapshot transaction.
+        "SELECT * FROM t AS OF TIMESTAMP NOW()",
+    ] {
+        assert!(widget_stmts(TIDB, sql).is_ok(), "widget: {sql:?}: {:?}", widget_stmts(TIDB, sql));
+        assert!(guard_sql(TIDB, sql, false).is_err(), "MCP: {sql:?} must be refused");
+    }
+    for sql in ["CREATE TABLE x (a int)", "SELECT RELEASE_LOCK('x')", "SELECT NEXT VALUE FOR s", "SELECT 1 /*T! , 2 */"] {
+        assert!(widget_stmts(TIDB, sql).is_err(), "widget: {sql:?} must be refused");
+    }
+    // MySQL itself has no such tables or SHOW forms to limit.
+    assert_eq!(guard_sql("mysql", "SELECT * FROM INFORMATION_SCHEMA.CLUSTER_LOG", false), Ok(()));
+    assert_eq!(guard_sql("mysql", "SHOW CONFIG", false), Ok(()));
+}
+
+const FAMILY: &str = " is not available to agents on TiDB: it reads node log files, another server, or other \
+                      sessions' SQL across the cluster.";
+const NO_ALTERNATIVE: &str = " There is no agent alternative; the user can see it in TableIQ's Metrics widgets.";
+const SEE: &str = "See docs/ENGINES.md#tidb-over-mcp";
+
+/// One template for every denied catalog name and `SHOW`, naming the allowed alternative
+/// where there is one.
+#[test]
+fn a_tidb_catalog_refusal_names_the_alternative() {
+    let msg = guard_sql(TIDB, "SELECT * FROM INFORMATION_SCHEMA.CLUSTER_SLOW_QUERY", false).unwrap_err();
+    assert_eq!(
+        msg,
+        format!(
+            "CLUSTER_SLOW_QUERY{FAMILY} Use INFORMATION_SCHEMA.STATEMENTS_SUMMARY instead; the user can see \
+             the rest in TableIQ's Metrics widgets. {SEE}"
+        )
+    );
+    let msg = guard_sql(TIDB, "SELECT * FROM information_schema.cluster_processlist", false).unwrap_err();
+    assert!(msg.starts_with("CLUSTER_PROCESSLIST is not") && msg.contains("Use INFORMATION_SCHEMA.PROCESSLIST instead"), "{msg}");
+    let none = |name: &str| {
+        format!("{name}{FAMILY} There is no agent alternative; the user can see it in TableIQ's Metrics widgets. {SEE}")
+    };
+    assert_eq!(guard_sql(TIDB, "SELECT * FROM INFORMATION_SCHEMA.CLUSTER_CONFIG", false), Err(none("CLUSTER_CONFIG")));
+    assert_eq!(guard_sql(TIDB, "SELECT * FROM metrics_schema.up", false), Err(none("METRICS_SCHEMA")));
+    let show = "SHOW CONFIG is not available to agents on TiDB: it reaches cluster placement, regions, jobs or \
+                configuration.";
+    assert_eq!(guard_sql(TIDB, "SHOW\nconfig", false), Err(format!("{show}{NO_ALTERNATIVE} {SEE}")));
+    let internal = "mysql.* is not available to agents on TiDB: TiDB's internal tables hold other sessions' SQL \
+                    and cluster jobs.";
+    assert_eq!(guard_sql(TIDB, "SELECT * FROM mysql.tidb_mdl_view", false), Err(format!("{internal}{NO_ALTERNATIVE} {SEE}")));
+}
+
+#[test]
+fn a_tidb_connection_on_a_system_schema_is_blocked() {
+    let want = "This connection's database is metrics_schema, which agents cannot query on TiDB; share a \
+                connection to an application database.";
+    assert_eq!(tidb_database_block("metrics_schema").as_deref(), Some(want));
+    assert!(tidb_database_block("INFORMATION_SCHEMA").is_some());
+    assert!(tidb_database_block("Performance_Schema").is_some());
+    assert!(tidb_database_block("\u{130}nformation_schema").is_some());
+    assert!(tidb_database_block("mysql").is_some());
+    assert!(tidb_database_block("SYS").is_some());
+    assert_eq!(tidb_database_block("app"), None);
+    assert_eq!(tidb_database_block("metrics_daily"), None);
+}
+
+#[test]
+fn a_custom_tidb_read_timestamp_is_refused_by_name() {
+    let want = "TableIQ chooses the snapshot (query start); a custom read timestamp is not supported over MCP.";
+    assert_eq!(guard_sql(TIDB, "SELECT * FROM t AS OF TIMESTAMP NOW()", false), Err(want.to_string()));
+    assert_eq!(guard_sql(TIDB, "SET @@tidb_snapshot = '2026-10-18 00:00:00'", true), Err(want.to_string()));
+}
+
+/// Callers (the MCP server) recognise a write refusal by its prefix, on TiDB with writes too.
+#[test]
+fn a_tidb_write_refusal_starts_with_the_shared_prefix() {
+    for writes in [false, true] {
+        for sql in ["INSERT INTO t VALUES (1)", "CREATE TABLE x (a int)", "ADMIN CHECK TABLE t", "SELECT NEXT VALUE FOR s"] {
+            let msg = guard_sql(TIDB, sql, writes).unwrap_err();
+            assert!(msg.starts_with(WRITE_REFUSAL), "{sql:?} (writes {writes}): {msg}");
+        }
+    }
+    assert!(guard_sql("mysql", "DELETE FROM t", false).unwrap_err().starts_with(WRITE_REFUSAL));
 }

@@ -25,8 +25,6 @@ export interface Profile {
   agent?: boolean;
   /** The generation (`AGENT_REV`) that opened it to agents; an allowlist entry older than that must be re-shared. */
   agentSince?: number;
-  /** Why agents cannot reach it, in the user's words; absent: `AGENT_NOTE`. */
-  agentNote?: string;
   transactions: boolean;
   backup: boolean;
   userMgmt: boolean;
@@ -80,7 +78,7 @@ export function catalogUnavailable(feature: string, engine: string, profile?: st
   return p && !p.real ? `${feature} aren't available on ${p.label} yet.` : null;
 }
 
-/** Why a product without an `agentNote` is not shared. Mirrored in `profiles.rs` (`AGENT_NOTE`). */
+/** Why a closed product is not shared. Mirrored in `profiles.rs` (`AGENT_NOTE`). */
 export const AGENT_NOTE =
   "TableIQ's agent guard has been reviewed for PostgreSQL, MySQL, MariaDB and CockroachDB only.";
 

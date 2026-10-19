@@ -32,7 +32,6 @@
       ".tidbcloud.com"
     ],
     "real": false,
-    "agentNote": "TiDB rejects START TRANSACTION READ ONLY unless tidb_enable_noop_functions is on, and then the statement does nothing, so TableIQ cannot make an agent's connection read-only.",
     "transactions": true,
     "backup": false,
     "userMgmt": false,

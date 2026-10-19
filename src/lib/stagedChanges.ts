@@ -88,14 +88,49 @@ export function buildBatch(snap: StagedSnapshot, pk: string[], rowOffset: number
 /** Rust `drivers::CHANGED_SINCE_LOADED`: an update's optimistic match found 0 rows. */
 export const CHANGED_SINCE_LOADED = "row changed since it was loaded";
 
+/** A transport/COMMIT failure can arrive after the database committed. Keep this latch
+ *  until the local batch has been discarded and a fresh page has loaded. */
+export interface CommitState {
+  inFlight: boolean;
+  uncertain: boolean;
+}
+
+export const UNCERTAIN_COMMIT =
+  "The previous commit may have succeeded. Copy the pending SQL if needed, then discard the local batch and reload before making further changes. Discard does not undo database changes.";
+
+function commitFailure(err: unknown): { message: string; change: RegExpExecArray | null } {
+  const message = String((err as { message?: string })?.message ?? err);
+  return { message, change: /^change (\d+): ([\s\S]*)$/.exec(message) };
+}
+
+/** All commit entry points share this state, including repeated calls before React paints.
+ *  Indexed failures precede COMMIT; unclassified failures must never be blindly retried. */
+export async function attemptCommit(
+  state: CommitState,
+  write: () => Promise<unknown>,
+  labels: string[],
+): Promise<{ ok: boolean; message: string | null }> {
+  if (state.uncertain) return { ok: false, message: UNCERTAIN_COMMIT };
+  if (state.inFlight) return { ok: false, message: "A commit is already in progress." };
+  state.inFlight = true;
+  try {
+    await write();
+    return { ok: true, message: null };
+  } catch (err) {
+    state.uncertain = !commitFailure(err).change;
+    return { ok: false, message: commitErrorMessage(err, labels) };
+  } finally {
+    state.inFlight = false;
+  }
+}
+
 /** A failed commit, for the status line. `change {i}: …` errors come from inside the
  *  rolled-back transaction, so they say nothing was committed; anything else (not
  *  connected, a failed COMMIT, a dropped connection) may or may not have committed,
  *  so it says the result is uncertain. */
 export function commitErrorMessage(err: unknown, labels: string[]): string {
-  const msg = String((err as { message?: string })?.message ?? err);
-  const m = /^change (\d+): ([\s\S]*)$/.exec(msg);
-  if (!m) return `Commit failed: ${msg} — the result is uncertain; refresh to check before retrying`;
+  const { message: msg, change: m } = commitFailure(err);
+  if (!m) return `Commit failed: ${msg} — ${UNCERTAIN_COMMIT}`;
   const i = Number(m[1]);
   const who = labels[i] ?? `Change ${i + 1}`;
   return m[2] === CHANGED_SINCE_LOADED

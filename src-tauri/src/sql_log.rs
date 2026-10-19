@@ -138,8 +138,9 @@ pub fn init_tracing() {
 /// Mask secrets: the literal after `PASSWORD` or `*_PASSWORD` (`[FOR account] [=] …`), after
 /// `SECRET` or `*_SECRET` (`[=] …`), and after MySQL's `IDENTIFIED [WITH plugin] BY|AS …`
 /// (plus its `REPLACE …`). A literal is `'…'`, a prefixed `N'…'`/`E'…'`/`X'…'`, `$tag$…$tag$`,
-/// or the first argument of a call such as `PASSWORD('…')`; MySQL's `"…"` counts after `=`
-/// and `IDENTIFIED BY|AS`. Comments between a keyword and its value are skipped.
+/// or the arguments of a call such as `PASSWORD('…')`; MySQL's `"…"` counts after `=`
+/// and `IDENTIFIED BY|AS`. Adjacent literals and unquoted assignment values (conninfo)
+/// are masked too. Comments between a keyword and its value are skipped.
 ///
 /// Keyword-anchored and fail-closed: nothing before a keyword is parsed, so no comment,
 /// string or odd escape earlier in the text can hide a password. A keyword that sits inside
@@ -214,8 +215,8 @@ fn is_kw(w: &[u8], kw: &[u8]) -> bool {
             && w[w.len() - kw.len()..].eq_ignore_ascii_case(kw))
 }
 
-/// Skip whitespace and comments (`-- …` to the line end, `/* … */`; unterminated runs to
-/// the end). Whitespace is `char::is_whitespace`, not just ASCII — SQL Server accepts a
+/// Skip whitespace and comments (`-- …` / `# …` to the line end, nested `/* … */`;
+/// unterminated runs to the end). Whitespace is `char::is_whitespace`, not just ASCII — SQL Server accepts a
 /// non-breaking space (U+00A0) anywhere plain whitespace is legal — decoded one char at a
 /// time so `i` only ever advances by a whole char and stays on a char boundary (`b` is the
 /// UTF-8 bytes of the original `&str`, so `&b[i..]` is always valid UTF-8 there).
@@ -228,10 +229,22 @@ fn skip_ws(b: &[u8], mut i: usize) -> usize {
             }
         }
         let rest = b.get(i..).unwrap_or_default();
-        if rest.starts_with(b"--") {
+        if rest.starts_with(b"--") || rest.starts_with(b"#") {
             i = rest.iter().position(|&c| c == b'\n').map_or(b.len(), |p| i + p);
         } else if rest.starts_with(b"/*") {
-            i = b[i + 2..].windows(2).position(|w| w == b"*/").map_or(b.len(), |p| i + 2 + p + 2);
+            i += 2;
+            let mut depth = 1;
+            while i < b.len() && depth > 0 {
+                if b[i..].starts_with(b"/*") {
+                    depth += 1;
+                    i += 2;
+                } else if b[i..].starts_with(b"*/") {
+                    depth -= 1;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
         } else {
             return i;
         }
@@ -291,9 +304,27 @@ fn literal_at(b: &[u8], i: usize, dq: bool) -> Option<(usize, usize)> {
     Some((k + 1, end))
 }
 
-/// The literal at `i`, or the first argument of a call there (`PASSWORD('…')`).
+/// Position after a literal's closing delimiter (including a dollar quote's full tag).
+fn after_literal(b: &[u8], start: usize, mask: (usize, usize)) -> usize {
+    let delimiter = if b.get(start) == Some(&b'$') { mask.0 - start } else { 1 };
+    (mask.1 + delimiter).min(b.len())
+}
+
+/// The literal at `i` (including SQL's adjacent literal continuation), or a call's
+/// complete argument list. A simple single-literal call keeps its quotes in the log;
+/// complex expressions are masked in full rather than exposing later arguments.
 fn value_at(b: &[u8], i: usize, dq: bool) -> Option<(usize, usize)> {
-    if let Some(m) = literal_at(b, i, dq) {
+    if let Some(mut m) = literal_at(b, i, dq) {
+        let mut next = after_literal(b, i, m);
+        loop {
+            let start = skip_ws(b, next);
+            if start == next {
+                break;
+            }
+            let Some(tail) = literal_at(b, start, dq) else { break };
+            m.1 = tail.1;
+            next = after_literal(b, start, tail);
+        }
         return Some(m);
     }
     let mut k = i;
@@ -301,7 +332,37 @@ fn value_at(b: &[u8], i: usize, dq: bool) -> Option<(usize, usize)> {
         k += 1;
     }
     let k = skip_ws(b, k);
-    (b.get(k) == Some(&b'(')).then(|| literal_at(b, skip_ws(b, k + 1), dq)).flatten()
+    if b.get(k) != Some(&b'(') {
+        return None;
+    }
+    let start = skip_ws(b, k + 1);
+    if let Some(m) = literal_at(b, start, dq) {
+        if b.get(skip_ws(b, after_literal(b, start, m))) == Some(&b')') {
+            return Some(m);
+        }
+    }
+    let mut end = k + 1;
+    let mut depth = 1;
+    while end < b.len() {
+        end = skip_ws(b, end);
+        if let Some(m) = literal_at(b, end, true) {
+            end = after_literal(b, end, m);
+            continue;
+        }
+        match b.get(end) {
+            Some(b'(') => depth += 1,
+            Some(b')') => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            None => break,
+            _ => {}
+        }
+        end += 1;
+    }
+    Some((k + 1, end))
 }
 
 /// After a keyword: `[FOR account] [=] value` (`FOR` only after `PASSWORD`).
@@ -318,7 +379,26 @@ fn value_after(b: &[u8], i: usize, allow_for: bool) -> Option<(usize, usize)> {
     if eq {
         j = skip_ws(b, j + 1);
     }
-    value_at(b, j, eq)
+    value_at(b, j, eq).or_else(|| {
+        // libpq conninfo can sit inside a SQL string: password=unquoted-value.
+        // Leave parameter placeholders alone. Over-mask other assignment expressions.
+        if !eq || matches!(b.get(j), None | Some(b'$' | b'?' | b'@' | b':' | b';' | b',' | b')')) {
+            return None;
+        }
+        let mut end = j;
+        while end < b.len() {
+            let c = std::str::from_utf8(&b[end..]).ok()?.chars().next()?;
+            if c.is_whitespace() || matches!(c, '\'' | '"' | ';' | ',' | ')') {
+                break;
+            }
+            // A conninfo backslash escapes the following character, including whitespace.
+            end += c.len_utf8();
+            if c == '\\' && end < b.len() {
+                end += std::str::from_utf8(&b[end..]).ok()?.chars().next()?.len_utf8();
+            }
+        }
+        (end > j).then_some((j, end))
+    })
 }
 
 /// After `IDENTIFIED`: `[WITH plugin] BY|AS value [REPLACE value]`.
@@ -349,6 +429,26 @@ fn identified(b: &[u8], i: usize, masks: &mut Vec<(usize, usize)>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redacts_commented_continued_and_computed_passwords_and_conninfo() {
+        for sql in [
+            "ALTER ROLE u PASSWORD /* outer /* inner */ still outer */ 'LEAK_NESTED'",
+            "SET PASSWORD = # mysql comment\n 'LEAK_HASH'",
+            "ALTER ROLE u PASSWORD 'first'\n 'LEAK_CONTINUATION'",
+            "SET PASSWORD = CONCAT('first', 'LEAK_CONCAT')",
+            "SELECT dblink('host=localhost password=LEAK_CONN dbname=test', 'SELECT 1')",
+            "SET PASSWORD = CONCAT('first)', CONCAT('second', 'LEAK_NESTED_CALL'))",
+            "ALTER ROLE u PASSWORD $pw$first$pw$\n $pw$LEAK_DOLLAR$pw$",
+            "SELECT dblink('password=first\\ LEAK_ESCAPED dbname=test', 'SELECT 1')",
+        ] {
+            let out = redact(sql);
+            assert!(!out.contains("LEAK_"), "secret leaked: {out}");
+            for (end, _) in sql.char_indices() {
+                let _ = redact(&sql[..end]);
+            }
+        }
+    }
 
     #[test]
     fn ring_keeps_the_newest_cap_entries() {

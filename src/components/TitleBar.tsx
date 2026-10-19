@@ -165,6 +165,7 @@ export function TitleBar(p: TitleBarProps) {
               sql={api.preview()}
               total={count}
               committing={committing}
+              commitBlockedReason={api.commitBlockedReason}
               onCommit={api.commit}
               onDiscard={api.discard}
               onClose={() => setReview(false)}
@@ -185,8 +186,8 @@ export function TitleBar(p: TitleBarProps) {
           }
           label="Commit changes"
           shortcut="⌘S"
-          disabled={noStaged}
-          title={reason}
+          disabled={noStaged || !!api?.commitBlockedReason}
+          title={api?.commitBlockedReason ?? reason}
           onClick={() => api?.commit()}
         />
       </Capsule>

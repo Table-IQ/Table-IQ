@@ -28,9 +28,6 @@ pub struct Profile {
     /// confirmed under an earlier one is not served until the user re-shares the connection.
     #[serde(default, rename = "agentSince")]
     pub agent_since: u32,
-    /// Why agents cannot reach it, in the user's words; absent: the general reason.
-    #[serde(default, rename = "agentNote")]
-    pub agent_note: Option<String>,
 }
 
 impl Profile {
@@ -141,9 +138,8 @@ pub fn agent_block(base: &str, saved: Option<&str>, detected: Option<&str>, dete
     }
     if let Some(p) = [saved, detected].into_iter().flatten().filter_map(lookup).find(|p| !p.agent()) {
         return Some(format!(
-            "{} cannot be shared over MCP yet: {} Ask the user to run this in a TableIQ query tab.",
-            p.label,
-            p.agent_note.as_deref().unwrap_or(AGENT_NOTE)
+            "{} cannot be shared over MCP yet: {AGENT_NOTE} Ask the user to run this in a TableIQ query tab.",
+            p.label
         ));
     }
     (!detect_ok).then(|| {
@@ -151,7 +147,7 @@ pub fn agent_block(base: &str, saved: Option<&str>, detected: Option<&str>, dete
     })
 }
 
-/// Why a product without an `agentNote` is not shared. Mirrored in `mcp.ts`.
+/// Why a closed product is not shared. Mirrored in `mcp.ts`.
 pub const AGENT_NOTE: &str =
     "TableIQ's agent guard has been reviewed for PostgreSQL, MySQL, MariaDB and CockroachDB only.";
 
@@ -328,14 +324,6 @@ mod tests {
         assert_eq!(agent_rev(), REDIS_AGENT_SINCE);
         assert!(MONGODB_AGENT_SINCE > lookup("cockroachdb").unwrap().agent_since, "a later opening than any product's");
         const { assert!(REDIS_AGENT_SINCE > MONGODB_AGENT_SINCE, "each opening is a generation of its own") };
-    }
-
-    #[test]
-    fn a_closed_product_names_its_own_reason() {
-        let m = agent_block("mysql", Some("tidb"), None, true).unwrap();
-        assert!(m.contains("START TRANSACTION READ ONLY") && m.contains("cannot make an agent's connection read-only"), "{m}");
-        let m = agent_block("mysql", Some("doris"), None, true).unwrap();
-        assert!(m.contains(AGENT_NOTE), "{m}");
     }
 
     #[test]

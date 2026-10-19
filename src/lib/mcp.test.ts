@@ -14,7 +14,7 @@ import {
   validRowCap,
 } from "./mcp";
 import type { McpConfig } from "./commands";
-import { AGENT_NOTE, AGENT_REV, MONGODB_AGENT_SINCE, PROFILES, REDIS_AGENT_SINCE } from "./profiles";
+import { AGENT_NOTE, AGENT_REV, MONGODB_AGENT_SINCE, REDIS_AGENT_SINCE } from "./profiles";
 
 const base: McpConfig = { enabled: true, port: 7431, row_cap: 500, connections: [] };
 
@@ -70,9 +70,8 @@ describe("mcpRowState (a connection's row in Settings → MCP)", () => {
   it("a compatible product cannot be shared, whatever the stored allowlist says", () => {
     expect(mcpRowState({ engine: "mysql", profile: "tidb" }, undefined)).toMatchObject({
       shareable: false,
-      note: `Not available over MCP yet: ${PROFILES.tidb.agentNote}`,
+      note: `Not available over MCP yet: ${AGENT_NOTE}`,
     });
-    expect(PROFILES.tidb.agentNote).toContain("START TRANSACTION READ ONLY");
     expect(mcpRowState({ engine: "mysql", profile: "doris" }, undefined).note).toBe(
       `Not available over MCP yet: ${AGENT_NOTE}`,
     );

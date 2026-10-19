@@ -91,9 +91,22 @@ const DUCKDB_FILE_FUNCTIONS: [&str; 5] = ["READ_*", "GLOB", "*_SCAN", "SNIFF_CSV
 /// Postgres's, so [`base_engine`] maps it back.
 pub const COCKROACHDB: &str = "cockroachdb";
 
+/// The `engine` for a TiDB server: MySQL's rules plus the lists below, and always read-only —
+/// [`guard`] ignores `writes` for it. Its read-only transaction refuses DML but not DDL or
+/// `SET GLOBAL` (2026-10-18 probe, TiDB 8.5.7), so on TiDB the guard is the only DDL barrier.
+pub const TIDB: &str = "tidb";
+
 fn base_engine(engine: &str) -> &str {
-    if engine == COCKROACHDB { "postgres" } else { engine }
+    match engine {
+        COCKROACHDB => "postgres",
+        TIDB => "mysql",
+        _ => engine,
+    }
 }
+
+/// Every write refusal starts with this, so a caller can tell one from any other refusal
+/// (the MCP server adds why TiDB never takes writes).
+pub const WRITE_REFUSAL: &str = "Only read-only SQL is allowed here";
 
 /// CockroachDB's functions that write files, change cluster state or act on other sessions,
 /// from v26.3.2's `pg_proc`, refused anywhere in the text like the Postgres list. The server
@@ -128,6 +141,227 @@ const CRDB_ESCAPE_WORDS: [&str; 7] =
 /// Statements that act on other sessions and jobs: refused as the first keyword, since a bare
 /// `RESUME` is a plausible column name.
 const CRDB_ESCAPE_FIRST: [&str; 3] = ["CANCEL", "PAUSE", "RESUME"];
+
+/// TiDB's functions that act on other sessions or reach past the snapshot, refused anywhere in
+/// the text like MySQL's list (which already has `GET_LOCK` and `LOAD_FILE`): the user-level
+/// locks, other sessions' statement text (`TIDB_DECODE_SQL_DIGESTS`, around the
+/// `CLUSTER_STATEMENTS_SUMMARY` deny), old and deleted row versions (`TIDB_MVCC_INFO`) and a
+/// stale read timestamp (`TIDB_BOUNDED_STALENESS`). Sequences are refused on the read-only path
+/// instead ([`SEQUENCE_FUNCTIONS`]), so a writes-allowed MariaDB keeps them.
+const TIDB_FUNCTIONS: [&str; 7] = [
+    "RELEASE_LOCK", "RELEASE_ALL_LOCKS", "IS_USED_LOCK", "IS_FREE_LOCK", "TIDB_DECODE_SQL_DIGESTS", "TIDB_MVCC_INFO",
+    "TIDB_BOUNDED_STALENESS",
+];
+
+/// A verdict (name, denied) for every TiDB 8.5.7 `SHOW BUILTINS` name matching `%LOCK%`, `%VAL`,
+/// `SLEEP`, `%FILE%` or `TIDB_%` (2026-10-18 probe), so a newer server's additions fail the live
+/// check instead of passing unreviewed. Denied ones are in MySQL's list, [`TIDB_FUNCTIONS`] or
+/// [`SEQUENCE_FUNCTIONS`]; allowed ones are pure or local (`SLEEP` is bounded by the agent
+/// timeout, as on MySQL).
+pub const TIDB_BUILTIN_VERDICTS: &[(&str, bool)] = &[
+    ("GET_LOCK", true), ("IS_FREE_LOCK", true), ("IS_USED_LOCK", true), ("RELEASE_ALL_LOCKS", true),
+    ("RELEASE_LOCK", true), ("LOAD_FILE", true), ("NEXTVAL", true), ("SETVAL", true), ("LASTVAL", true),
+    ("TIDB_DECODE_SQL_DIGESTS", true), ("TIDB_MVCC_INFO", true), ("TIDB_BOUNDED_STALENESS", true),
+    ("INTERVAL", false), ("SLEEP", false), ("TIDB_CURRENT_TSO", false), ("TIDB_DECODE_BINARY_PLAN", false),
+    ("TIDB_DECODE_KEY", false), ("TIDB_DECODE_PLAN", false), ("TIDB_ENCODE_INDEX_KEY", false),
+    ("TIDB_ENCODE_RECORD_KEY", false), ("TIDB_ENCODE_SQL_DIGEST", false), ("TIDB_IS_DDL_OWNER", false),
+    ("TIDB_PARSE_TSO", false), ("TIDB_PARSE_TSO_LOGICAL", false), ("TIDB_ROW_CHECKSUM", false),
+    ("TIDB_SHARD", false), ("TIDB_VERSION", false),
+];
+
+/// The system tables TiDB 8.5.7 has and MySQL 8.4 lacks (2026-10-18 probe), one complete set:
+/// over MCP each is refused unless it is on [`TIDB_ALLOWED_TABLES`]. They read node log files,
+/// other servers (PD, TiKV, TiFlash, Prometheus) or other sessions' SQL across the cluster.
+/// Every `METRICS_SCHEMA` name is refused too. A live test fails on a server table that is
+/// neither MySQL's nor here, so a version bump cannot open one unreviewed.
+pub const TIDB_ONLY_TABLES: &[&str] = &[
+    // INFORMATION_SCHEMA (62)
+    "ANALYZE_STATUS", "ATTRIBUTES", "CLIENT_ERRORS_SUMMARY_BY_HOST", "CLIENT_ERRORS_SUMMARY_BY_USER",
+    "CLIENT_ERRORS_SUMMARY_GLOBAL", "CLUSTER_CONFIG", "CLUSTER_DEADLOCKS", "CLUSTER_HARDWARE", "CLUSTER_INFO",
+    "CLUSTER_LOAD", "CLUSTER_LOG", "CLUSTER_MEMORY_USAGE", "CLUSTER_MEMORY_USAGE_OPS_HISTORY",
+    "CLUSTER_PROCESSLIST", "CLUSTER_SLOW_QUERY", "CLUSTER_STATEMENTS_SUMMARY",
+    "CLUSTER_STATEMENTS_SUMMARY_EVICTED", "CLUSTER_STATEMENTS_SUMMARY_HISTORY", "CLUSTER_SYSTEMINFO",
+    "CLUSTER_TIDB_INDEX_USAGE", "CLUSTER_TIDB_TRX", "CLUSTER_TRX_SUMMARY", "DATA_LOCK_WAITS", "DDL_JOBS",
+    "DEADLOCKS", "GLOBAL_STATUS", "GLOBAL_VARIABLES", "INSPECTION_RESULT", "INSPECTION_RULES",
+    "INSPECTION_SUMMARY", "MEMORY_USAGE", "MEMORY_USAGE_OPS_HISTORY", "METRICS_SUMMARY",
+    "METRICS_SUMMARY_BY_LABEL", "METRICS_TABLES", "PLACEMENT_POLICIES", "RUNAWAY_WATCHES", "SEQUENCES",
+    "SESSION_STATUS", "SESSION_VARIABLES", "SLOW_QUERY", "STATEMENTS_SUMMARY", "STATEMENTS_SUMMARY_EVICTED",
+    "STATEMENTS_SUMMARY_HISTORY", "TABLESPACES", "TABLE_STORAGE_STATS", "TIDB_CHECK_CONSTRAINTS",
+    "TIDB_HOT_REGIONS", "TIDB_HOT_REGIONS_HISTORY", "TIDB_INDEXES", "TIDB_INDEX_USAGE", "TIDB_SERVERS_INFO",
+    "TIDB_TRX", "TIFLASH_INDEXES", "TIFLASH_REPLICA", "TIFLASH_SEGMENTS", "TIFLASH_TABLES",
+    "TIKV_REGION_PEERS", "TIKV_REGION_STATUS", "TIKV_STORE_STATUS", "TRX_SUMMARY", "VARIABLES_INFO",
+    // PERFORMANCE_SCHEMA (13): pprof tables that run profilers and reach PD over HTTP
+    "PD_PROFILE_ALLOCS", "PD_PROFILE_BLOCK", "PD_PROFILE_CPU", "PD_PROFILE_GOROUTINES", "PD_PROFILE_MEMORY",
+    "PD_PROFILE_MUTEX", "TIDB_PROFILE_ALLOCS", "TIDB_PROFILE_BLOCK", "TIDB_PROFILE_CPU",
+    "TIDB_PROFILE_GOROUTINES", "TIDB_PROFILE_MEMORY", "TIDB_PROFILE_MUTEX", "TIKV_PROFILE_CPU",
+];
+
+/// The reviewed [`TIDB_ONLY_TABLES`] agents may read: this node's statement summaries,
+/// transactions and lock waits (what MySQL exposes per server), and schema and session metadata.
+/// The cluster-wide `CLUSTER_*` versions stay refused.
+pub const TIDB_ALLOWED_TABLES: &[&str] = &[
+    "STATEMENTS_SUMMARY", "STATEMENTS_SUMMARY_HISTORY", "STATEMENTS_SUMMARY_EVICTED", "TIDB_INDEXES", "TIDB_TRX",
+    "DEADLOCKS", "DATA_LOCK_WAITS", "SEQUENCES", "TIDB_CHECK_CONSTRAINTS", "TIFLASH_REPLICA", "SESSION_VARIABLES",
+    "SESSION_STATUS", "GLOBAL_VARIABLES", "GLOBAL_STATUS", "VARIABLES_INFO",
+];
+
+/// The schemas TiDB's own tables live in: a statement naming none of them reads no system
+/// table (`USE` is refused, and [`tidb_database_block`] refuses a connection sitting in one).
+const TIDB_SYSTEM_SCHEMAS: [&str; 3] = ["INFORMATION_SCHEMA", "PERFORMANCE_SCHEMA", "METRICS_SCHEMA"];
+
+/// Optimizer hints that raise a read's memory quota or leave its resource group on a cluster
+/// other workloads share: refused over MCP inside a `/*+ … */` comment.
+const TIDB_HINTS: [&str; 3] = ["SET_VAR", "MEMORY_QUOTA", "RESOURCE_GROUP"];
+
+/// Refusal for a read timestamp the agent picks: the wrapper's `AS OF TIMESTAMP NOW(6)` is the
+/// one snapshot.
+const TIDB_CUSTOM_SNAPSHOT: &str =
+    "TableIQ chooses the snapshot (query start); a custom read timestamp is not supported over MCP.";
+
+/// Why a catalog table or `METRICS_SCHEMA` is refused.
+const TIDB_CLUSTER_READS: &str = "it reads node log files, another server, or other sessions' SQL across the cluster";
+/// Why an off-list `SHOW` is refused.
+const TIDB_SHOW_REACHES: &str = "it reaches cluster placement, regions, jobs or configuration";
+/// Why `mysql.*` and `sys.*` are refused.
+const TIDB_INTERNAL_HOLDS: &str = "TiDB's internal tables hold other sessions' SQL and cluster jobs";
+
+/// The one refusal for what agents may not read on TiDB: a catalog table, `METRICS_SCHEMA`, an
+/// internal schema or a `SHOW` form.
+fn tidb_family_refusal(name: &str, reason: &str) -> String {
+    let alternative = if name.starts_with("CLUSTER_STATEMENTS_SUMMARY") || matches!(name, "CLUSTER_SLOW_QUERY" | "SLOW_QUERY") {
+        Some("INFORMATION_SCHEMA.STATEMENTS_SUMMARY")
+    } else if name == "CLUSTER_PROCESSLIST" {
+        Some("INFORMATION_SCHEMA.PROCESSLIST")
+    } else {
+        None
+    };
+    let rest = match alternative {
+        Some(a) => format!("Use {a} instead; the user can see the rest in TableIQ's Metrics widgets."),
+        None => "There is no agent alternative; the user can see it in TableIQ's Metrics widgets.".into(),
+    };
+    format!(
+        "{name} is not available to agents on TiDB: {reason}. {rest} See docs/ENGINES.md#tidb-over-mcp"
+    )
+}
+
+/// TiDB's internal schemas: `mysql` holds other sessions' SQL (`tidb_runaway_queries`,
+/// `tidb_mdl_view`), DDL text and cluster jobs, and `sys` has views over denied cluster tables
+/// (`schema_unused_indexes`). Over MCP any qualified reference to them is refused wholesale.
+const TIDB_INTERNAL_SCHEMAS: [&str; 2] = ["MYSQL", "SYS"];
+
+/// A TiDB connection whose current database is a system or internal schema reads its tables
+/// unqualified, past the name check, so agents cannot use it at all.
+pub fn tidb_database_block(db: &str) -> Option<String> {
+    let folded = fold_upper(db);
+    TIDB_SYSTEM_SCHEMAS.iter().chain(&TIDB_INTERNAL_SCHEMAS).any(|s| folded == *s).then(|| {
+        format!(
+            "This connection's database is {db}, which agents cannot query on TiDB; share a connection to an \
+             application database."
+        )
+    })
+}
+
+/// TiDB's error for a read timestamp past PD's clock, which `NOW(6)` hits when the TiDB node's
+/// clock runs ahead: worded as the clock-skew problem it is.
+pub fn explain_tidb_error(msg: &str) -> Option<String> {
+    msg.contains("cannot set read timestamp to a future time").then(|| {
+        "TiDB could not read as of now: the TiDB node's clock is ahead of its timestamp oracle (PD). This is \
+         usually clock skew; check clock sync (NTP) on the TiDB nodes."
+            .into()
+    })
+}
+
+/// What [`guard`] refuses on TiDB over MCP only: a denied catalog table, `METRICS_SCHEMA`, a
+/// qualified `mysql.`/`sys.` name, a `SHOW` off the allow list, or a hint from [`TIDB_HINTS`].
+/// `names`: [`quoted_names`] of the raw text (`` information_schema.`CLUSTER_LOG` ``); `flat`:
+/// the scanned code with comments blanked. Catalog tables are looked for only when a system
+/// schema is named, so a user's own `metrics_daily` or `cluster_nodes` stays readable.
+fn tidb_agent_refusal(names: &str, flat: &str) -> Option<String> {
+    if TIDB_SYSTEM_SCHEMAS.iter().any(|s| has_word(names, s)) {
+        if has_word(names, "METRICS_SCHEMA") {
+            return Some(tidb_family_refusal("METRICS_SCHEMA", TIDB_CLUSTER_READS));
+        }
+        let mut denied = TIDB_ONLY_TABLES.iter().filter(|t| !TIDB_ALLOWED_TABLES.contains(t));
+        if let Some(t) = denied.find(|t| has_word(names, t)) {
+            return Some(tidb_family_refusal(t, TIDB_CLUSTER_READS));
+        }
+    }
+    // `mysql.x`, `` `sys` /* c */ . x ``: the schema word, then (past blanks) a `.`.
+    for schema in TIDB_INTERNAL_SCHEMAS {
+        if after_word(names, schema).any(|(_, r)| skip_blank_mysql(r).starts_with('.')) {
+            return Some(tidb_family_refusal(&format!("{}.*", schema.to_lowercase()), TIDB_INTERNAL_HOLDS));
+        }
+    }
+    let mut words = flat.split(|c: char| !word_char(c)).filter(|w| !w.is_empty());
+    if words.next() == Some("SHOW") {
+        let after: Vec<&str> = words.take(3).collect();
+        if !tidb_show_allowed(&after) {
+            return Some(tidb_family_refusal(&format!("SHOW {}", after.first().unwrap_or(&"")), TIDB_SHOW_REACHES));
+        }
+    }
+    let mut hints = names.match_indices("/*+").map(|(i, _)| &names[i..names[i..].find("*/").map_or(names.len(), |e| i + e)]);
+    hints.find_map(|h| TIDB_HINTS.into_iter().find(|w| has_word(h, w))).map(|w| {
+        format!("The `{w}` optimizer hint is not available to agents on TiDB: it changes a read's limits on a shared cluster.")
+    })
+}
+
+/// The `SHOW` forms agents may run on TiDB, by the (first three) words after `SHOW`: what MySQL
+/// shows too. TiDB's own (`CONFIG`, `PLACEMENT`, `TABLE t REGIONS`, `DDL JOBS`, `STATS_*`, …)
+/// reach cluster placement, regions, jobs or configuration. (`SHOW CREATE …` and `SHOW
+/// CHARACTER SET` never get here: `CREATE` and `SET` are write keywords.)
+fn tidb_show_allowed(words: &[&str]) -> bool {
+    let word = |i: usize| words.get(i).copied().unwrap_or("");
+    match word(0) {
+        "FULL" => matches!(word(1), "TABLES" | "COLUMNS" | "FIELDS" | "PROCESSLIST"),
+        "GLOBAL" | "SESSION" => matches!(word(1), "VARIABLES" | "STATUS"),
+        // `SHOW TABLE status REGIONS` is the regions of a table named `status`.
+        "TABLE" => word(1) == "STATUS" && matches!(word(2), "" | "FROM" | "IN" | "LIKE" | "WHERE"),
+        "OPEN" => word(1) == "TABLES",
+        "FUNCTION" | "PROCEDURE" => word(1) == "STATUS",
+        first => matches!(
+            first,
+            "TABLES" | "COLUMNS" | "FIELDS" | "INDEX" | "INDEXES" | "KEYS" | "DATABASES" | "SCHEMAS" | "VARIABLES"
+                | "STATUS" | "WARNINGS" | "ERRORS" | "COLLATION" | "CHARSET" | "ENGINES" | "PROCESSLIST" | "GRANTS"
+                | "BUILTINS" | "PRIVILEGES" | "TRIGGERS"
+        ),
+    }
+}
+
+/// `upper` with backticks and double quotes blanked, so a quoted name reads as the bare word
+/// TiDB resolves (`` `nextval`('s') ``, `` `mysql`.t ``). Blanked, not removed, so two quoted
+/// names never join into one word.
+fn quoted_names(upper: &str) -> String {
+    upper.replace(['`', '"'], " ")
+}
+
+/// [`skip_blank`] plus MySQL's `#` comments.
+fn skip_blank_mysql(mut s: &str) -> &str {
+    loop {
+        s = skip_blank(s);
+        match s.strip_prefix('#') {
+            Some(r) => s = r.find('\n').map_or("", |n| &r[n..]),
+            None => return s,
+        }
+    }
+}
+
+/// Sequence functions on the MySQL base (MariaDB's and TiDB's): each advances or sets a sequence,
+/// which a rollback does not undo, so a read-only connection refuses them — and `NEXT VALUE FOR`.
+const SEQUENCE_FUNCTIONS: [&str; 3] = ["NEXTVAL", "SETVAL", "LASTVAL"];
+
+/// `words` in sequence in `flat` (comments blanked), adjacent past whitespace: `NEXT /**/ VALUE`.
+fn has_seq(flat: &str, words: &[&str]) -> bool {
+    let Some((first, rest)) = words.split_first() else { return false };
+    after_word(flat, first).any(|(_, mut r)| {
+        rest.iter().all(|w| {
+            if !starts_word(r, w) {
+                return false;
+            }
+            r = r[w.len()..].trim_start();
+            true
+        })
+    })
+}
 
 /// [`escape_pair`] for CockroachDB: cluster settings (its `ALTER SYSTEM`), external
 /// connections (stored storage URIs) and logical replication to another cluster.
@@ -249,6 +483,23 @@ fn escape_pair(engine: &str, code: &str) -> Option<&'static str> {
     }
 }
 
+/// `s` upper-cased for matching, with the non-ASCII letters TiDB's Go case folding equates
+/// to ASCII folded too: `İ` (U+0130) is `I`, the Kelvin sign (U+212A) is `K`, `ſ` (U+017F) is
+/// `S`. Rust keeps the first two, so `GET_LOC\u{212A}` would pass a name check that TiDB then
+/// resolves to `GET_LOCK` (2026-10-18 review, live). Only ever makes matching stricter; the SQL
+/// sent to the server is untouched.
+fn fold_upper(s: &str) -> String {
+    s.to_uppercase()
+        .chars()
+        .map(|c| match c {
+            '\u{130}' => 'I',
+            '\u{212A}' => 'K',
+            '\u{17F}' => 'S',
+            c => c,
+        })
+        .collect()
+}
+
 fn word_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
@@ -300,6 +551,7 @@ fn blank_comments(code: &str, hash: bool) -> String {
 /// May `sql` run over MCP on an `engine` connection? `writes`: the connection allows writes,
 /// which lifts the keyword checks but never the one-statement rule, the function denylist or
 /// the escapes beyond the database ([`escape_words`], [`escape_names`], [`escape_pair`]).
+/// [`TIDB`] ignores `writes`: it is read-only to agents whatever the connection says.
 pub fn guard_sql(engine: &str, sql: &str, writes: bool) -> Result<(), String> {
     guard(engine, sql, writes, true)
 }
@@ -311,13 +563,21 @@ fn guard(engine: &str, sql: &str, writes: bool, mcp: bool) -> Result<(), String>
         return Err("Empty SQL.".into());
     }
     let crdb = engine == COCKROACHDB;
+    let tidb = engine == TIDB;
+    let writes = writes && !tidb;
     let engine = base_engine(engine);
     // `code`: the text with its literals and quoted identifiers blanked out.
     let code = scan(engine, sql)?;
-    let upper = sql.to_uppercase();
+    let upper = fold_upper(sql);
     let file_fns: &[&str] = if mcp && engine == "duckdb" { &DUCKDB_FILE_FUNCTIONS } else { &[] };
-    let crdb_fns: &[&str] = if crdb { &CRDB_FUNCTIONS } else { &[] };
-    if let Some(f) = engine_functions(engine).iter().chain(file_fns).chain(crdb_fns).find(|f| has_pattern(&upper, f)) {
+    let product_fns: &[&str] = if crdb {
+        &CRDB_FUNCTIONS
+    } else if tidb {
+        &TIDB_FUNCTIONS
+    } else {
+        &[]
+    };
+    if let Some(f) = engine_functions(engine).iter().chain(file_fns).chain(product_fns).find(|f| has_pattern(&upper, f)) {
         return Err(format!(
             "`{}` is not allowed on this connection: it reads files or acts outside the query \
              (refused anywhere in the text, even inside a string or comment).",
@@ -344,7 +604,7 @@ fn guard(engine: &str, sql: &str, writes: bool, mcp: bool) -> Result<(), String>
                     PIVOT — a file path to DuckDB) is not allowed on this connection."
             .into());
     }
-    let code = code.to_uppercase();
+    let code = fold_upper(&code);
     // `EXPLAIN ANALYZE (DEBUG)` runs the statement and saves a diagnostics bundle on the
     // server, which survives the read-only transaction's rollback.
     if crdb && first_keyword(sql) == "EXPLAIN" && has_word(&code, "DEBUG") {
@@ -380,11 +640,15 @@ fn guard(engine: &str, sql: &str, writes: bool, mcp: bool) -> Result<(), String>
         }
         return Ok(());
     }
+    // A session snapshot would move every later read of the session off TableIQ's.
+    if tidb && has_word(&upper, "SET") && has_word(&upper, "TIDB_SNAPSHOT") {
+        return Err(TIDB_CUSTOM_SNAPSHOT.into());
+    }
     let crdb_writers: &[&str] = if crdb { &CRDB_WRITE_KEYWORDS } else { &[] };
     if let Some(k) = WRITE_KEYWORDS.iter().chain(crdb_writers).find(|k| has_word(&upper, k)) {
         return Err(format!(
-            "Only read-only SQL is allowed here: `{k}` is not allowed (it is refused anywhere in \
-             the text, even inside a string or comment)."
+            "{WRITE_REFUSAL}: `{k}` is not allowed (it is refused anywhere in the text, even inside \
+             a string or comment)."
         ));
     }
     // The T-SQL verbs only as code: `status = 'OPEN'` or a column `[close]` is data. The
@@ -393,17 +657,46 @@ fn guard(engine: &str, sql: &str, writes: bool, mcp: bool) -> Result<(), String>
     if engine == "sqlserver" {
         if let Some(k) = TSQL_KEYWORDS.iter().find(|k| has_word(&code, k)) {
             return Err(format!(
-                "Only read-only SQL is allowed here: `{k}` is not allowed outside a string or \
-                 quoted name (SQL Server needs no `;` between statements)."
+                "{WRITE_REFUSAL}: `{k}` is not allowed outside a string or quoted name (SQL Server \
+                 needs no `;` between statements)."
             ));
         }
     }
     let first = first_keyword(sql);
     if !READ_FIRST.contains(&first.as_str()) {
         return Err(format!(
-            "Only read-only SQL is allowed here: a statement must start with one of {}, not `{first}`.",
+            "{WRITE_REFUSAL}: a statement must start with one of {}, not `{first}`.",
             READ_FIRST.join("/")
         ));
+    }
+    if engine == "mysql" {
+        let flat = blank_comments(&code, true);
+        let names = quoted_names(&upper);
+        // Sequences on MariaDB and TiDB: the value is taken even when the transaction rolls back
+        // (the 2026-10-18 probe allocated one inside TiDB's snapshot transaction). The functions
+        // by their call (`nextval /* c */ (s)`, `` `nextval`('s') ``), so a `nextval` column is
+        // still a read.
+        let call = |f: &&str| after_word(&names, f).any(|(_, r)| skip_blank_mysql(r).starts_with('('));
+        let sequence = if has_seq(&flat, &["NEXT", "VALUE", "FOR"]) {
+            Some("NEXT VALUE FOR")
+        } else {
+            SEQUENCE_FUNCTIONS.iter().find(|f| call(f)).copied()
+        };
+        if let Some(k) = sequence {
+            return Err(format!(
+                "{WRITE_REFUSAL}: `{k}` is not allowed (it advances a sequence, which a rollback does not undo)."
+            ));
+        }
+        // A Metrics widget needs neither: TiDB refuses a statement read timestamp inside the
+        // snapshot transaction itself (error 8135).
+        if tidb && mcp {
+            if has_seq(&flat, &["AS", "OF", "TIMESTAMP"]) {
+                return Err(TIDB_CUSTOM_SNAPSHOT.into());
+            }
+            if let Some(why) = tidb_agent_refusal(&names, &flat) {
+                return Err(why);
+            }
+        }
     }
     Ok(())
 }
@@ -529,7 +822,9 @@ pub fn single_statement(engine: &str, sql: &str) -> Result<(), String> {
 fn scan(engine: &str, sql: &str) -> Result<String, String> {
     let engine = base_engine(engine);
     let refuse = |why: &str| Err(format!("Only a single statement is allowed: {why}."));
-    if sql.contains("/*!") || sql.contains("/*M!") {
+    // TiDB runs a `/*T! … */` body too (2026-10-18 probe: `SELECT 1 /*T![clustered_index] , 2 */`
+    // returned two columns); only the upper-case `T` is executable.
+    if sql.contains("/*!") || sql.contains("/*M!") || (engine == "mysql" && sql.contains("/*T!")) {
         return refuse("MySQL executable comments (/*! … */) are refused");
     }
     let b = sql.as_bytes();
@@ -651,8 +946,13 @@ pub fn widget_stmts(engine: &str, sql: &str) -> Result<Vec<String>, String> {
 /// [`read_only_stmts`]. All three run on one pinned connection; a failure mid-way never
 /// returns it to a pool mid-transaction (`touches_session` closes a sqlx connection after
 /// BEGIN; DuckDB's per-run clone and SQL Server's `rollback_orphan_tx` roll back).
+///
+/// TiDB's plain `READ ONLY` transaction accepts writes; a stale-read one refuses DML, and
+/// `NOW(6)` reads everything committed when the query starts (2026-10-18 probe). It still runs
+/// DDL, which only [`guard`] refuses.
 pub fn read_only_wrap(engine: &str, sql: &str) -> Result<Vec<String>, String> {
     let begin = match base_engine(engine) {
+        _ if engine == TIDB => "START TRANSACTION READ ONLY AS OF TIMESTAMP NOW(6)",
         "postgres" => "BEGIN TRANSACTION READ ONLY",
         "mysql" => "START TRANSACTION READ ONLY",
         "sqlite" | "duckdb" => "BEGIN",
@@ -1014,5 +1314,46 @@ mod tests {
         // The guard runs first: nothing that could leave the transaction gets wrapped.
         assert!(read_only_stmts("postgres", "SELECT 1; COMMIT; SELECT 2").is_err());
         assert!(read_only_stmts("postgres", "DELETE FROM t").is_err());
+    }
+
+    /// TiDB's plain `READ ONLY` transaction does not refuse a write; a stale-read one does,
+    /// and `NOW(6)` reads what was committed when the query starts.
+    #[test]
+    fn read_only_wrap_reads_tidb_as_of_the_query_start() {
+        let want = ["START TRANSACTION READ ONLY AS OF TIMESTAMP NOW(6)", "SELECT 1", "ROLLBACK"].map(String::from);
+        assert_eq!(read_only_wrap(TIDB, "SELECT 1"), Ok(want.to_vec()));
+        assert_eq!(read_only_stmts(TIDB, "SELECT 1"), Ok(want.to_vec()));
+        assert_eq!(widget_stmts(TIDB, "SELECT 1"), Ok(want.to_vec()));
+    }
+
+    /// Every TiDB builtin that could lock, allocate, read a file or reach past the snapshot has
+    /// a verdict, and the guard holds to it.
+    #[test]
+    fn tidb_builtin_verdicts_hold() {
+        for (name, denied) in TIDB_BUILTIN_VERDICTS {
+            let verdict = guard_sql(TIDB, &format!("SELECT {name}(1)"), false);
+            assert_eq!(verdict.is_err(), *denied, "{name}: {verdict:?}");
+        }
+    }
+
+    #[test]
+    fn tidb_allowed_tables_are_tidb_only_tables() {
+        assert_eq!(TIDB_ONLY_TABLES.len(), 62 + 13);
+        for t in TIDB_ALLOWED_TABLES {
+            assert!(TIDB_ONLY_TABLES.contains(t), "{t}");
+        }
+    }
+
+    #[test]
+    fn a_tidb_clock_ahead_of_pd_is_explained() {
+        let server = "error returned from database: 1105 (HY000): cannot set read timestamp to a future time, \
+                      readTS: 469852264505802752, currentTS: 469852263195344896";
+        let msg = explain_tidb_error(server).expect("explained");
+        assert_eq!(
+            msg,
+            "TiDB could not read as of now: the TiDB node's clock is ahead of its timestamp oracle (PD). This is \
+             usually clock skew; check clock sync (NTP) on the TiDB nodes."
+        );
+        assert_eq!(explain_tidb_error("1146 (42S02): Table 'app.t' doesn't exist"), None);
     }
 }

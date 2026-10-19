@@ -2,6 +2,8 @@ import { create } from "zustand";
 
 /** What the titlebar's Discard / Review / Commit act on: the visible table tab's grid. */
 export interface StagedApi {
+  /** Why writes are blocked while review/copy and local discard remain available. */
+  commitBlockedReason?: string;
   /** The Review popover's SQL: the whole staged batch, quoted for the connection's engine. */
   preview: () => string;
   commit: () => void;

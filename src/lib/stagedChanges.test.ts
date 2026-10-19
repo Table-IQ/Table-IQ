@@ -1,8 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildBatch,
   buildPreviewSql,
   commitErrorMessage,
+  attemptCommit,
+  UNCERTAIN_COMMIT,
   insertCellDisplay,
   NO_STAGED,
   stagedCounts,
@@ -136,9 +138,48 @@ describe("commitErrorMessage", () => {
   });
   it("never claims a rollback for an error without a change index", () => {
     expect(commitErrorMessage("not connected (or not a SQL connection)", labels)).toBe(
-      "Commit failed: not connected (or not a SQL connection) — the result is uncertain; refresh to check before retrying",
+      `Commit failed: not connected (or not a SQL connection) — ${UNCERTAIN_COMMIT}`,
     );
     expect(commitErrorMessage("change 7: row no longer exists", labels)).toBe("Change 8: row no longer exists — nothing was committed");
+  });
+});
+
+describe("uncertain commit recovery", () => {
+  it("never repeats an insert when COMMIT succeeded but its response was lost", async () => {
+    const state = { inFlight: false, uncertain: false };
+    let databaseRows = 0;
+    const write = vi.fn(async () => {
+      databaseRows++;
+      throw new Error("connection lost while reading COMMIT response");
+    });
+    const first = await attemptCommit(state, write, ["New row 1"]);
+    expect(first.ok).toBe(false);
+    expect(first.message).toContain("may have succeeded");
+    expect(state.uncertain).toBe(true);
+    expect((await attemptCommit(state, write, ["New row 1"])).ok).toBe(false);
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(databaseRows).toBe(1);
+  });
+
+  it("allows a corrected batch after a confirmed pre-COMMIT failure", async () => {
+    const state = { inFlight: false, uncertain: false };
+    await attemptCommit(state, async () => { throw new Error("change 0: constraint failed"); }, []);
+    expect(state.uncertain).toBe(false);
+    const write = vi.fn(async () => undefined);
+    expect((await attemptCommit(state, write, [])).ok).toBe(true);
+    expect(write).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses another entry point while a write is in flight", async () => {
+    const state = { inFlight: false, uncertain: false };
+    let finish!: () => void;
+    const write = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const first = attemptCommit(state, write, []);
+    expect((await attemptCommit(state, write, [])).ok).toBe(false);
+    finish();
+    expect((await first).ok).toBe(true);
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(state).toEqual({ inFlight: false, uncertain: false });
   });
 });
 
