@@ -6,7 +6,7 @@
   { "engine": "postgres", "profile": "rds-postgres", "allowed": true },
   { "engine": "mysql", "profile": "azure-mysql", "allowed": true },
   { "engine": "postgres", "profile": "cloudsql-postgres", "allowed": true },
-  { "engine": "mysql", "profile": "tidb", "allowed": false },
+  { "engine": "mysql", "profile": "tidb", "allowed": true },
   { "engine": "postgres", "profile": "cockroachdb", "allowed": true },
   { "engine": "postgres", "profile": "redshift", "allowed": false },
   { "engine": "mysql", "profile": "doris", "allowed": false },

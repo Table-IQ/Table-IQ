@@ -119,6 +119,11 @@ fn delete_sql(table: &str, pk: &[(String, Option<String>)]) -> (String, Vec<Opti
 /// One staged change as `(sql, binds)` — the same statements the single-row commands send.
 fn change_sql(schema: &str, table: &str, c: &Change) -> (String, Vec<Option<String>>) {
     match c {
+        Change::UpdateRow { pk, edits } => super::build_row_update_sql(
+            &quote_ident(table), pk, edits, &quote_ident, &sqlite_placeholder,
+            &|c, i| format!("{} IS ?{i}", quote_ident(c)),
+            &|c, i| format!("CAST({} AS TEXT) IS ?{i}", quote_ident(c)),
+        ),
         Change::Update { edit } => update_sql(table, edit),
         Change::Delete { pk } => delete_sql(table, pk),
         Change::Insert { values } => {
@@ -180,6 +185,54 @@ impl SqliteDriver {
             })
             .collect())
     }
+}
+
+/// Restore through SQLite's online backup API, never by unlinking an open database.
+/// Dedicated private-cache handles let SQLite coordinate with other connections/processes.
+/// A busy destination fails without replacing its file or deleting live WAL sidecars.
+pub(crate) fn restore_file(destination: &str, source: &str) -> Result<(), String> {
+    use libsqlite3_sys as ffi;
+    use std::ffi::{CStr, CString};
+    struct Handle(*mut ffi::sqlite3);
+    impl Drop for Handle {
+        fn drop(&mut self) {
+            // SAFETY: this function owns each handle and finishes the backup before drop.
+            unsafe { ffi::sqlite3_close(self.0); }
+        }
+    }
+    fn message(h: &Handle) -> String {
+        // SAFETY: h remains open and SQLite owns this NUL-terminated error message.
+        unsafe { CStr::from_ptr(ffi::sqlite3_errmsg(h.0)).to_string_lossy().into_owned() }
+    }
+    fn open(path: &str, flags: i32) -> Result<Handle, String> {
+        let path = CString::new(path).map_err(|_| "Database path contains NUL".to_string())?;
+        let mut raw = std::ptr::null_mut();
+        // SAFETY: path is NUL-terminated; raw is an out parameter. No handle escapes this thread.
+        let code = unsafe { ffi::sqlite3_open_v2(path.as_ptr(), &mut raw, flags | ffi::SQLITE_OPEN_PRIVATECACHE, std::ptr::null()) };
+        if raw.is_null() { return Err("Could not allocate a SQLite connection".into()); }
+        let handle = Handle(raw);
+        if code != ffi::SQLITE_OK { return Err(message(&handle)); }
+        Ok(handle)
+    }
+    let src = open(source, ffi::SQLITE_OPEN_READONLY)?;
+    let dst = open(destination, ffi::SQLITE_OPEN_READWRITE)?;
+    // SAFETY: both handles are exclusive to this blocking function. The backup is always
+    // finished before either handle closes. No Rust await/panic occurs while it is active.
+    let (step, finish) = unsafe {
+        ffi::sqlite3_busy_timeout(dst.0, 1000);
+        let backup = ffi::sqlite3_backup_init(dst.0, c"main".as_ptr(), src.0, c"main".as_ptr());
+        if backup.is_null() { return Err(message(&dst)); }
+        let step = ffi::sqlite3_backup_step(backup, -1);
+        let finish = ffi::sqlite3_backup_finish(backup); // rolls back incomplete restores
+        (step, finish)
+    };
+    if step == ffi::SQLITE_BUSY || step == ffi::SQLITE_LOCKED {
+        return Err("The database is still in use — finish other transactions and retry restore".into());
+    }
+    if step != ffi::SQLITE_DONE || finish != ffi::SQLITE_OK {
+        return Err(format!("SQLite restore failed ({step}/{finish}): {}", message(&dst)));
+    }
+    Ok(())
 }
 
 /// A row identity must pin down exactly ONE row before we write through it.
@@ -535,6 +588,7 @@ impl SqlDriver for SqliteDriver {
         for (i, c) in changes.iter().enumerate() {
             match c {
                 Change::Update { edit } => reject_null_pk(&edit.pk),
+                Change::UpdateRow { pk, .. } => reject_null_pk(pk),
                 Change::Delete { pk } => reject_null_pk(pk),
                 Change::Insert { .. } => Ok(()),
             }

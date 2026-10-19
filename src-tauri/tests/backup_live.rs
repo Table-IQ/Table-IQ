@@ -457,10 +457,7 @@ fn mssql_parts(ado: &str) -> (String, u16, String, String, String) {
 
 #[tokio::test]
 async fn sqlserver_backup_to_a_server_path() {
-    let Ok(ado) = std::env::var("TIQ_MSSQL_URL") else {
-        eprintln!("skip: no TIQ_MSSQL_URL");
-        return;
-    };
+    let Some(ado) = live_url("TIQ_MSSQL_URL") else { return };
     let (host, port, database, user, pass) = mssql_parts(&ado);
     let drv: Arc<dyn SqlDriver> =
         Arc::new(SqlServerDriver::connect(&host, port, &database, &user, &pass, "prefer").await.expect("connect"));

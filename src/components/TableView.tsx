@@ -420,6 +420,9 @@ export function TableView({ connId, schema, object, view }: Props) {
         // second round trip; upgrade path is to hand the grid this window.
         const win = decodeWindow(bytes);
         if (recovering) {
+          // The uncertain write may have changed keys or triggered other changes.
+          // Clear old Inspector values before allowing edits on the fresh page.
+          useSelectedRow.getState().clearIfFrom(schema, object.name);
           recoveryRequested.current = false;
           commitState.current.uncertain = false;
           setUncertainCommit(false);
@@ -1104,6 +1107,9 @@ export function TableView({ connId, schema, object, view }: Props) {
             }}
             rightAlignColumns={rightAlignColumns}
             onSave={(n) => {
+              // The row may have moved (key edits), been deleted, or changed in a trigger.
+              // Never keep pre-commit values editable in the Inspector during reload.
+              useSelectedRow.getState().clearIfFrom(schema, object.name);
               window.clearTimeout(savedTimer.current);
               setSaved((s) => ({ n, id: (s?.id ?? 0) + 1 }));
               savedTimer.current = window.setTimeout(() => setSaved(null), 2000);

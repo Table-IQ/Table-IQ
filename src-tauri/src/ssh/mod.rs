@@ -52,6 +52,18 @@ pub struct SshConfig {
     pub auth: SshAuth,
 }
 
+impl SshConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.enabled {
+            if self.host.trim().is_empty() || self.host.chars().any(|c| c.is_whitespace() || matches!(c, '/' | '\\')) {
+                return Err("SSH server must be a hostname, IP address, or SSH alias".into());
+            }
+            if self.port == 0 { return Err("SSH port must be between 1 and 65535".into()); }
+        }
+        Ok(())
+    }
+}
+
 fn default_ssh_port() -> u16 {
     22
 }
@@ -65,6 +77,15 @@ pub fn ssh_secret_account(conn_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enabled_tunnels_validate_host_and_port_before_connecting() {
+        let mut cfg = SshConfig { enabled: true, host: "bastion".into(), port: 22, username: "u".into(), auth: SshAuth::Agent };
+        assert!(cfg.validate().is_ok());
+        cfg.host = " ".into(); assert!(cfg.validate().is_err());
+        cfg.host = "bastion".into(); cfg.port = 0; assert!(cfg.validate().is_err());
+        cfg.enabled = false; assert!(cfg.validate().is_ok());
+    }
 
     #[test]
     fn ssh_secret_account_is_namespaced_by_conn_id() {

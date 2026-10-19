@@ -100,3 +100,31 @@ pub async fn delete_miss_and_db_error_roll_back(drv: &dyn SqlDriver, schema: &st
     assert!(err.starts_with("change 1: "), "{err}");
     assert_eq!(rows(drv).await, before);
 }
+
+/// Both key columns and a nullable value change in one UPDATE. Every original value
+/// participates in conflict detection, and a conflict rolls back earlier row updates.
+pub async fn composite_row_updates(drv: &dyn SqlDriver, schema: &str) {
+    use tableiq_lib::drivers::CellEdit;
+    drv.run_script("DROP TABLE IF EXISTS tiq_composite").await.unwrap();
+    drv.run_script("CREATE TABLE tiq_composite (a INT NOT NULL, b INT NOT NULL, v VARCHAR(20), PRIMARY KEY (a,b))").await.unwrap();
+    drv.run_script("INSERT INTO tiq_composite VALUES (1,2,NULL), (3,4,'old')").await.unwrap();
+    let cell = |c: &str, before: Option<&str>, after: &str| CellEdit { column: c.into(), orig_value: before.map(str::to_owned), new_value: Some(after.into()) };
+    let changed = Change::UpdateRow { pk: vec![("a".into(), Some("1".into())), ("b".into(), Some("2".into()))],
+        edits: vec![cell("a", Some("1"), "11"), cell("b", Some("2"), "12"), cell("v", None, "new")] };
+    let stale = Change::UpdateRow { pk: vec![("a".into(), Some("3".into())), ("b".into(), Some("4".into()))],
+        edits: vec![cell("a", Some("3"), "13"), cell("v", Some("stale"), "bad")] };
+    let err = drv.apply_changes(schema, "tiq_composite", &[changed.clone(), stale]).await.unwrap_err().to_string();
+    assert!(err.contains("change 1:") && err.contains("changed since"), "{err}");
+    let before = drv.run_query("SELECT a,b,v FROM tiq_composite WHERE a=1 AND b=2", 10).await.unwrap();
+    assert_eq!(before.batch.num_rows(), 1, "earlier update rolled back");
+    let out = drv.apply_changes(schema, "tiq_composite", &[
+        changed,
+        Change::Delete { pk: vec![("a".into(), Some("3".into())), ("b".into(), Some("4".into()))] },
+        Change::Insert { values: vec![("a".into(), Some("5".into())), ("b".into(), Some("6".into()))] },
+    ]).await.unwrap();
+    assert_eq!(out, ChangesResult { updated: 1, deleted: 1, inserted: 1 });
+    let after = drv.run_query("SELECT v FROM tiq_composite WHERE a=11 AND b=12", 10).await.unwrap();
+    assert_eq!(after.batch.num_rows(), 1);
+    assert_eq!(arrow::util::display::array_value_to_string(after.batch.column(0), 0).unwrap(), "new");
+    drv.run_script("DROP TABLE tiq_composite").await.unwrap();
+}

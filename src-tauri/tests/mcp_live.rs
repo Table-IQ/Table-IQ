@@ -47,6 +47,8 @@ fn config_dir() -> &'static std::path::Path {
             ("pg", "postgres", None),
             ("mssql", "sqlserver", None),
             ("tidb", "mysql", None),
+            ("tidb-profile", "mysql", Some("tidb")),
+            ("tidb-system", "mysql", Some("tidb")),
             ("crdb", "postgres", None),
             ("crdb-neon", "postgres", Some("neon")),
         ] {
@@ -260,32 +262,76 @@ async fn postgres_over_http_refuses_sql_executing_builtins() {
     stop.cancel();
 }
 
-/// A TiDB saved as plain `mysql` (no profile), shared with writes: the live session says what
-/// it is, so every tool is refused and the INSERT never runs.
+/// A TiDB saved as plain `mysql` still uses snapshot reads and refuses writes in both modes.
 #[tokio::test]
-async fn a_tidb_saved_as_plain_mysql_is_unreachable_over_http() {
-    let Some(tidb_url) = live_url("TIQ_TIDB_URL") else { return };
+async fn tidb_over_http_reads_refuses_writes_and_requires_fresh_sharing() {
+    let Some(url) = live_url("TIQ_TIDB_URL") else { return };
     let _one = TIDB_ONE.lock().await;
-    let tidb = Arc::new(tableiq_lib::drivers::mysql::MySqlDriver::connect(&tidb_url).await.unwrap());
+    let drv = Arc::new(tableiq_lib::drivers::mysql::MySqlDriver::connect(&url).await.unwrap());
     let table = format!("tiq_mcp_tidb_{}", std::process::id());
-    tidb.run_script(&format!("DROP TABLE IF EXISTS {table}; CREATE TABLE {table} (n INT); INSERT INTO {table} VALUES (1),(2),(3)"))
-        .await
-        .unwrap();
-    let (url, stop) = start_sharing(&["tidb"], true, |s| s.adopt_session("tidb", tidb.clone())).await;
-
-    for (i, (tool, args)) in [
-        ("list_tables", json!({"connection_id": "tidb"})),
-        ("run_query", json!({"connection_id": "tidb", "sql": format!("INSERT INTO {table} VALUES (4)")})),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let r = call(&url, 1 + i as u32, tool, args).await;
-        assert_eq!(r["isError"], true, "{tool}: {r}");
-        assert!(text(&r).contains("TiDB cannot be shared over MCP yet"), "{tool}: {r}");
+    drv.run_script(&format!("DROP TABLE IF EXISTS {table}; CREATE TABLE {table} (n INT PRIMARY KEY); INSERT INTO {table} VALUES (1),(2),(3)")).await.unwrap();
+    for writes in [false, true] {
+        let (http, stop) = start_sharing(&["tidb"], writes, |s| s.adopt_session("tidb", drv.clone())).await;
+        let read = call(&http, 1, "run_query", json!({"connection_id":"tidb", "sql":format!("SELECT COUNT(*) AS n FROM {table}")})).await;
+        assert_ne!(read["isError"], true, "{read}");
+        assert!(text(&read).contains("3"), "fresh committed rows: {read}");
+        let workers: Vec<_> = (0..4).map(|worker| {
+            let http = http.clone(); let table = table.clone();
+            tokio::spawn(async move {
+                for i in 0..50 {
+                    let result = call(&http, 100 + worker * 50 + i, "run_query", json!({"connection_id":"tidb", "sql":format!("SELECT COUNT(*) AS n FROM {table}")})).await;
+                    assert_ne!(result["isError"], true, "snapshot read failed under load: {result}");
+                }
+            })
+        }).collect();
+        for worker in workers { worker.await.unwrap(); }
+        for (i, sql) in [format!("INSERT INTO {table} VALUES (4)"), format!("CREATE TABLE {table}_ddl (x INT)"), "ADMIN SHOW DDL".into(), "SET GLOBAL tidb_enable_noop_functions = 1".into(), "SELECT NEXTVAL(s)".into()].iter().enumerate() {
+            let result = call(&http, 2 + i as u32, "run_query", json!({"connection_id":"tidb", "sql":sql})).await;
+            assert_eq!(result["isError"], true, "{sql}: {result}");
+        }
+        assert_eq!(run(drv.as_ref(), &[format!("SELECT count(*) FROM {table}")]).await.unwrap()[0][0].as_deref(), Some("3"));
+        stop.cancel();
     }
-    assert_eq!(run(tidb.as_ref(), &[format!("SELECT count(*) FROM {table}")]).await.unwrap(), vec![vec![Some("3".to_string())]]);
-    tidb.run_script(&format!("DROP TABLE {table}")).await.unwrap();
+    let (http, stop) = start_sharing_rev(&["tidb"], false, 3, |s| s.adopt_session("tidb", drv.clone())).await;
+    let refused = call(&http, 1, "run_query", json!({"connection_id":"tidb", "sql":"SELECT 1"})).await;
+    assert_eq!(refused["isError"], true);
+    assert!(text(&refused).contains("shared before"), "{refused}");
+    stop.cancel();
+    drv.run_script(&format!("DROP TABLE {table}")).await.unwrap();
+}
+
+#[tokio::test]
+async fn tidb_named_profile_and_system_database_boundaries_over_http() {
+    let Some(url) = live_url("TIQ_TIDB_URL") else { return };
+    let _one = TIDB_ONE.lock().await;
+    use tableiq_lib::drivers::mysql::MySqlDriver;
+    let drv = Arc::new(MySqlDriver::connect_as(&url, Some("tidb")).await.unwrap());
+    let (http, stop) = start_sharing(&["tidb-profile"], false, |s| s.adopt_session("tidb-profile", drv)).await;
+    let read = call(&http, 1, "run_query", json!({"connection_id":"tidb-profile", "sql":"SELECT 42 AS answer"})).await;
+    assert_ne!(read["isError"], true, "{read}");
+    assert!(text(&read).contains("42"), "{read}");
+    let databases = call(&http, 2, "list_databases", json!({"connection_id":"tidb-profile"})).await;
+    assert_ne!(databases["isError"], true, "{databases}");
+    let names: Vec<String> = serde_json::from_str(text(&databases)).unwrap();
+    assert!(names.iter().all(|name| tableiq_lib::mcp::guard::tidb_database_block(name).is_none()), "{names:?}");
+    let describe = call(&http, 3, "describe_table", json!({"connection_id":"tidb-profile", "schema":"mysql", "table":"user"})).await;
+    assert_eq!(describe["isError"], true, "{describe}");
+    stop.cancel();
+
+    let (base, query) = url.split_once('?').map_or((url.as_str(), String::new()), |(base, q)| (base, format!("?{q}")));
+    let system_url = format!("{}/mysql{query}", base.rsplit_once('/').unwrap().0);
+    let system = Arc::new(MySqlDriver::connect_as(&system_url, Some("tidb")).await.unwrap());
+    let (http, stop) = start_sharing(&["tidb-system"], false, |s| s.adopt_session("tidb-system", system)).await;
+    for (i, (tool, args)) in [
+        ("run_query", json!({"connection_id":"tidb-system", "sql":"SELECT 1"})),
+        ("list_databases", json!({"connection_id":"tidb-system"})),
+        ("list_tables", json!({"connection_id":"tidb-system"})),
+        ("describe_table", json!({"connection_id":"tidb-system", "schema":"mysql", "table":"user"})),
+    ].into_iter().enumerate() {
+        let refused = call(&http, 10 + i as u32, tool, args).await;
+        assert_eq!(refused["isError"], true, "{tool}: {refused}");
+        assert!(text(&refused).contains("mysql"), "{refused}");
+    }
     stop.cancel();
 }
 
@@ -294,10 +340,7 @@ async fn a_tidb_saved_as_plain_mysql_is_unreachable_over_http() {
 /// needs a short timeout and lives in `mcp::server`'s tests, also gated on this URL.)
 #[tokio::test]
 async fn sqlserver_over_http_reads_and_refuses() {
-    let Ok(ado) = std::env::var("TIQ_MSSQL_URL") else {
-        eprintln!("skipping: TIQ_MSSQL_URL not set");
-        return;
-    };
+    let Some(ado) = live_url("TIQ_MSSQL_URL") else { return };
     let (mut host, mut port, mut user, mut pass) = ("127.0.0.1".to_string(), 1433u16, String::new(), String::new());
     for kv in ado.split(';') {
         let Some((k, v)) = kv.split_once('=') else { continue };

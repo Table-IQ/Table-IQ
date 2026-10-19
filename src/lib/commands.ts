@@ -1124,6 +1124,7 @@ export async function applyEdit(
 /** One staged change for `apply_changes` (mirrors Rust `Change`, tagged by `kind`). */
 export type Change =
   | { kind: "update"; edit: EditSpec }
+  | { kind: "updaterow"; pk: [string, string | null][]; edits: Omit<EditSpec, "pk">[] }
   | { kind: "delete"; pk: [string, string | null][] }
   | { kind: "insert"; values: [string, string | null][] };
 
@@ -1842,4 +1843,9 @@ export async function downloadText(filename: string, text: string, mime = "text/
   a.download = filename;
   a.click();
   URL.revokeObjectURL(a.href);
+}
+
+/** Advisory check; unknown rights are reported rather than presented as safe. */
+export async function mcpRoleWarnings(id: string): Promise<string[]> {
+  return invoke<string[]>("mcp_role_warnings", { id });
 }

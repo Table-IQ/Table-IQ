@@ -8,6 +8,7 @@ import { Tabs } from "./ui/Panel";
 import { Chip } from "./ui/Chip";
 import { IconClose, IconKey, IconLink, IconSearch } from "./ui/Icon";
 import { useSelectedRow } from "../state/selectedRowStore";
+import { useStaged } from "../state/stagedStore";
 import { loadForeignKeys, loadTableMeta } from "../state/connectionStore";
 
 /** Whether the row-detail fields can be edited: the grid's own rule (`readOnlyReason`), so a
@@ -90,8 +91,12 @@ export function Inspector({
   // Editable only when the grid is (`fieldsEditable`). On success we
   // update the selected-row store (so the panel shows the new value) and ask the
   // matching TableView to re-sync its grid.
-  const editable = fieldsEditable(object, pk, transactions);
+  const writesBlocked = useStaged((s) => s.count > 0 || s.committing || !!s.api?.commitBlockedReason);
+  const editable = fieldsEditable(object, pk, transactions) && !writesBlocked;
   const commitField = async (col: string, newValue: string): Promise<boolean> => {
+    // A blur handler may belong to the render before the grid locked writes.
+    const staged = useStaged.getState();
+    if (staged.count > 0 || staged.committing || staged.api?.commitBlockedReason) return false;
     if (!editable || !rowDetail || !object || !schema) return false;
     const orig = rowDetail.values[col] ?? "";
     if (orig === newValue) return true;

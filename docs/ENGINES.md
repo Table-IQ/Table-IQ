@@ -74,12 +74,12 @@ uses; a failure means that feature degrades on that product.
 - `mcp_read_only`: whether the read-only wrapper used for agent reads keeps a write from
   landing. Measured on every run that creates its own fixture table. It is one line of
   defence only: the guard (`mcp/guard.rs`) is the other, and DDL gets past the wrapper on MySQL
-  and CockroachDB. Of the compatible products only CockroachDB is shared over MCP (see below).
+  and CockroachDB. CockroachDB and TiDB have reviewed MCP dialects (see below).
 
 | Profile | describe_table | foreign_keys | table_stats | estimate_rows | list_databases | explain_json | cancel | mcp_read_only |
 |---|---|---|---|---|---|---|---|---|
 | MariaDB | ok | ok | ok | ok | ok | not implemented | ok | ok |
-| TiDB | ok | ok | ok | ok | ok | not implemented | ok | START TRANSACTION READ ONLY rejected: function READ ONLY has only noop implementation in tidb now, use tidb_enable_noop_functions to enable these functions |
+| TiDB | ok | ok | ok | ok | ok | not implemented | ok | ok with AS OF TIMESTAMP NOW(6) snapshot (rechecked locally, 2026-10-20) |
 | OceanBase | ok | ok | ok | ok | ok | not implemented | ok | ok |
 | Apache Doris | not reached | not reached | not reached | not reached | not reached | not reached | not reached | not reached |
 | StarRocks | ok | ok | tiq_probe is not among 0 tables | no estimate | ok | not implemented | ok | n/a (existing table) |
@@ -191,7 +191,7 @@ detected product differ, the saved one stays and the more restrictive capabiliti
 | Profile | Grid editing | Backup and restore | User management | Agent access (MCP) |
 |---|---|---|---|---|
 | MariaDB | yes | yes | no | yes |
-| TiDB | yes | no | no | no |
+| TiDB | yes | no | no | read-only snapshot |
 | OceanBase | yes | no | no | no |
 | Apache Doris | no | no | no | no |
 | StarRocks | no | no | no | no |
@@ -224,7 +224,7 @@ detected product differ, the saved one stays and the more restrictive capabiliti
   it, a server whose version query failed so TableIQ could not identify it, or a profile id saved
   by a newer build cannot be shared over MCP at all, for reads or writes. MariaDB, Neon,
   Supabase, TimescaleDB and AlloyDB are the base engine under a vendor name and keep MCP access;
-  CockroachDB has `agent: true` with `real: false`. `AGENT_NOTE` is the reason the
+  CockroachDB and TiDB have `agent: true` with `real: false`. `AGENT_NOTE` is the reason the
   UI and the MCP error give for a refusal.
 - **An entry shared before a product opened to agents is not served.** `agentSince` on a
   profile dates its opening (`agent_rev()` is the latest); an allowlist entry (`McpConn.rev`,
@@ -266,17 +266,31 @@ refused on a read-only one (`CREATE` is a write word), and `unsafe_*` names are 
 New server versions can add `crdb_internal` functions: the list is from v26.3.2, and the
 server's own `allow_unsafe_internals` gate is what covers the rest.
 
-### TiDB over MCP: still closed
+### TiDB over MCP: read-only snapshots
 
-TiDB rejects `START TRANSACTION READ ONLY` and `SET … transaction_read_only` unless
-`tidb_enable_noop_functions` is on, and then they do nothing, so there is no read-only
-transaction to stand on (`tests/mcp_live.rs`, `tidb_has_no_default_read_only_transaction`;
-`tidb_super_read_only` needs `SUPER`). `START TRANSACTION READ ONLY AS OF TIMESTAMP NOW(6)` does
-refuse DML ("only support read-only statement during read-only staleness transactions"), but
-it reads a snapshot (a row committed a moment before was not visible in a manual run), DDL
-and `SET GLOBAL` run through it, and TiDB's own function and statement list (`ADMIN`,
-`IMPORT INTO`, `PLAN REPLAYER`, `BATCH`, …) has not been reviewed. Opening TiDB needs a decision
-on snapshot reads and a TiDB dialect in the guard; `AGENT_NOTE` says why it is closed.
+TiDB agent access is enabled in the current unreleased batch (sharing generation 4).
+Every agent query uses SQL validation and `START TRANSACTION READ ONLY AS OF TIMESTAMP NOW(6)`
+followed by the query and ROLLBACK, even when an old configuration enables writes. This is a
+snapshot chosen at query start, not a guarantee of linearizable reads or immediate visibility
+across a distributed cluster. Never enable `tidb_enable_noop_functions` as a safety measure:
+plain `START TRANSACTION READ ONLY` rejects by default and becomes a no-op with that option.
+
+The snapshot wrapper rejects DML but does not itself stop DDL. The guard also refuses TiDB
+administrative/import/export/sequence operations, custom snapshots, unsafe hints, and internal
+or cluster-wide metadata reads. Use a dedicated SELECT-only application role. Local activity
+logging and SQL validation do not make an elevated database role safe.
+
+The same rules apply when TiDB is detected behind a connection saved as ordinary MySQL.
+A saved TiDB profile that connects to a server not identified as TiDB is refused. Old shares
+must be confirmed again. Connections whose default database is a system/internal schema
+are refused; database/table listings omit those schemas and describe_table checks them too.
+
+Local TiDB 8.5.7 evidence on 2026-10-20: hard profile checks and snapshot wrapper passed;
+Explain JSON remains unsupported. HTTP checks covered both write-policy settings, 400
+concurrent-worker read requests, DML/DDL/admin refusal, old-share refusal, a named TiDB
+profile, and internal default-database/metadata boundaries. Clock-ahead errors explain TiDB/PD
+clock synchronization; the local tests do not establish clock behavior for every cluster.
+TiDB Cloud verification remains pending because no cloud test profile was supplied.
 
 ## How detection works, and its limits
 

@@ -28,7 +28,7 @@ use tableiq_lib::profiles;
 /// The soft checks each CI engine is known to fail. A change here is a change in what the
 /// product can do on that engine.
 const EXPECTED_SOFT_FAILS: &[(&str, &[&str])] = &[
-    ("tidb", &["explain_json", "mcp_read_only"]),
+    ("tidb", &["explain_json"]),
     ("cockroachdb", &["table_stats", "estimate_rows", "explain_json", "cancel"]),
     ("mariadb", &["explain_json"]),
 ];
@@ -50,7 +50,7 @@ fn soft<T>(failed: &mut Vec<&'static str>, name: &'static str, res: Result<T, St
 
 /// What the read-only wrapper does to a write: `Ok` when the table still has its 3 rows.
 async fn mcp_read_only(drv: &dyn SqlDriver, schema: &str, base: &str) -> Result<(), String> {
-    let stmts = read_only_wrap(base, "INSERT INTO tiq_smoke (id, name) VALUES (99, 'x')")?;
+    let stmts = read_only_wrap(profiles::guard_engine(base, None, drv.detected_product().as_deref()), "INSERT INTO tiq_smoke (id, name) VALUES (99, 'x')")?;
     let outs = drv.run_statements(&stmts, 10, &CancelToken::new()).await.map_err(|e| e.to_string())?;
     if let Some(e) = outs.first().and_then(|o| o.error.as_ref()) {
         return Err(format!("{} rejected: {}", stmts[0], e.message));
@@ -248,12 +248,12 @@ async fn a_detected_product_restricts_a_session_saved_as_the_plain_engine() {
     if let Some(url) = live_url("TIQ_TIDB_URL") {
         let drv = MySqlDriver::connect(&url).await.expect("connect");
         assert_eq!(drv.caps(), profiles::Caps { backup: false, user_mgmt: false, ..all });
-        assert!(drv.agent_access().unwrap_err().contains("TiDB cannot be shared over MCP yet"));
+        assert_eq!(drv.agent_access(), Ok(()));
         // A wrong label lifts nothing: saved as MariaDB (the base engine to agents), the
         // server still says TiDB, and the more restrictive of the two decides.
         let mislabelled = MySqlDriver::connect_as(&url, Some("mariadb")).await.expect("connect");
         assert!(!mislabelled.caps().backup && !mislabelled.caps().user_mgmt);
-        assert!(mislabelled.agent_access().unwrap_err().contains("TiDB cannot be shared over MCP yet"));
+        assert_eq!(mislabelled.agent_access(), Ok(()));
     }
     if let Some(url) = live_url("TIQ_CRDB_URL") {
         let drv = PgDriver::connect(&url).await.expect("connect");
@@ -303,7 +303,7 @@ async fn a_saved_profile_applies_to_a_genuine_mysql() {
     let drv = MySqlDriver::connect_as(&url, Some("tidb")).await.expect("connect");
     assert_eq!(drv.product().as_deref(), Some("tidb"));
     assert!(!drv.caps().backup && drv.caps().transactions);
-    assert!(drv.agent_access().unwrap_err().contains("TiDB cannot be shared over MCP yet"));
+    assert!(drv.agent_access().unwrap_err().contains("did not identify itself as TiDB"));
     let future = MySqlDriver::connect_as(&url, Some("from-the-future")).await.expect("connect");
     assert_eq!(future.product(), None);
     assert!(future.agent_access().unwrap_err().contains("saved by a newer TableIQ"));

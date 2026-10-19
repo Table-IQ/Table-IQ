@@ -99,6 +99,11 @@ fn delete_sql(schema: &str, table: &str, pk: &[(String, Option<String>)]) -> (St
 /// One staged change as `(sql, binds)` — the same statements the single-row commands send.
 fn change_sql(schema: &str, table: &str, c: &Change) -> (String, Vec<Option<String>>) {
     match c {
+        Change::UpdateRow { pk, edits } => super::build_row_update_sql(
+            &format!("{}.{}", quote_ident(schema), quote_ident(table)), pk, edits, &quote_ident, &mssql_placeholder,
+            &|c, i| format!("{} = @P{i}", quote_ident(c)),
+            &|c, i| { let c = quote_ident(c); format!("({c} = @P{i} OR ({c} IS NULL AND @P{i} IS NULL))") },
+        ),
         Change::Update { edit } => update_sql(schema, table, edit),
         Change::Delete { pk } => delete_sql(schema, table, pk),
         Change::Insert { values } => {
@@ -492,6 +497,10 @@ impl SqlServerDriver {
         if trust {
             config.trust_cert();
         }
+        Self::from_config(config).await
+    }
+
+    async fn from_config(config: Config) -> DResult<Self> {
         let mut client = open(&config).await?;
         // Ask the server rather than trusting `database`: it may be empty (the login's default).
         let row = client
@@ -648,6 +657,12 @@ fn to_batch(columns: &[std::string::String], data: &[Vec<Option<std::string::Str
 
 #[async_trait]
 impl SqlDriver for SqlServerDriver {
+    async fn isolated_session(&self) -> DResult<Arc<dyn SqlDriver>> {
+        let mut config = self.config.clone();
+        config.database(&self.database);
+        Ok(Arc::new(Self::from_config(config).await?))
+    }
+
     fn agent_access(&self) -> Result<(), String> {
         Ok(())
     }

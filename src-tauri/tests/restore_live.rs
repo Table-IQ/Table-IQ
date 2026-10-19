@@ -1,7 +1,7 @@
 //! Restore Database against real engines, through the same job registry the UI polls. Each
 //! test backs up, drops a table, restores, and checks the table (and its rows) came back.
 //!
-//! SQLite and DuckDB (close → atomic file swap → reopen) always run, in-process.
+//! SQLite (native online backup) and DuckDB (close → atomic file swap → reopen) always run in-process.
 //! The rest are gated and skip with a message:
 //! - real `pg_restore` / `psql` / `mysql`: `TIQ_PG_URL` / `TIQ_MYSQL_URL` AND the tool found by
 //!   `resolve_tool` (e.g. `brew install libpq mysql-client`).
@@ -78,6 +78,46 @@ async fn sqlite_backup_drop_restore_round_trip() {
     let reopened = SqliteDriver::connect(&path).await.unwrap();
     assert_eq!(scalar(&reopened, "SELECT COUNT(*) FROM items").await, "3", "the table is back");
     assert_eq!(scalar(&reopened, "SELECT COUNT(*) FROM sqlite_master WHERE name = 'later'").await, "0");
+}
+
+/// A second open connection must see the restored database, not an unlinked old file.
+#[tokio::test]
+async fn sqlite_restore_keeps_other_connections_on_the_same_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("shared.sqlite");
+    let bak = dir.path().join("snapshot.sqlite");
+    let path = db.to_str().unwrap();
+    let drv: Arc<dyn SqlDriver> = Arc::new(SqliteDriver::connect(path).await.unwrap());
+    drv.run_script("CREATE TABLE items (id INTEGER PRIMARY KEY); INSERT INTO items VALUES (1)").await.unwrap();
+    backup::sql_backup(drv.clone(), "sqlite", path, bak.to_str().unwrap()).await.unwrap();
+    drv.run_script("INSERT INTO items VALUES (2)").await.unwrap();
+    let other = SqliteDriver::connect(path).await.unwrap();
+    assert_eq!(scalar(&other, "SELECT COUNT(*) FROM items").await, "2");
+    backup::file_restore(drv, "sqlite", path, bak.to_str().unwrap()).await.unwrap();
+    assert_eq!(scalar(&other, "SELECT COUNT(*) FROM items").await, "1");
+    other.run_script("INSERT INTO items VALUES (3)").await.unwrap();
+    let reopened = SqliteDriver::connect(path).await.unwrap();
+    assert_eq!(scalar(&reopened, "SELECT COUNT(*) FROM items").await, "2");
+}
+
+#[tokio::test]
+async fn sqlite_restore_refuses_an_active_writer_without_changing_data() {
+    use sqlx::Connection;
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("busy.sqlite");
+    let bak = dir.path().join("snapshot.sqlite");
+    let path = db.to_str().unwrap();
+    let drv: Arc<dyn SqlDriver> = Arc::new(SqliteDriver::connect(path).await.unwrap());
+    drv.run_script("CREATE TABLE items (id INTEGER PRIMARY KEY); INSERT INTO items VALUES (1)").await.unwrap();
+    backup::sql_backup(drv.clone(), "sqlite", path, bak.to_str().unwrap()).await.unwrap();
+    let mut writer = sqlx::SqliteConnection::connect_with(&sqlx::sqlite::SqliteConnectOptions::new().filename(path)).await.unwrap();
+    sqlx::query("BEGIN IMMEDIATE").execute(&mut writer).await.unwrap();
+    sqlx::query("INSERT INTO items VALUES (2)").execute(&mut writer).await.unwrap();
+    let error = backup::file_restore(drv, "sqlite", path, bak.to_str().unwrap()).await.unwrap_err();
+    assert!(error.contains("still in use"), "{error}");
+    sqlx::query("COMMIT").execute(&mut writer).await.unwrap();
+    let reopened = SqliteDriver::connect(path).await.unwrap();
+    assert_eq!(scalar(&reopened, "SELECT COUNT(*) FROM items").await, "2");
 }
 
 /// A file that is not a SQLite database is refused before the session is closed or the
@@ -487,6 +527,18 @@ async fn mysql_multi_database_dump_is_refused_through_the_docker_shim() {
                 .unwrap_err();
             assert!(e.contains(&format!("USE `{OTHER_DB}`")), "{e}");
 
+            // Qualified writes bypass --one-database without ever issuing USE.
+            for sql in [
+                format!("DELETE FROM {OTHER_DB}.guard;"),
+                format!("UPDATE `{OTHER_DB}`.`guard` SET x = 9;"),
+                format!("ALTER DATABASE {OTHER_DB} CHARACTER SET latin1;"),
+            ] {
+                std::fs::write(&sneaky, sql).unwrap();
+                let result = backup::tool_restore("mysql", &t, &pass, sneaky.to_str().unwrap(), shim.path().to_str()).await;
+                assert!(result.is_err(), "cross-database restore started: {result:?}");
+                assert!(!shim.path().join("argv.mysql").exists(), "mysql never ran");
+            }
+
             let guard: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {OTHER_DB}.guard"))
                 .fetch_one(&mut c)
                 .await
@@ -647,10 +699,7 @@ async fn mssql_restore(drv: Arc<dyn SqlDriver>, path: &'static str) -> JobStatus
 
 #[tokio::test]
 async fn sqlserver_backup_drop_restore_of_a_scratch_database() {
-    let Ok(ado) = std::env::var("TIQ_MSSQL_URL") else {
-        eprintln!("skip: no TIQ_MSSQL_URL");
-        return;
-    };
+    let Some(ado) = live_url("TIQ_MSSQL_URL") else { return };
     let (host, port, user, pass) = mssql_parts(&ado);
     mssql_cleanup(&host, port, &user, &pass).await;
 

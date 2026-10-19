@@ -28,6 +28,17 @@ const snap = (p: Partial<StagedSnapshot>): StagedSnapshot => ({
 });
 
 describe("buildBatch", () => {
+  it("combines both composite-key edits and other changed columns into one row update", () => {
+    const b = buildBatch(snap({ edits: [
+      { row: 0, col: "id", before: "41", newValue: "51" },
+      { row: 0, col: "name", before: "a", newValue: "A" },
+      { row: 0, col: "note", before: null, newValue: "changed" },
+    ] }), ["id", "name"], 0);
+    expect(b.changes).toHaveLength(1);
+    expect(b.changes[0]).toMatchObject({ kind: "updaterow", pk: [["id", "41"], ["name", "a"]] });
+    expect(b.labels).toEqual(["Row 1 (id=41, name=a)"]);
+  });
+
   it("orders updates (PK edits last), then deletes, then inserts, with PKs from the server values", () => {
     const b = buildBatch(
       snap({
@@ -62,7 +73,7 @@ describe("buildBatch", () => {
     expect(b.changes[0]).toEqual({ kind: "delete", pk: [["id", "41"], ["note", null]] });
   });
 
-  it("runs PK edits after every non-PK edit, so a later edit on the same row still matches its original PK", () => {
+  it("groups key and non-key edits while preserving each row’s original identity", () => {
     const b = buildBatch(
       snap({
         edits: [
@@ -75,13 +86,15 @@ describe("buildBatch", () => {
       0,
     );
     expect(b.changes).toEqual([
-      { kind: "update", edit: { pk: [["id", "42"]], column: "name", new_value: "B", orig_value: "b" } },
+      { kind: "updaterow", pk: [["id", "42"]], edits: [
+        { column: "name", new_value: "B", orig_value: "b" },
+        { column: "id", new_value: "8", orig_value: "42" },
+      ] },
       { kind: "update", edit: { pk: [["id", "41"]], column: "name", new_value: "A", orig_value: "a" } },
-      { kind: "update", edit: { pk: [["id", "42"]], column: "id", new_value: "8", orig_value: "42" } },
     ]);
-    expect(b.labels).toEqual(["Row 2 (id=42)", "Row 1 (id=41)", "Row 2 (id=42)"]);
-    // An error on the id UPDATE (index 2) still names the right row.
-    expect(commitErrorMessage("change 2: row changed since it was loaded", b.labels)).toBe(
+    expect(b.labels).toEqual(["Row 2 (id=42)", "Row 1 (id=41)"]);
+    // A conflict in either column names the row-level change.
+    expect(commitErrorMessage("change 0: row changed since it was loaded", b.labels)).toBe(
       "Row 2 (id=42) changed since it was loaded — nothing was committed",
     );
   });

@@ -3,10 +3,21 @@
 ## Unreleased
 
 ### Fixed
+- MySQL restore validation rejects foreign qualified references and ALTER DATABASE/SCHEMA, including quoted numeric database names. Trusted-dump and least-privilege requirements remain; conservative alias rejection is documented.
+- SQLite restore uses the native online backup API instead of replacing an open file. Other connections retain a consistent database; active writers cause a safe refusal.
+- SQL Server MCP calls use separate sessions so agent transactions and timeout cleanup cannot roll back a user transaction. Full-width ASCII procedure names are normalized before escape checks.
+- MCP token initialization and rotation share one lock through keychain persistence; failed persistence does not publish a replacement token.
+- Multiple staged cell edits on a row commit in one UPDATE using its original composite key and original changed-column values. Conflicts roll back the batch. Inspector row selection clears after commit before fresh rows load, and after uncertain-commit recovery. Inspector writes respect staged, in-flight and uncertain-commit blocks.
+- Blank Test Connection passwords fall back to the saved keychain entry; keychain failures remain errors. SSH host/port validation and SQLite/DuckDB URL suffix handling preserve encoded file paths.
+- Plain Postgres restores reject database-switch, include and shell meta-commands after SQL or other commands on the same line, before starting psql. Validation preserves quoted SQL, comments and pg_dump COPY data.
 - Staged commits with an unknown outcome block grid editing and resubmission until the local batch is explicitly discarded and fresh rows load. Review and copying remain available; discarding does not undo database changes.
 - SQL-log password redaction handles nested comments, MySQL `#` comments, adjacent literals, complex function arguments and unquoted conninfo assignments.
 
 ### Changed
+- TiDB sharing uses read-only snapshots and its own guard dialect, requires fresh sharing confirmation, and refuses internal default databases and mismatched server profiles. Cloud verification remains pending.
+- MCP timeout messages distinguish requested cancellation from completion. Settings show advisory role warnings and document engine/multi-result limitations.
+- CI provisions SQL Server and requires live guard, isolation, backup and restore coverage rather than silently skipping absent URLs.
+- Website source now lives in a separate repository. Mac signing/notarization is deferred by the owner for 3–4 days; native debug checks are not signed-release evidence.
 - Launch strategy focuses on a Mac/Postgres investigation workflow, measured beta usage and release-specific evidence. `TODOS.md` now orders the remaining work by launch risk and user impact.
 
 ## 0.8.10 — 2026-10-18

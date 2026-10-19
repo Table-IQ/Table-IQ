@@ -70,7 +70,7 @@ const ENV_SEGMENTS: { env: ConnEnv | null; label: string }[] = [
   ...CONN_ENVS.map((env, i) => ({ env, label: ["Local", "Dev", "Test", "Staging", "Prod"][i] })),
 ];
 const SSL_MODES = ["disable", "allow", "prefer", "require", "verify-ca", "verify-full"];
-const ERR_LABEL: Record<keyof ConnFieldErrors, string> = { host: "Host", port: "Port", database: "Database file" };
+const ERR_LABEL: Record<keyof ConnFieldErrors, string> = { host: "Host", port: "Port", database: "Database file", sshhost: "SSH server", sshport: "SSH port" };
 
 const focusRing = "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40";
 // The pressed-tile ring on the compatible-database select, and its stronger focused state.
@@ -146,6 +146,8 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
     host: touched.host || (errs.host && errs.host !== "Required") ? errs.host : undefined,
     port: touched.port || form.port ? errs.port : undefined,
     database: touched.database || form.database ? errs.database : undefined,
+    sshhost: touched.sshhost || form.ssh?.host ? errs.sshhost : undefined,
+    sshport: touched.sshport || form.ssh?.port ? errs.sshport : undefined,
   };
   const firstErr = (Object.keys(errs) as (keyof ConnFieldErrors)[])[0];
   const blockReason = firstErr ? `${ERR_LABEL[firstErr]}: ${errs[firstErr]}` : undefined;
@@ -628,17 +630,18 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
                   {ssh.enabled && (
                     <div className="border-t border-border px-[11px] pt-[9px] pb-[11px]">
                       <div className="mb-[9px] grid grid-cols-[1fr_80px] gap-[9px]">
-                        <Field id={`${uid}sshhost`} label="Server">
+                        <Field id={`${uid}sshhost`} label="Server" error={shown.sshhost}>
                           <input
-                            {...ids("sshhost")}
+                            {...ids("sshhost", shown.sshhost)}
+                            onBlur={touch("sshhost")}
                             className={field()}
                             value={ssh.host}
                             onChange={(e) => p.onSsh({ host: e.target.value })}
                             placeholder="bastion.example.com or ~/.ssh/config alias"
                           />
                         </Field>
-                        <Field id={`${uid}sshport`} label="Port">
-                          <input {...ids("sshport")} className={field()} inputMode="numeric" value={ssh.port || ""} onChange={(e) => p.onSsh({ port: toPort(e.target.value) })} />
+                        <Field id={`${uid}sshport`} label="Port" error={shown.sshport}>
+                          <input {...ids("sshport", shown.sshport)} onBlur={touch("sshport")} className={field()} inputMode="numeric" value={ssh.port || ""} onChange={(e) => p.onSsh({ port: toPort(e.target.value) })} />
                         </Field>
                       </div>
                       <Field id={`${uid}sshuser`} label="User" className="mb-[9px]">

@@ -41,6 +41,8 @@ arrow = { version = "53", features = ["ipc"] }
 parquet = { version = "53", default-features = false, features = ["arrow", "snap", "zstd", "lz4", "flate2"] }
 bytes = "1"
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "mysql", "sqlite", "json"] }
+# Same SQLite library already used by sqlx; native online backup coordinates restore locks.
+libsqlite3-sys = "=0.30.1"
 thiserror = "2"
 sysinfo = "0.32"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }

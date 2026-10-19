@@ -136,10 +136,7 @@ fn mssql_parts(ado: &str) -> (String, u16, String, String, String) {
 
 #[tokio::test]
 async fn sqlserver_statements_are_logged() {
-    let Ok(ado) = std::env::var("TIQ_MSSQL_URL") else {
-        eprintln!("skip: no TIQ_MSSQL_URL");
-        return;
-    };
+    let Some(ado) = live_url("TIQ_MSSQL_URL") else { return };
     let (host, port, database, user, pass) = mssql_parts(&ado);
     let drv = SqlServerDriver::connect(&host, port, &database, &user, &pass, "prefer").await.unwrap();
     let (d, log) = logged(Arc::new(drv));

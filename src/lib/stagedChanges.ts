@@ -52,11 +52,8 @@ export interface Batch {
   labels: string[];
 }
 
-/** The ordered batch: updates (stage order, but PK-column edits after all others),
- *  deletes (row order), inserts (stage order). A row staged for delete drops its cell
- *  edits — the delete wins. Every WHERE value is last-known-server state
- *  (`originalRowGetter`), never a staged value — which is why a PK edit must run last:
- *  once `id` 7→8 has run, a later `name` UPDATE … WHERE id=7 would match nothing. */
+/** Updates grouped by row, then deletes and inserts. Every WHERE uses original server
+ *  values, so changing several composite-key columns still matches exactly one row. */
 export function buildBatch(snap: StagedSnapshot, pk: string[], rowOffset: number): Batch {
   const deleted = new Set(snap.deletes);
   const server = (row: number) => (c: string) => snap.serverValue(row, c) ?? null;
@@ -68,11 +65,15 @@ export function buildBatch(snap: StagedSnapshot, pk: string[], rowOffset: number
   const labels: string[] = [];
   const pkLast = (e: PendingEdit) => (pk.includes(e.col) ? 1 : 0);
   // Array.prototype.sort is stable, so stage order holds within each group.
+  const rows = new Map<number, PendingEdit[]>();
   for (const e of [...snap.edits].sort((a, b) => pkLast(a) - pkLast(b))) {
-    if (deleted.has(e.row)) continue;
-    const edit = buildEdit(pk, originalRowGetter(e, (c) => snap.serverValue(e.row, c)), e.col, e.newValue);
-    changes.push({ kind: "update", edit });
-    labels.push(label(e.row));
+    if (!deleted.has(e.row)) rows.set(e.row, [...(rows.get(e.row) ?? []), e]);
+  }
+  for (const [row, pending] of rows) {
+    const edits = pending.map((e) => buildEdit(pk, originalRowGetter(e, (c) => snap.serverValue(row, c)), e.col, e.newValue));
+    if (edits.length === 1) changes.push({ kind: "update", edit: edits[0] });
+    else changes.push({ kind: "updaterow", pk: edits[0].pk, edits: edits.map(({ pk: _pk, ...edit }) => edit) });
+    labels.push(label(row));
   }
   for (const row of [...deleted].sort((a, b) => a - b)) {
     changes.push({ kind: "delete", pk: pk.map((c) => [c, server(row)(c)] as [string, string | null]) });
@@ -148,6 +149,9 @@ export function buildPreviewSql(schema: string, table: string, changes: Change[]
   for (const c of changes) {
     if (c.kind === "update") {
       lines.push(`UPDATE ${q} SET ${quoteIdent(c.edit.column, engine)} = ${lit(c.edit.new_value)} WHERE ${pkWhere(c.edit.pk, engine)};`);
+    } else if (c.kind === "updaterow") {
+      const sets = c.edits.map((e) => `${quoteIdent(e.column, engine)} = ${lit(e.new_value)}`).join(", ");
+      lines.push(`UPDATE ${q} SET ${sets} WHERE ${pkWhere(c.pk, engine)};`);
     } else if (c.kind === "delete") {
       lines.push(buildDeleteStatement(schema, table, c.pk, engine));
     } else if (c.values.length === 0) {

@@ -173,7 +173,7 @@ async fn mysql_like_keeps_the_text_column_collation() {
 }
 
 async fn mssql() -> Option<SqlServerDriver> {
-    let ado = std::env::var("TIQ_MSSQL_URL").ok()?;
+    let ado = live_url("TIQ_MSSQL_URL")?;
     let (mut host, mut port, mut db, mut user, mut pass) =
         ("127.0.0.1".to_string(), 1433u16, String::new(), String::new(), String::new());
     for kv in ado.split(';') {
