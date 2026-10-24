@@ -10,13 +10,15 @@ export function StatusBar({
   right?: ReactNode;
 }) {
   return (
-    <div
-      className="flex items-center gap-2 border-t border-border bg-surface px-3 text-[11px] text-muted"
-      style={{ height: "var(--statusbar-h)" }}
-    >
-      <span className="flex items-center gap-2">{left}</span>
-      <span className="flex flex-1 items-center justify-center gap-2">{center}</span>
-      <span className="flex items-center gap-2">{right}</span>
+    <div className="@container/status shrink-0">
+      <div
+        className="tiq-chrome flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-border px-3 py-1 text-[11px] text-muted"
+        style={{ minHeight: "var(--statusbar-h)" }}
+      >
+        <span className="flex max-w-full flex-wrap items-center gap-2">{left}</span>
+        <span className="order-last flex max-w-full basis-full flex-wrap items-center justify-center gap-2 empty:hidden @min-[760px]/status:order-none @min-[760px]/status:flex-1 @min-[760px]/status:basis-auto">{center}</span>
+        <span className="ml-auto flex max-w-full flex-wrap items-center gap-2">{right}</span>
+      </div>
     </div>
   );
 }

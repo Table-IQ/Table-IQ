@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ENGINE_COLORS, ENGINE_MONOGRAMS, EngineIcon, engineLabel } from "./EngineIcon";
+import { ENGINE_LABELS, EngineIcon, engineLabel } from "./EngineIcon";
+import type { Engine } from "../../lib/commands";
 import { PROFILES } from "../../lib/profiles";
+
+const logos = import.meta.glob<string>("../../assets/engines/*.svg", { eager: true, query: "?url", import: "default" });
+const imageSource = (html: string) => html.match(/<img src="([^"]+)"/)?.[1].replace(/&#x27;/g, "'").replace(/&amp;/g, "&");
 
 describe("engineLabel", () => {
   it("names the product when the profile is known, else the engine", () => {
@@ -27,9 +31,18 @@ describe("EngineIcon", () => {
   it("draws the base engine without a profile, or with one it does not know", () => {
     for (const profile of [undefined, null, "from-the-future", "cockroachdb"]) {
       const h = html({ profile });
-      expect(h).toContain(`>${ENGINE_MONOGRAMS.mysql}<`);
-      expect(h).toContain(ENGINE_COLORS.mysql);
+      expect(imageSource(h)).toBe(logos["../../assets/engines/mysql.svg"]);
+      expect(h).not.toContain(">My<");
       expect(h).toContain('title="MySQL"');
+    }
+  });
+
+  it("renders a bundled vendor mark for every selectable engine, including PostgreSQL and ChromaDB", () => {
+    for (const engine of Object.keys(ENGINE_LABELS) as Engine[]) {
+      const h = html({ engine });
+      expect(imageSource(h)).toBe(logos[`../../assets/engines/${engine}.svg`]);
+      expect(h).not.toMatch(/src="https?:/);
+      expect(h).toContain('alt=""');
     }
   });
 

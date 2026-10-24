@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { createPortal } from "react-dom";
 import type { Engine } from "../lib/commands";
 import { canLeaveSession, closeConnection, useConnections } from "../state/connectionStore";
 import { isFileEngine } from "./ConnectionManager";
@@ -115,29 +114,27 @@ export function ConnectionRail() {
       </button>
       {/* Portalled: the rail's backdrop-filter would otherwise be the containing block
           for this fixed menu, offsetting it and trapping it under the sidebar. */}
-      {menu &&
-        createPortal(
-          <ContextMenu
-            x={menu.x}
-            y={menu.y}
-            onClose={() => setMenu(null)}
-            items={[
-              {
-                id: "rail-db",
-                label: "Show database name",
-                checked: label === "database",
-                onSelect: () => pickLabel("database"),
-              },
-              {
-                id: "rail-conn",
-                label: "Show connection name",
-                checked: label === "connection",
-                onSelect: () => pickLabel("connection"),
-              },
-            ]}
-          />,
-          document.body,
-        )}
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          items={[
+            {
+              id: "rail-db",
+              label: "Show database name",
+              checked: label === "database",
+              onSelect: () => pickLabel("database"),
+            },
+            {
+              id: "rail-conn",
+              label: "Show connection name",
+              checked: label === "connection",
+              onSelect: () => pickLabel("connection"),
+            },
+          ]}
+        />
+      )}
     </nav>
   );
 }

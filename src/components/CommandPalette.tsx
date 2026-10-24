@@ -111,7 +111,7 @@ export function CommandPalette({
       onClick={onClose}
     >
       <div
-        className="flex max-h-[60vh] w-full max-w-xl flex-col overflow-hidden rounded-xl border border-border bg-bg shadow-[var(--shadow-pop)]"
+        className="tiq-glass-panel flex max-h-[60vh] w-full max-w-xl flex-col overflow-hidden rounded-xl border border-border bg-bg shadow-[var(--shadow-pop)]"
         onClick={(e) => e.stopPropagation()}
       >
         <label className="flex items-center gap-2 border-b border-border bg-surface px-4 py-3">

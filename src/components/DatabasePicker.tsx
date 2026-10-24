@@ -72,7 +72,7 @@ export function DatabasePicker({
       data-testid="database-picker"
     >
       <div
-        className="flex max-h-[64vh] w-full max-w-md flex-col overflow-hidden rounded-[10px] border border-border bg-bg shadow-[var(--shadow-pop)]"
+        className="tiq-glass-panel flex max-h-[64vh] w-full max-w-md flex-col overflow-hidden rounded-[10px] border border-border bg-bg shadow-[var(--shadow-pop)]"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="border-b border-border bg-surface px-4 py-2.5 text-center">

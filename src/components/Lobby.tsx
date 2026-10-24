@@ -496,7 +496,7 @@ export function LobbyView(p: LobbyViewProps) {
   };
 
   return (
-    <div className="h-full overflow-auto bg-bg">
+    <div className="tiq-connection-home h-full overflow-auto">
       <div className="@container mx-auto max-w-[860px] p-6">
         <Header {...p} />
         <QuickActions {...p} />

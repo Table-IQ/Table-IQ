@@ -3,7 +3,6 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { LobbyView, type LobbyViewProps } from "./Lobby";
 import type { SchemaModel } from "../lib/commands";
 import { PROFILES } from "../lib/profiles";
-import { ENGINE_MONOGRAMS } from "./ui/EngineIcon";
 
 // No jsdom here (vitest runs in node): LobbyView is the pure presentational half,
 // so every state is reachable through props and react-dom/server.
@@ -84,7 +83,7 @@ describe("LobbyView", () => {
     for (const profile of [undefined, "from-the-future"]) {
       const plain = render({ cfg: { ...cfg, profile } });
       expect(plain).toContain("<span>PostgreSQL</span>");
-      expect(plain).toContain(`>${ENGINE_MONOGRAMS.postgres}<`);
+      expect(plain).toMatch(/src="[^"]*postgres\.svg/);
     }
   });
 

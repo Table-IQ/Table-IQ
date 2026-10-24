@@ -92,7 +92,7 @@ export function KvShell() {
   return (
     <div className="flex h-full flex-col">
       <header
-        className="tiq-titlebar-drag flex shrink-0 items-center gap-3 border-b border-border bg-surface pl-[88px] pr-3"
+        className="tiq-chrome tiq-titlebar-drag flex shrink-0 items-center gap-3 border-b border-border bg-surface pl-[88px] pr-3"
         style={{ height: "var(--header-h)" }}
       >
         <Wordmark className="text-sm" />
@@ -130,7 +130,7 @@ export function KvShell() {
 
       <div className="flex min-h-0 flex-1">
         <ConnectionRail />
-        <aside className="flex shrink-0 flex-col border-r border-border bg-surface" style={{ width: "var(--sidebar-w)" }}>
+        <aside className="tiq-vibrancy flex shrink-0 flex-col border-r border-border" style={{ width: "var(--sidebar-w)" }}>
           <KvKeyTree
             key={id}
             connId={id}
@@ -143,7 +143,7 @@ export function KvShell() {
           />
         </aside>
 
-        <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-bg">
           <Tabs
             tabs={[
               { key: "key", label: "Key" },

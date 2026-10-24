@@ -99,7 +99,7 @@ const toPort = (s: string) => Number(s.replace(/\D/g, "") || 0);
 function Field({ id, label, error, className = "", children }: { id: string; label: string; error?: string; className?: string; children: ReactNode }) {
   return (
     <div className={`min-w-0 ${className}`}>
-      <label htmlFor={id} className="mb-[3px] block text-[11.5px] text-muted">
+      <label htmlFor={id} className="mb-1 block text-[12px] text-muted">
         {label}
       </label>
       {children}
@@ -263,10 +263,10 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
   const firstLine = status.kind === "err" ? status.msg.split("\n")[0] : "";
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="tiq-connection-form flex min-h-0 flex-1 flex-col">
       {/* Header */}
       <div className="flex shrink-0 items-center gap-[11px] border-b border-border px-4 py-3.5">
-        <EngineIcon engine={form.engine} profile={form.profile} size="lg" />
+        <EngineIcon engine={form.engine} profile={form.profile} size="xl" />
         <div className="min-w-0 flex-1">
           <div className="truncate text-[14.5px] font-semibold text-text">
             {mode === "new" ? "New Connection" : form.name || "Untitled"}
@@ -333,7 +333,7 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
         {urlNote && <div className="mt-1 text-[11px] text-danger">{urlNote}</div>}
 
         {mode === "new" && (
-          <div className="mt-3 grid grid-cols-5 gap-[5px]">
+          <div className="tiq-engine-picker mt-3 grid grid-cols-4 gap-1.5">
             {ENGINES.map(({ id, short, title }) => {
               // A picked product presses the select below instead of its base engine's tile.
               const on = form.engine === id && !form.profile;
@@ -344,11 +344,11 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
                   aria-pressed={on}
                   title={title ?? engineLabel(id)}
                   onClick={() => p.onEngine(id)}
-                  className={`flex flex-col items-center gap-1 rounded-lg border px-px pt-[7px] pb-[5px] text-[10px] leading-tight transition-colors ${focusRing} ${
+                  className={`flex min-w-0 flex-col items-center gap-1.5 rounded-lg border px-1 py-2 text-[11px] leading-tight transition-colors ${focusRing} ${
                     on ? "border-primary text-text ring-3 ring-primary/15" : "border-border text-muted hover:bg-surface"
                   }`}
                 >
-                  <EngineIcon engine={id} size="sm" />
+                  <EngineIcon engine={id} size="md" />
                   {short}
                 </button>
               );
@@ -732,7 +732,7 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
       </div>
 
       {/* Footer */}
-      <div className="shrink-0 border-t border-border bg-surface">
+      <div className="tiq-chrome shrink-0 border-t border-border bg-surface">
         {status.kind !== "idle" && (
           <div className="px-4 pt-[9px] text-[12px]" role="status">
             {status.kind === "busy" && (

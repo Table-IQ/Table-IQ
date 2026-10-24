@@ -451,7 +451,7 @@ export function Settings() {
   return (
     <Panel title="Settings" onClose={close} width="lg">
       <div className="flex min-h-[420px]">
-        <nav aria-label="Settings sections" className="w-40 shrink-0 border-r border-border p-2">
+        <nav aria-label="Settings sections" className="tiq-chrome w-40 shrink-0 border-r border-border p-2">
           {SECTIONS.map((s, i) => {
             const active = s.key === section;
             return (

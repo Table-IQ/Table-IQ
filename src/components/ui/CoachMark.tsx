@@ -102,7 +102,7 @@ function Bubble({
 }) {
   return (
     <div
-      className="z-[70] w-72 rounded-lg border border-border bg-bg p-3 shadow-[var(--shadow-pop)]"
+      className="tiq-glass-panel z-[70] w-72 rounded-lg border border-border bg-bg p-3 shadow-[var(--shadow-pop)]"
       style={style}
     >
       <div className="mb-1 text-xs font-semibold text-text">{spec.title}</div>

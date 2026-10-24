@@ -1,10 +1,16 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import App from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { logClientError } from "./lib/commands";
 import { logError } from "./lib/report";
 import "./index.css";
+
+// Keep the design gallery and its styles out of production builds.
+const App = React.lazy(() =>
+  import.meta.env.DEV && new URLSearchParams(window.location.search).get("preview") === "connections"
+    ? import("./previews/ConnectionGallery")
+    : import("./App"),
+);
 
 // A webview crash otherwise leaves no trace at all: the console dies with the window.
 window.addEventListener("error", (e) =>
@@ -19,7 +25,9 @@ window.addEventListener("securitypolicyviolation", (e) =>
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <ErrorBoundary>
-      <App />
+      <React.Suspense fallback={null}>
+        <App />
+      </React.Suspense>
     </ErrorBoundary>
   </React.StrictMode>,
 );

@@ -84,7 +84,7 @@ export function Onboarding() {
   if (stage === "welcome") {
     return (
       <div className="tiq-overlay flex items-center justify-center p-6">
-        <div className="w-[560px] rounded-xl border border-border bg-bg p-8 shadow-[var(--shadow-pop)]">
+        <div className="tiq-glass-panel w-[560px] max-w-full rounded-xl border border-border bg-bg p-8 shadow-[var(--shadow-pop)]">
           <BrandMark size={42} className="mb-3 text-primary" />
           <div className="mb-1 text-2xl font-semibold tracking-tight text-text">
             Welcome to <Wordmark className="text-2xl" />

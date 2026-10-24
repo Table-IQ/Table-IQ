@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 export interface ContextMenuItem {
   /** Stable id for keying; also used as the test selector. */
@@ -24,19 +25,53 @@ export interface ContextMenuProps {
   onClose: () => void;
 }
 
+function menuButtons(menu: HTMLElement) {
+  return Array.from(menu.querySelectorAll<HTMLButtonElement>("button[data-menu-id]:not(:disabled)"))
+    .filter((button) => button.closest('[role="menu"]') === menu);
+}
+
 /** Recursive item list — owns its open-submenu state so nesting composes. */
 function MenuItems({
   items,
   onClose,
   flipLeft,
+  autoFocus,
+  onBack,
 }: {
   items: (ContextMenuItem | "separator")[];
   onClose: () => void;
   flipLeft: boolean;
+  autoFocus: boolean;
+  onBack?: () => void;
 }) {
-  const [openSub, setOpenSub] = useState<string | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
+  const [openSub, setOpenSub] = useState<{ id: string; keyboard: boolean } | null>(null);
+  useEffect(() => {
+    if (autoFocus && ref.current) menuButtons(ref.current)[0]?.focus();
+  }, [autoFocus]);
   return (
-    <>
+    <div
+      ref={ref}
+      role="menu"
+      onKeyDown={(e) => {
+        // Portals still bubble through the owning dialog in React. Keep menu
+        // navigation local so the dialog's Tab trap cannot steal focus.
+        e.stopPropagation();
+        if (e.key === "Escape" || e.key === "Tab" || (e.key === "ArrowLeft" && onBack)) {
+          e.preventDefault();
+          if (e.key !== "Tab" && onBack) onBack();
+          else onClose();
+          return;
+        }
+        if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
+        e.preventDefault();
+        const buttons = menuButtons(e.currentTarget);
+        const current = buttons.indexOf(document.activeElement as HTMLButtonElement);
+        const next = e.key === "Home" ? 0 : e.key === "End" ? buttons.length - 1
+          : (current + (e.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
+        buttons[next]?.focus();
+      }}
+    >
       {items.map((item, i) =>
         item === "separator" ? (
           <div key={`sep-${i}`} className="my-1 h-px bg-border" />
@@ -44,21 +79,29 @@ function MenuItems({
           <div
             key={item.id}
             className="relative"
-            onMouseEnter={() => setOpenSub(item.children ? item.id : null)}
+            onMouseEnter={() => setOpenSub(item.children ? { id: item.id, keyboard: false } : null)}
           >
             <button
               disabled={item.disabled}
+              tabIndex={-1}
               data-menu-id={item.id}
+              onKeyDown={(e) => {
+                if (e.key === "ArrowRight" && item.children) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setOpenSub({ id: item.id, keyboard: true });
+                }
+              }}
               onClick={() => {
                 if (item.disabled) return;
                 if (item.children) {
-                  setOpenSub((s) => (s === item.id ? null : item.id));
+                  setOpenSub((s) => (s?.id === item.id ? null : { id: item.id, keyboard: true }));
                   return;
                 }
                 item.onSelect?.();
                 onClose();
               }}
-              className={`flex w-full items-center justify-between gap-4 px-3 py-1.5 text-left transition-colors hover:bg-bg disabled:cursor-not-allowed disabled:opacity-40 ${
+              className={`flex w-full items-center justify-between gap-4 px-3 py-1.5 text-left transition-colors hover:bg-bg focus-visible:bg-primary-soft focus-visible:outline focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-40 ${
                 item.tone === "danger"
                   ? "text-danger"
                   : item.tone === "muted"
@@ -68,7 +111,7 @@ function MenuItems({
               role={item.checked === undefined ? "menuitem" : "menuitemradio"}
               aria-checked={item.checked}
               aria-haspopup={item.children ? "menu" : undefined}
-              aria-expanded={item.children ? openSub === item.id : undefined}
+              aria-expanded={item.children ? openSub?.id === item.id : undefined}
             >
               <span className="truncate">
                 {item.checked !== undefined && (
@@ -88,20 +131,28 @@ function MenuItems({
                 )
               )}
             </button>
-            {item.children && openSub === item.id && (
+            {item.children && openSub?.id === item.id && (
               <div
-                role="menu"
-                className={`absolute top-0 z-50 min-w-[190px] rounded-md border border-border bg-surface py-1 text-xs shadow-xl ${
+                className={`tiq-glass-panel absolute top-0 z-50 min-w-[190px] rounded-md border border-border bg-surface py-1 text-xs shadow-xl ${
                   flipLeft ? "right-full -mr-1" : "left-full -ml-1"
                 }`}
               >
-                <MenuItems items={item.children} onClose={onClose} flipLeft={flipLeft} />
+                <MenuItems
+                  items={item.children}
+                  onClose={onClose}
+                  flipLeft={flipLeft}
+                  autoFocus={openSub.keyboard}
+                  onBack={() => {
+                    setOpenSub(null);
+                    if (ref.current) menuButtons(ref.current).find((button) => button.dataset.menuId === item.id)?.focus();
+                  }}
+                />
               </div>
             )}
           </div>
         ),
       )}
-    </>
+    </div>
   );
 }
 
@@ -113,6 +164,17 @@ function MenuItems({
 export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ x, y });
+
+  useLayoutEffect(() => {
+    const trigger = document.activeElement as HTMLElement | null;
+    const menu = ref.current;
+    return () => {
+      // Do not steal focus from another dialog opened by a menu action.
+      if (trigger?.isConnected && (menu?.contains(document.activeElement) || document.activeElement === document.body)) {
+        trigger.focus({ preventScroll: true });
+      }
+    };
+  }, []);
 
   // Outside click + Escape close.
   useEffect(() => {
@@ -149,16 +211,18 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
   // Submenus flow left when the menu sits in the right portion of the viewport.
   const flipLeft = pos.x > (typeof window !== "undefined" ? window.innerWidth : 1440) * 0.55;
 
-  return (
+  // Glass ancestors establish containing blocks; viewport coordinates belong
+  // at the document root so menus cannot be offset or clipped by a sheet.
+  return createPortal(
     <div
       ref={ref}
-      role="menu"
       data-testid="context-menu"
-      className="fixed z-50 min-w-[190px] rounded-md border border-border bg-surface py-1 text-xs shadow-xl"
+      className="tiq-glass-panel fixed z-[80] min-w-[190px] rounded-md border border-border bg-surface py-1 text-xs shadow-xl"
       style={{ left: pos.x, top: pos.y }}
       onClick={(e) => e.stopPropagation()}
     >
-      <MenuItems items={items} onClose={onClose} flipLeft={flipLeft} />
-    </div>
+      <MenuItems items={items} onClose={onClose} flipLeft={flipLeft} autoFocus />
+    </div>,
+    document.body,
   );
 }

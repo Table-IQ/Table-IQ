@@ -122,7 +122,7 @@ export function WorkspaceOverview({ onClose }: { onClose: () => void }) {
           const next = forward ? Math.min(i + 1, buttons.length - 1) : Math.max(i - 1, 0);
           buttons[next]?.focus();
         }}
-        className="flex max-h-[80vh] w-full max-w-3xl flex-col overflow-hidden rounded-[10px] border border-border bg-bg shadow-[var(--shadow-pop)] outline-none"
+        className="tiq-glass-panel flex max-h-[80vh] w-full max-w-3xl flex-col overflow-hidden rounded-[10px] border border-border bg-bg shadow-[var(--shadow-pop)] outline-none"
       >
         <div className="border-b border-border bg-surface px-4 py-2.5 text-center">
           <div className="text-[13px] font-semibold text-text">Workspace Overview</div>

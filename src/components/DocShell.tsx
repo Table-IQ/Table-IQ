@@ -92,7 +92,7 @@ export function DocShell() {
   return (
     <div className="flex h-full flex-col">
       <header
-        className="tiq-titlebar-drag flex shrink-0 items-center gap-3 border-b border-border bg-surface pl-[88px] pr-3"
+        className="tiq-chrome tiq-titlebar-drag flex shrink-0 items-center gap-3 border-b border-border bg-surface pl-[88px] pr-3"
         style={{ height: "var(--header-h)" }}
       >
         <Wordmark className="text-sm" />
@@ -120,7 +120,7 @@ export function DocShell() {
 
       <div className="flex min-h-0 flex-1">
         <ConnectionRail />
-        <aside className="flex shrink-0 flex-col border-r border-border bg-surface" style={{ width: "var(--sidebar-w)" }}>
+        <aside className="tiq-vibrancy flex shrink-0 flex-col border-r border-border" style={{ width: "var(--sidebar-w)" }}>
           <div className="border-b border-border p-2">
             <label className="flex items-center gap-1.5 rounded-md border border-border bg-bg px-2 focus-within:border-primary">
               <IconSearch size={12} className="text-muted" />
@@ -160,7 +160,7 @@ export function DocShell() {
           </div>
         </aside>
 
-        <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-bg">
           {selected ? (
             <>
               <div className="flex shrink-0 items-center border-b border-border bg-surface">

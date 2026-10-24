@@ -115,7 +115,7 @@ export function TitleBar(p: TitleBarProps) {
   return (
     <header
       data-tauri-drag-region
-      className="tiq-titlebar-drag flex shrink-0 items-center gap-2 border-b border-border bg-surface pl-[84px] pr-3"
+      className="tiq-chrome tiq-titlebar-drag flex shrink-0 items-center gap-2 border-b border-border pl-[84px] pr-3"
       style={{ height: "var(--titlebar-h)" }}
       onContextMenu={(e) => {
         e.preventDefault();

@@ -9,22 +9,23 @@
 :root {
   /* Surfaces — neutral. Chrome reads as "quiet"; primary is reserved for state. */
   --bg: #ffffff;
-  --surface: #f7f7f8;
-  --surface-2: #eeeef0;
-  --border: #e4e4e7;
-  --border-strong: #a1a1aa;
-  --text: #18181b;
-  --muted: #52525b;
-  --muted-2: #71717a;
-  --primary: #4f46e5;
-  --primary-hover: #4338ca;
-  --primary-soft: #eef2ff;
+  --surface: #f1f6fb;
+  --surface-2: #e4edf6;
+  --border: #cbd7e5;
+  --border-strong: #8b9db2;
+  --text: #1e293b;
+  --muted: #475a70;
+  --muted-2: #52657b;
+  --primary: #3e6694;
+  --primary-hover: #30547e;
+  --primary-soft: #e8f0fa;
+  --primary-text: #3e6694;
   --accent: #7c3aed;
   --selection: #2563eb;
   --selection-bg: #dbeafe;
-  --danger: #dc2626;
-  --warn: #d97706;
-  --ok: #059669;
+  --danger: #b91c1c;
+  --warn: #9a5408;
+  --ok: #047857;
 
   /* Typography. System stack first so the app feels native on every OS. */
   --font-sans: -apple-system, "SF Pro Text", "SF Pro", system-ui,
@@ -45,16 +46,22 @@
   --inspector-w: 240px;
   --gap-tight: 4px;
   --gap: 8px;
-  --radius: 5px;
-  --radius-sm: 3px;
-  --shadow-soft: 0 1px 2px rgb(0 0 0 / 0.04), 0 1px 1px rgb(0 0 0 / 0.03);
-  --shadow-pop: 0 8px 24px rgb(0 0 0 / 0.12), 0 2px 6px rgb(0 0 0 / 0.06);
+  --radius: 7px;
+  --radius-sm: 4px;
+  --shadow-soft: 0 1px 3px rgb(36 67 104 / 0.08), inset 0 1px 0 rgb(255 255 255 / 0.65);
+  --shadow-pop: 0 20px 60px rgb(36 67 104 / 0.18), 0 2px 8px rgb(36 67 104 / 0.08);
+  /* Pearl chrome is separate from opaque data/editor surfaces. */
+  --pearl-base: #e7eff8;
+  --pearl-glow: #c5d9ee;
+  --pearl-panel: #f4f8fc;
+  --pearl-tint: rgb(244 248 252 / 0.94);
+  --pearl-edge: #b7cadd;
 
   /* Glass capsule chrome (Task 5 — titlebar toolbar pills). No backdrop-filter:
      the titlebar behind is solid, so a blur would cost GPU for nothing. */
-  --glass-bg: rgba(255, 255, 255, 0.55);
-  --glass-border: rgba(0, 0, 0, 0.06);
-  --glass-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --glass-bg: rgba(255, 255, 255, 0.82);
+  --glass-border: #c2d1e2;
+  --glass-shadow: 0 1px 3px rgb(36 67 104 / 0.08), inset 0 1px 0 #ffffff;
 
   /* Connection-environment pill tints (src/lib/connEnv.ts ConnEnv, + "none"
      for an untagged connection). Background + a readable on-background text. */
@@ -81,25 +88,26 @@
 
   /* SQL syntax — TablePlus palette, sampled (DESIGN.md "SQL editor syntax colours") */
   --syn-text: #000000;
-  --syn-keyword: #6499d3;
-  --syn-string: #cf5478;
-  --syn-comment: #449940;
+  --syn-keyword: #356b9d;
+  --syn-string: #b3325a;
+  --syn-comment: #347637;
   --syn-number: #1a01f5;
-  --syn-gutter: #7e7e7e;
+  --syn-gutter: #626d7c;
 }
 
 [data-theme="dark"] {
   --bg: #0f1115;
-  --surface: #15171c;
-  --surface-2: #1c1f26;
-  --border: #26282f;
-  --border-strong: #3a3d46;
-  --text: #e6e7eb;
-  --muted: #9ca3af;
-  --muted-2: #71757e;
-  --primary: #6366f1;
-  --primary-hover: #818cf8;
-  --primary-soft: #1e1b4b;
+  --surface: #192536;
+  --surface-2: #253449;
+  --border: #3c4c62;
+  --border-strong: #64758c;
+  --text: #e6eef8;
+  --muted: #b1c0d2;
+  --muted-2: #9baec5;
+  --primary: #426b9b;
+  --primary-hover: #4b75a5;
+  --primary-soft: #243b58;
+  --primary-text: #9ec7f1;
   --accent: #8b5cf6;
   --selection: #3b82f6;
   --selection-bg: #1e3a8a;
@@ -108,10 +116,15 @@
   --ok: #34d399;
   --shadow-soft: 0 1px 2px rgb(0 0 0 / 0.45), 0 1px 1px rgb(0 0 0 / 0.3);
   --shadow-pop: 0 8px 24px rgb(0 0 0 / 0.55), 0 2px 6px rgb(0 0 0 / 0.3);
+  --pearl-base: #152236;
+  --pearl-glow: #263e58;
+  --pearl-panel: #1c2b3d;
+  --pearl-tint: rgb(28 43 61 / 0.96);
+  --pearl-edge: #4b627e;
 
-  --glass-bg: rgba(255, 255, 255, 0.06);
-  --glass-border: rgba(255, 255, 255, 0.08);
-  --glass-shadow: none;
+  --glass-bg: #25364c;
+  --glass-border: #506680;
+  --glass-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06);
 
   --env-none: var(--glass-bg);
   --env-none-text: var(--text);
@@ -131,7 +144,7 @@
   --syn-string: #ff7fa3;
   --syn-comment: #6bc46d;
   --syn-number: #a5a3ff;
-  --syn-gutter: #6e7681;
+  --syn-gutter: #9baec5;
 }
 
 @theme inline {
@@ -155,6 +168,9 @@
   --font-sans: var(--font-sans);
   --font-mono: var(--font-mono);
 }
+
+/* Accent text needs a lighter ink in dark mode; filled buttons keep white text. */
+.text-primary { color: var(--primary-text); }
 
 html,
 body,
@@ -198,15 +214,53 @@ body {
    ship a translucent backdrop already; these classes layer a frosted blur on
    top so the panels feel like a real Mac app. Linux/Windows fall back to a
    solid surface (no-op selector if backdrop-filter is unsupported). */
-.tiq-vibrancy {
-  background: color-mix(in srgb, var(--surface) 86%, transparent);
+.tiq-app {
+  background: radial-gradient(ellipse at 90% 0%, var(--pearl-glow), transparent 70%), var(--pearl-base);
+}
+.tiq-chrome {
+  background: linear-gradient(115deg, var(--pearl-panel), var(--surface));
+}
+.tiq-vibrancy,
+.tiq-glass-panel {
+  background: var(--pearl-panel);
+}
+.tiq-glass-panel {
+  border-color: var(--pearl-edge);
+  box-shadow: var(--shadow-pop), inset 0 1px 0 var(--glass-bg);
+}
+.tiq-connection-home {
+  background: linear-gradient(140deg, var(--bg) 35%, var(--surface));
+}
+.tiq-sheet {
+  width: min(500px, 100%);
+  border-radius: 16px;
+}
+.tiq-engine-mark {
+  border: 1px solid #c5d1df;
+  border-radius: 6px;
+  background: #f8fafc;
+  box-shadow: inset 0 1px 0 #fff;
+  padding: 3px;
+}
+.tiq-engine-mark img { width: 100%; height: 100%; object-fit: contain; }
+.tiq-engine-mark[data-size="sm"] { padding: 1px; border: 0; border-radius: 3px; }
+.tiq-engine-mark[data-size="xl"] { padding: 5px; border-radius: 10px; }
+@media (max-width: 540px) {
+  .tiq-connection-form [aria-label="Environment"] { flex-wrap: wrap; height: auto; min-height: 32px; }
+  .tiq-connection-form [aria-label="Environment"] button { min-width: 33.33%; min-height: 28px; }
+  .tiq-connection-form kbd { display: none; }
 }
 @supports (backdrop-filter: blur(20px)) {
-  .tiq-vibrancy {
-    background: color-mix(in srgb, var(--surface) 70%, transparent);
-    backdrop-filter: blur(20px) saturate(180%);
-    -webkit-backdrop-filter: blur(20px) saturate(180%);
+  .tiq-vibrancy,
+  .tiq-glass-panel {
+    background: var(--pearl-tint);
+    backdrop-filter: blur(20px) saturate(120%);
+    -webkit-backdrop-filter: blur(20px) saturate(120%);
   }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .tiq-vibrancy,
+  .tiq-glass-panel { background: var(--pearl-panel); backdrop-filter: none; -webkit-backdrop-filter: none; }
 }
 
 /* macOS traffic-light overlay region — header reserves space + drags the window. */
@@ -258,7 +312,7 @@ body {
 /* Mongo JSON view: monochrome with restraint — keys in text, strings in ok, numbers in primary. */
 .tiq-j-key { color: var(--text); }
 .tiq-j-str { color: var(--ok); }
-.tiq-j-num { color: var(--primary); }
+.tiq-j-num { color: var(--primary-text); }
 .tiq-j-bool, .tiq-j-null { color: var(--muted); font-style: italic; }
 
 /* Dim the page behind the welcome card. */

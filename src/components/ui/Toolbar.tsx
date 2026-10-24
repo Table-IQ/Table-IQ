@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 export function Toolbar({ children, className = "" }: { children: ReactNode; className?: string }) {
   return (
     <div
-      className={`flex h-[var(--toolbar-h)] items-center gap-1 border-b border-border bg-surface px-2 ${className}`}
+      className={`tiq-chrome flex h-[var(--toolbar-h)] items-center gap-1 border-b border-border px-2 ${className}`}
       style={{ height: "var(--toolbar-h)" }}
     >
       {children}
