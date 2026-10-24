@@ -21,7 +21,7 @@ function Root() {
   ) : (
     <MainShell key={active.id} />
   );
-  return <div className="h-screen w-screen bg-bg text-text">{shell}</div>;
+  return <div className="tiq-app h-screen w-screen overflow-hidden text-text">{shell}</div>;
 }
 
 export default function App() {

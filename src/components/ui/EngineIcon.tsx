@@ -1,18 +1,36 @@
 import type { Engine } from "../../lib/commands";
 import { profileOf } from "../../lib/profiles";
+import postgres from "../../assets/engines/postgres.svg";
+import mysql from "../../assets/engines/mysql.svg";
+import sqlite from "../../assets/engines/sqlite.svg";
+import duckdb from "../../assets/engines/duckdb.svg";
+import redis from "../../assets/engines/redis.svg";
+import mongodb from "../../assets/engines/mongodb.svg";
+import sqlserver from "../../assets/engines/sqlserver.svg";
+import clickhouse from "../../assets/engines/clickhouse.svg";
+import libsql from "../../assets/engines/libsql.svg";
+import elasticsearch from "../../assets/engines/elasticsearch.svg";
+import rqlite from "../../assets/engines/rqlite.svg";
+import meilisearch from "../../assets/engines/meilisearch.svg";
+import qdrant from "../../assets/engines/qdrant.svg";
+import chroma from "../../assets/engines/chroma.svg";
+import weaviate from "../../assets/engines/weaviate.svg";
+import influxdb from "../../assets/engines/influxdb.svg";
+import opensearch from "../../assets/engines/opensearch.svg";
 
 /**
- * TablePlus-style engine badge — a soft-coloured circle with a 2-letter monogram.
- * Used everywhere a connection is identified (sidebar list, ⌘O picker, MainShell
- * breadcrumb dot). Deliberately matches TablePlus's idiom rather than rendering
- * vendor logos, both for trademark hygiene and so the colour is what carries
- * recognition at a glance. A connection saved as a compatible product (TiDB,
- * CockroachDB, …) takes its fill, monogram and label from `profiles.json`.
+ * Bundled vendor marks identify each engine consistently in sheets, lists and
+ * pickers. Compatible products retain their own badge from profiles.json instead
+ * of being mislabeled with the underlying wire protocol's vendor logo.
  */
 export type EngineIconSize = "sm" | "md" | "lg" | "xl";
 
 const PX: Record<EngineIconSize, number> = { sm: 16, md: 22, lg: 32, xl: 44 };
 const FONT: Record<EngineIconSize, number> = { sm: 9, md: 10, lg: 12, xl: 15 };
+const LOGOS: Record<Engine, string> = {
+  postgres, mysql, sqlite, duckdb, redis, mongodb, sqlserver, clickhouse, libsql,
+  elasticsearch, rqlite, meilisearch, qdrant, chroma, weaviate, influxdb,
+};
 
 export const ENGINE_COLORS: Record<Engine, string> = {
   postgres: "#336791",
@@ -90,6 +108,18 @@ export function EngineIcon({
   const font = FONT[size];
   const product = profileOf(engine, profile);
   const color = product?.color ?? ENGINE_COLORS[engine];
+  if (!product) {
+    const logo = engine === "elasticsearch" && profile === "opensearch" ? opensearch : LOGOS[engine];
+    return <span
+      role={title ? "img" : undefined}
+      aria-label={title}
+      aria-hidden={!title}
+      title={title ?? engineLabel(engine, profile)}
+      data-size={size}
+      className={`tiq-engine-mark inline-flex shrink-0 items-center justify-center ${className}`}
+      style={{ width: px, height: px }}
+    ><img src={logo} alt="" draggable={false} width={px} height={px} /></span>;
+  }
   return (
     <span
       role={title ? "img" : undefined}

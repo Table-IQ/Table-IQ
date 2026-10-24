@@ -41,9 +41,9 @@ export function Panel({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className={`flex max-h-[92vh] w-full flex-col overflow-hidden rounded-lg border border-border bg-bg shadow-[var(--shadow-pop)] ${w}`}
+        className={`tiq-glass-panel flex max-h-[92vh] w-full flex-col overflow-hidden rounded-xl border border-border shadow-[var(--shadow-pop)] ${w}`}
       >
-        <header className="flex h-10 shrink-0 items-center gap-2 border-b border-border bg-surface px-3">
+        <header className="tiq-chrome flex h-11 shrink-0 items-center gap-2 border-b border-border px-4">
           <div id={titleId} className="flex-1 truncate text-sm font-semibold text-text">{title}</div>
           {onClose && (
             <button
@@ -59,7 +59,7 @@ export function Panel({
         {toolbar && <div className="shrink-0">{toolbar}</div>}
         <div className="min-h-0 flex-1 overflow-auto">{children}</div>
         {footer && (
-          <footer className="flex shrink-0 items-center gap-2 border-t border-border bg-surface px-3 py-2">
+          <footer className="tiq-chrome flex shrink-0 items-center gap-2 border-t border-border px-4 py-3">
             {footer}
           </footer>
         )}
@@ -78,7 +78,7 @@ export function Tabs({
   onSelect: (k: string) => void;
 }) {
   return (
-    <div className="flex items-center gap-0 border-b border-border bg-surface px-2">
+    <div className="tiq-chrome flex items-center gap-0 border-b border-border px-2">
       {tabs.map((t) => {
         const isActive = t.key === active;
         return (

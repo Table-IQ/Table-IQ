@@ -65,7 +65,7 @@ export function StagedReview({
       ref={ref}
       role="dialog"
       aria-label="Staged changes"
-      className={`tiq-no-drag tiq-slide-in absolute ${align === "right" ? "right-0" : "left-0"} top-full z-50 mt-2 w-[520px] rounded-lg border border-border bg-bg text-xs text-text shadow-[var(--shadow-pop)]`}
+      className={`tiq-glass-panel tiq-no-drag tiq-slide-in absolute ${align === "right" ? "right-0" : "left-0"} top-full z-50 mt-2 w-[520px] rounded-lg border border-border bg-bg text-xs text-text shadow-[var(--shadow-pop)]`}
     >
       <div className="flex items-center gap-2 border-b border-border px-3 py-2">
         <span className="font-medium">{`Review ${total} change${total === 1 ? "" : "s"} · ${summary}`}</span>

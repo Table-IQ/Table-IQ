@@ -42,15 +42,17 @@ export function gridTheme(mode: ResolvedTheme) {
       bgHeaderHasFocus: "#1c1f26",
       textDark: "#f2f2f3",
       textMedium: "#9ca3af",
-      textLight: "#7e828a",
+      textLight: "#9baec5",
       textHeader: "#f2f2f3",
       // Vertical border darkened from #26282f → #3a3d46 (matches --border-strong
       // in DESIGN.md). Horizontal kept softer so the grid still reads as rows-
       // first rather than cells-first.
       borderColor: "#3a3d46",
       horizontalBorderColor: "#1c1f26",
-      accentColor: "#6366f1",
-      accentLight: "#1e1b4b",
+      accentColor: "#9ec7f1",
+      accentFg: "#0f1115",
+      textHeaderSelected: "#0f1115",
+      accentLight: "#243b58",
     };
   }
   return {
@@ -61,14 +63,14 @@ export function gridTheme(mode: ResolvedTheme) {
     bgHeaderHasFocus: "#f4f4f5",
     textDark: "#000000",
     textMedium: "#52525b",
-    textLight: "#7e7e7e",
+    textLight: "#52657b",
     textHeader: "#000000",
     // Light-mode vertical border darkened so cell boundaries land clearly at
     // small data text — was #e4e4e7 (barely visible against #ffffff cells).
     borderColor: "#d4d4d8",
     horizontalBorderColor: "#eeeef0",
-    accentColor: "#4f46e5",
-    accentLight: "#eef2ff",
+    accentColor: "#3e6694",
+    accentLight: "#e8f0fa",
   };
 }
 
@@ -145,6 +147,6 @@ export function nullCellStyle(mode: ResolvedTheme): {
   textLight: string;
   baseFontStyle: string;
 } {
-  const color = mode === "dark" ? "#71757e" : "#71717a";
+  const color = mode === "dark" ? "#9baec5" : "#52657b";
   return { textDark: color, textLight: color, baseFontStyle: "italic 12.5px" };
 }

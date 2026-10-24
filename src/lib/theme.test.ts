@@ -23,8 +23,8 @@ describe("gridTheme", () => {
     expect(gridTheme("light").bgCell).toBe("#ffffff");
   });
   it("uses the brand accent in both modes", () => {
-    expect(gridTheme("light").accentColor).toBe("#4f46e5");
-    expect(gridTheme("dark").accentColor).toBe("#6366f1");
+    expect(gridTheme("light").accentColor).toBe("#3e6694");
+    expect(gridTheme("dark").accentColor).toBe("#9ec7f1");
   });
   it("draws cells in the mono face at 12.5px, like TablePlus", () => {
     for (const mode of ["light", "dark"] as const) {
@@ -85,8 +85,8 @@ describe("nullCellStyle", () => {
   });
 
   it("uses the mode's own muted tone", () => {
-    expect(nullCellStyle("light").textDark).toBe("#71717a");
-    expect(nullCellStyle("dark").textDark).toBe("#71757e");
+    expect(nullCellStyle("light").textDark).toBe("#52657b");
+    expect(nullCellStyle("dark").textDark).toBe("#9baec5");
   });
 });
 

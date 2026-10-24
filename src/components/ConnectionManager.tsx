@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { BrandMark } from "./Brand";
 import { ThemeToggle } from "./ThemeToggle";
 import { useSettingsUi } from "./Settings";
@@ -148,6 +148,13 @@ export function ConnectionManager() {
   // The secrets as last loaded (always empty) or saved; also part of the dirty check.
   const [savedSecrets, setSavedSecrets] = useState<Secrets>(NO_SECRETS);
   const [sheetOpen, setSheetOpen] = useState(false);
+  const sheetRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!sheetOpen) return;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    sheetRef.current?.focus({ preventScroll: true });
+    return () => { if (opener?.isConnected) opener.focus(); };
+  }, [sheetOpen]);
   // Bumped on every open: keys <ConnectionSheet> so its local UI state starts fresh.
   const [openSeq, setOpenSeq] = useState(0);
   const [search, setSearch] = useState("");
@@ -442,14 +449,14 @@ export function ConnectionManager() {
 
       {/* Right pane — connection list. No status bar, no chrome. Click a row to
           connect; right-click for the context menu; hover to reveal edit/delete. */}
-      <main className="relative flex min-w-0 flex-1 flex-col bg-bg">
+      <main className="tiq-connection-home relative flex min-w-0 flex-1 flex-col">
         {/* Top drag region so the user can grab the right pane top too. */}
         <div
           className="tiq-titlebar-drag absolute inset-x-0 top-0 h-9"
           aria-hidden
         />
 
-        <div className="flex shrink-0 items-center gap-2 px-5 pt-4 pb-3">
+        <div className="tiq-no-drag relative flex shrink-0 items-center gap-2 px-5 pt-4 pb-3">
           <button
             onClick={openSheetForNew}
             className="inline-flex h-7 w-7 items-center justify-center rounded-full text-muted hover:bg-surface hover:text-text"
@@ -561,15 +568,29 @@ export function ConnectionManager() {
           off-screen when closed so opening is instant. Solid scrim (no blur) so
           we don't repaint the viewport on every keystroke. */}
       <div
-        className={`fixed inset-0 z-40 flex items-stretch justify-end transition-opacity duration-150 ${
+        className={`fixed inset-0 z-40 flex items-stretch justify-end p-3 transition-opacity duration-150 ${
           sheetOpen ? "pointer-events-auto bg-black/30 opacity-100" : "pointer-events-none opacity-0"
         }`}
         onClick={() => void requestClose()}
         aria-hidden={!sheetOpen}
+        inert={!sheetOpen}
       >
         <div
+          ref={sheetRef}
+          role="dialog"
+          aria-modal="true"
+          aria-label={mode === "new" ? "New Connection" : "Edit Connection"}
+          tabIndex={-1}
           onClick={(e) => e.stopPropagation()}
-          className={`tiq-sheet flex h-full w-[460px] flex-col overflow-hidden border-l border-border bg-bg shadow-[var(--shadow-pop)] transition-transform duration-200 ease-out ${
+          onKeyDown={(e) => {
+            if (e.key !== "Tab") return;
+            const controls = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex="0"]'))
+              .filter((el) => el.getClientRects().length > 0);
+            const first = controls[0], last = controls[controls.length - 1];
+            if (e.shiftKey && (document.activeElement === first || document.activeElement === e.currentTarget)) { e.preventDefault(); last?.focus(); }
+            else if (!e.shiftKey && (document.activeElement === last || document.activeElement === e.currentTarget)) { e.preventDefault(); first?.focus(); }
+          }}
+          className={`tiq-sheet tiq-glass-panel flex h-full min-w-0 flex-col overflow-hidden border border-border outline-none transition-transform duration-200 ease-out ${
             sheetOpen ? "translate-none" : "translate-x-full"
           }`}
         >

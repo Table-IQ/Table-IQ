@@ -1071,7 +1071,7 @@ export function MainShell() {
         <main className="flex min-w-0 flex-1 flex-col">
           {/* Tab strip — tabs only, no actions */}
           <div
-            className="flex shrink-0 items-stretch gap-0 overflow-x-auto border-b border-border bg-bg"
+            className="tiq-chrome flex shrink-0 items-stretch gap-0 overflow-x-auto border-b border-border"
             style={{ height: "var(--tabbar-h)" }}
             data-onboard="tabs"
           >
@@ -1489,7 +1489,7 @@ function HelpMenu({ onTour, onClose }: { onTour: () => void; onClose: () => void
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
   return (
-    <div className="fixed right-4 top-[calc(var(--titlebar-h)+4px)] z-50 w-72 rounded-lg border border-border bg-bg p-2 shadow-[var(--shadow-pop)]">
+    <div className="tiq-glass-panel fixed right-4 top-[calc(var(--titlebar-h)+4px)] z-50 w-72 rounded-lg border border-border bg-bg p-2 shadow-[var(--shadow-pop)]">
       <button
         onClick={onTour}
         className="block w-full rounded-md px-3 py-2 text-left text-xs text-text hover:bg-surface-2"

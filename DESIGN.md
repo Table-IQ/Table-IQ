@@ -7,15 +7,15 @@ needs a value reaches for the variable, not a literal. Brand assets in
 
 ## Design DNA
 
-> Mature desktop SQL client — TablePlus, Postico 2, Tower. Dense, monochrome,
-> instantly familiar to macOS power users. Data front and centre; chrome quiet.
+> Pearl glass for a mature desktop SQL client. Cool translucent chrome, opaque
+> data surfaces, and crisp typography. Data stays central; glass stays in the frame.
 
 Three principles, in order:
 
 1. **Data first.** Every pixel of chrome above the grid steals a row. Default to
    tight rows, small fonts, single-strip toolbars. Generous space only for
    onboarding / connection picker / modals.
-2. **Monochrome, with restraint on color.** Primary indigo is for *state*
+2. **Monochrome, with restraint on color.** Primary blue is for *state*
    (focus ring, active tab dot, AI badge). Chips and FK indicators default to
    neutral; they never compete with the data.
 3. **Native-feeling.** SF system fonts, system-style scrollbars, macOS
@@ -86,7 +86,7 @@ Fonts:
 
 ## Color tokens
 
-Chrome reads as **neutral**. Primary indigo is reserved for state. Chips default
+Chrome uses **Pearl blue-grey**. Primary blue is reserved for state. Chips default
 to a transparent neutral background; primary is opt-in (AI badge, focused
 field ring, active-tab dot, draft-row left accent).
 
@@ -95,39 +95,39 @@ field ring, active-tab dot, draft-row left accent).
 | Token | Value | Use |
 |---|---|---|
 | `--bg` | `#ffffff` | Workspace background, grid background |
-| `--surface` | `#f7f7f8` | Sidebar, toolbar, status bar |
-| `--surface-2` | `#eeeef0` | Hover, pressed |
-| `--border` | `#e4e4e7` | 1px dividers |
-| `--border-strong` | `#a1a1aa` | Inline kbd borders |
-| `--text` | `#18181b` | Body text |
-| `--muted` | `#52525b` | Captions, section labels, dim icons |
-| `--muted-2` | `#71717a` | Placeholder text |
-| `--primary` | `#4f46e5` | State only — focus ring, active tab dot |
-| `--primary-soft` | `#eef2ff` | Subtle focus / selection backgrounds |
+| `--surface` | `#f1f6fb` | Sidebar, toolbar, status bar |
+| `--surface-2` | `#e4edf6` | Hover, pressed |
+| `--border` | `#cbd7e5` | 1px dividers |
+| `--border-strong` | `#8b9db2` | Inline kbd borders |
+| `--text` | `#1e293b` | Body text |
+| `--muted` | `#475a70` | Captions, section labels, dim icons |
+| `--muted-2` | `#52657b` | Placeholder text |
+| `--primary` | `#3e6694` | State only — focus ring, active tab dot |
+| `--primary-soft` | `#e8f0fa` | Subtle focus / selection backgrounds |
 | `--accent` | `#7c3aed` | AI surfaces only |
 | `--selection` | `#2563eb` | Cell selection in grid |
 | `--selection-bg` | `#dbeafe` | Row hover / soft selection |
-| `--danger` | `#dc2626` | Destructive |
-| `--warn` | `#d97706` | Warning |
-| `--ok` | `#059669` | OK / editable indicator |
+| `--danger` | `#b91c1c` | Destructive |
+| `--warn` | `#9a5408` | Warning |
+| `--ok` | `#047857` | OK / editable indicator |
 
 ### Dark
 
-Engineered for macOS dark mode — warm-leaning blue-black backgrounds, less
-saturated than our previous indigo-tinted dark.
+Dark Pearl uses slate-blue chrome around opaque near-black data surfaces.
+Secondary text stays bright enough to read at small desktop sizes.
 
 | Token | Value |
 |---|---|
 | `--bg` | `#0f1115` |
-| `--surface` | `#15171c` |
-| `--surface-2` | `#1c1f26` |
-| `--border` | `#26282f` |
-| `--border-strong` | `#3a3d46` |
-| `--text` | `#e6e7eb` |
-| `--muted` | `#9ca3af` |
-| `--muted-2` | `#71757e` |
-| `--primary` | `#6366f1` |
-| `--primary-soft` | `#1e1b4b` |
+| `--surface` | `#192536` |
+| `--surface-2` | `#253449` |
+| `--border` | `#3c4c62` |
+| `--border-strong` | `#64758c` |
+| `--text` | `#e6eef8` |
+| `--muted` | `#b1c0d2` |
+| `--muted-2` | `#9baec5` |
+| `--primary` | `#426b9b` |
+| `--primary-soft` | `#243b58` |
 | `--accent` | `#8b5cf6` |
 | `--selection` | `#3b82f6` |
 | `--selection-bg` | `#1e3a8a` |
@@ -139,6 +139,16 @@ saturated than our previous indigo-tinted dark.
   `size={11}` in the status bar.
 - Inline data UI icons (FK chevrons, sort markers) render at `strokeWidth={2}`
   and `size={10}`.
+
+## Pearl surfaces and readability
+
+- `tiq-app` supplies the quiet blue-grey backdrop. `tiq-chrome` styles titlebars, toolbars, tabs, and footers without nested blur.
+- `tiq-vibrancy` and `tiq-glass-panel` use a 20px blur with a 94% light / 96% dark tint. Unsupported blur and reduced-transparency preferences use an opaque fallback.
+- Tables, SQL editors, form controls, and JSON values retain opaque backgrounds. Grid fonts, row heights, padding, selection, zebra stripes, and edit indicators keep their established behavior.
+- Status bars keep controls in one row when space permits. Below 760px of pane width, paging moves to a second row so the inspector cannot cover actions.
+- Selected grid headers use dark ink on the pale dark-theme accent; JSON numbers use the readable accent-text token. Contrast tests cover both.
+- Body text, secondary text, hints, SQL syntax, and NULL cells target at least 4.5:1 contrast. `--primary-text` separates readable accent text from the filled button color in dark mode.
+- Menus render at the document root so glass cannot offset or clip viewport-positioned popovers.
 
 ## Layout building blocks
 
@@ -187,7 +197,7 @@ neither is measured.
 - Details for active table: columns + size + indexes + comment **by default**
 - Falls back to "select a table" only when no table tab is active
 
-### Status bar (22px) — content-rich
+### Status bar (28px minimum) — content-rich
 - **Left:** `public.wide · Table · 5 cols · ~1,000,000 rows`
 - **Center:** `‹ ‹ 1-300 of 721 rows › ›`
 - **Right:** `Data | Structure` segmented · `+ Row` · `Filters` · `Columns` · editable/RO chip
@@ -200,10 +210,10 @@ neither is measured.
 
 ## Surface treatments
 
-### Translucency (macOS)
-On `navigator.platform.includes('Mac')`:
-- Sidebar + Inspector get `backdrop-filter: blur(20px) saturate(180%)` over a translucent surface
-- The body uses an off-white tinted surface so blur has something to attenuate
+### Translucency
+- Supported browsers use `backdrop-filter: blur(20px) saturate(120%)` for sidebars, inspectors and floating panels.
+- The body supplies a subtle Pearl tint; data panes remain opaque.
+- Unsupported blur and reduced-transparency preferences use solid Pearl panels.
 
 ### Scrollbars
 Auto-hide native-feel: 8px wide, 4px radius, transparent track, thumb fades in
@@ -272,10 +282,10 @@ project" we replaced in Slice 23.
   9px tall, 13px font — feels iOS-like, premium
 - Drag region: 36px transparent strip at the top so window dragging works on
   the right pane too
-- Row: `<EngineIcon size="lg">` (32px circle, engine colour, 2-letter monogram)
+- Row: `<EngineIcon size="lg">` (32px locally bundled vendor mark)
   + name 13.5px medium + env tag in colour-coded parens + colour-tag dot, then
   on the second line: `host:port/db` in 11.5px mono muted. No engine label
-  suffix on the row — the coloured circle does that job
+  suffix on the row — the vendor mark does that job
 - Hover reveals Edit + × delete buttons on the right; right-click opens the
   context menu (Connect / Edit / Duplicate / Delete)
 - Single-click connects (via the inner button); double-click on the `<li>`
@@ -284,10 +294,11 @@ project" we replaced in Slice 23.
 
 ### Engine identifier (`EngineIcon`)
 Lives in [src/components/ui/EngineIcon.tsx](src/components/ui/EngineIcon.tsx).
-TablePlus-style 2-letter monogram circle (not square tile, not avatar): flat
-engine colour fill + an inset 1px white-on-top / black-on-bottom highlight that
-reads as glass depth. Used everywhere a connection is identified (welcome list,
-⌘O picker). Sizes: sm 16 / md 22 / lg 32 / xl 44. Monograms: Pg, My, Sq, Dk, Re, Mo, Ms, Ch, Tu (Turso / libSQL, teal `#0f766e`), Es (Elasticsearch / OpenSearch, blue `#0b6e99`), Me (Meilisearch, violet `#6d28d9`), Qr (Qdrant, red `#dc244c`), Cd (ChromaDB, orange `#c2410c`), We (Weaviate, olive `#4d7c0f`), In (InfluxDB 3, indigo `#4f46e5`).
+Locally bundled SVG vendor marks on a neutral tile, readable in both themes.
+All 16 selectable engines have real marks, including PostgreSQL and ChromaDB;
+OpenSearch has its own mark when detected. Sizes: sm 16 / md 22 / lg 32 / xl 44.
+Source URLs and asset provenance live in [src/assets/engines/README.md](src/assets/engines/README.md).
+No runtime image downloads or new icon dependency.
 
 A connection saved as a wire-compatible product (a **profile**: TiDB, CockroachDB, Neon, …)
 takes its monogram and fill from [src/lib/profiles.json](src/lib/profiles.json), the one table
@@ -312,14 +323,18 @@ floats recently-used connections to the top of the list without any UI grouping
 — we deliberately don't show a "Recent" header because TablePlus doesn't.
 
 ### Connection sheet
-`ConnectionSheet.tsx`, a 460px right-hand slide-in over a `bg-black/30` scrim.
-- **Header:** EngineIcon (lg), the title (the only 600 weight: "New Connection" or
+`ConnectionSheet.tsx`, a 500px Pearl right sheet, inset 12px, with a 16px radius
+and a `bg-black/30` scrim. It shrinks to the available window width; its body
+scrolls while the footer stays visible. Validation, shortcuts, and dirty-close
+confirmation retain their existing behavior. Focus stays within the open sheet;
+hidden sheets are inert, and closing restores focus.
+- **Header:** EngineIcon (xl), the title (the only 600 weight: "New Connection" or
   the name), then the engine or product label (an untested product reads
   "{label} · Beta") and, when editing, `● Unsaved changes` in
   `text-warn`. A ⋯ menu (edit only) holds Copy as URL (never includes the
   password), Duplicate and Delete. Then ×.
-- **Body:** a dashed paste-a-URL field that fills the form. In new mode, a row of
-  7 engine tiles, then a native `<select>` of wire-compatible databases
+- **Body:** a dashed paste-a-URL field that fills the form. In new mode, a four-column grid of
+  16 engine tiles with 22px vendor marks, then a native `<select>` of wire-compatible databases
   ("Or a compatible database…"), grouped "PostgreSQL-compatible" / "MySQL-compatible",
   tested products first and "(Beta)" on the untested. Picking one sets its base
   engine and presets, and the select takes the pressed-tile ring
@@ -384,7 +399,7 @@ floats recently-used connections to the top of the list without any UI grouping
 |---|---|---|---|
 | Search hit (cell matches the table search) | `#c7d2fe` | `#312e81` | `searchHitBg` — the accent, one step stronger than the selected-row band so a hit still reads on a selected row |
 | Selected row | `#e0e7ff` | `#1e2540` | `gridRowTints.selected` |
-| FK cell text | `#4f46e5` | `#6366f1` | `gridTheme().accentColor` |
+| FK cell text | `#3e6694` | `#9ec7f1` | `gridTheme().accentColor` |
 | Row staged for delete | `#fdd5d5` | `#4a1c21` | `editTints().deleted` — whole row, over any cell tint and over glide's row-selection fill; read-only until Undo delete / Discard |
 | Staged new row | `#ccf3d9` | `#173a24` | `editTints().inserted` — appended after the page's rows, read-only; omitted columns show a muted italic `DEFAULT` |
 
@@ -405,17 +420,17 @@ closes only the active connection; the last one remaining takes over.
 
 ## SQL editor syntax colours
 
-Xcode-style, sampled from TablePlus: keywords recede in a soft blue while
-identifiers stay full-contrast, so the query's *names* carry the eye.
+SQL identifiers remain full-contrast. Syntax colors and gutter numbers meet
+4.5:1 contrast against the opaque editor background in both themes.
 
 | Token | Light | Dark |
 |---|---|---|
-| keyword / type | `#6499D3` | `#6CB6FF` |
-| string | `#CF5478` | `#FF7FA3` |
-| comment | `#449940` | `#6BC46D` |
+| keyword / type | `#356B9D` | `#6CB6FF` |
+| string | `#B3325A` | `#FF7FA3` |
+| comment | `#347637` | `#6BC46D` |
 | number / bool / null | `#1A01F5` | `#A5A3FF` |
 | identifier / function / operator | `--text` (`#000` light) | `--text` |
-| gutter numbers | `#7E7E7E` on `--bg` | `#6E7681` on `--bg` |
+| gutter numbers | `#626D7C` on `--bg` | `#9BAEC5` on `--bg` |
 
 ## Do / Don't
 
