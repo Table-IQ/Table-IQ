@@ -1,17 +1,22 @@
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="tiq-grad" x1="64" y1="64" x2="960" y2="960" gradientUnits="userSpaceOnUse">
+    <!-- Pearl surface (surface #f1f6fb to surface-2 #e4edf6), deepened slightly so the tile reads on a light Dock -->
+    <linearGradient id="tiq-tile" x1="64" y1="64" x2="960" y2="960" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F7FAFD"/>
+      <stop offset="1" stop-color="#DCE7F3"/>
+    </linearGradient>
+    <!-- Same AI gradient as <BrandMark>'s spark -->
+    <linearGradient id="tiq-spark" x1="522" y1="262" x2="762" y2="502" gradientUnits="userSpaceOnUse">
       <stop stop-color="#6366F1"/>
-      <stop offset="1" stop-color="#7C3AED"/>
+      <stop offset="1" stop-color="#A855F7"/>
     </linearGradient>
   </defs>
-  <!-- app tile -->
-  <rect x="64" y="64" width="896" height="896" rx="220" fill="url(#tiq-grad)"/>
-  <!-- a 2x2 table: three cells... -->
-  <rect x="272" y="272" width="220" height="220" rx="44" fill="#FFFFFF"/>
-  <rect x="272" y="532" width="220" height="220" rx="44" fill="#FFFFFF"/>
-  <rect x="532" y="532" width="220" height="220" rx="44" fill="#FFFFFF"/>
+  <!-- app tile, with a Pearl border hairline -->
+  <rect x="64" y="64" width="896" height="896" rx="220" fill="url(#tiq-tile)" stroke="#CBD7E5" stroke-width="8"/>
+  <!-- a 2x2 table: three cells in Pearl primary... -->
+  <rect x="272" y="272" width="220" height="220" rx="44" fill="#3E6694"/>
+  <rect x="272" y="532" width="220" height="220" rx="44" fill="#3E6694"/>
+  <rect x="532" y="532" width="220" height="220" rx="44" fill="#3E6694"/>
   <!-- ...and the fourth cell is the AI spark, a touch larger so it breaks out of the grid -->
-  <path d="M642 262 L672 352 L762 382 L672 412 L642 502 L612 412 L522 382 L612 352 Z" fill="#C4B5FD"/>
-  <path d="M642 292 L664 358 L730 382 L664 406 L642 472 L620 406 L554 382 L620 358 Z" fill="#FFFFFF"/>
+  <path d="M642 262 L672 352 L762 382 L672 412 L642 502 L612 412 L522 382 L612 352 Z" fill="url(#tiq-spark)"/>
 </svg>

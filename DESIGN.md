@@ -27,8 +27,9 @@ Three principles, in order:
 - **Name:** TableIQ (one word, capital T and IQ). Never "Table-IQ" or "Tableiq".
 - **Wordmark:** `Table` in `--text`, `IQ` in `--primary`. Component: [`<Wordmark>`](src/components/Brand.tsx).
 - **Mark:** a 2×2 table whose top-right cell *is* the 4-point **AI sparkle** —
-  the grid is "Table", the spark is "IQ". App tile: white cells on the
-  indigo→violet gradient, spark in `#C4B5FD` with a white core
+  the grid is "Table", the spark is "IQ". App tile: Pearl light tile
+  (`#F7FAFD`→`#DCE7F3`, `--border` hairline), cells in `--primary` `#3e6694`,
+  spark in the indigo→violet gradient, so the Dock icon matches the in-app mark
   ([icon-tile.svg](src/assets/brand/icon-tile.svg), regenerate the OS icon set
   with `node scripts/render-brand-icon.mjs && pnpm tauri icon src/assets/brand/icon-1024.png`).
   Inline glyph: tile-less, three cells in `currentColor`, spark in the
