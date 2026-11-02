@@ -1,7 +1,7 @@
 {
   "name": "tableiq",
   "private": true,
-  "version": "0.8.11",
+  "version": "0.8.12",
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
@@ -12,6 +12,7 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@codemirror/autocomplete": "^6.20.2",
     "@codemirror/lang-sql": "^6.10.0",
     "@codemirror/language": "^6.12.3",
     "@codemirror/state": "^6.6.0",

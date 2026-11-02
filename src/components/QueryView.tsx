@@ -115,8 +115,8 @@ export function QueryView({
   // The session's profile (saved, else detected) names a product Explain is documented to fail on.
   const explainNote = useConnections((s) => explainUnavailable(engine ?? "postgres", s.active?.profile));
   const completionSchema = useMemo(
-    () => schemaModelToCompletionMap(schemaModel),
-    [schemaModel],
+    () => schemaModelToCompletionMap(schemaModel, engine),
+    [schemaModel, engine],
   );
   // Defaults to postgres, matching SqlEditor's own CodeMirror-dialect fallback.
   const sqlDialect: SqlDialect = dialectFor(engine);

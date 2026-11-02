@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.8.12 — 2026-11-02
+
+### Changed
+- The connected SQL workspace's connection picker now offers New connection and Edit. Reuse the existing form to save profiles without leaving open tabs; saved connection settings apply after disconnecting and reconnecting.
+- Light mode uses opaque neutral panels, stronger labels, and clear white inputs. Dark mode retains its Pearl surfaces.
+- Inspector JSON fields show lossless indentation and syntax colors. Values grow with content up to 30% of window height, then scroll internally. Formatting alone does not write changes; Escape cancels edits.
+- SQL autocomplete shows grouped suggestions, schema names, column types, and keyboard hints in a readable popup that fits outside short query panes. Table contexts and qualified aliases avoid keyword noise. Suggestions open after two typed characters or at useful table/dot boundaries; Enter inserts a newline until a suggestion is selected.
+- Same-named tables in different schemas keep separate column suggestions instead of merging incompatible column lists.
+
 ## 0.8.11 — 2026-11-02
 
 ### Fixed

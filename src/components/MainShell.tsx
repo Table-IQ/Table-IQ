@@ -16,7 +16,7 @@ import { DiffView } from "./DiffView";
 import { CommandPalette } from "./CommandPalette";
 import { ConnectionPicker } from "./ConnectionPicker";
 import { DatabasePicker } from "./DatabasePicker";
-import { isFileEngine } from "./ConnectionManager";
+import { ConnectionManager, isFileEngine } from "./ConnectionManager";
 import { Onboarding } from "./Onboarding";
 import { WorkspaceOverview } from "./WorkspaceOverview";
 import { SqlLogPanel } from "./SqlLogPanel";
@@ -177,6 +177,7 @@ export function MainShell() {
   }, [showSqlLog]);
   // ⌘O Open Connection palette (TablePlus-style switcher; replaces the left-edge rail).
   const [showConnPicker, setShowConnPicker] = useState(false);
+  const [connectionEditor, setConnectionEditor] = useState<{ connection: ConnConfig | null } | null>(null);
   // ⌘D Switch Database — opens the per-server database picker (TablePlus parity).
   const [showDbPicker, setShowDbPicker] = useState(false);
   const [dbList, setDbList] = useState<{
@@ -1281,8 +1282,12 @@ export function MainShell() {
           activeId={active.id}
           onPick={(c) => void onSwapConnection(c)}
           onClose={() => setShowConnPicker(false)}
+          onAddNew={() => setConnectionEditor({ connection: null })}
+          onEdit={(connection) => setConnectionEditor({ connection })}
         />
       )}
+
+      {connectionEditor && <ConnectionManager editor={{ ...connectionEditor, onClose: () => setConnectionEditor(null) }} />}
 
       {showDbPicker && (
         <DatabasePicker

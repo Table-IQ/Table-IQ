@@ -9,13 +9,13 @@
 :root {
   /* Surfaces — neutral. Chrome reads as "quiet"; primary is reserved for state. */
   --bg: #ffffff;
-  --surface: #f1f6fb;
-  --surface-2: #e4edf6;
-  --border: #cbd7e5;
-  --border-strong: #8b9db2;
-  --text: #1e293b;
-  --muted: #475a70;
-  --muted-2: #52657b;
+  --surface: #f5f5f5;
+  --surface-2: #ededee;
+  --border: #d2d3d6;
+  --border-strong: #90949b;
+  --text: #202124;
+  --muted: #45484d;
+  --muted-2: #5c6068;
   --primary: #3e6694;
   --primary-hover: #30547e;
   --primary-soft: #e8f0fa;
@@ -51,16 +51,16 @@
   --shadow-soft: 0 1px 3px rgb(36 67 104 / 0.08), inset 0 1px 0 rgb(255 255 255 / 0.65);
   --shadow-pop: 0 20px 60px rgb(36 67 104 / 0.18), 0 2px 8px rgb(36 67 104 / 0.08);
   /* Pearl chrome is separate from opaque data/editor surfaces. */
-  --pearl-base: #e7eff8;
-  --pearl-glow: #c5d9ee;
-  --pearl-panel: #f4f8fc;
-  --pearl-tint: rgb(244 248 252 / 0.94);
-  --pearl-edge: #b7cadd;
+  --pearl-base: #f5f5f5;
+  --pearl-glow: #ffffff;
+  --pearl-panel: #f5f5f5;
+  --pearl-tint: rgb(245 245 245 / 1);
+  --pearl-edge: #d2d3d6;
 
   /* Glass capsule chrome (Task 5 — titlebar toolbar pills). No backdrop-filter:
      the titlebar behind is solid, so a blur would cost GPU for nothing. */
-  --glass-bg: rgba(255, 255, 255, 0.82);
-  --glass-border: #c2d1e2;
+  --glass-bg: #ffffff;
+  --glass-border: #d2d3d6;
   --glass-shadow: 0 1px 3px rgb(36 67 104 / 0.08), inset 0 1px 0 #ffffff;
 
   /* Connection-environment pill tints (src/lib/connEnv.ts ConnEnv, + "none"
@@ -215,9 +215,15 @@ body {
    top so the panels feel like a real Mac app. Linux/Windows fall back to a
    solid surface (no-op selector if backdrop-filter is unsupported). */
 .tiq-app {
+  background: var(--pearl-base);
+}
+[data-theme="dark"] .tiq-app {
   background: radial-gradient(ellipse at 90% 0%, var(--pearl-glow), transparent 70%), var(--pearl-base);
 }
 .tiq-chrome {
+  background: var(--surface);
+}
+[data-theme="dark"] .tiq-chrome {
   background: linear-gradient(115deg, var(--pearl-panel), var(--surface));
 }
 .tiq-vibrancy,
@@ -251,16 +257,112 @@ body {
   .tiq-connection-form kbd { display: none; }
 }
 @supports (backdrop-filter: blur(20px)) {
-  .tiq-vibrancy,
-  .tiq-glass-panel {
+  [data-theme="dark"] .tiq-vibrancy,
+  [data-theme="dark"] .tiq-glass-panel {
     background: var(--pearl-tint);
     backdrop-filter: blur(20px) saturate(120%);
     -webkit-backdrop-filter: blur(20px) saturate(120%);
   }
 }
 @media (prefers-reduced-transparency: reduce) {
-  .tiq-vibrancy,
-  .tiq-glass-panel { background: var(--pearl-panel); backdrop-filter: none; -webkit-backdrop-filter: none; }
+  [data-theme="dark"] .tiq-vibrancy,
+  [data-theme="dark"] .tiq-glass-panel { background: var(--pearl-panel); backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
+
+/* Row details grow with their content, while long text/JSON keeps its own scroll area. */
+.tiq-inspector-value {
+  min-height: 32px;
+  max-height: 30vh;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 18px;
+  scrollbar-gutter: stable;
+}
+
+/* SQL suggestions: opaque, bounded, and portalled beyond a short query pane. */
+.cm-tooltip.cm-tooltip-autocomplete.tiq-sql-completions {
+  min-width: min(340px, calc(100vw - 24px));
+  max-width: min(480px, calc(100vw - 24px));
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  box-shadow: var(--shadow-pop);
+}
+.cm-tooltip.cm-tooltip-autocomplete.tiq-sql-completions > ul {
+  min-width: 0;
+  max-width: 100%;
+  max-height: min(320px, 35vh);
+  padding: 4px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.cm-tooltip.cm-tooltip-autocomplete.tiq-sql-completions > ul > li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  line-height: 20px;
+}
+.cm-tooltip.cm-tooltip-autocomplete.tiq-sql-completions > ul > li:hover {
+  background: var(--surface);
+}
+.cm-tooltip.cm-tooltip-autocomplete.tiq-sql-completions > ul > li[aria-selected="true"] {
+  background: var(--selection-bg);
+  color: var(--text);
+  box-shadow: inset 2px 0 var(--primary-text);
+}
+.cm-tooltip.cm-tooltip-autocomplete.tiq-sql-completions completion-section {
+  border: 0;
+  padding: 7px 8px 3px;
+  opacity: 1;
+  color: var(--muted);
+  font: 500 10.5px/16px var(--font-sans);
+}
+.tiq-sql-completions .cm-completionLabel {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tiq-sql-completions .cm-completionDetail {
+  max-width: 45%;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted);
+  font: 11px/20px var(--font-sans);
+}
+.tiq-sql-completions .cm-completionMatchedText { font-weight: 600; text-decoration: none; }
+.tiq-sql-completions .cm-completionIcon {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  flex: 0 0 22px;
+  height: 22px;
+  padding: 0;
+  opacity: 1;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--muted);
+  font: 500 10px/1 var(--font-sans);
+}
+.tiq-sql-completions .cm-completionIcon-type::after { content: "T"; }
+.tiq-sql-completions .cm-completionIcon-property::after { content: "C"; }
+.tiq-sql-completions .cm-completionIcon-namespace::after { content: "S"; }
+.tiq-sql-completions .cm-completionIcon-keyword::after { content: "SQL"; font-size: 8px; }
+.cm-tooltip.cm-tooltip-autocomplete.tiq-sql-completions::after {
+  content: "↑↓ choose · Enter/Tab insert · Esc close";
+  display: block;
+  border-top: 1px solid var(--border);
+  padding: 7px 12px;
+  background: var(--surface);
+  color: var(--muted);
+  font: 11px/16px var(--font-sans);
 }
 
 /* macOS traffic-light overlay region — header reserves space + drags the window. */

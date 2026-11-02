@@ -1,35 +1,43 @@
-import type { SchemaModel } from "./commands";
+import type { Completion, CompletionSection } from "@codemirror/autocomplete";
+import type { SQLNamespace } from "@codemirror/lang-sql";
+import type { Engine, SchemaModel } from "./commands";
+import { quoteIdent } from "./tableScript";
 
-/**
- * Convert TableIQ's SchemaModel into the `{ [tableName]: string[] }` shape that
- * `@codemirror/lang-sql`'s `schemaCompletionSource` expects.
- *
- * Tables that appear in multiple schemas are merged on bare name (UI defaults to
- * `dotName: false` so users type `users.id`); the qualified `schema.table` form is
- * also exposed so `public.users.<col>` completion works.
- */
-export function schemaModelToCompletionMap(model: SchemaModel | null | undefined): Record<string, string[]> {
-  const out: Record<string, string[]> = {};
+const TABLES: CompletionSection = { name: "Tables & views", rank: "dynamic" };
+const COLUMNS: CompletionSection = { name: "Columns", rank: "dynamic" };
+const SCHEMAS: CompletionSection = { name: "Schemas", rank: "dynamic" };
+// CodeMirror interprets dots in namespace keys as path separators.
+const key = (name: string) => name.replace(/\./g, "\\.");
+
+/** Schema, table and column metadata for CodeMirror's native SQL completion source.
+ * Unique table names are also available without a schema prefix. Ambiguous names
+ * stay under their own schema, so columns from different tables are never merged.
+ * Completion labels remain readable; insertion quotes each actual identifier. */
+export function schemaModelToCompletionMap(model: SchemaModel | null | undefined, engine?: Engine): SQLNamespace {
+  const out: Record<string, SQLNamespace> = Object.create(null);
   if (!model) return out;
+  const counts = new Map<string, number>();
+  const schemas = new Set(model.schemas.map((s) => s.name));
+  for (const s of model.schemas) for (const o of s.objects) counts.set(o.name, (counts.get(o.name) ?? 0) + 1);
   for (const s of model.schemas) {
+    const tables: Record<string, SQLNamespace> = Object.create(null);
     for (const o of s.objects) {
-      const cols = o.columns.map((c) => c.name);
-      out[o.name] = mergeCols(out[o.name], cols);
-      out[`${s.name}.${o.name}`] = mergeCols(out[`${s.name}.${o.name}`], cols);
+      const columns: Completion[] = o.columns.map((c) => ({
+        label: c.name, type: "property", detail: c.data_type,
+        apply: quoteIdent(c.name, engine), section: COLUMNS,
+      }));
+      const table = {
+        self: { label: o.name, type: "type", detail: `${s.name} · ${o.kind.toLowerCase()}`,
+          apply: quoteIdent(o.name, engine), section: TABLES },
+        children: columns,
+      };
+      tables[key(o.name)] = table;
+      if (counts.get(o.name) === 1 && !schemas.has(o.name)) out[key(o.name)] = table;
     }
-  }
-  return out;
-}
-
-function mergeCols(prev: string[] | undefined, next: string[]): string[] {
-  if (!prev) return next;
-  const seen = new Set(prev);
-  const out = prev.slice();
-  for (const c of next) {
-    if (!seen.has(c)) {
-      out.push(c);
-      seen.add(c);
-    }
+    out[key(s.name)] = {
+      self: { label: s.name, type: "namespace", detail: "Schema", apply: quoteIdent(s.name, engine), section: SCHEMAS },
+      children: tables,
+    };
   }
   return out;
 }

@@ -7,8 +7,8 @@ needs a value reaches for the variable, not a literal. Brand assets in
 
 ## Design DNA
 
-> Pearl glass for a mature desktop SQL client. Cool translucent chrome, opaque
-> data surfaces, and crisp typography. Data stays central; glass stays in the frame.
+> A mature desktop SQL client: opaque neutral light panels, restrained Pearl glass
+> in dark mode, and crisp typography. Data stays central.
 
 Three principles, in order:
 
@@ -89,7 +89,7 @@ Fonts:
 
 ## Color tokens
 
-Chrome uses **Pearl blue-grey**. Primary blue is reserved for state. Chips default
+Light chrome uses **opaque neutral grey**; dark chrome keeps Pearl blue-grey. Primary blue is reserved for state. Chips default
 to a transparent neutral background; primary is opt-in (AI badge, focused
 field ring, active-tab dot, draft-row left accent).
 
@@ -98,13 +98,13 @@ field ring, active-tab dot, draft-row left accent).
 | Token | Value | Use |
 |---|---|---|
 | `--bg` | `#ffffff` | Workspace background, grid background |
-| `--surface` | `#f1f6fb` | Sidebar, toolbar, status bar |
-| `--surface-2` | `#e4edf6` | Hover, pressed |
-| `--border` | `#cbd7e5` | 1px dividers |
-| `--border-strong` | `#8b9db2` | Inline kbd borders |
-| `--text` | `#1e293b` | Body text |
-| `--muted` | `#475a70` | Captions, section labels, dim icons |
-| `--muted-2` | `#52657b` | Placeholder text |
+| `--surface` | `#f5f5f5` | Sidebar, toolbar, status bar |
+| `--surface-2` | `#ededee` | Hover, pressed |
+| `--border` | `#d2d3d6` | 1px dividers |
+| `--border-strong` | `#90949b` | Inline kbd borders |
+| `--text` | `#202124` | Body text |
+| `--muted` | `#45484d` | Captions, section labels, dim icons |
+| `--muted-2` | `#5c6068` | Placeholder text |
 | `--primary` | `#3e6694` | State only — focus ring, active tab dot |
 | `--primary-soft` | `#e8f0fa` | Subtle focus / selection backgrounds |
 | `--accent` | `#7c3aed` | AI surfaces only |
@@ -145,8 +145,10 @@ Secondary text stays bright enough to read at small desktop sizes.
 
 ## Pearl surfaces and readability
 
-- `tiq-app` supplies the quiet blue-grey backdrop. `tiq-chrome` styles titlebars, toolbars, tabs, and footers without nested blur.
-- `tiq-vibrancy` and `tiq-glass-panel` use a 20px blur with a 94% light / 96% dark tint. Unsupported blur and reduced-transparency preferences use an opaque fallback.
+- Light panels and chrome use opaque neutral surfaces with dark text; no blue wash or backdrop blur. Dark mode retains its Pearl backdrop. `tiq-chrome` styles titlebars, toolbars, tabs, and footers without nested blur.
+- In dark mode, `tiq-vibrancy` and `tiq-glass-panel` use a 20px blur with a 96% tint. Light mode, unsupported blur, and reduced-transparency preferences use opaque panels.
+- Inspector labels use body ink; types use secondary ink. JSON fields show lossless indentation and syntax colors, grow with content up to 30vh, then scroll internally. Enter adds lines in JSON; ⌘/Ctrl+Enter or blur saves, and Escape cancels. Formatting alone never saves.
+- The connected workspace’s connection picker exposes New connection and Edit for each saved profile. The existing sheet owns Save changes; open profiles require disconnect/reconnect before new settings take effect.
 - Tables, SQL editors, form controls, and JSON values retain opaque backgrounds. Grid fonts, row heights, padding, selection, zebra stripes, and edit indicators keep their established behavior.
 - Status bars keep controls in one row when space permits. Below 760px of pane width, paging moves to a second row so the inspector cannot cover actions.
 - Selected grid headers use dark ink on the pale dark-theme accent; JSON numbers use the readable accent-text token. Contrast tests cover both.
@@ -441,3 +443,12 @@ SQL identifiers remain full-contrast. Syntax colors and gutter numbers meet
 - **Do** keep TablePlus's familiar layout, enhanced. **Don't** reinvent the flow users already know.
 - **Do** reserve violet/gradient for AI. **Don't** sprinkle it across normal UI.
 - **Do** keep chrome stroke 1.5; data UI stroke 2.
+
+## SQL suggestion menu
+
+- Use CodeMirror's native completion list, keyboard navigation, and ARIA semantics.
+- Suggestions use opaque surfaces, 30px rows, grouped headings, schema/kind details for tables, and data types for columns.
+- The menu is 340–480px wide within the viewport, with a scrolling list capped at 35vh / 320px. Portal it outside the editor so short query panes do not clip it.
+- Automatic opening waits for two characters, except useful table and qualified-name boundaries. Ctrl+Space requests suggestions explicitly.
+- No option is selected automatically. Arrow keys choose, Enter/Tab inserts a selected option, and Escape dismisses. The run-query shortcuts keep their priority.
+- Preserve the native SQL parser's alias handling and each dialect's identifier quoting. Never merge columns from ambiguous table names across schemas.

@@ -27,7 +27,7 @@ import { defaultSshConfig, type SshConfig } from "../lib/ssh";
 import { connNameFor, isServerUrlEngine, isUrlHost, normalizeUrlSecrets, toConnUrl, validateConn, withName } from "../lib/connUrl";
 import { PROFILES, applyPreset, presetFor } from "../lib/profiles";
 import { confirmDialog } from "../lib/confirmDialog";
-import { cancelConnecting, openConnection, useConnections, type ConnectingState } from "../state/connectionStore";
+import { cancelConnecting, canLeaveSession, openConnection, useConnections, type ConnectingState } from "../state/connectionStore";
 import { getLastConnected } from "../lib/lastConnected";
 import { version as APP_VERSION } from "../../package.json";
 
@@ -134,9 +134,12 @@ function envTagOf(c: ConnConfig): { label: string; tone: "ok" | "warn" | "muted"
   return { label: "(remote)", tone: "muted" };
 }
 
-export function ConnectionManager() {
+export function ConnectionManager({ editor }: {
+  /** Reuse the saved-connection form over a live workspace, without leaving its tabs. */
+  editor?: { connection: ConnConfig | null; onClose: () => void };
+} = {}) {
   const { saved, setSaved, connecting } = useConnections();
-  const [form, setForm] = useState<ConnConfig>(blankConfig);
+  const [form, setForm] = useState<ConnConfig>(() => editor?.connection ?? blankConfig());
   const [password, setPassword] = useState("");
   // SSH secrets are split so the form can show password + key passphrase the way
   // TablePlus does (both visible). Only the active method's secret is sent — see
@@ -145,10 +148,10 @@ export function ConnectionManager() {
   const [sshKeyPass, setSshKeyPass] = useState("");
   const [status, setStatus] = useState<SheetStatus>({ kind: "idle", msg: "" });
   // The form as last loaded or saved; the dirty guard compares against it.
-  const [initial, setInitial] = useState<ConnConfig>(blankConfig);
+  const [initial, setInitial] = useState<ConnConfig>(form);
   // The secrets as last loaded (always empty) or saved; also part of the dirty check.
   const [savedSecrets, setSavedSecrets] = useState<Secrets>(NO_SECRETS);
-  const [sheetOpen, setSheetOpen] = useState(false);
+  const [sheetOpen, setSheetOpen] = useState(!!editor);
   const sheetRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!sheetOpen) return;
@@ -274,6 +277,7 @@ export function ConnectionManager() {
   const dirty = isDirty(initial, form, { password, sshPassword, sshKeyPass }, savedSecrets);
   // A duplicate has a fresh id, so it opens as "new".
   const mode = saved.some((s) => s.id === form.id) ? "edit" : "new";
+  const inUse = useConnections((s) => s.open.some((session) => session.info.id === form.id));
   const okToDiscard = async () =>
     !dirty ||
     (await confirmDialog("Discard unsaved changes?", "Unsaved changes", {
@@ -281,7 +285,14 @@ export function ConnectionManager() {
       cancel: "Keep editing",
     }));
   const requestClose = async () => {
-    if (await okToDiscard()) setSheetOpen(false);
+    if (status.kind === "busy") {
+      if (connecting?.id !== form.id) return;
+      handleCancel();
+    }
+    if (await okToDiscard()) {
+      setSheetOpen(false);
+      editor?.onClose();
+    }
   };
   const pickOrReport = async (pick: () => Promise<string | null>, use: (path: string) => void) => {
     try {
@@ -318,13 +329,14 @@ export function ConnectionManager() {
   const doSave = async () => {
     setStatus({ kind: "busy", msg: "Saving…" });
     try {
-      const { cfg, pw } = settle(form, password);
+      const { cfg, pw } = settle(withName(form), password);
       await saveConnection(cfg, pw || undefined, effectiveSshSecret || undefined);
       await refresh();
       // Keep the secrets typed: Test sends them and has no keychain fallback.
+      setForm(cfg);
       setInitial(cfg);
       setSavedSecrets({ password: pw, sshPassword, sshKeyPass });
-      setStatus({ kind: "ok", msg: "Saved" });
+      setStatus({ kind: "ok", msg: inUse ? "Saved. Reconnect to apply connection changes." : "Saved" });
     } catch (e) {
       setStatus({ kind: "err", msg: String(e) });
     }
@@ -332,6 +344,10 @@ export function ConnectionManager() {
 
   const doConnect = async (cfg0: ConnConfig, pw0?: string) => {
     if (connecting) return; // one connect at a time — ConnRow disables other rows too
+    // Replacing a live pool under open tabs could send their queries to a different database.
+    // Save remains available; disconnect first before applying changed connection settings.
+    if (useConnections.getState().open.some((session) => session.info.id === cfg0.id)) return;
+    if (editor && !(await canLeaveSession())) return;
     setStatus({ kind: "busy", msg: "Connecting…" });
     try {
       const { cfg, pw } = pw0 === undefined ? { cfg: cfg0, pw: undefined } : settle(withName(cfg0), pw0);
@@ -344,6 +360,7 @@ export function ConnectionManager() {
       }
       const ok = await openConnection(cfg);
       if (!ok) setStatus({ kind: "idle", msg: "" }); // cancelled — no error to show
+      else editor?.onClose();
     } catch (e) {
       setStatus({ kind: "err", msg: String(e) });
     }
@@ -364,7 +381,8 @@ export function ConnectionManager() {
   }, [saved, search]);
 
   return (
-    <div className="flex h-full">
+    <div className={editor ? "contents" : "flex h-full"}>
+      {!editor && <>
       {/* Brand sidebar — TablePlus parity: logo + wordmark + version + action stack.
           The whole panel uses macOS vibrancy and the top portion is draggable so the
           traffic-light reserve doubles as the window grip. */}
@@ -564,15 +582,17 @@ export function ConnectionManager() {
           ]}
         />
       )}
+      </>}
 
       {/* Side-sheet form — opens from the right for new/edit. Mounted always; slid
           off-screen when closed so opening is instant. Solid scrim (no blur) so
           we don't repaint the viewport on every keystroke. */}
       <div
-        className={`fixed inset-0 z-40 flex items-stretch justify-end p-3 transition-opacity duration-150 ${
+        className={`${sheetOpen ? "tiq-overlay " : ""}fixed inset-0 z-40 flex items-stretch justify-end p-3 transition-opacity duration-150 ${
           sheetOpen ? "pointer-events-auto bg-black/30 opacity-100" : "pointer-events-none opacity-0"
         }`}
         onClick={() => void requestClose()}
+        style={{ backdropFilter: "none" }}
         aria-hidden={!sheetOpen}
         inert={!sheetOpen}
       >
@@ -584,6 +604,7 @@ export function ConnectionManager() {
           tabIndex={-1}
           onClick={(e) => e.stopPropagation()}
           onKeyDown={(e) => {
+            e.stopPropagation(); // The sheet owns shortcuts; background tabs must not react.
             if (e.key !== "Tab") return;
             const controls = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex="0"]'))
               .filter((el) => el.getClientRects().length > 0);
@@ -598,6 +619,7 @@ export function ConnectionManager() {
           <ConnectionSheet
             key={openSeq}
             mode={mode}
+            inUse={inUse}
             form={form}
             dirty={dirty}
             status={status}
@@ -680,6 +702,7 @@ export function ConnectionManager() {
               if (await okToDiscard()) duplicate(initial);
             }}
             onDelete={async () => {
+              if (useConnections.getState().open.some((session) => session.info.id === form.id)) return;
               if (
                 await confirmDialog(`Delete connection "${form.name}"?`, "Delete connection", {
                   ok: "Delete",
@@ -693,6 +716,7 @@ export function ConnectionManager() {
                   return;
                 }
                 setSheetOpen(false);
+                editor?.onClose();
                 await refresh();
               }
             }}
@@ -700,7 +724,7 @@ export function ConnectionManager() {
           />
         </div>
       </div>
-      <Onboarding />
+      {!editor && <Onboarding />}
     </div>
   );
 }

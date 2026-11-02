@@ -19,6 +19,8 @@ export type SheetStatus =
 
 export interface ConnectionSheetProps {
   mode: "new" | "edit";
+  /** Saved settings can change while connected; replacing/deleting a live session cannot. */
+  inUse?: boolean;
   form: ConnConfig;
   dirty: boolean;
   status: SheetStatus;
@@ -303,6 +305,7 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
 
       {/* Body */}
       <div className="min-w-0 flex-1 overflow-auto px-4 py-3">
+        {p.inUse && <p className="mb-3 text-[12px] text-muted">This connection is open. Save changes here, then disconnect and reconnect to apply them.</p>}
         <label className="flex h-[32px] items-center gap-2 rounded-lg border border-dashed border-border bg-surface px-2.5 focus-within:border-primary">
           <IconLink size={13} className="shrink-0 text-muted" />
           <input
@@ -782,9 +785,9 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
             </button>
           )}
           <button type="button" onClick={p.onSave} disabled={!!blockReason || busy} title={blockReason} className={btn}>
-            Save <kbd className={kbd}>⌘S</kbd>
+            {mode === "edit" ? "Save changes" : "Save"} <kbd className={kbd}>⌘S</kbd>
           </button>
-          <button type="button" onClick={p.onConnect} disabled={!!blockReason || busy} title={blockReason} className={btnPrimary}>
+          <button type="button" onClick={p.onConnect} disabled={!!blockReason || busy || p.inUse} title={p.inUse ? "Disconnect this connection before reconnecting with updated settings" : blockReason} className={btnPrimary}>
             Connect <kbd className={kbd}>⌘↵</kbd>
           </button>
         </div>
@@ -799,7 +802,7 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
             { id: "copy-url", label: "Copy as URL", onSelect: p.onCopyUrl },
             { id: "dup", label: "Duplicate", onSelect: p.onDuplicate },
             "separator",
-            { id: "del", label: "Delete", tone: "danger", onSelect: p.onDelete },
+            { id: "del", label: "Delete", tone: "danger", disabled: p.inUse, onSelect: p.onDelete },
           ]}
         />
       )}

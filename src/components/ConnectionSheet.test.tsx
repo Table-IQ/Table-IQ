@@ -15,6 +15,12 @@ const base: ConnectionSheetProps = {
 const html = (p: Partial<ConnectionSheetProps> = {}) => renderToStaticMarkup(<ConnectionSheet {...base} {...p} />);
 
 describe("ConnectionSheet", () => {
+  it("lets an open connection be saved but prevents replacing its live session", () => {
+    const h = html({ mode: "edit", inUse: true, dirty: true });
+    expect(h).toContain("disconnect and reconnect to apply them");
+    expect(h).toMatch(/<button(?![^>]* disabled=)[^>]*>Save changes /);
+    expect(h).toMatch(/<button[^>]*disabled=""[^>]*>Connect /);
+  });
   it("new mode: title, engine tiles, URL paste, password placeholder, no ⋯ menu", () => {
     const h = html();
     expect(h).toContain("New Connection");

@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { applyEdit, type ForeignKey, type ObjectInfo } from "../lib/commands";
 import { buildEdit, writeOutcomeMessage } from "../lib/edit";
 import { incomingForeignKeys, outgoingForeignKeys } from "../lib/fk";
 import { readOnlyReason } from "../lib/gridEditable";
 import { logError } from "../lib/report";
+import { prettyJsonText } from "../lib/kvFormat";
+import { highlightJson } from "../lib/docView";
 import { Tabs } from "./ui/Panel";
 import { Chip } from "./ui/Chip";
 import { IconClose, IconKey, IconLink, IconSearch } from "./ui/Icon";
@@ -268,7 +270,7 @@ function RowDetailView({
           <ul className="flex flex-col gap-3">
             {columns.map((c) => (
               <FieldCard
-                key={c.name}
+                key={`${row.row}:${c.name}`}
                 name={c.name}
                 type={c.data_type}
                 value={row.values[c.name]}
@@ -309,7 +311,7 @@ function RowDetailView({
 /** A single field — label + type over a value box that sits over the grey panel.
  *  When editable, the box is a focusable input: ⏎ / blur commits, Esc reverts.
  *  A green/red border flash confirms the save outcome (TablePlus parity). */
-function FieldCard({
+export function FieldCard({
   name,
   type,
   value,
@@ -324,19 +326,47 @@ function FieldCard({
   onCommit: (newValue: string) => Promise<boolean>;
 }) {
   const original = value ?? "";
+  const isJson = /\bjsonb?\b/i.test(type);
+  // The existing formatter only changes whitespace; large integers, duplicate keys,
+  // and escaped strings survive. Display formatting itself must never cause a write.
+  const displayed = useMemo(() => isJson ? prettyJsonText(original) ?? original : original, [isJson, original]);
   // NULL reads as absent; an empty string renders as an (empty) value box.
   const isNull = value == null;
-  const [draft, setDraft] = useState(original);
+  const [draft, setDraft] = useState(displayed);
   const [editing, setEditing] = useState(false);
   const [flash, setFlash] = useState<"ok" | "err" | null>(null);
   const mounted = useRef(true);
   const flashTimer = useRef<number | undefined>(undefined);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const cancelBlur = useRef(false);
+
+  const sizeToContent = () => {
+    const input = inputRef.current;
+    if (!input) return;
+    input.style.height = "auto";
+    input.style.height = `${input.scrollHeight + 2}px`;
+  };
+  useLayoutEffect(sizeToContent, [draft, editing, editable]);
+  useEffect(() => {
+    const input = inputRef.current;
+    if (!input) return;
+    if (isJson && editing) input.focus();
+    let width = input.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (input.clientWidth !== width) {
+        width = input.clientWidth;
+        sizeToContent();
+      }
+    });
+    observer.observe(input);
+    return () => observer.disconnect();
+  }, [isJson, editing, editable]);
 
   // Keep the local draft in sync when the row/value changes underneath us.
   useEffect(() => {
-    setDraft(original);
+    setDraft(displayed);
     setEditing(false);
-  }, [original, name]);
+  }, [displayed, name]);
 
   // Cancel any pending flash timer on unmount (selection change, filter typing,
   // tab switch) so we never setState on an unmounted FieldCard.
@@ -350,11 +380,12 @@ function FieldCard({
 
   const commit = async () => {
     setEditing(false);
-    if (draft === original) return;
+    if (cancelBlur.current) { cancelBlur.current = false; return; }
+    if (draft === displayed) return;
     const ok = await onCommit(draft);
     if (!mounted.current) return;
     setFlash(ok ? "ok" : "err");
-    if (!ok) setDraft(original);
+    if (!ok) setDraft(displayed);
     if (flashTimer.current !== undefined) window.clearTimeout(flashTimer.current);
     flashTimer.current = window.setTimeout(() => {
       if (mounted.current) setFlash(null);
@@ -381,13 +412,15 @@ function FieldCard({
       style={{ contentVisibility: "auto", containIntrinsicSize: "auto 52px" }}
     >
       <div className="flex items-baseline gap-2 px-0.5">
-        <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-muted">{name}</span>
-        <span className="shrink-0 font-mono text-[9.5px] uppercase tracking-wide text-muted-2">
+        <span title={name} className="min-w-0 flex-1 truncate text-[12px] font-medium text-text">{name}</span>
+        <span title={type} className="max-w-[45%] truncate font-mono text-[10px] uppercase tracking-wide text-muted">
           {type}
         </span>
       </div>
-      {editable ? (
+      {editable && (!isJson || editing) ? (
         <textarea
+          ref={inputRef}
+          aria-label={name}
           rows={1}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
@@ -395,31 +428,40 @@ function FieldCard({
           onFocus={() => setEditing(true)}
           onBlur={commit}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
+            if (e.key === "Enter" && (isJson ? e.metaKey || e.ctrlKey : !e.shiftKey)) {
               e.preventDefault();
               (e.target as HTMLTextAreaElement).blur();
             } else if (e.key === "Escape") {
-              setDraft(original);
+              e.preventDefault();
+              e.stopPropagation();
+              cancelBlur.current = true;
+              setDraft(displayed);
               setEditing(false);
               (e.target as HTMLTextAreaElement).blur();
             }
           }}
           spellCheck={false}
-          className={`max-h-40 w-full resize-y rounded-[var(--radius-sm)] border bg-bg px-2 py-1.5 font-mono text-[11.5px] leading-relaxed text-text transition-colors placeholder:italic placeholder:text-muted-2 focus:outline-none ${border}`}
+          title={isJson ? "Enter adds a line · ⌘/Ctrl+Enter saves · Esc cancels" : "Enter saves · Shift+Enter adds a line · Esc cancels"}
+          className={`tiq-inspector-value w-full resize-none rounded-[var(--radius-sm)] border bg-bg px-2 py-1.5 font-mono text-text transition-colors placeholder:italic placeholder:text-muted focus:outline-none ${border}`}
         />
       ) : (
         <button
           onClick={() => {
-            if (!isNull) navigator.clipboard?.writeText(original);
+            if (editable) setEditing(true);
+            else if (!isNull) navigator.clipboard?.writeText(original);
           }}
-          title={isNull ? undefined : "Click to copy"}
-          className="w-full cursor-copy rounded-[var(--radius-sm)] border border-border bg-bg px-2 py-1.5 text-left transition-colors hover:border-border-strong"
+          aria-label={`${editable ? "Edit" : "Copy"} ${name}`}
+          title={editable ? "Click to edit JSON" : isNull ? undefined : "Click to copy"}
+          className={`tiq-inspector-value w-full rounded-[var(--radius-sm)] border bg-bg px-2 py-1.5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-primary ${border} ${editable ? "cursor-text" : "cursor-copy"}`}
         >
           {isNull ? (
-            <span className="font-mono text-[11px] italic text-muted-2">NULL</span>
+            <span className="font-mono italic text-muted">NULL</span>
+          ) : isJson ? (
+            // Shared highlighter escapes every text run before adding token spans.
+            <span className="block whitespace-pre-wrap break-words font-mono" dangerouslySetInnerHTML={{ __html: highlightJson(displayed) }} />
           ) : (
-            <span className="block max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[11.5px] leading-relaxed text-text">
-              {original}
+            <span className="block whitespace-pre-wrap break-words font-mono text-text">
+              {displayed}
             </span>
           )}
         </button>

@@ -1,10 +1,12 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { EditorView, basicSetup } from "codemirror";
 import { Compartment, Prec } from "@codemirror/state";
-import { sql, PostgreSQL, MySQL, MSSQL, SQLite, type SQLDialect } from "@codemirror/lang-sql";
-import { keymap, placeholder } from "@codemirror/view";
+import { sql, PostgreSQL, MySQL, MSSQL, SQLite, type SQLDialect, type SQLNamespace } from "@codemirror/lang-sql";
+import { autocompletion, acceptCompletion } from "@codemirror/autocomplete";
+import { keymap, placeholder, tooltips } from "@codemirror/view";
 import { syntaxHighlighting } from "@codemirror/language";
 import { sqlHighlight } from "../lib/sqlHighlight";
+import { sqlCompletionSource } from "../lib/sqlCompletion";
 import { loadEditorFontSize } from "../lib/prefs";
 import type { Engine } from "../lib/commands";
 
@@ -27,11 +29,11 @@ interface Props {
   /** Focus left the editor (e.g. a click on the connection rail). */
   onBlur?: () => void;
   /**
-   * Schema for autocomplete. Maps `tableName` (and `schema.tableName`) to its
-   * columns, the shape `@codemirror/lang-sql` expects. Reconfigured in place
+   * Schema for autocomplete. Namespaces carry table/column labels and types
+   * in the shape `@codemirror/lang-sql` expects. Reconfigured in place
    * (no editor remount) when this object identity changes.
    */
-  schema?: Record<string, string[]>;
+  schema?: SQLNamespace;
   /** Engine driving SQL-dialect highlighting/completion. Defaults to Postgres. */
   dialect?: Engine;
 }
@@ -64,6 +66,20 @@ function cmDialectFor(engine: Engine | undefined): SQLDialect {
     default:
       return PostgreSQL;
   }
+}
+
+function sqlSupport(engine: Engine | undefined, schema?: SQLNamespace) {
+  const dialect = cmDialectFor(engine);
+  return [
+    sql({ dialect }),
+    autocompletion({
+      override: [sqlCompletionSource(dialect, schema)],
+      activateOnTypingDelay: 180,
+      selectOnOpen: false,
+      maxRenderedOptions: 60,
+      tooltipClass: () => "tiq-sql-completions",
+    }),
+  ];
 }
 
 /** CodeMirror 6 SQL editor. Theme uses CSS vars so it adapts to light/dark. */
@@ -123,16 +139,21 @@ export const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(
       parent: host.current,
       extensions: [
         basicSetup,
+        EditorView.contentAttributes.of({ "aria-label": "SQL query editor" }),
         syntaxHighlighting(sqlHighlight),
         sqlCompartment.of(
-          sql({ dialect: cmDialectFor(dialectRef.current), schema: schemaRef.current }),
+          sqlSupport(dialectRef.current, schemaRef.current),
         ),
+        // The query pane can be only a few lines tall. Let CodeMirror position
+        // the menu in the viewport rather than clip it inside the resized pane.
+        tooltips({ parent: document.body }),
         fontSizeCompartment.of(fontSizeTheme(loadEditorFontSize())),
         // `basicSetup`'s defaultKeymap binds Mod-Enter to insertBlankLine; without
         // Prec.highest that binding wins (same precedence, registered first) and
         // ⌘↵ inserts a newline instead of running the query.
         Prec.highest(
           keymap.of([
+            { key: "Tab", run: acceptCompletion },
             {
               key: "Mod-Enter",
               run: () => {
@@ -180,7 +201,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(
     const view = viewRef.current;
     if (!view) return;
     view.dispatch({
-      effects: sqlCompartment.reconfigure(sql({ dialect: cmDialectFor(dialect), schema })),
+      effects: sqlCompartment.reconfigure(sqlSupport(dialect, schema)),
     });
   }, [schema, dialect, sqlCompartment]);
 
