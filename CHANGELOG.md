@@ -14,6 +14,8 @@
 - SQL-log password redaction handles nested comments, MySQL `#` comments, adjacent literals, complex function arguments and unquoted conninfo assignments.
 
 ### Changed
+- TableIQ-owned application code now uses AGPL-3.0-only. Third-party licenses are preserved and documented in `LICENSE-EXCEPTIONS.md`; earlier Apache-2.0 releases retain their permissions.
+- Adopt the supplied Witness Q branding across app logos, platform icons, and the README; retain native app typography and UI colors.
 - TiDB sharing uses read-only snapshots and its own guard dialect, requires fresh sharing confirmation, and refuses internal default databases and mismatched server profiles. Cloud verification remains pending.
 - MCP timeout messages distinguish requested cancellation from completion. Settings show advisory role warnings and document engine/multi-result limitations.
 - CI provisions SQL Server and requires live guard, isolation, backup and restore coverage rather than silently skipping absent URLs.

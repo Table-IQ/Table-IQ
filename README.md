@@ -1,4 +1,15 @@
+<p align="center">
+  <img src="src/assets/brand/icon-1024.png" width="88" height="88" alt="TableIQ Witness Q app icon">
+</p>
+
 # TableIQ
+
+![Let your agent in. See every query.](docs/brand/readme-banner.png)
+
+[![CI workflow](https://img.shields.io/badge/CI-GitHub_Actions-3E6694.svg)](https://github.com/RudreshNarwal/Table-IQ/actions/workflows/ci.yml)
+[![License: AGPL-3.0-only](https://img.shields.io/badge/License-AGPL--3.0--only-3E6694.svg)](LICENSE)
+
+[Get started](#development) · [Postgres walkthrough](docs/launch/POSTGRES-WORKFLOW.md) · [Engine support](docs/ENGINES.md) · [Website](https://tableiq.ideolyst.com)
 
 **Your database and coding agent, in one inspectable workflow.**
 
@@ -13,6 +24,10 @@ See [`DESIGN.md`](DESIGN.md) for the visual/design system and [`CHANGELOG.md`](C
 for release history. Start with the [Postgres investigation walkthrough](docs/launch/POSTGRES-WORKFLOW.md).
 The [roadmap](docs/ROADMAP.md) and [GTM strategy](docs/GTM.md) describe the Mac/Postgres launch focus;
 other engines retain the support levels documented below.
+
+![TableIQ browsing a synthetic storefront database in PostgreSQL](docs/brand/app-preview.jpg)
+
+*Real-app capture from v0.8.10, using synthetic data.*
 
 ## Supported engines
 
@@ -102,7 +117,14 @@ and the [MCP troubleshooting walkthrough](docs/launch/POSTGRES-WORKFLOW.md#troub
 
 ## License and what stays free
 
-TableIQ is open source under the [Apache License 2.0](LICENSE).
+TableIQ-owned application code is open source under the
+[GNU Affero General Public License, version 3 only (AGPL-3.0-only)](LICENSE).
+Third-party dependencies, database marks, and fonts retain their original licenses;
+see [license exceptions and notices](LICENSE-EXCEPTIONS.md).
+
+Previously released Apache-2.0 versions retain their original permissions. This
+change applies to the current source and subsequent changes, not retroactively to
+those releases.
 
 **What stays free forever:** every database engine, the MCP server and its guard, BYO-key AI,
 staged edits, SSH tunnels, unlimited connections, and every feature in our first public release
@@ -123,6 +145,9 @@ pnpm tauri dev
 `pnpm tauri dev` builds the Rust backend and opens the app window against a live Vite dev
 server. `pnpm dev` alone serves just the frontend, with the Rust IPC layer mocked in
 `src/lib/commands.ts` (no database needed) — useful for pure UI work.
+
+<details>
+<summary>Tests, local databases, and real-app QA</summary>
 
 ## Tests
 
@@ -226,6 +251,8 @@ VITE_IPC_BRIDGE=1 pnpm dev   # open http://localhost:1420
 ```
 
 Commands can also be called directly: `curl -s -XPOST localhost:1430/invoke/list_connections -d '{}'`.
+
+</details>
 
 ## Known limitations
 

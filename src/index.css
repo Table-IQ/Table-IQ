@@ -451,3 +451,11 @@ input[type="number"] {
   -moz-appearance: textfield;
   appearance: textfield;
 }
+
+/* Brand artwork is supplied in two fixed palettes; UI text colors must not recolor it. */
+.tableiq-brand { display: inline-flex; flex-shrink: 0; vertical-align: middle; }
+.tableiq-brand img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.tableiq-wordmark { width: 7.8em; min-width: 96px; aspect-ratio: 415 / 120; }
+.tableiq-brand .brand-on-dark { display: none; }
+[data-theme="dark"] .tableiq-brand .brand-on-light { display: none; }
+[data-theme="dark"] .tableiq-brand .brand-on-dark { display: block; }

@@ -24,22 +24,24 @@ Three principles, in order:
 
 ## Brand
 
-- **Name:** TableIQ (one word, capital T and IQ). Never "Table-IQ" or "Tableiq".
-- **Wordmark:** `Table` in `--text`, `IQ` in `--primary`. Component: [`<Wordmark>`](src/components/Brand.tsx).
-- **Mark:** a 2×2 table whose top-right cell *is* the 4-point **AI sparkle** —
-  the grid is "Table", the spark is "IQ". App tile: Pearl light tile
-  (`#F7FAFD`→`#DCE7F3`, `--border` hairline), cells in `--primary` `#3e6694`,
-  spark in the indigo→violet gradient, so the Dock icon matches the in-app mark
-  ([icon-tile.svg](src/assets/brand/icon-tile.svg), regenerate the OS icon set
-  with `node scripts/render-brand-icon.mjs && pnpm tauri icon src/assets/brand/icon-1024.png`).
-  Inline glyph: tile-less, three cells in `currentColor`, spark in the
-  indigo→violet gradient ([`<BrandMark>`](src/components/Brand.tsx),
-  [glyph.svg](src/assets/brand/glyph.svg)). Replaced the "cells-T + spark" of
-  slices 30–31 (2026-09-26): the T read as a hammer at small sizes and the spark
-  floated outside the letterform; the grid still reads at 16 px.
-- Reserve the **violet `--accent`** and the primary→accent gradient for AI
-  features (NL→SQL, chat, explain) — including the brand spark. Never for
-  ordinary chrome.
+The [November 2026 brand guidelines and original kit](docs/brand/README.md) are the
+source of truth for identity and marketing. The app design tokens below still govern
+product UI; the brand refresh does not change its layout, typography, or state colors.
+
+- **Name:** TableIQ (one word, capital T and IQ).
+- **Mark:** the supplied **Witness Q**: table frame, header and divider, with a visible
+  query tail. Use the original SVG geometry from `src/assets/brand/`.
+- **Wordmark:** use the supplied outlined horizontal lockups, never retyped text.
+  Use the light-background artwork on light surfaces and dark-background artwork on dark.
+- **Palette:** Ledger Ink `#0C1A2B`, Pearl `#F1F6FB`, secondary Pearl Blue `#3E6694`.
+  Query tail: Lumen Deep `#0B7480` on light, Lumen `#38D6E0` on dark.
+- **App tile:** supplied Ink tile with Pearl Blue header glass and Lumen tail.
+  Regenerate with `node scripts/render-brand-icon.mjs && pnpm tauri icon src/assets/brand/icon-1024.png`.
+- **Spacing:** clear space of ¼ mark height; minimum 16 px mark and 96 px lockup.
+- **Fonts:** native system fonts stay in the app. Marketing uses Instrument Sans and
+  IBM Plex Mono. Do not apply marketing fonts to database cells or app chrome.
+- **Voice:** “Let your agent in. See every query.” State behavior and limitations together.
+- **AI:** violet remains reserved for in-app AI features. No violet in brand artwork or marketing.
 
 ## Type scale
 
@@ -269,7 +271,7 @@ project" we replaced in Slice 23.
 - Top region (~56px) is `tiq-titlebar-drag` so the user can grab anywhere in
   the strip to move the window; traffic-light reserve is implicit
 - Stack: `<BrandMark size={120}>` → `TableIQ` wordmark (36px semibold) → version
-  line (12px muted) → tagline (11px muted-2, "Local-first · zero telemetry / Open source · Apache-2.0")
+  line (12px muted) → tagline (11px muted-2, "Local-first · zero telemetry / Open source · AGPL-3.0-only")
 - Bottom stack (three buttons, identical width, 32px tall): Export Bundle,
   Import Bundle, **Create Connection** (primary)
 - Tiny footer row under buttons: `⌘N new · ⌘F filter` + ThemeToggle (icon-only)

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { BrandMark } from "./Brand";
+import logoLight from "../assets/brand/tableiq-logo-stacked-light.svg";
+import logoDark from "../assets/brand/tableiq-logo-stacked-dark.svg";
 import { ThemeToggle } from "./ThemeToggle";
 import { useSettingsUi } from "./Settings";
 import { Onboarding } from "./Onboarding";
@@ -376,15 +377,15 @@ export function ConnectionManager() {
         <div className="tiq-titlebar-drag absolute inset-x-0 top-0 h-14" aria-hidden />
 
         <div className="flex flex-col items-start gap-3 px-7 pt-12 pb-6">
-          <BrandMark size={168} className="-ml-1 text-primary" />
-          <h1 className="mt-2 text-[36px] font-semibold leading-none tracking-tight text-text">
-            Table<span className="text-primary">IQ</span>
+          <h1 className="tableiq-brand" style={{ width: 168, aspectRatio: "246 / 236" }}>
+            <img className="brand-on-light" src={logoLight} alt="TableIQ" />
+            <img className="brand-on-dark" src={logoDark} alt="TableIQ" />
           </h1>
           <div className="text-[12px] text-muted">Version {APP_VERSION}</div>
           <div className="mt-1 text-[11px] leading-relaxed text-muted-2">
             Local-first · zero telemetry
             <br />
-            Open source · Apache-2.0
+            Open source · AGPL-3.0-only
           </div>
         </div>
 

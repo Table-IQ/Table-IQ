@@ -63,7 +63,7 @@ If a gate is unmet, move the dependent announcement; the calendar never override
 
 ### Public release checklist
 
-- [ ] Public repository under Apache-2.0, with history checked for secrets and the free-feature pledge intact.
+- [ ] Public repository under AGPL-3.0-only (with documented third-party exceptions), with history checked for secrets and the free-feature pledge intact.
 - [ ] Signed/notarized Mac release installs and starts on supported clean Macs; publish actual architecture, OS requirements and artifact sizes.
 - [ ] A verified update path preserves connections/settings. Until an auto-updater ships, document and test manual replacement; never advertise automatic updates as available.
 - [ ] Real release-build checks cover the investigation, refused writes, unshared connections, stale/invalid tokens, disconnect/reconnect and error recovery. No unresolved critical data-loss or access-control defects in the advertised workflow.

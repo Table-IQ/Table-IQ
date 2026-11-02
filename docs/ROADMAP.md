@@ -16,7 +16,7 @@ P1–P5 preserve shipped work and technical backlog, not a launch sequence or en
 | Engine profiles (PostgreSQL and MySQL wire) | 23 on the existing drivers: 15 verified, 8 Beta ([ENGINES.md](ENGINES.md)) |
 | Document and key-value browsers | MongoDB (`DocShell`, v0.8.5) and Redis (`KvShell`, v0.8.6), with staged edits and read-only MCP tools; Redis Cluster and Sentinel not yet |
 | HTTP engines (read-only, P3) | ClickHouse, Turso/libSQL, Elasticsearch/OpenSearch, rqlite, Meilisearch, Qdrant, InfluxDB 3, ChromaDB, Weaviate |
-| Built | Keyset paging with a 20M-real-row scale fixture and a separate synthetic ~1T planner-estimate test, staged edits in one transaction, SQL log, user management, metrics board, backup/restore, ERD, schema/result diff, ⌘K, BYO-key AI (Anthropic/OpenAI/Gemini/Ollama), MCP server with a fail-closed guard and an in-repo adversarial guard suite, WASM plugins, SSH tunnels, keychain secrets, Apache-2.0 LICENSE |
+| Built | Keyset paging with a 20M-real-row scale fixture and a separate synthetic ~1T planner-estimate test, staged edits in one transaction, SQL log, user management, metrics board, backup/restore, ERD, schema/result diff, ⌘K, BYO-key AI (Anthropic/OpenAI/Gemini/Ollama), MCP server with a fail-closed guard and an in-repo adversarial guard suite, WASM plugins, SSH tunnels, keychain secrets, AGPL-3.0-only LICENSE (third-party licenses preserved) |
 | Release work still to verify | Repository publication, signed/notarized Mac release, tested update path, published download, release-specific trust evidence and usage gates; no public-release evidence recorded here yet |
 
 ## P0 · Validate and release the focused workflow
