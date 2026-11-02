@@ -175,8 +175,13 @@
 html,
 body,
 #root {
+  width: 100%;
   height: 100%;
   margin: 0;
+  overflow: hidden;
+  /* The desktop window is fixed; only panes inside it scroll. Stop trackpad
+     gestures at their boundary from rubber-banding the outer WebKit page. */
+  overscroll-behavior: none;
 }
 
 body {
