@@ -17,6 +17,7 @@
 - SQL-log password redaction handles nested comments, MySQL `#` comments, adjacent literals, complex function arguments and unquoted conninfo assignments.
 
 ### Changed
+- Desktop bundles include the app license, copyright notice, and documented third-party license notices.
 - TableIQ-owned application code now uses AGPL-3.0-only. Third-party licenses are preserved and documented in `LICENSE-EXCEPTIONS.md`; earlier Apache-2.0 releases retain their permissions.
 - Adopt the supplied Witness Q branding across app logos, platform icons, and the README; retain native app typography and UI colors.
 - TiDB sharing uses read-only snapshots and its own guard dialect, requires fresh sharing confirmation, and refuses internal default databases and mismatched server profiles. Cloud verification remains pending.
