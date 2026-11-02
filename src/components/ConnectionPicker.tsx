@@ -81,8 +81,17 @@ export function ConnectionPicker({
           else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
         }}
       >
-        <div className="border-b border-border bg-surface px-4 py-2.5 text-center">
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border bg-surface px-4 py-2.5">
           <div className="text-[13px] font-semibold text-text">Connections</div>
+          {onAddNew && (
+            <button
+              type="button"
+              onClick={() => { onAddNew(); onClose(); }}
+              className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded px-2.5 text-[12px] font-medium text-primary hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-primary"
+            >
+              <IconPlus size={14} /> Add connection
+            </button>
+          )}
         </div>
         <label className="flex items-center gap-2 border-b border-border px-3 py-2">
           <IconSearch size={12} className="text-muted" />
@@ -148,12 +157,6 @@ export function ConnectionPicker({
             })
           )}
         </div>
-        {onAddNew && <div className="border-t border-border p-2">
-          <button onClick={() => { onAddNew(); onClose(); }}
-            className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-[12px] font-medium text-primary hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-primary">
-            <IconPlus size={14} /> New connection…
-          </button>
-        </div>}
         <footer className="flex items-center justify-between border-t border-border bg-surface px-4 py-1.5 text-[10px] text-muted">
           <span>
             <span className="tiq-kbd">↑</span> <span className="tiq-kbd">↓</span> navigate ·{" "}
