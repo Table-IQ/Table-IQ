@@ -452,3 +452,9 @@ SQL identifiers remain full-contrast. Syntax colors and gutter numbers meet
 - Automatic opening waits for two characters, except useful table and qualified-name boundaries. Ctrl+Space requests suggestions explicitly.
 - No option is selected automatically. Arrow keys choose, Enter/Tab inserts a selected option, and Escape dismisses. The run-query shortcuts keep their priority.
 - Preserve the native SQL parser's alias handling and each dialect's identifier quoting. Never merge columns from ambiguous table names across schemas.
+
+## Resizable panels
+
+- Shared drag handles sit above neighboring panes so the full grab area remains reachable. Horizontal panel-width handles retain their compact hit area; vertical panel-height handles use an 8px strip with a visible grip.
+- Handles are keyboard focusable and expose their name and size. Arrow keys move 10px, Shift+Arrow moves 40px, and Home/End reaches the available limits.
+- The SQL/results split remembers the editor height, reserves 120px for results when space allows, and adapts to window/pane height changes. Double-click or Enter restores the default editor height.

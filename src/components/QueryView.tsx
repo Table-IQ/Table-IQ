@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { SqlEditor, type SqlEditorHandle } from "./SqlEditor";
 import { useSettingsUi } from "./Settings";
 import { PlanView } from "./PlanView";
@@ -59,6 +59,14 @@ const EDITOR_H_KEY = "tiq:layout:queryEditorH";
 const EDITOR_H_MIN = 72;
 const EDITOR_H_MAX = 700;
 const EDITOR_H_DEFAULT = 176;
+const RESULTS_H_MIN = 120;
+const SPLITTER_H = 8;
+
+/** Reserve room for results even after restoring a tall editor in a smaller window. */
+export function queryEditorBounds(availableHeight: number) {
+  const max = clampWidth(availableHeight - RESULTS_H_MIN - SPLITTER_H, 0, EDITOR_H_MAX);
+  return { min: Math.min(EDITOR_H_MIN, max), max };
+}
 
 /** One finished run: what was sent, what came back, and the document it came from. */
 interface RunState {
@@ -71,8 +79,10 @@ interface RunState {
 
 function readEditorHeight(): number {
   if (typeof window === "undefined") return EDITOR_H_DEFAULT;
-  const n = Number(window.localStorage.getItem(EDITOR_H_KEY));
-  return Number.isFinite(n) && n > 0 ? clampWidth(n, EDITOR_H_MIN, EDITOR_H_MAX) : EDITOR_H_DEFAULT;
+  try {
+    const n = Number(window.localStorage.getItem(EDITOR_H_KEY));
+    return Number.isFinite(n) && n > 0 ? clampWidth(n, EDITOR_H_MIN, EDITOR_H_MAX) : EDITOR_H_DEFAULT;
+  } catch { return EDITOR_H_DEFAULT; }
 }
 
 export function QueryView({
@@ -105,6 +115,19 @@ export function QueryView({
   const [runStart, setRunStart] = useState(0);
   const [plan, setPlan] = useState<string | null>(null);
   const [editorH, setEditorH] = useState<number>(readEditorHeight);
+  const splitRef = useRef<HTMLDivElement>(null);
+  const [splitH, setSplitH] = useState(EDITOR_H_MAX + RESULTS_H_MIN + SPLITTER_H);
+  const editorBounds = queryEditorBounds(splitH);
+  const visibleEditorH = clampWidth(editorH, editorBounds.min, editorBounds.max);
+  useLayoutEffect(() => {
+    const pane = splitRef.current;
+    if (!pane) return;
+    const measure = () => setSplitH(pane.clientHeight);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(pane);
+    return () => observer.disconnect();
+  }, []);
   const [drawer, setDrawer] = useState<"none" | "chart" | "plugins" | "diff" | "ai">("none");
   const recordResult = useResults((s) => s.record);
   const recentCount = useResults((s) => s.recents.length);
@@ -122,7 +145,7 @@ export function QueryView({
   const sqlDialect: SqlDialect = dialectFor(engine);
 
   useEffect(() => {
-    window.localStorage.setItem(EDITOR_H_KEY, String(editorH));
+    try { window.localStorage.setItem(EDITOR_H_KEY, String(editorH)); } catch { /* Resizing still works without storage. */ }
   }, [editorH]);
 
   // Editor text lives on the tab so it survives switching tabs and a reload.
@@ -388,7 +411,7 @@ export function QueryView({
   };
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full min-h-0 flex-col">
       {/* Primary toolbar */}
       <Toolbar>
         {!running ? (
@@ -527,7 +550,8 @@ export function QueryView({
       )}
 
       {/* Editor — height is user-draggable and persisted (TablePlus parity) */}
-      <div className="shrink-0 overflow-hidden" style={{ height: editorH }}>
+      <div ref={splitRef} className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div className="shrink-0 overflow-hidden" style={{ height: visibleEditorH }}>
         <SqlEditor
           ref={editorRef}
           initial={sqlRef.current}
@@ -542,7 +566,12 @@ export function QueryView({
       <ResizeHandle
         direction="vertical"
         side="bottom"
-        onResize={(d) => setEditorH((h) => clampWidth(h + d, EDITOR_H_MIN, EDITOR_H_MAX))}
+        label="Resize SQL editor and results"
+        value={visibleEditorH}
+        min={editorBounds.min}
+        max={editorBounds.max}
+        onResize={(d) => setEditorH((h) => clampWidth(Math.min(h, editorBounds.max) + d, editorBounds.min, editorBounds.max))}
+        onReset={() => setEditorH(clampWidth(EDITOR_H_DEFAULT, editorBounds.min, editorBounds.max))}
       />
 
       {/* Results. While a run is in flight: a progress bar on the top edge and the
@@ -589,6 +618,7 @@ export function QueryView({
             </QueryResults>
           )}
         </div>
+      </div>
       </div>
 
       {/* Result-set status footer */}

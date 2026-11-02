@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.8.13 — 2026-11-02
+
+### Fixed
+- Adjacent panes no longer cover the drag targets for the SQL/results divider and left sidebar.
+- Query layout adapts to the available window height, keeping room for results when a saved editor height is too large.
+- Resizing restores the cursor and text selection when a drag ends, the window loses focus, or the panel unmounts.
+
+### Changed
+- The SQL/results divider has a visible grip, supports keyboard resizing, and resets on double-click or Enter. The chosen height remains saved between sessions.
+
 ## 0.8.12 — 2026-11-02
 
 ### Changed

@@ -1062,6 +1062,10 @@ export function MainShell() {
         )}
         {showSidebar && (
           <ResizeHandle
+            label="Resize sidebar"
+            value={sidebarW}
+            min={SIDEBAR_MIN}
+            max={SIDEBAR_MAX}
             onResize={(d) =>
               setSidebarW((w) => clampWidth(w + d, SIDEBAR_MIN, SIDEBAR_MAX))
             }
@@ -1203,6 +1207,10 @@ export function MainShell() {
 
         {showInspector && (
           <ResizeHandle
+            label="Resize inspector"
+            value={inspectorW}
+            min={INSPECTOR_MIN}
+            max={INSPECTOR_MAX}
             onResize={(d) =>
               setInspectorW((w) => clampWidth(w - d, INSPECTOR_MIN, INSPECTOR_MAX))
             }

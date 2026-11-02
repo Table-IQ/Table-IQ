@@ -161,6 +161,10 @@ export function SqlLogPanel({ connId }: { connId: string }) {
       <ResizeHandle
         direction="vertical"
         side="top"
+        label="Resize SQL log"
+        value={height}
+        min={MIN_H}
+        max={MAX_H}
         onResize={(d) => setHeight((h) => clampWidth(h - d, MIN_H, MAX_H))}
       />
       <div
