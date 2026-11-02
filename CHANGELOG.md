@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.8.14 — 2026-11-02
+
+### Fixed
+- Contain the desktop viewport to prevent trackpad gestures from overscrolling the outer page; tables and forms retain their own scrolling.
+
+### Changed
+- Place Add connection beside the connection picker title so it stays visible above the saved connections.
+
 ## 0.8.13 — 2026-11-02
 
 ### Fixed
