@@ -48,9 +48,15 @@ async fn pg_filtered_window_times_out() {
     assert!(err.to_string().contains("timed out"), "got {err}");
     assert!(start.elapsed() < Duration::from_secs(5), "took {:?}", start.elapsed());
     // An unfiltered page reads just its rows, so this one is fast…
-    drv.open_window_cancellable("tiq_win_timeout", "slow", 0, 10, &[], &[], None, &CancelToken::new())
+    // This checks recovery after a timeout, not sub-second performance on a busy runner.
+    // Give the successful fetch headroom, then restore the short bound for the slow sort.
+    let drv = drv.with_window_timeout_ms(5_000);
+    let page = drv
+        .open_window_cancellable("tiq_win_timeout", "slow", 0, 10, &[], &[], None, &CancelToken::new())
         .await
         .expect("unfiltered page");
+    assert_eq!(page.num_rows(), 10);
+    let drv = drv.with_window_timeout_ms(300);
     // …but it is bounded too (at twice the filtered bound): a sort still reads everything.
     let start = Instant::now();
     let by_name = [SortKey { column: "name".into(), desc: false }];

@@ -2,7 +2,10 @@
 
 ## Unreleased
 
+## 0.8.11 — 2026-11-02
+
 ### Fixed
+- The Postgres window-timeout test gives its successful recovery query scheduling headroom on shared CI runners, while preserving the short timeout assertions.
 - MySQL restore validation rejects foreign qualified references and ALTER DATABASE/SCHEMA, including quoted numeric database names. Trusted-dump and least-privilege requirements remain; conservative alias rejection is documented.
 - SQLite restore uses the native online backup API instead of replacing an open file. Other connections retain a consistent database; active writers cause a safe refusal.
 - SQL Server MCP calls use separate sessions so agent transactions and timeout cleanup cannot roll back a user transaction. Full-width ASCII procedure names are normalized before escape checks.
