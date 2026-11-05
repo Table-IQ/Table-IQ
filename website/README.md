@@ -93,10 +93,16 @@ The logo strip and the Engines section are generated from the app: `python3 scri
 
 ## SEO, AEO and GEO
 
-- `scripts/seo.py` writes JSON-LD (SoftwareApplication, Organization, WebSite, FAQPage on home; TechArticle + BreadcrumbList on guides) and `sitemap.xml`. The FAQPage is parsed from the visible FAQ, so edit the FAQ in HTML, then rerun the script.
-- `robots.txt` allows search and AI crawlers by name; `llms.txt` is the plain-text fact sheet answer engines read. Keep its facts in step with the page.
-- `_headers` adds `X-Robots-Tag: noindex` on `*.pages.dev` so only `tableiq.ideolyst.com` is indexed.
-- **Go-live switch:** remove `<meta name="robots" content="noindex, nofollow">` from the four HTML files only after publication gates pass. Then submit the sitemap in Google Search Console and Bing Webmaster Tools (Bing feeds ChatGPT search and Copilot).
+The coming-soon website is indexable, by owner request. This does not announce a downloadable signed app. `robots.txt` permits search and AI crawlers; HTML uses `index, follow, max-image-preview:large`. Cloudflare account-level bot controls still apply independently.
+
+- `scripts/seo.py` owns canonical URLs, Open Graph/Twitter metadata, accurate JSON-LD, the sitemap, font preload, and alternate-format discovery links. Canonical URLs are extensionless, matching Workers' direct responses; old `.html` links remain supported through native redirects.
+- The same generator derives `index.md`, both guide Markdown files, `license.md`, `llms.txt`, and `llms-full.txt` from public HTML. It preserves SQL and security/legal content. There is no separate keyword-only content or invented evidence.
+- HTML `rel="alternate"` and `rel="describedby"` links advertise Markdown and `llms.txt`. Raw Markdown has HTTP canonical links back to HTML and `noindex, follow` headers to avoid duplicate search results. The sitemap contains only canonical HTML pages.
+- `_headers` is generated too. Font caching and an early preload of the actual heading font help resource discovery; no extra animation library or runtime is added.
+- `indexnow-key.txt` is a deliberately public ownership-verification file. `indexnow.json` contains the generated notification payload and is excluded from uploads by `.assetsignore`. The deploy workflow submits canonical URLs to IndexNow after upload; failures are advisory and do not undo a successful deployment. Acceptance is not proof of indexing.
+- Google does not use `llms.txt` or Markdown as a special ranking signal. FAQ JSON-LD describes visible answers; it does not promise Google FAQ rich results. See [SEO decisions and official references](SEO.md).
+
+After verifying ownership in Google Search Console and Bing Webmaster Tools, submit `https://tableiq.ideolyst.com/sitemap.xml`, inspect canonical pages, and monitor discovery/indexing and query performance. No verification tokens, account connections, indexing results, rankings, or AI citations are implied by this repository's checks.
 
 ## Branding
 

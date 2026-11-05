@@ -1,9 +1,38 @@
-# Cloudflare Pages: keep the *.pages.dev preview copy out of search; the canonical site is tableiq.ideolyst.com.
-https://:project.pages.dev/*
-  X-Robots-Tag: noindex
-
-https://:version.:project.pages.dev/*
-  X-Robots-Tag: noindex
-
+# Static assets served by Cloudflare Workers.
 /img/*
   Cache-Control: public, max-age=604800
+
+/fonts/*
+  Cache-Control: public, max-age=604800
+
+/index.md
+  Content-Type: text/markdown; charset=utf-8
+  X-Robots-Tag: noindex, follow
+  Link: <https://tableiq.ideolyst.com/>; rel="canonical"
+
+/guides/mcp-permissions.md
+  Content-Type: text/markdown; charset=utf-8
+  X-Robots-Tag: noindex, follow
+  Link: <https://tableiq.ideolyst.com/guides/mcp-permissions>; rel="canonical"
+
+/guides/postgres-investigation.md
+  Content-Type: text/markdown; charset=utf-8
+  X-Robots-Tag: noindex, follow
+  Link: <https://tableiq.ideolyst.com/guides/postgres-investigation>; rel="canonical"
+
+/license.md
+  Content-Type: text/markdown; charset=utf-8
+  X-Robots-Tag: noindex, follow
+  Link: <https://tableiq.ideolyst.com/license>; rel="canonical"
+
+/llms.txt
+  Content-Type: text/plain; charset=utf-8
+  X-Robots-Tag: noindex, follow
+
+/llms-full.txt
+  Content-Type: text/plain; charset=utf-8
+  X-Robots-Tag: noindex, follow
+
+/indexnow-key.txt
+  Content-Type: text/plain; charset=utf-8
+  X-Robots-Tag: noindex, follow

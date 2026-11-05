@@ -1,6 +1,7 @@
 """Regression checks for the deployment gate, using disposable site copies."""
 from pathlib import Path
 import json
+import html
 import re
 import shutil
 import subprocess
@@ -61,10 +62,41 @@ class WebsiteChecks(unittest.TestCase):
         self.assertIn("missing anchor: #missing-feature", result.stderr)
 
     def test_wrong_sitemap_fails(self):
-        self.change("sitemap.xml", "/license.html</loc>", "/missing.html</loc>")
+        self.change("sitemap.xml", "/license</loc>", "/missing</loc>")
         result = self.run_script("validate.py")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("sitemap URLs must match", result.stderr)
+
+    def test_indexable_pages_have_direct_canonicals_and_markdown_alternates(self):
+        for path in (self.site / "dist").rglob("*.html"):
+            source = path.read_text()
+            self.assertNotIn("noindex", source)
+            canonical = re.search(r'<link rel="canonical" href="([^"]+)"', source)[1]
+            self.assertFalse(canonical.endswith(".html"), canonical)
+            self.assertIn(f'<meta property="og:url" content="{canonical}">', source)
+            self.assertIn('rel="alternate" type="text/markdown"', source)
+            self.assertIn('rel="describedby"', source)
+
+    def test_generated_markdown_preserves_sql_and_faq_answers(self):
+        result = self.run_script("seo.py")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        guide = self.site / "dist/guides/postgres-investigation.html"
+        markdown = guide.with_suffix(".md").read_text()
+        for code in re.findall(r'<pre><code[^>]*>(.*?)</code></pre>', guide.read_text(), re.S):
+            self.assertIn(html.unescape(code), markdown)
+        self.change("index.html", "<summary>What is TableIQ?</summary>", "<summary>What does TableIQ do?</summary>")
+        result = self.run_script("seo.py")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("What does TableIQ do?", (self.site / "dist/index.md").read_text())
+        self.assertIn("What does TableIQ do?", (self.site / "dist/llms-full.txt").read_text())
+
+    def test_check_rejects_missing_markdown_without_creating_it(self):
+        path = self.site / "dist/index.md"
+        path.unlink(missing_ok=True)
+        result = self.run_script("seo.py", "--check")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("index.md", result.stderr)
+        self.assertFalse(path.exists())
 
     def test_navigation_and_other_disclosures_never_enter_faq_schema(self):
         self.change("index.html", "<main id=\"main\">", '<details><summary>Unrelated menu</summary><div>Not a FAQ</div></details><main id="main">')

@@ -16,10 +16,19 @@ class Page(HTMLParser):
         super().__init__()
         self.ids = set()
         self.references = []
+        self.meta = {}
+        self.canonical = []
+        self.markdown = []
         self.feed(source)
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
+        if tag == "meta":
+            self.meta[attrs.get("name", attrs.get("property"))] = attrs.get("content", "")
+        if tag == "link" and attrs.get("rel") == "canonical":
+            self.canonical.append(attrs.get("href", ""))
+        if tag == "link" and attrs.get("rel") == "alternate" and attrs.get("type") == "text/markdown":
+            self.markdown.append(attrs.get("href", ""))
         if attrs.get("id"):
             if attrs["id"] in self.ids:
                 raise ValueError(f"duplicate id: {attrs['id']}")
@@ -55,12 +64,23 @@ def main():
             raise ValueError(f"{owner.relative_to(DIST)}: path outside site: {reference}")
         if target.is_dir():
             target /= "index.html"
+        elif not target.suffix and target.with_suffix(".html").is_file():
+            target = target.with_suffix(".html")
         if not target.is_file():
             raise ValueError(f"{owner.relative_to(DIST)}: missing local file: {reference}")
         if url.fragment and target in pages and unquote(url.fragment) not in pages[target].ids:
             raise ValueError(f"{owner.relative_to(DIST)}: missing anchor: {reference}")
+        return target
 
     for path, page in pages.items():
+        if len(page.canonical) != 1 or check_reference(path, page.canonical[0]) != path:
+            raise ValueError(f"{path.name}: canonical must identify this page")
+        if page.canonical[0].endswith(".html") or page.meta.get("og:url") != page.canonical[0]:
+            raise ValueError(f"{path.name}: use the direct canonical URL in metadata")
+        if "noindex" in page.meta.get("robots", ""):
+            raise ValueError(f"{path.name}: public HTML must be indexable")
+        if len(page.markdown) != 1 or check_reference(path, page.markdown[0]) != path.with_suffix(".md"):
+            raise ValueError(f"{path.name}: missing Markdown alternate")
         for reference in page.references:
             check_reference(path, reference)
     for path in DIST.rglob("*.css"):
@@ -69,7 +89,7 @@ def main():
 
     sitemap = DIST / "sitemap.xml"
     urls = [node.text for node in ET.parse(sitemap).findall("{*}url/{*}loc")]
-    expected = {f"{SITE}/" if path.name == "index.html" else f"{SITE}/{path.relative_to(DIST)}" for path in pages}
+    expected = {page.canonical[0] for page in pages.values()}
     if len(urls) != len(set(urls)) or set(urls) != expected:
         raise ValueError("sitemap URLs must match published HTML pages exactly")
     for url in urls:

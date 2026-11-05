@@ -1,29 +1,20 @@
 # TableIQ
 
-> TableIQ is a free, open-source (AGPL-3.0-only) database client for macOS, built in Rust on Tauri. It browses, queries and edits PostgreSQL, MySQL, MariaDB, SQL Server, SQLite and DuckDB, has dedicated browsers for MongoDB and Redis, reads ClickHouse, Elasticsearch, OpenSearch, Turso/libSQL, rqlite, Meilisearch, Qdrant, InfluxDB 3, Chroma and Weaviate over HTTP, and connects to Postgres- and MySQL-compatible products such as CockroachDB, TiDB, YugabyteDB, TimescaleDB, Neon and Supabase. A local MCP server lets coding agents such as Cursor, Claude Code and Claude Desktop query only the connections the user shares, read-only by default, and logs every call in MCP Activity. Made by Ideolyst.
+> TableIQ is a free, open-source database client for macOS. Browse data, run SQL, review staged edits and explore schemas. Its local MCP server lets compatible coding agents query only connections you share, read-only by default, with every call shown in MCP Activity.
 
-Key facts:
+## Availability
 
-- Platform: macOS, one universal app for Apple silicon and Intel. The signed Mac download is not yet available; the planned release supports Apple silicon and Intel.
-- Price: free. Every engine, the MCP server and its guard, bring-your-own-key AI, staged edits, SSH tunnels, unlimited connections and every feature in the first public release stay free. No engine or device-count paywall.
-- Agents: MCP over HTTP on 127.0.0.1 with a bearer token. Writes are refused unless the user allows them per connection. Read-only access can still expose sensitive data or run expensive queries; use a least-privilege database role.
-- Editing: changes stage in the grid, the user reviews the exact SQL, and they commit in one transaction. Production-tagged connections confirm every commit.
-- Privacy: no account and no required cloud service. Credentials are stored in the macOS Keychain. Built-in AI sends context only to the provider the user configures, when used.
-- Beta: compatible products not yet verified against the live product are labelled Beta (Amazon Redshift, Apache Doris, SelectDB, Manticore Search, PlanetScale, Neon, Supabase, AlloyDB, Amazon RDS/Aurora, Azure Database, Google Cloud SQL).
+The signed Mac download is not available yet. The planned release will support Apple silicon and Intel Macs. Source and preview releases currently require repository access.
 
-## Pages
+## Documentation
 
-- [Home](https://tableiq.ideolyst.com/): features, supported databases, agent setup and FAQ
-- [Investigate a Postgres data issue with your agent](https://tableiq.ideolyst.com/guides/postgres-investigation.html): step-by-step walkthrough with Claude Code and a read-only role
-- [Understand MCP permissions](https://tableiq.ideolyst.com/guides/mcp-permissions.html): connection sharing, tokens, refused writes and engine-specific limits
+- [TableIQ: Mac database client with visible agent queries](https://tableiq.ideolyst.com/index.md): Markdown of the public page
+- [Troubleshoot MCP permissions: TableIQ](https://tableiq.ideolyst.com/guides/mcp-permissions.md): Markdown of the public page
+- [Investigate a Postgres data issue: TableIQ](https://tableiq.ideolyst.com/guides/postgres-investigation.md): Markdown of the public page
+- [TableIQ licensing: AGPL-3.0-only and third-party notices](https://tableiq.ideolyst.com/license.md): Markdown of the public page
+- [Complete reference](https://tableiq.ideolyst.com/llms-full.txt): all public page content in one file
+- [Engine support](https://tableiq.ideolyst.com/#engine-list): supported engines and Beta labels
 
-## Company
+## Permissions and privacy
 
-- [Ideolyst](https://ideolyst.com)
-
-## License
-
-TableIQ-owned application code uses AGPL-3.0-only. Third-party components retain
-their original licenses. Previously released Apache-2.0 versions retain their permissions.
-License and unsigned previews: https://tableiq.ideolyst.com/license.html
-Exceptions: https://tableiq.ideolyst.com/license.html#third-party
+Start with a read-only, least-privilege role on a replica or a sanitized copy. TableIQ refuses writes by default and logs every agent call, but read access can still expose sensitive data or run expensive queries.

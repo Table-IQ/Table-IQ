@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url><loc>https://tableiq.ideolyst.com/</loc><priority>1.0</priority></url>
-  <url><loc>https://tableiq.ideolyst.com/license.html</loc><priority>0.5</priority></url>
-  <url><loc>https://tableiq.ideolyst.com/guides/mcp-permissions.html</loc><priority>0.7</priority></url>
-  <url><loc>https://tableiq.ideolyst.com/guides/postgres-investigation.html</loc><priority>0.7</priority></url>
+  <url><loc>https://tableiq.ideolyst.com/license</loc><priority>0.5</priority></url>
+  <url><loc>https://tableiq.ideolyst.com/guides/mcp-permissions</loc><priority>0.7</priority></url>
+  <url><loc>https://tableiq.ideolyst.com/guides/postgres-investigation</loc><priority>0.7</priority></url>
 </urlset>
