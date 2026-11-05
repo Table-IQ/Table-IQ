@@ -182,6 +182,8 @@ See the [permissions guide](docs/launch/MCP-PERMISSIONS.md) and
 
 ## Development
 
+The marketing site lives in [`website/`](website/README.md) and deploys directly to Cloudflare Workers when that folder changes on `main`.
+
 Prerequisites: Node 22, pnpm, Rust (stable), and the platform packages Tauri v2 needs to
 build a webview app for your OS (see the [Tauri prerequisites guide](https://tauri.app/start/prerequisites/)).
 

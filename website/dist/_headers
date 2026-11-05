@@ -1,0 +1,9 @@
+# Cloudflare Pages: keep the *.pages.dev preview copy out of search; the canonical site is tableiq.ideolyst.com.
+https://:project.pages.dev/*
+  X-Robots-Tag: noindex
+
+https://:version.:project.pages.dev/*
+  X-Robots-Tag: noindex
+
+/img/*
+  Cache-Control: public, max-age=604800

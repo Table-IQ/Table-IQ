@@ -5,6 +5,9 @@
 # Node
 node_modules/
 dist/
+# The marketing site contains source assets, not generated app output.
+!website/dist/
+!website/dist/**
 dist-ssr/
 *.local
 
@@ -39,3 +42,7 @@ vite.config.js
 .claude/vite-dev.log
 .claude/*.png
 .claude/qa-shots/
+
+# Local Cloudflare state and Hallmark review captures
+.wrangler/
+.hallmark/

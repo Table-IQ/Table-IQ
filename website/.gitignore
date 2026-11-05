@@ -1,0 +1,6 @@
+.DS_Store
+.context/
+.env
+.env.*
+__pycache__/
+.wrangler/

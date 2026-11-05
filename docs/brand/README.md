@@ -16,7 +16,7 @@ and web fonts. Font licenses are retained in [licenses](licenses/).
 - Marketing uses Instrument Sans (400/500/600) and IBM Plex Mono (400/500).
   The app keeps its native system fonts. The wordmark is supplied vector artwork.
 - Brand line: **Let your agent in. See every query.**
-- Site hero: **The Mac database client that shows you what your agent did.**
+- Site hero: **Your agent’s SQL. In plain sight.**
 - Use plain, specific claims with their limits. Ideolyst appears as footer text:
   **An Ideolyst product**. Never imply that read-only access is risk-free.
 
@@ -35,6 +35,7 @@ render at 1200 × 400. Its Instrument Sans font is embedded for reproducible ren
 TableIQ v0.8.10, real Rust IPC bridge, local Postgres, synthetic storefront data.
 It documents the existing product UI, not a new release.
 
-The separate `tableiq-website` repository uses copies of the supplied artwork in
-`dist/img/brand/` and fonts with licenses in `dist/fonts/`. Its editable social-card
-source is `dist/img/og.svg`, rendered to `dist/img/og.png` at 1200 × 630.
+The website now lives in this repository under `website/`, with supplied artwork in
+`website/dist/img/brand/` and licensed fonts in `website/dist/fonts/`. Its editable
+social-card source is `website/dist/img/og.svg`, rendered to `website/dist/img/og.png`
+at 1200 × 630. See [website maintenance and deployment](../../website/README.md).

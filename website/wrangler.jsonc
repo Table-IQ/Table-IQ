@@ -1,0 +1,14 @@
+{
+  "$schema": "https://unpkg.com/wrangler@4.158.0/config-schema.json",
+  "name": "tableiq-website",
+  "compatibility_date": "2026-11-05",
+  "workers_dev": false,
+  "routes": [
+    { "pattern": "tableiq.ideolyst.com", "custom_domain": true }
+  ],
+  "assets": {
+    "directory": "./dist",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page"
+  }
+}
