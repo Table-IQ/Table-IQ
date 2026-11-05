@@ -1,10 +1,29 @@
 # TableIQ Roadmap
 
-_Last updated 2026-10-19 · current version v0.8.10 · companion doc: [GTM.md](GTM.md)_
+_Last updated 2026-11-05 · current version v0.8.10 · companion doc: [GTM.md](GTM.md)_
 
 The active priority is a reliable Mac/PostgreSQL investigation workflow with a coding agent. Validate repeat usage and buyer interest before expanding engine breadth. [GTM.md](GTM.md) owns the audience, launch gates and 90-day decision; the [validation kit](launch/VALIDATION.md) records evidence.
 
 [TODOS.md](../TODOS.md#active-order--launch-validation-2026-10-20) owns the engineering pick-up order and distinguishes workspace fixes from unverified release gates.
+
+## Operating strategy and governance decisions
+
+**Adopted strategy:** Follow Sarvaiksh’s validation-led strategy, adopt RN’s visual demonstration and outreach ideas, and defer edition splitting until paid demand is demonstrated.
+
+| Area | Policy / Decision | Implementation in Roadmap |
+|---|---|---|
+| **Business model** | Free open-source desktop client now; paid team offering after validation | Keep core app free; defer separate Community vs. Enterprise editions until paid demand is proven. |
+| **When to build paid features** | Seek two conditional paid-pilot commitments before building | Treat RN’s candidate features (shared vaults, central audit logs, permissions) as buyer interview topics, not pre-built code. |
+| **Free vs. paid boundary** | All engines, local MCP, staged edits, and promised local features remain free | Never gate engines, device count, or local agent guards. Paid tier adds organizational/team capabilities only. |
+| **Upfront desktop payment** | No desktop paywall or TablePlus-style restrictions at launch | Preserve free, unrestricted desktop adoption to fuel the agentic/MCP flywheel. |
+| **License** | Retain `AGPL-3.0-only` for launch | Reconsider only if qualified enterprise buyer prospects present verified, concrete licensing friction. |
+| **Positioning** | Lead with: *"Your database and coding agent, in one inspectable workflow."* | Anchor on concrete investigation task; use the broader agentic era context as supporting narrative. |
+| **Security claims** | Precise, engine-specific controls and documented limitations | No claims of universal safety or compliance guarantees. Read-only access does not prevent sensitive data exposure. |
+| **Launch demo** | Concrete investigation first; refusal as supporting evidence | Show real Postgres data investigation, inspected SQL/results in TableIQ, then a verified refusal. No unverified claims. |
+| **Distribution** | Channel breadth with readiness-gated sequencing | Use RN’s channels (MCP directories, Show HN, technical posts, social/agentic communities) prioritized by Sarvaiksh’s gates. |
+| **Release quality** | Signed/notarized native install & onboarding first; Homebrew as follow-up | Working DMG, clean-Mac install, verified update path, and trust checks before public announcement. |
+| **Pricing** | Test $99/team/month (5 users) in buyer discovery | Validate willingness to pay against an agreed deliverable before publishing plans. |
+| **Success metrics** | Prioritize workflow completion and retention over hype | Judge success by activation (14/20), repeat use (8/20), switching reasons (5/20), and 2 paid commitments. |
 
 P1–P5 preserve shipped work and technical backlog, not a launch sequence or engine-count target. Existing engines remain supported at their documented level. New engines, sidecars and broad product expansion are deferred during launch validation unless a measured blocker in the target workflow requires them.
 
@@ -21,17 +40,23 @@ P1–P5 preserve shipped work and technical backlog, not a launch sequence or en
 
 ## P0 · Validate and release the focused workflow
 
-- [x] Apache-2.0 license, NOTICE, manifests, UI license string and README free-feature pledge landed in v0.8.2.
+- [x] AGPL-3.0-only license, NOTICE, manifests, UI license string, LICENSE-EXCEPTIONS.md and README free-feature pledge landed (historical Apache-2.0 versions preserved).
 - [ ] Interview 10 beta users and observe five doing the task with their current tools and TableIQ. Begin buyer interviews immediately.
 - [ ] Enroll a fixed cohort of 20 target developers. Fix its three most common blockers; preserve failed attempts and nonresponses in the evidence.
-- [ ] Before public distribution, check repository history for secrets and make the repository public.
-- [ ] Produce a signed/notarized Mac release and verify installation on supported clean Macs. The release workflow contains signing hooks; that is not proof that credentials or signed artifacts exist.
+- [ ] Before public distribution, check repository history for secrets and make the repository public under `AGPL-3.0-only`. Keep license change on hold until qualified buyer discovery shows verified legal friction.
+- [ ] Produce a signed/notarized Mac release and verify installation on supported clean Macs. (Signing and tested onboarding take precedence; Homebrew cask is a follow-up).
 - [ ] Verify an update path that preserves settings/connections. A documented, tested manual replacement is acceptable until the auto-updater is implemented; do not claim automatic updates meanwhile.
-- [ ] Record actual Mac artifact sizes, supported OS versions and architectures. Optimize size only if measured onboarding or distribution problems justify it.
+- [ ] Record actual Mac artifact sizes, supported OS versions and architectures.
 - [ ] Verify the advertised Postgres workflow on the native release: successful reads, refused writes, isolation of unshared connections, token rejection/revocation, disconnect/reconnect and recovery. No unresolved critical data-loss or access-control defects.
-- [ ] Publish own-product test methods, versions, roles, results and limitations, including failures and exclusions. The existing in-repo adversarial suite and env-gated live tests are a starting point, not a universal safety proof.
-- [ ] Prepare the landing page, useful task demo, two setup/troubleshooting tutorials and two consented user stories. [Draft material](launch/ASSETS.md) is not a published asset.
+- [ ] Publish own-product test methods, versions, roles, results and limitations, including failures and exclusions. Engine-specific controls only: read-only access does not prevent sensitive data disclosure or expensive queries; never claim universal safety.
+- [ ] Prepare the landing page, useful task demo, two setup/troubleshooting tutorials and two consented user stories. Lead positioning with: *"Your database and coding agent, in one inspectable workflow."*
+- [ ] **Launch demonstration video/brief:** Show a concrete, high-clarity investigation first using synthetic Postgres data (agent answering a data question, running queries, inspecting SQL and the result grid in TableIQ), followed by a verified refused write probe as supporting evidence. **Strict rule:** Avoid depicting unverified behavior, including automatically staging refused MCP writes.
 - [ ] Pass the GTM usage gates before Show HN: 14/20 unaided activations within 15 minutes, 8 activated users returning on days 8–14, and 5 concrete switching reasons.
+- [ ] **Readiness-gated distribution sequence:**
+  1. Targeted beta cohort and referral onboarding.
+  2. Show HN launch once usage, release, and trust gates pass.
+  3. Expand to RN's proposed channels: MCP directories (PulseMCP, Glama, Smithery, Awesome-MCP-Servers), agentic community forums (Cursor, Claude, Orca/Conductor), and technical walkthrough articles (Dev.to, Hashnode, Reddit). Evaluate each channel by retained/activated users rather than impression vanity metrics.
+  4. Follow up with Homebrew cask (`brew install --cask tableiq`) and Product Hunt.
 
 **Done** = a public, installable Mac release with accurate claims, a verified update path, trust evidence and the usage gates above. Windows/Linux packaging, Homebrew and cross-vendor guard comparisons are follow-ups, not prerequisites for this focused launch.
 
@@ -127,9 +152,16 @@ AI chat expansion, i18n, cloud sync, Excel improvements, SQLCipher and a plugin 
 
 ## P7 · Commercial discovery, then one scoped pilot
 
-Begin buyer conversations during days 1–14, not after an arbitrary star target. Seek five completed buyer interviews and two written, conditional paid-pilot commitments by day 90. Test $99/team/month for five users as an interview hypothesis, not an announced plan.
-
-Shared vaults, SSO, central policy, audit export, approval flows, web/Docker hosting and licensing are candidate problems to investigate, not a committed bundle. Build only after several buyers identify the same problem. Specify one pilot's deliverable, acceptance test, delivery window and billing start with those buyers. Choose its architecture then; a web build or separate `ee/` tree is not a prerequisite to discovery.
+- **Business model & edition policy:** Keep the desktop client free and open source under `AGPL-3.0-only` for launch. **Do not split into Community vs. Enterprise editions prematurely**, and do not introduce a desktop paywall.
+- **Preserve the free-feature pledge:** All database engines, local MCP server, fail-closed guards, staged edits, BYOK/Ollama AI, and unlimited connections remain permanently free. Charging for engines or gating local core features is explicitly rejected. Paid offerings will only cover net-new organizational/team capabilities.
+- **Buyer interview discovery (Days 1–90):** Begin buyer conversations during days 1–14, not after an arbitrary star target. Seek five completed buyer interviews and **two written, conditional paid-pilot commitments** by day 90.
+- **Pricing experiment:** Test **$99/team/month for five users** as an interview hypothesis against a specific agreed deliverable, not an announced public plan.
+- **Interview inquiry topics (from RN proposal):** Treat the following candidate capabilities as discovery questions to validate recurring team problems, not as pre-built features:
+  - *Team connection vaults:* Centralized, encrypted connection sharing via KMS/1Password.
+  - *Central agent audit logging:* Exportable, immutable logs of agent-executed SQL for SOC2/compliance.
+  - *Role-based agent permissions:* Scoping which team members or agents can query specific databases.
+  - *Commercial license waiver:* Identifying if enterprise legal policies prevent deploying AGPL on employee machines.
+- **Scoped pilot commitment rule:** Build only after several buyers identify the same problem. Specify one pilot's deliverable, acceptance test, delivery window and billing start with those buyers before building. Choose its architecture then; a separate `ee/` tree or web build is not a prerequisite to discovery.
 
 **Discovery done** = the interviews and conditional commitments are recorded with buyer authority, repeated need and objections. **Pilot done** will be defined in that separate agreed scope. Preserve every feature covered by the free-feature pledge.
 

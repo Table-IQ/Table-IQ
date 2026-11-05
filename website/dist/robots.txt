@@ -1,0 +1,17 @@
+# Public marketing pages are indexable. The signed app download is coming soon.
+User-agent: *
+Allow: /
+
+# Explicit search and AI crawler permissions. Crawl access does not guarantee inclusion or citation.
+User-agent: GPTBot
+User-agent: OAI-SearchBot
+User-agent: ChatGPT-User
+User-agent: ClaudeBot
+User-agent: Claude-SearchBot
+User-agent: Claude-User
+User-agent: PerplexityBot
+User-agent: Google-Extended
+User-agent: Applebot-Extended
+Allow: /
+
+Sitemap: https://tableiq.ideolyst.com/sitemap.xml
