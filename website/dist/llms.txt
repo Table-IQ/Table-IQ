@@ -4,7 +4,7 @@
 
 Key facts:
 
-- Platform: macOS, one universal app for Apple silicon and Intel. The signed release is in final checks; the download is not yet published.
+- Platform: macOS, one universal app for Apple silicon and Intel. The signed Mac download is not yet available; the planned release supports Apple silicon and Intel.
 - Price: free. Every engine, the MCP server and its guard, bring-your-own-key AI, staged edits, SSH tunnels, unlimited connections and every feature in the first public release stay free. No engine or device-count paywall.
 - Agents: MCP over HTTP on 127.0.0.1 with a bearer token. Writes are refused unless the user allows them per connection. Read-only access can still expose sensitive data or run expensive queries; use a least-privilege database role.
 - Editing: changes stage in the grid, the user reviews the exact SQL, and they commit in one transaction. Production-tagged connections confirm every commit.

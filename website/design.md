@@ -9,6 +9,7 @@ Shared system for the homepage, guides and licensing. Tokens live in `dist/token
 - Dark default, explicit light/dark preference retained. Instrument Sans for display/body; IBM Plex Mono for code only.
 - Main page: left-aligned large display beside an interactive real-product screen. Wide MCP activity capture, product details as rows, an engine index, reading links, native release state and FAQ.
 - One container: 1440px including 64px desktop gutters. Grids use minmax(0, 1fr). One 32px column gap outside hero.
+- Copy leads with the Mac database client and the browse/query/edit workflow, then explains agent sharing and SQL/results. Plain product explanations take precedence over headline word-count targets.
 - Main headline: 500 weight, one color, no accented word. Section heads 40–56px. Body at least 16px.
 - No fake app chrome, metrics, testimonials, stock photos, uppercase tracked labels, or decorative dots.
 

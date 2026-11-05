@@ -91,7 +91,7 @@ faq = faq_parser.entries
 app = {
     "@type": "SoftwareApplication", "@id": SITE + "/#app", "name": "TableIQ", "url": SITE + "/",
     "applicationCategory": "DeveloperApplication", "operatingSystem": "macOS",
-    "description": "Free, open-source database client for macOS, built in Rust, with a local MCP server that lets coding agents query chosen connections read-only by default.",
+    "description": "Free, open-source Mac database client for browsing, querying and editing databases, with a local MCP server that lets coding agents query chosen connections read-only by default and logs every call.",
     "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
     "license": "https://www.gnu.org/licenses/agpl-3.0.html", "image": SITE + "/img/hero-light.jpg",
     "publisher": {"@id": org["@id"]},

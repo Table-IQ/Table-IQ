@@ -16,7 +16,7 @@ and web fonts. Font licenses are retained in [licenses](licenses/).
 - Marketing uses Instrument Sans (400/500/600) and IBM Plex Mono (400/500).
   The app keeps its native system fonts. The wordmark is supplied vector artwork.
 - Brand line: **Let your agent in. See every query.**
-- Site hero: **Your agent’s SQL. In plain sight.**
+- Site hero: **Your Mac database client. See every agent query.**
 - Use plain, specific claims with their limits. Ideolyst appears as footer text:
   **An Ideolyst product**. Never imply that read-only access is risk-free.
 
