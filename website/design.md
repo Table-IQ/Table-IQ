@@ -28,7 +28,10 @@ Shared system for the homepage, guides and licensing. Tokens live in `dist/token
 - One primary: Pearl fill and Ledger Ink text (inverse in light mode). Secondary buttons use rules or text.
 - Controls at least 44px high; visible, immediate focus rings. Mobile controls 48px.
 - Screens: accessible tabs in the homepage; keyboard arrows, Home/End, no automatic cycling. Panels remain visible without JS.
-- One scroll reveal pattern using opacity/transform, visible by default. No looping or scroll hijacking. Reduced motion resolves immediately.
+- Motion character: coordinated and visible, driven by the real product. Three primitives: staggered entrances, a transform-based screen indicator, and one scroll-linked product figure.
+- Hero text and screenshot settle in sequence within 800ms. Focused actions and controls appear immediately. Screen changes use a 420ms fade/slide; the indicator follows selection, fonts and responsive layout.
+- Section entrances use the same opacity/translate language. The wide MCP Activity figure alone scales and settles with viewport entry on supported desktop browsers. No loops, automatic cycling or scroll hijacking.
+- Reduced motion resolves immediately, including preference changes during an animation. Without JavaScript, the complete static page stays visible. Browsers without view timelines and small screens get the static MCP figure.
 - Guides are still. Prose 65–72ch, line height 1.7; tables scroll inside the document on mobile.
 
 ## Exports

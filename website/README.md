@@ -26,6 +26,21 @@ python3 -m http.server 4175 --bind 127.0.0.1 --directory dist
 - **Engine matrix & logos**: `python3 website/scripts/engines.py .` regenerates the logo strip and grid in `index.html` from `src/lib/profiles.json` and `src/assets/engines/`.
 - **Local checks**: `python3 website/scripts/validate.py` checks JSON-LD, sitemap URLs, and local HTML/CSS links, anchors and assets. Run `python3 -m unittest discover -s website/scripts -p 'test_*.py'` for regression checks.
 
+## Product motion
+
+The homepage uses native CSS and Web Animations: a staggered hero entrance, a sliding screen selector, and one scroll-linked MCP Activity screenshot. Section headings share the entrance language. Nothing cycles automatically. Reduced-motion preferences cancel movement, including changes during an animation. Without JavaScript, the complete static page stays visible. Small screens and browsers without view timelines get the static MCP figure.
+
+Optional browser regression checks use an external Puppeteer install; the site itself has no runtime dependency:
+
+```sh
+npm install --prefix /tmp/tableiq-motion-tools puppeteer-core
+HALLMARK_PUPPETEER=/tmp/tableiq-motion-tools \
+CHROME_PATH='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' \
+node --test website/scripts/verify-motion.mjs
+```
+
+Start the local preview first. Set `WEBSITE_URL` to check a different server. The tests cover entrance sequencing, immediate focused actions, mouse/keyboard screen changes, resizing, scroll motion, reduced motion and JavaScript-disabled content.
+
 ## Deployment: Cloudflare Workers
 
 This repository owns the website source and deploys directly to the existing `tableiq-website` Worker at **https://tableiq.ideolyst.com/**. No separate website repository, AWS account, S3 bucket, or cross-repository sync is needed. `wrangler.jsonc` serves `dist/` as static assets and declares the existing custom domain. Published `.html` guide links remain valid through Cloudflare’s standard canonical redirects; unknown paths return 404 instead of the homepage.
