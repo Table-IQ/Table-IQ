@@ -954,19 +954,17 @@ export const DataGrid = forwardRef<DataGridHandle, Props>(function DataGrid(
     if (!editable) return;
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return;
-      // Don't hijack ⌘Z/⌘S while the user is typing in the cell overlay editor or
-      // any other input — let native text undo / form handling win there.
-      const t = e.target as HTMLElement | null;
-      if (
-        t &&
-        (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)
-      )
-        return;
       const k = e.key.toLowerCase();
       if (k === "z") {
+        // Don't hijack ⌘Z while the user is typing in the cell overlay editor or any
+        // other input — native text undo wins there.
+        const t = e.target as HTMLElement | null;
+        if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
         e.preventDefault();
         undoLastEdit();
       } else if (k === "s") {
+        // No input guard: the cell overlay editor keeps focus after a value is picked,
+        // and ⌘S must still commit the staged edits (it has no native text meaning).
         e.preventDefault();
         void commitPending();
       }
