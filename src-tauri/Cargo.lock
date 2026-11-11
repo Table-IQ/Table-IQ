@@ -7330,7 +7330,7 @@ dependencies = [
 
 [[package]]
 name = "tableiq"
-version = "0.8.14"
+version = "0.8.15"
 dependencies = [
  "arrow 53.4.1",
  "async-trait",

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.8.15 — 2026-11-12
+
+### Fixed
+- ⌘S now commits staged edits while a cell editor still has focus, instead of being ignored until the editor is closed.
+
 ## 0.8.14 — 2026-11-02
 
 ### Fixed
