@@ -5,9 +5,6 @@
 # Node
 node_modules/
 dist/
-# The marketing site contains source assets, not generated app output.
-!website/dist/
-!website/dist/**
 dist-ssr/
 *.local
 

@@ -1,13 +1,13 @@
 # Design: TableIQ website
 
-Shared system for the homepage, guides and licensing. Tokens live in `dist/tokens.css`.
+Shared system for the homepage, guides and licensing. Tokens live in `brand/tokens.json` and `app/globals.css`. Section spec: `site-plan/sections.md`.
 
 ## System
 
 - Genre: modern-minimal. Shape: product workbench, documentation as long documents.
 - Brand-derived Ledger Ink / Pearl. Supplied logo and actual product screenshots stay unchanged.
 - Dark default, explicit light/dark preference retained. Instrument Sans for display/body; IBM Plex Mono for code only.
-- Main page: left-aligned large display beside an interactive real-product screen. Wide MCP activity capture, product details as rows, an engine index, reading links, native release state and FAQ.
+- Main page (11 sections, 11 archetypes): split hero with the agent trace, contrast pair, stepper, case card, tabs, bento, stat band (inverse), logo strip with index, card pair, accordion, full-width band.
 - One container: 1440px including 64px desktop gutters. Grids use minmax(0, 1fr). One 32px column gap outside hero.
 - Copy leads with the Mac database client and the browse/query/edit workflow, then explains agent sharing and SQL/results. Plain product explanations take precedence over headline word-count targets.
 - Main headline: 500 weight, one color, no accented word. Section heads 40–56px. Body at least 16px.
@@ -26,18 +26,18 @@ Shared system for the homepage, guides and licensing. Tokens live in `dist/token
 ## Controls and motion
 
 - One primary: Pearl fill and Ledger Ink text (inverse in light mode). Secondary buttons use rules or text.
-- Controls at least 44px high; visible, immediate focus rings. Mobile controls 48px.
-- Screens: accessible tabs in the homepage; keyboard arrows, Home/End, no automatic cycling. Panels remain visible without JS.
-- Motion character: coordinated and visible, driven by the real product. Three primitives: staggered entrances, a transform-based screen indicator, and one scroll-linked product figure.
-- Hero text and screenshot settle in sequence within 800ms. Focused actions and controls appear immediately. Screen changes use a 420ms fade/slide; the indicator follows selection, fonts and responsive layout.
-- Section entrances use the same opacity/translate language. The wide MCP Activity figure alone scales and settles with viewport entry on supported desktop browsers. No loops, automatic cycling or scroll hijacking.
-- Reduced motion resolves immediately, including preference changes during an animation. Without JavaScript, the complete static page stays visible. Browsers without view timelines and small screens get the static MCP figure.
-- Guides are still. Prose 65–72ch, line height 1.7; tables scroll inside the document on mobile.
+- Controls at least 44px high; mobile 48px; visible, immediate focus rings.
+- Library: `motion` 14 via `LazyMotion` + `m`, `MotionConfig reducedMotion="user"`. Durations and easings from `brand/tokens.json`.
+- Signature (hero only): the recorded MCP session resolves row by row with a Lumen scan; the refused write lands last and pulses once. Replay button; no loop.
+- Hero headline and screenshot rise with CSS transforms and never start invisible (LCP).
+- Micro: section headings rise once on scroll; screen tabs slide a shared indicator and settle the chosen capture; cards lift on hover.
+- Reduced motion resolves to the final state. Without JavaScript, all copy, captures and trace rows are visible and JS-only controls hide.
+- Guides and licensing are still.
 
 ## Exports
 
-`dist/tokens.css`, `dist/base.css`, `dist/styles.css`. No app dependencies or framework build step.
+`brand/tokens.json`, `app/globals.css`. Built with `npm run build` into `out/`.
 
 ## Reading-page rules
 
-Guides and licensing use `dist/documents.css`, which imports the shared controls and tokens. Reading pages keep their supplied security/legal wording verbatim. They use a Banner introduction, 72ch prose, 25px subsection heads and 64px section gaps. Marketing tests for full-width section mass, large section heads and 120px section gaps are deliberately waived for continuous technical/legal reading. Main-page two-column heads inherit the outer section spacing.
+Guides and licensing render `content/*.html` inside `.document` (styles in `app/globals.css`). Reading pages keep their supplied security/legal wording verbatim. They use a Banner introduction, 72ch prose, 25px subsection heads and 64px section gaps. Marketing tests for full-width section mass, large section heads and 120px section gaps are deliberately waived for continuous technical/legal reading. Main-page two-column heads inherit the outer section spacing.

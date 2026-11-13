@@ -1,0 +1,140 @@
+@import "tailwindcss";
+
+/* Brand tokens (brand/tokens.json). Dark Ledger Ink is the default; light is Pearl. */
+:root {
+  color-scheme: dark;
+  --paper: #0c1a2b;
+  --paper-2: #142337;
+  --paper-3: #1d3047;
+  --ink: #f1f6fb;
+  --ink-2: #bdcbdc;
+  --muted: #a1b3c9;
+  --rule: #34465d;
+  --accent: #accbed;
+  --accent-ink: #0c1a2b;
+  --signal: #38d6e0;
+  --error: #f0b9ae;
+  --success: #c2d9c9;
+  --band: #f1f6fb;
+  --band-ink: #0c1a2b;
+  --band-muted: #354a62;
+  --gutter: 64px;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --paper: #f1f6fb;
+  --paper-2: #e4edf6;
+  --paper-3: #d5e2ef;
+  --ink: #0c1a2b;
+  --ink-2: #354a62;
+  --muted: #475d76;
+  --rule: #b7cadd;
+  --accent: #335781;
+  --accent-ink: #f1f6fb;
+  --signal: #0b7480;
+  --error: #8e3d32;
+  --success: #37664a;
+  --band: #0c1a2b;
+  --band-ink: #f1f6fb;
+  --band-muted: #a1b3c9;
+}
+@media (max-width: 60rem) { :root { --gutter: 24px; } }
+@media (max-width: 40rem) { :root { --gutter: 20px; } }
+
+@theme inline {
+  --color-paper: var(--paper);
+  --color-paper-2: var(--paper-2);
+  --color-paper-3: var(--paper-3);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-muted: var(--muted);
+  --color-rule: var(--rule);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-signal: var(--signal);
+  --color-error: var(--error);
+  --color-success: var(--success);
+  --color-band: var(--band);
+  --color-band-ink: var(--band-ink);
+  --color-band-muted: var(--band-muted);
+  --color-pearl: #f1f6fb;
+
+  --font-sans: var(--font-instrument), system-ui, sans-serif;
+  --font-mono: var(--font-plex), ui-monospace, monospace;
+
+  --text-display: clamp(2.5rem, 3.6vw + 0.75rem, 4.5rem);
+  --text-display--line-height: 1;
+  --text-display--letter-spacing: -0.04em;
+  --text-section: clamp(2rem, 2.5vw + 1rem, 3.5rem);
+  --text-section--line-height: 1.04;
+  --text-section--letter-spacing: -0.035em;
+  --text-title: clamp(1.25rem, 0.75vw + 0.875rem, 1.625rem);
+  --text-title--line-height: 1.2;
+  --text-lead: clamp(1.125rem, 0.35vw + 1rem, 1.375rem);
+  --text-lead--line-height: 1.5;
+
+  --radius-card: 8px;
+  --radius-pill: 4px;
+  --container-site: 1440px;
+  --container-prose: 72ch;
+  --spacing-gutter: var(--gutter);
+
+  --ease-brand: cubic-bezier(0.16, 1, 0.3, 1);
+  --default-transition-duration: 220ms;
+  --default-transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@layer base {
+  html { background: var(--paper); scroll-padding-top: 88px; }
+  body { @apply bg-paper text-ink font-sans antialiased; font-size: 1rem; line-height: 1.6; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
+  ::selection { background: var(--accent); color: var(--accent-ink); }
+  code, kbd, pre { @apply font-mono; font-size: 0.875em; }
+  kbd { @apply rounded-pill border border-rule px-1 py-px; }
+  /* JS-only controls stay hidden until script marks the page interactive. */
+  html:not(.js) [data-needs-js] { display: none !important; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; scroll-behavior: auto !important; }
+  }
+}
+
+/* Long-form reading: guides and licensing render supplied HTML verbatim. */
+@layer components {
+  .document { @apply mx-auto max-w-prose; }
+  .document-header { @apply pb-10 border-b border-rule mb-12; }
+  .document-breadcrumb { @apply flex flex-wrap gap-x-3 text-sm text-muted mb-6; }
+  .document-breadcrumb a + a::before, .document-breadcrumb a + span::before { content: "/"; margin-right: 0.75rem; color: var(--rule); }
+  .document h1 { @apply text-section font-medium text-balance; }
+  .document-lead { @apply text-lead text-ink-2 mt-5; }
+  .document-notice { @apply mt-8 rounded-card border border-rule bg-paper-2 p-6 space-y-3; }
+  .document-section { @apply mb-16; }
+  .document h2 { @apply text-title font-medium mt-12 mb-4 scroll-mt-24; }
+  .document h3 { @apply text-lg font-semibold mt-8 mb-3; }
+  .document p, .document li { @apply text-ink-2 leading-[1.7]; }
+  .document p { @apply my-4; }
+  .document ol, .document ul { @apply my-4 pl-6 space-y-2; }
+  .document ol { list-style: decimal; }
+  .document ul { list-style: disc; }
+  .document a:not(.button) { @apply text-ink underline decoration-rule underline-offset-4 hover:decoration-accent; }
+  .document strong { @apply text-ink font-semibold; }
+  .document pre { @apply my-6 overflow-x-auto rounded-card border border-rule bg-paper-2 p-5 text-sm leading-relaxed; }
+  .document :not(pre) > code { @apply rounded-pill bg-paper-2 px-1.5 py-0.5; }
+  .document .table-scroll { @apply my-6 overflow-x-auto rounded-card border border-rule; }
+  .document table { @apply w-full border-collapse text-sm; }
+  .document th { @apply bg-paper-2 text-left font-semibold text-ink px-4 py-3; }
+  .document td { @apply border-t border-rule px-4 py-3 align-top text-ink-2; }
+  .document .button { @apply inline-flex min-h-11 items-center rounded-pill bg-ink px-5 font-medium text-paper no-underline; }
+}
+
+/* Hero entrance, set before paint by the head script (html.motion = JS on and motion allowed).
+   Headline and screenshot move but never start invisible, so LCP is not delayed. */
+@keyframes rise { from { transform: translateY(28px); } }
+@keyframes trace-safety { to { opacity: 1; } }
+html.motion .hero-rise { animation: rise 0.8s cubic-bezier(0.16, 1, 0.3, 1) both; }
+html.motion .hero-rise-2 { animation: rise 0.8s 0.08s cubic-bezier(0.16, 1, 0.3, 1) both; }
+html.motion .hero-rise-3 { animation: rise 0.9s 0.16s cubic-bezier(0.16, 1, 0.3, 1) both; }
+/* Trace rows wait for the replay; if script fails they still appear after 5s. */
+html.motion .trace-row { opacity: 0; animation: trace-safety 0.3s 4s forwards; }
+html.js .screen-panel:not([data-active]) { display: none; }
+html.js .screen-panel { margin-bottom: 0; }
+.dot-field { background-image: radial-gradient(var(--rule) 1px, transparent 1.2px); background-size: 14px 14px; mask-image: linear-gradient(to bottom, black, transparent 85%); }
