@@ -4,3 +4,8 @@
 .env.*
 __pycache__/
 .wrangler/
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts

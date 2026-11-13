@@ -1,0 +1,91 @@
+<header class="document-header">
+<nav class="document-breadcrumb" aria-label="Breadcrumb"><a href="/#guides">All guides</a></nav>
+<h1>Troubleshoot TableIQ agent permissions</h1>
+<p class="document-lead">Use a synthetic or sanitized database and a dedicated least-privilege login. This guide covers the desktop-hosted MCP server. TableIQ must remain open while an agent uses it.</p>
+</header>
+<div class="document-body">
+<section class="document-section" aria-labelledby="establish-connection">
+<h2 id="establish-connection">Establish the connection</h2>
+<ol>
+<li>Connect in TableIQ and run <code>SELECT 1</code> in a query tab. A database login error occurs before MCP permissions are involved. Test Connection uses the saved password when its input is blank; a typed password overrides it.</li>
+<li>Open Settings → MCP. Enable the server, select only the intended connection, and leave Allow writes off.</li>
+<li>Review any role warning. Elevated database privileges remain available to SQL functions and extensions despite application validation. An unsuccessful privilege check means unknown permissions, not a safe role.</li>
+<li>Copy the configuration for your agent from TableIQ. Keep the bearer token private. Do not put it in screenshots, a repository, or a support report.</li>
+<li>Ask the agent to list connections, then run <code>SELECT 1</code> against the selected connection. Inspect MCP Activity to see the query and outcome.</li>
+</ol>
+</section>
+<section class="document-section" aria-labelledby="diagnose-result">
+<h2 id="diagnose-result">Diagnose the result</h2>
+<div class="document-table" role="region" aria-labelledby="diagnose-result" tabindex="0">
+<table>
+<caption class="visually-hidden">Diagnose the result</caption>
+<thead>
+<tr>
+<th scope="col">Result</th>
+<th scope="col">Action</th>
+</tr>
+</thead>
+<tbody><tr>
+<th scope="row">Connection refused</th>
+<td>Keep TableIQ running; verify MCP is enabled and the configured loopback port matches. Check Settings for a port conflict.</td>
+</tr>
+<tr>
+<th scope="row">HTTP 401</th>
+<td>Copy the current configuration again. Regenerating the token invalidates old configurations. Restart/reconnect the agent&#39;s MCP client.</td>
+</tr>
+<tr>
+<th scope="row">Connection not shared</th>
+<td>Check that exact connection in Settings. An unshared connection intentionally looks like an unknown connection.</td>
+</tr>
+<tr>
+<th scope="row">Shared before this engine was supported</th>
+<td>Turn sharing off and on to confirm access under the new engine rules. This resets write access.</td>
+</tr>
+<tr>
+<th scope="row">SQL validation refusal</th>
+<td>Read the specific error. Use a plain, bounded SELECT on an application table. Do not enable writes to work around a refusal.</td>
+</tr>
+<tr>
+<th scope="row">Database permission denied</th>
+<td>Ask an administrator to grant only the required SELECT/schema access. Do not substitute a superuser login.</td>
+</tr>
+<tr>
+<th scope="row">TiDB profile mismatch</th>
+<td>Use the correct engine profile. A genuine MySQL server saved as TiDB is not accepted as a TiDB agent connection.</td>
+</tr>
+<tr>
+<th scope="row">TiDB clock error</th>
+<td>Check TiDB/PD clock synchronization. Do not enable <code>tidb_enable_noop_functions</code>; it does not enforce read-only behavior.</td>
+</tr>
+<tr>
+<th scope="row">Timeout</th>
+<td>Cancellation is a request, not proof of termination. Inspect the outcome and reduce query cost before retrying. Never blindly retry a write.</td>
+</tr>
+<tr>
+<th scope="row">Truncated result</th>
+<td>Narrow the selected columns, filter, or aggregate. A row limit does not limit how much work the database scans.</td>
+</tr>
+<tr>
+<th scope="row">MySQL CALL or SQL Server multi-result response</th>
+<td>Do not infer completeness from <code>truncated: false</code>. Prefer one explicit SELECT; these drivers have result-set limitations.</td>
+</tr>
+</tbody></table>
+</div>
+</section>
+<section class="document-section" aria-labelledby="engine-controls">
+<h2 id="engine-controls">Understand each engine&#39;s controls</h2>
+<ul>
+<li>PostgreSQL and CockroachDB use read-only transactions plus SQL validation. Database roles still govern access to sensitive data and server functions.</li>
+<li>MySQL/MariaDB use read-only transactions plus SQL validation. DDL may implicitly commit; SQL validation is part of the boundary.</li>
+<li>TiDB always uses the guarded <code>AS OF TIMESTAMP NOW(6)</code> read path for agents, even if an old configuration requests writes. Snapshot transactions reject DML but do not prevent DDL by themselves. Share a SELECT-only application role. Internal/system database connections are refused.</li>
+<li>SQLite, DuckDB, and SQL Server use SQL validation plus rollback wrappers. These wrappers are not database-enforced read-only sessions. SQL Server agent calls use separate sessions from user query tabs.</li>
+<li>DuckDB&#39;s agent hardening disables external access for the shared instance. Reconnecting or restoring reopens the instance; the next agent call hardens it again.</li>
+</ul>
+<p>A local MCP server does not keep query results away from an external agent&#39;s provider. Share only data that provider may receive.</p>
+</section>
+<section class="document-section" aria-labelledby="verify-refusal">
+<h2 id="verify-refusal">Verify refusal without changing application data</h2>
+<p>On the synthetic database, ask for <code>CREATE TEMP TABLE tableiq_permission_probe (id integer)</code> with writes disabled. Expect a refusal in MCP Activity. Then run <code>SELECT 1</code> again to confirm the connection remains usable. This checks one advertised behavior; it does not prove universal safety.</p>
+<p>For a support report, include app/OS/database/agent versions, exact sanitized errors, and a minimal synthetic query. Exclude tokens, passwords, credential-bearing URLs, and customer data.</p>
+</section>
+</div>

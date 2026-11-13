@@ -1,54 +1,54 @@
 # TableIQ website
 
-Static marketing and documentation site for TableIQ, maintained directly in this repository under `website/`. The served files are tracked in `dist/`.
+Marketing and documentation site for TableIQ at **https://tableiq.ideolyst.com/**, maintained in this repository under `website/`.
 
-Status: full Hallmark redesign using the supplied TableIQ logo and real product screenshots. Ledger Ink is the default; the header switch saves an explicit light/dark preference. Staged at `tableiq.ideolyst.com`. The shared design system lives in `design.md` and `dist/tokens.css`.
+Status: rebuilt on Next.js with Motion (formerly Framer Motion) using the `brand-first-motion-site` workflow. Planning records live in `brand/` and `site-plan/` (validation, site map, section spec, content plan, decision log). Ledger Ink is the default theme; the header switch saves an explicit light/dark preference.
 
-## Preview locally
+## Stack
 
-From the repository root:
+Next.js 16 App Router with `output: "export"` (static HTML into `out/`), TypeScript, Tailwind 4 with brand tokens as CSS variables (`app/globals.css`, source `brand/tokens.json`), `motion` 14 imported from `motion/react`. Same pattern as the HealthPass Ideolyst site. Cloudflare Workers serves `out/` as static assets.
 
-```sh
-python3 -m http.server 4175 --bind 127.0.0.1 --directory website/dist
+```
+brand/tokens.json            source of truth for colour, type, spacing, motion
+app/                         routes, metadata, sitemap.ts, robots.ts
+components/ui/               primitives: Button, Badge, Accordion, LinkCard
+components/blocks/           SectionShell, SectionHeading, ProductShot, StepItem, StatItem, EngineMark ...
+components/sections/         one file per page section
+components/motion/           client wrappers: MotionProvider, Reveal, AgentTrace, ScreenTabs, ThemeToggle
+content/*.html               guide and license bodies, kept verbatim (security and legal wording)
+lib/engines.ts               engine list built from ../src/lib/profiles.json at build time
+public/                      fonts, real screenshots (800w, 1200w and original), brand marks, licenses
 ```
 
-Open `http://127.0.0.1:4175`. Stop with Ctrl-C.
-
-Or from `website/`:
+## Develop and preview
 
 ```sh
-python3 -m http.server 4175 --bind 127.0.0.1 --directory dist
+cd website
+npm ci
+npm run dev                  # http://127.0.0.1:4175
+npm run build                # next build, then scripts/seo.py writes Markdown, llms.txt, _headers, indexnow.json
+npx --yes wrangler@4.158.0 dev --config wrangler.jsonc   # production-like routing for out/
 ```
 
-## Maintenance scripts
+## Checks
 
-- **SEO & sitemap**: `python3 website/scripts/seo.py` regenerates JSON-LD schema (FAQPage, SoftwareApplication, Organization, TechArticle) and `sitemap.xml`. Use `--check` to reject stale output without writing files. Optional modification dates are omitted so generation is deterministic.
-- **Engine matrix & logos**: `python3 website/scripts/engines.py .` regenerates the logo strip and grid in `index.html` from `src/lib/profiles.json` and `src/assets/engines/`.
-- **Local checks**: `python3 website/scripts/validate.py` checks JSON-LD, sitemap URLs, and local HTML/CSS links, anchors and assets. Run `python3 -m unittest discover -s website/scripts -p 'test_*.py'` for regression checks.
+- `npm run typecheck`
+- `npm run check` (after a build): `seo.py --check`, `validate.py` (JSON-LD, canonicals, sitemap, local links/anchors/assets) and the regression tests in `scripts/test_website.py`.
 
 ## Product motion
 
-The homepage uses native CSS and Web Animations: a staggered hero entrance, a sliding screen selector, and one scroll-linked MCP Activity screenshot. Section headings share the entrance language. Nothing cycles automatically. Reduced-motion preferences cancel movement, including changes during an animation. Without JavaScript, the complete static page stays visible. Small screens and browsers without view timelines get the static MCP figure.
+Track: Motion (decision D-02). One signature moment: the hero replays the recorded Claude Code session from the MCP Activity capture, call by call, with a Lumen scan on each row and the refused `UPDATE` landing last. Rows are transcribed from the real capture, never invented. Supporting micro-interactions: section headings rise once on scroll, the screen tabs slide their indicator and settle the selected capture. Reference pattern from MotionSites (Data Relay, Intelligent Systems, Halftone FAQ); the pattern was taken, not the design.
 
-Optional browser regression checks use an external Puppeteer install; the site itself has no runtime dependency:
-
-```sh
-npm install --prefix /tmp/tableiq-motion-tools puppeteer-core
-HALLMARK_PUPPETEER=/tmp/tableiq-motion-tools \
-CHROME_PATH='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' \
-node --test website/scripts/verify-motion.mjs
-```
-
-Start the local preview first. Set `WEBSITE_URL` to check a different server. The tests cover entrance sequencing, immediate focused actions, mouse/keyboard screen changes, resizing, scroll motion, reduced motion and JavaScript-disabled content.
+Rules kept: transform and opacity only; the hero headline and screenshot never start invisible (CSS rise only); all copy is in the server HTML; `MotionConfig reducedMotion="user"` plus a pre-paint `motion` class, so reduced motion shows everything at rest; without JavaScript every capture and trace row stays visible and JS-only controls hide. No loops or auto-cycling.
 
 ## Deployment: Cloudflare Workers
 
-This repository owns the website source and deploys directly to the existing `tableiq-website` Worker at **https://tableiq.ideolyst.com/**. No separate website repository, AWS account, S3 bucket, or cross-repository sync is needed. `wrangler.jsonc` serves `dist/` as static assets and declares the existing custom domain. Published `.html` guide links remain valid through Cloudflare’s standard canonical redirects; unknown paths return 404 instead of the homepage.
+This repository owns the website source and deploys directly to the existing `tableiq-website` Worker at **https://tableiq.ideolyst.com/**. No separate website repository, AWS account, S3 bucket, or cross-repository sync is needed. `wrangler.jsonc` serves the built `out/` directory as static assets and declares the existing custom domain. Published `.html` guide links remain valid through Cloudflare’s standard canonical redirects; unknown paths return 404 instead of the homepage.
 
 `.github/workflows/deploy-website.yml` runs when `website/**`, its workflow, or the relevant ignore rules change:
 
-- Pull requests validate generated SEO and engine output, sitemap URLs, local links/assets, and regression checks.
-- Pushes to `main` validate and deploy directly to Cloudflare using Wrangler 4.158.0.
+- Pull requests install, typecheck and build the site, then validate text exports, sitemap URLs, local links/assets, and regression checks. `src/lib/profiles.json` changes also trigger it, since the engine list is built from it.
+- Pushes to `main` validate, rebuild and deploy `out/` to Cloudflare using Wrangler 4.158.0.
 - Manual runs deploy only from `main`; other branches only validate.
 - Production deployments are serialized and reject commits superseded by newer `main` commits.
 
@@ -63,6 +63,7 @@ For local deployment and preview:
 
 ```sh
 npx --yes wrangler@4.158.0 login
+npm --prefix website run build
 npx --yes wrangler@4.158.0 dev --config website/wrangler.jsonc
 npx --yes wrangler@4.158.0 deploy --dry-run --config website/wrangler.jsonc
 npx --yes wrangler@4.158.0 deploy --config website/wrangler.jsonc
@@ -92,28 +93,28 @@ The website stores no installers. Keep the “Coming soon” download state unti
 - Check desktop/mobile layout, links, keyboard access, page titles and descriptions after content changes.
 - Coordinate the public product launch with the app's beta activation and retention gates.
 
-No testimonials, traction counts, download availability, or performance benchmarks have been invented.
+Two beta user stories (Gulshan Yadav, moved from DBeaver; Deepak Saxena, moved from the TablePlus free plan) are published with their consent, which the owner holds privately. Their quotes in `lib/site.ts` were drafted from the reasons they gave for switching and must be approved word for word by each person before deploy. No traction counts, download availability, or performance benchmarks have been invented.
 
 ## Screenshots
 
-`dist/img/*-{light,dark}.jpg` are captures of the real app (Pearl theme, Table-IQ v0.8.10) driven through its `ipc_bridge` against a local Postgres seeded with a generic `storefront` dataset. The MCP Activity shot is a real Claude Code session against a read-only role; its `UPDATE` was refused by the guard. Re-capture when the app UI changes; never use the browser mock.
+`public/img/*-{light,dark}.jpg` are captures of the real app (Pearl theme, Table-IQ v0.8.10) driven through its `ipc_bridge` against a local Postgres seeded with a generic `storefront` dataset. The MCP Activity shot is a real Claude Code session against a read-only role; its `UPDATE` was refused by the guard. Re-capture when the app UI changes; never use the browser mock. After replacing a capture, regenerate its `-800` and `-1200` variants (`sips -s format jpeg --resampleWidth 1200 in.jpg --out in-1200.jpg`). If the MCP Activity capture changes, update the transcribed rows in `components/motion/agent-trace.tsx`.
 
 ## Download button
 
-There is no verified signed DMG yet. The homepage directs visitors to GitHub and states “Download for Mac: coming soon” in `#download`. When the notarized release exists, add its verified release-asset link there and update the hero action.
+There is no verified signed DMG yet. The homepage directs visitors to the walkthrough and GitHub and states “Download for Mac: coming soon” in `#download` (`components/sections/final-cta.tsx`). When the notarized release exists, add its verified release-asset link there and update the hero action.
 
 ## Engine logos
 
-The logo strip and the Engines section are generated from the app: `python3 scripts/engines.py /path/to/Table-IQ`. It copies `src/assets/engines/*.svg` (licenses and sources in `dist/img/engines/README.md`) and reads `src/lib/profiles.json`; a profile with `tested: false` shows as Beta. Rerun it when a profile is verified or added. Compatible products use the marks in `dist/img/engines/profiles/` (sources in `SOURCES.md` there); a profile with no file there falls back to the app's coloured monogram.
+The logo strip and the Engines index are built at `next build` by `lib/engines.ts` from `../src/lib/profiles.json`; a profile with `tested: false` shows as Beta. Native driver marks live in `public/img/engines/` (copied from `src/assets/engines/`, licenses in `public/img/engines/README.md`); compatible products use `public/img/engines/profiles/` (sources in `SOURCES.md`), falling back to the app's coloured monogram. Recopy a mark when the app adds a native driver.
 
 ## SEO, AEO and GEO
 
 The coming-soon website is indexable, by owner request. This does not announce a downloadable signed app. `robots.txt` permits search and AI crawlers; HTML uses `index, follow, max-image-preview:large`. Cloudflare account-level bot controls still apply independently.
 
-- `scripts/seo.py` owns canonical URLs, Open Graph/Twitter metadata, accurate JSON-LD, the sitemap, font preload, and alternate-format discovery links. Canonical URLs are extensionless, matching Workers' direct responses; old `.html` links remain supported through native redirects.
-- The same generator derives `index.md`, both guide Markdown files, `license.md`, `llms.txt`, and `llms-full.txt` from public HTML. It preserves SQL and security/legal content. There is no separate keyword-only content or invented evidence.
+- Next.js metadata (`lib/meta.ts`) owns canonical URLs, Open Graph/Twitter metadata and alternate-format links; `app/sitemap.ts` and `app/robots.ts` own those files; JSON-LD is rendered per page from `lib/site.ts` (FAQPage uses the same list as the visible FAQ). Canonical URLs are extensionless; old `.html` links still redirect natively.
+- `scripts/seo.py` runs after every build and derives `index.md`, both guide Markdown files, `license.md`, `llms.txt`, and `llms-full.txt` from public HTML. It preserves SQL and security/legal content. There is no separate keyword-only content or invented evidence.
 - HTML `rel="alternate"` and `rel="describedby"` links advertise Markdown and `llms.txt`. Raw Markdown has HTTP canonical links back to HTML and `noindex, follow` headers to avoid duplicate search results. The sitemap contains only canonical HTML pages.
-- `_headers` is generated too. Font caching and an early preload of the actual heading font help resource discovery; no extra animation library or runtime is added.
+- `_headers` is generated too. `next/font` self-hosts and preloads the brand fonts.
 - `indexnow-key.txt` is a deliberately public ownership-verification file. `indexnow.json` contains the generated notification payload and is excluded from uploads by `.assetsignore`. The deploy workflow submits canonical URLs to IndexNow after upload; failures are advisory and do not undo a successful deployment. Acceptance is not proof of indexing.
 - Google does not use `llms.txt` or Markdown as a special ranking signal. FAQ JSON-LD describes visible answers; it does not promise Google FAQ rich results. See [SEO decisions and official references](SEO.md).
 
@@ -121,35 +122,20 @@ After verifying ownership in Google Search Console and Bing Webmaster Tools, sub
 
 ## Branding
 
-Identity follows `Table-IQ/docs/brand/TableIQ-Brand-Guidelines.pdf` and the original
-brand kit retained beside it. Supplied SVG lockups and marks live in `dist/img/brand/`.
-Use these outlined wordmarks without retyping them. `dist/fonts/` contains the supplied
-Instrument Sans and IBM Plex Mono web fonts, plus upstream SIL Open Font Licenses.
-The app itself retains native fonts. Marketing uses Ink/Pearl grounds, Pearl Blue
-secondary color, and a restrained Lumen query tail (Deep on light backgrounds).
+Identity follows `Table-IQ/docs/brand/TableIQ-Brand-Guidelines.pdf`; `brand/BRAND.md` and `brand/tokens.json` summarize it for the site. Supplied SVG lockups and marks live in `public/img/brand/`; use them without retyping the wordmark. `public/fonts/` holds the supplied Instrument Sans and IBM Plex Mono with their SIL Open Font Licenses, loaded through `next/font/local`. Lumen is the restrained signal colour for live query traces (Lumen Deep on light).
 
-`dist/img/og.svg` is the editable social-card source with an embedded brand font;
-`dist/img/og.png` is its browser render at 1200 × 630. Website changes on `main` publish directly through the Cloudflare GitHub Actions workflow.
+`public/img/og.svg` is the editable social-card source; `public/img/og.png` is its render at 1200 × 630.
 
 ## Theme switch
 
-The site starts in Ledger Ink (dark mode), regardless of the OS appearance. The header's
-**Dark mode** toggle is keyboard accessible and saves the choice in `localStorage`
-under `tableiq-theme`. `dist/theme.js` applies a valid saved choice before styles
-load, then keeps logo and screenshot variants in sync across home and guide pages.
-With storage blocked, the switch still works for the current page. With JavaScript
-disabled, the site remains readable in Ledger Ink and hides the inactive switch.
+The site starts in Ledger Ink regardless of OS appearance. A pre-paint script in `app/layout.tsx` applies a saved `tableiq-theme` choice from `localStorage` and flips the dark `<source>` of every screenshot and logo; `components/motion/theme-toggle.tsx` keeps them in sync on toggle and on client navigation. With storage blocked the switch still works for the page. Without JavaScript the site stays in Ledger Ink and the switch is hidden.
 
 ## Public license notices
 
-`dist/license.html` explains the app license and unsigned-preview policy.
-`dist/licenses/` contains exact copies of the app license, exceptions, copyright,
+`/license` (`content/license.html`) explains the app license and unsigned-preview policy.
+`public/licenses/` contains exact copies of the app license, exceptions, copyright,
 and bundled asset/font notices. Sync these from the app repository when terms change.
 
 ## Interaction and design
 
-`dist/styles.css` owns the workbench and shared chrome. `dist/documents.css` adds the continuous reading layout used by the guides and licensing. Both use `dist/tokens.css`.
-
-The homepage screen switcher displays existing Browse, Query, Review and Schema captures. Its controls work with keyboard arrows and Home/End. Without JavaScript all captures remain available. Screen changes and the single scroll-reveal pattern respect reduced motion; there is no automatic carousel or looping animation. Native disclosures hold the detailed engine index, desktop toolkit and FAQ. Mobile navigation remains available without JavaScript.
-
-Hallmark is installed globally, not vendored into the product. Its local `.hallmark/` review records and screenshots, plus Wrangler's `.wrangler/` state, are ignored. `dist/.assetsignore` also excludes review artifacts from Cloudflare uploads. No framework build or app dependency installation is required to publish this site.
+See `design.md` and `site-plan/sections.md`. Native disclosures hold the engine index and FAQ; mobile navigation works without JavaScript. Hallmark review records (`.hallmark/`) and Wrangler state (`.wrangler/`) are ignored.

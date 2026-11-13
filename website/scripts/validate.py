@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Check published HTML, JSON-LD, sitemap and local asset/link references."""
+"""Check the built site in out/: HTML, JSON-LD, canonicals, sitemap and local asset/link references."""
 import json
+import sys
 from html.parser import HTMLParser
 from pathlib import Path
 import re
@@ -8,7 +9,8 @@ from urllib.parse import unquote, urljoin, urlsplit
 import xml.etree.ElementTree as ET
 
 SITE = "https://tableiq.ideolyst.com"
-DIST = Path(__file__).resolve().parent.parent / "dist"
+DIST = Path(__file__).resolve().parent.parent / (sys.argv[1] if len(sys.argv) > 1 else "out")
+ERROR_PAGES = {"404.html", "_not-found.html"}
 
 
 class Page(HTMLParser):
@@ -43,7 +45,7 @@ class Page(HTMLParser):
 def main():
     pages = {}
     for path in sorted(DIST.rglob("*.html")):
-        if any(part.startswith(".") for part in path.relative_to(DIST).parts):
+        if any(part.startswith(".") for part in path.relative_to(DIST).parts) or path.name in ERROR_PAGES:
             continue
         source = path.read_text()
         pages[path] = Page(source)
@@ -62,10 +64,11 @@ def main():
         target = (DIST / unquote(url.path).lstrip("/")).resolve()
         if not target.is_relative_to(DIST.resolve()):
             raise ValueError(f"{owner.relative_to(DIST)}: path outside site: {reference}")
-        if target.is_dir():
-            target /= "index.html"
-        elif not target.suffix and target.with_suffix(".html").is_file():
+        # Cloudflare serves /page from page.html before a same-named directory (Next keeps RSC data there).
+        if not target.suffix and target.with_suffix(".html").is_file():
             target = target.with_suffix(".html")
+        elif target.is_dir():
+            target /= "index.html"
         if not target.is_file():
             raise ValueError(f"{owner.relative_to(DIST)}: missing local file: {reference}")
         if url.fragment and target in pages and unquote(url.fragment) not in pages[target].ids:

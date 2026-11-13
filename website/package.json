@@ -1,0 +1,27 @@
+{
+  "name": "tableiq-website",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --hostname 127.0.0.1 --port 4175",
+    "build": "next build",
+    "postbuild": "python3 scripts/seo.py",
+    "typecheck": "tsc --noEmit",
+    "check": "python3 scripts/seo.py --check && python3 scripts/validate.py && python3 -m unittest discover -s scripts -p 'test_*.py'",
+    "preview": "python3 -m http.server 4176 --bind 127.0.0.1 --directory out"
+  },
+  "dependencies": {
+    "motion": "14.13.0",
+    "next": "16.4.6",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^24",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.9.3"
+  }
+}

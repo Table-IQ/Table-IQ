@@ -1,0 +1,35 @@
+import Link from "next/link";
+import { BrandLogo } from "@/components/blocks/brand-logo";
+import { ThemeToggle } from "@/components/motion/theme-toggle";
+import { Button } from "@/components/ui/button";
+import { GITHUB, NAV } from "@/lib/site";
+
+export function Header() {
+  return (
+    <div className="sticky top-0 z-50 border-b border-rule bg-paper/90 backdrop-blur">
+      <header className="mx-auto flex h-16 max-w-site items-center justify-between gap-4 px-gutter">
+        <Link href="/" aria-label="TableIQ home" className="shrink-0">
+          <BrandLogo />
+        </Link>
+        <nav aria-label="Main navigation" className="flex items-center gap-1 md:gap-2">
+          {NAV.map((n) => (
+            <Link key={n.href} href={n.href} className="hidden min-h-11 items-center px-3 text-sm text-ink-2 hover:text-ink lg:inline-flex">{n.label}</Link>
+          ))}
+          <a href={GITHUB} className="hidden min-h-11 items-center px-3 text-sm text-ink-2 hover:text-ink sm:inline-flex" title="Repository access required while TableIQ is in preview">GitHub</a>
+          <div className="hidden md:block">
+            <Button href="/#download" variant="secondary">Get TableIQ <span className="text-xs text-muted">Coming soon</span></Button>
+          </div>
+          <details className="relative lg:hidden">
+            <summary className="flex min-h-11 cursor-pointer list-none items-center rounded-pill border border-rule px-4 text-sm [&::-webkit-details-marker]:hidden">Menu</summary>
+            <div className="absolute right-0 mt-2 grid w-60 gap-1 rounded-card border border-rule bg-paper p-2 shadow-xl">
+              {[...NAV, { href: GITHUB, label: "GitHub (access required)" }, { href: "/#download", label: "Get TableIQ (coming soon)" }].map((n) => (
+                <a key={n.href} href={n.href} className="flex min-h-12 items-center rounded-pill px-3 text-ink-2 hover:bg-paper-2 hover:text-ink">{n.label}</a>
+              ))}
+            </div>
+          </details>
+          <ThemeToggle />
+        </nav>
+      </header>
+    </div>
+  );
+}

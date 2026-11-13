@@ -36,6 +36,6 @@ TableIQ v0.8.10, real Rust IPC bridge, local Postgres, synthetic storefront data
 It documents the existing product UI, not a new release.
 
 The website now lives in this repository under `website/`, with supplied artwork in
-`website/dist/img/brand/` and licensed fonts in `website/dist/fonts/`. Its editable
-social-card source is `website/dist/img/og.svg`, rendered to `website/dist/img/og.png`
+`website/public/img/brand/` and licensed fonts in `website/public/fonts/`. Its editable
+social-card source is `website/public/img/og.svg`, rendered to `website/public/img/og.png`
 at 1200 × 630. See [website maintenance and deployment](../../website/README.md).

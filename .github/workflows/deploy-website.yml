@@ -4,12 +4,14 @@ on:
   pull_request:
     paths:
       - 'website/**'
+      - 'src/lib/profiles.json'
       - '.github/workflows/deploy-website.yml'
       - '.gitignore'
   push:
     branches: [main]
     paths:
       - 'website/**'
+      - 'src/lib/profiles.json'
       - '.github/workflows/deploy-website.yml'
       - '.gitignore'
   workflow_dispatch:
@@ -28,16 +30,23 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - name: Build static site (Next.js export, then text exports)
+        working-directory: website
+        run: |
+          npm ci
+          npm run typecheck
+          npm run build
       - name: Check generated SEO, sitemap and local references
+        working-directory: website
         run: |
-          python3 -m unittest discover -s website/scripts -p 'test_*.py'
-          python3 website/scripts/seo.py --check
-          python3 website/scripts/validate.py
-      - name: Check engine matrix and logo drift
-        run: |
-          python3 website/scripts/engines.py .
-          git diff --exit-code -- website/dist/
-          test -z "$(git ls-files --others --exclude-standard website/dist/)"
+          python3 -m unittest discover -s scripts -p 'test_*.py'
+          python3 scripts/seo.py --check
+          python3 scripts/validate.py
 
   deploy:
     name: Deploy to Cloudflare Workers
@@ -54,6 +63,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: npm
+          cache-dependency-path: website/package-lock.json
       - name: Require Cloudflare credentials
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -70,6 +81,12 @@ jobs:
             echo "main has advanced; deploy the latest main workflow instead." >&2
             exit 1
           fi
+      - name: Build static website
+        working-directory: website
+        run: |
+          npm ci
+          npm run build
+          python3 scripts/validate.py
       - name: Deploy static website
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -82,5 +99,5 @@ jobs:
           curl --fail-with-body --silent --show-error --max-time 20 \
             --retry 2 --retry-delay 3 \
             --header 'Content-Type: application/json; charset=utf-8' \
-            --data-binary @website/dist/indexnow.json \
+            --data-binary @website/out/indexnow.json \
             https://api.indexnow.org/indexnow
