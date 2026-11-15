@@ -31,6 +31,12 @@ Mac. Browse tables, run SQL, inspect results and review staged edits across
 PostgreSQL, MySQL, SQLite and more. Bring your own AI provider key when you want
 help with SQL; no TableIQ account is required.
 
+**Keep the SQL and table tabs you need open. No paid tab limit.** The current
+desktop app also has no engine or device-count paywall. [TablePlus's free edition](https://tableplus.com/docs/utilities/licensing)
+is limited to two tabs; its paid license is perpetual. DBeaver Community is free
+and open source—compare the workflow on your own Mac; no speed advantage is
+claimed without a matched benchmark.
+
 Coding-agent access through MCP is an optional integration. It is not required to
 use the database client or built-in AI.
 

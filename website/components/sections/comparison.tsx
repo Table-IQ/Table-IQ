@@ -3,7 +3,7 @@ import { SectionShell } from "@/components/blocks/section-shell";
 
 const ROWS = [
   { label: "Source license", tableiq: "AGPL-3.0-only for application code", tableplus: "Proprietary", dbeaver: "Apache-2.0 Community; separate commercial editions" },
-  { label: "Free desktop use", tableiq: "Current app free; unlimited connections; no engine or device-count paywall", tableplus: "Free trial: 2 tabs, 2 windows, 2 advanced filters; paid perpetual license available", dbeaver: "Free Community Edition; paid PRO editions" },
+  { label: "Free desktop use", tableiq: "SQL/table tabs and connections free; no tab, engine or device-count paywall", tableplus: "Free trial: 2 tabs, 2 windows, 2 advanced filters; paid perpetual license available", dbeaver: "Free Community Edition; paid PRO editions" },
   { label: "Everyday data work", tableiq: "Browse tables, run SQL and review staged grid edits", tableplus: "SQL and data editors; preview changes as SQL before committing", dbeaver: "SQL and data editors; manual transactions and rollback" },
   { label: "Optional AI", tableiq: "Configure Anthropic, OpenAI, Gemini, OpenRouter or local Ollama; preview compatibility varies", tableplus: "Built-in assistant with API-key providers and local Ollama; check vendor plan terms", dbeaver: "Community has AI Chat with OpenAI/custom endpoints; additional providers and tools in PRO" },
   { label: "Release scope", tableiq: "Apple silicon Mac developer preview; unsigned and not notarized", tableplus: "Established releases across multiple platforms", dbeaver: "Established releases across multiple platforms" },
@@ -13,7 +13,7 @@ export function Comparison() {
   return (
     <SectionShell id="compare" surface="paper-2" label="compare-title">
       <SectionHeading id="compare-title" title="Considering TablePlus or DBeaver?">
-        An open-source alternative for everyday database work. Try one task beside your current client and see whether it fits. DBeaver Community is also free and open source; both established clients already offer AI features.
+        Keep more SQL and table tabs open without buying a license. Compare your everyday browsing, query and edit workflow beside TablePlus or DBeaver. DBeaver Community is also free and open source; both established clients already offer AI features.
       </SectionHeading>
       <p className="mb-3 text-sm text-muted lg:hidden">Swipe or scroll horizontally to compare all three clients.</p>
       <div className="overflow-x-auto rounded-card border border-rule" role="region" aria-label="Database client comparison" tabIndex={0}>

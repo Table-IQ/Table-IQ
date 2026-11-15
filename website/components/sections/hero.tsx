@@ -11,14 +11,14 @@ export function Hero() {
             A free, open-source database client for Mac.
           </h1>
           <p className="hero-rise-2 mt-6 max-w-xl text-lead text-ink-2">
-            Browse your tables, write SQL and review changes before you commit. Connect to PostgreSQL, MySQL, SQLite and more. Use AI with your own API key when you want help with SQL.
+            Open the SQL and table tabs you need, with no paid tab limit. Browse PostgreSQL, MySQL, SQLite and more, review changes, and use AI with your own API key.
           </p>
           <div className="hero-rise-2 mt-8 flex flex-wrap items-center gap-x-6 gap-y-3">
             <Button href={DOWNLOAD_URL}>Download developer preview</Button>
             <Button href="#demo" variant="text">Watch the everyday workflow</Button>
           </div>
           <p className="hero-rise-2 mt-10 flex flex-wrap gap-x-6 gap-y-1 text-sm text-muted">
-            <span>Free and open source</span>
+            <span>No tab paywall</span>
             <span>No account required</span>
             <span>{PREVIEW.platform}</span>
           </p>

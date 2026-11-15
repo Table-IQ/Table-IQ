@@ -1,33 +1,55 @@
 # TableIQ Roadmap
 
-_Last updated 2026-11-05 · current version v0.8.10 · companion doc: [GTM.md](GTM.md)_
+_Last updated 2026-11-15 · published preview v0.8.17 · companion: [GTM.md](GTM.md)_
 
-The active priority is a reliable Mac/PostgreSQL investigation workflow with a coding agent. Validate repeat usage and buyer interest before expanding engine breadth. [GTM.md](GTM.md) owns the audience, launch gates and 90-day decision; the [validation kit](launch/VALIDATION.md) records evidence.
+The active priority is an everyday Mac database client for developers switching from TablePlus or DBeaver: browse data, run SQL and review edits, with optional AI using the developer's own key. MCP is an advanced integration. The free app has no paid SQL/table-tab limit, engine paywall or device-count paywall. DBeaver users' reports of heaviness are a research lead; a speed or memory advantage needs a matched measurement.
 
-[TODOS.md](../TODOS.md#active-order--launch-validation-2026-10-20) owns the engineering pick-up order and distinguishes workspace fixes from unverified release gates.
+[GTM.md](GTM.md) owns positioning, launch sequencing and revenue experiments. [Release evidence](launch/RELEASE-VALIDATION.md) distinguishes source checks, native observations and open gates; [TODOS.md](../TODOS.md) retains the engineering backlog. P1–P5 below are a technical inventory, not tomorrow's build queue.
 
-## Operating strategy and governance decisions
+## Tomorrow — Monday, November 16, 2026 (IST)
 
-**Adopted strategy:** Follow Sarvaiksh’s validation-led strategy, adopt RN’s visual demonstration and outreach ideas, and defer edition splitting until paid demand is demonstrated.
+Planned order for one founder; approximately 5–7 focused hours if participants and test machines are available. Sessions are not booked and these items are not completed results. DBeaver and TablePlus are already installed on this Mac; comparative performance is still unmeasured.
 
-| Area | Policy / Decision | Implementation in Roadmap |
-|---|---|---|
-| **Business model** | Free open-source desktop client now; paid team offering after validation | Keep core app free; defer separate Community vs. Enterprise editions until paid demand is proven. |
-| **When to build paid features** | Seek two conditional paid-pilot commitments before building | Treat RN’s candidate features (shared vaults, central audit logs, permissions) as buyer interview topics, not pre-built code. |
-| **Free vs. paid boundary** | All engines, local MCP, staged edits, and promised local features remain free | Never gate engines, device count, or local agent guards. Paid tier adds organizational/team capabilities only. |
-| **Upfront desktop payment** | No desktop paywall or TablePlus-style restrictions at launch | Preserve free, unrestricted desktop adoption to fuel the agentic/MCP flywheel. |
-| **License** | Retain `AGPL-3.0-only` for launch | Reconsider only if qualified enterprise buyer prospects present verified, concrete licensing friction. |
-| **Positioning** | Lead with: *"Your database and coding agent, in one inspectable workflow."* | Anchor on concrete investigation task; use the broader agentic era context as supporting narrative. |
-| **Security claims** | Precise, engine-specific controls and documented limitations | No claims of universal safety or compliance guarantees. Read-only access does not prevent sensitive data exposure. |
-| **Launch demo** | Concrete investigation first; refusal as supporting evidence | Show real Postgres data investigation, inspected SQL/results in TableIQ, then a verified refusal. No unverified claims. |
-| **Distribution** | Channel breadth with readiness-gated sequencing | Use RN’s channels (MCP directories, Show HN, technical posts, social/agentic communities) prioritized by Sarvaiksh’s gates. |
-| **Release quality** | Signed/notarized native install & onboarding first; Homebrew as follow-up | Working DMG, clean-Mac install, verified update path, and trust checks before public announcement. |
-| **Pricing** | Test $99/team/month (5 users) in buyer discovery | Validate willingness to pay against an agreed deliverable before publishing plans. |
-| **Success metrics** | Prioritize workflow completion and retention over hype | Judge success by activation (14/20), repeat use (8/20), switching reasons (5/20), and 2 paid commitments. |
+| Priority | Work | Done means |
+| --- | --- | --- |
+| 1 — first-run proof | Try the public DMG on a clean or separate Mac/account. Open five SQL/table tabs, run the synthetic query, open a .sql file, inspect Keychain/update prompts and manually replace the prior preview using backed-up test data. | Exact app/OS/architecture recorded; five tabs without a paywall, captured as a short proof clip; correct result; failures retained. If another Mac or permissions are unavailable, record that dependency rather than claiming a pass. |
+| 2 — performance evidence | Compare TableIQ and DBeaver Community on the same Mac, database and SQL; include TablePlus if available. Check current stable versions where available and record the exact preview/stable builds, app-restart time to usable UI, idle memory including helper processes, and one query's time to visible results. | At least five paired samples per measured operation, varied app order, raw results and median/range. Declare cache state, driver setup and missing measurements. Publish a comparative claim only if those measurements support it. |
+| 3 — AI acceptance | Diagnose the prior provider/key failure and complete one genuine natural-language → generated SQL → review → manual Run task on synthetic data. | Provider/model/version recorded and the expected result verified. Depends on valid provider access and reliable macOS control; until then the film remains configuration-only. |
+| 4 — developer feedback | Recruit 10 willing target developers, especially TablePlus free users hitting tab limits and DBeaver users unhappy with their workflow. Aim for 3–5 observed first tasks and record the reasons to stay with their current client. | Real counts, unaided task outcome and top blockers in the traction scorecard; consented D7/D14 follow-ups. Contact/meeting records stay outside Git. |
+| 5 — initial distribution | Founder shares the existing 55-second client film, canonical download and one specific feedback question on X/LinkedIn after a useful first-run check. | Actual post URLs and aggregate counts recorded. No coordinated votes; no unsupported performance or AI-success claims. Show HN remains a separate founder-written submission after its gates. |
+| 6 — first revenue test | Owner progresses GitHub Sponsors onboarding; ask two potential support buyers about one bounded setup offer. | Verified funding listing, or a named setup blocker; two actual buyer responses to an explicitly proposed offer. No checkout or paying customer is claimed before it exists. |
 
-P1–P5 preserve shipped work and technical backlog, not a launch sequence or engine-count target. Existing engines remain supported at their documented level. New engines, sidecars and broad product expansion are deferred during launch validation unless a measured blocker in the target workflow requires them.
+Benchmark notes: use identical synthetic data, SQL, row limits and window size. Disable optional AI/agent integrations for the common baseline and record configuration. Use the same OS memory metric, include helper processes and state how shared memory is accounted for. App restarts with warm filesystem caches are not cold-boot measurements. Keep raw samples and exclusions with the reported versions.
 
-## Where we are (v0.8.10)
+Prioritize first-run proof, three useful observations and the top blocker over extra channels. Benchmarking and AI acceptance may carry over when access is missing. Freeze new engines, SSO, cloud sync and compulsory signup during this launch work.
+
+## Current delivery and boundaries
+
+- [x] Public [Table-IQ/Table-IQ repository](https://github.com/Table-IQ/Table-IQ), community/security/licensing documents and AGPL-3.0-only application source.
+- [x] Public unsigned Apple silicon v0.8.17 DMG, matching source, notices and checksums. Declared minimum macOS 11; tested here only on macOS 27.0.1.
+- [x] Client-first website/README, a 55-second real client introduction, and three advanced MCP examples. Footage is v0.8.15; AI is configuration-only.
+- [x] .sql Open With, visible MCP Activity, Settings/update checks and compatible Keychain service rename. See the release record for exact native/source evidence.
+- [ ] Clean/older-Mac acceptance, full packaged upgrade preservation, signing/notarization and remaining native checks.
+- [ ] Successful native AI generation, measured comparative performance and voluntary repeated use.
+- [ ] Owner-activated funding checkout and demonstrated willingness to pay.
+
+## Operating decisions
+
+| Area | Current decision |
+| --- | --- |
+| Positioning | Free, open-source database client for Mac. SQL/table tabs without a paid cap; optional BYOK AI. Core workflow first, MCP later. |
+| Free boundary | Keep existing/first-release desktop features, SQL/table tabs, engines, connections and device use free. No required account. |
+| Revenue now | Optional sponsorship and a bounded paid setup/support experiment; donations do not unlock features. |
+| Revenue later | New services or capabilities only after observing a recurring need and obtaining scoped buyer commitments. No pre-built team tier or compulsory desktop subscription. |
+| Price experiments | Proposed sponsorship levels and one support-session test in GTM; planning hypotheses, not an active pricing page. |
+| Claims | TablePlus free has a two-tab limit and paid perpetual licensing. DBeaver Community is already free/open source. Architecture alone proves no performance advantage. |
+| Release quality | The explicitly unsigned preview is already public. Signed distribution and broader claims retain their own acceptance gates. |
+| Distribution | GitHub, the existing demo and small founder-led developer outreach first; tailored communities/Show HN after readiness checks. |
+| Evidence | Record installation/task completion and D7/D14 return use, not signup totals as active users. |
+
+The inventory below is historical; use [ENGINES.md](ENGINES.md) for current support.
+
+## Historical engine inventory — v0.8.10
 
 | Area | Status |
 |---|---|
@@ -38,29 +60,6 @@ P1–P5 preserve shipped work and technical backlog, not a launch sequence or en
 | Built | Keyset paging with a 20M-real-row scale fixture and a separate synthetic ~1T planner-estimate test, staged edits in one transaction, SQL log, user management, metrics board, backup/restore, ERD, schema/result diff, ⌘K, BYO-key AI (Anthropic/OpenAI/Gemini/Ollama), MCP server with a fail-closed guard and an in-repo adversarial guard suite, WASM plugins, SSH tunnels, keychain secrets, AGPL-3.0-only LICENSE (third-party licenses preserved) |
 | Release work still to verify | Repository publication, signed/notarized Mac release, tested update path, published download, release-specific trust evidence and usage gates; no public-release evidence recorded here yet |
 
-## P0 · Validate and release the focused workflow
-
-- [x] AGPL-3.0-only license, NOTICE, manifests, UI license string, LICENSE-EXCEPTIONS.md and README free-feature pledge landed (historical Apache-2.0 versions preserved).
-- [ ] Interview 10 beta users and observe five doing the task with their current tools and TableIQ. Begin buyer interviews immediately.
-- [ ] Enroll a fixed cohort of 20 target developers. Fix its three most common blockers; preserve failed attempts and nonresponses in the evidence.
-- [ ] Before public distribution, check repository history for secrets and make the repository public under `AGPL-3.0-only`. Keep license change on hold until qualified buyer discovery shows verified legal friction.
-- [ ] Produce a signed/notarized Mac release and verify installation on supported clean Macs. (Signing and tested onboarding take precedence; Homebrew cask is a follow-up).
-- [ ] Verify an update path that preserves settings/connections. A documented, tested manual replacement is acceptable until the auto-updater is implemented; do not claim automatic updates meanwhile.
-- [ ] Record actual Mac artifact sizes, supported OS versions and architectures.
-- [ ] Verify the advertised Postgres workflow on the native release: successful reads, refused writes, isolation of unshared connections, token rejection/revocation, disconnect/reconnect and recovery. No unresolved critical data-loss or access-control defects.
-- [ ] Publish own-product test methods, versions, roles, results and limitations, including failures and exclusions. Engine-specific controls only: read-only access does not prevent sensitive data disclosure or expensive queries; never claim universal safety.
-- [ ] Prepare the landing page, useful task demo, two setup/troubleshooting tutorials and two consented user stories. Lead positioning with: *"Your database and coding agent, in one inspectable workflow."*
-- [ ] **Launch demonstration video/brief:** Show a concrete, high-clarity investigation first using synthetic Postgres data (agent answering a data question, running queries, inspecting SQL and the result grid in TableIQ), followed by a verified refused write probe as supporting evidence. **Strict rule:** Avoid depicting unverified behavior, including automatically staging refused MCP writes.
-- [ ] Pass the GTM usage gates before Show HN: 14/20 unaided activations within 15 minutes, 8 activated users returning on days 8–14, and 5 concrete switching reasons.
-- [ ] **Readiness-gated distribution sequence:**
-  1. Targeted beta cohort and referral onboarding.
-  2. Show HN launch once usage, release, and trust gates pass.
-  3. Expand to RN's proposed channels: MCP directories (PulseMCP, Glama, Smithery, Awesome-MCP-Servers), agentic community forums (Cursor, Claude, Orca/Conductor), and technical walkthrough articles (Dev.to, Hashnode, Reddit). Evaluate each channel by retained/activated users rather than impression vanity metrics.
-  4. Follow up with Homebrew cask (`brew install --cask tableiq`) and Product Hunt.
-
-**Done** = a public, installable Mac release with accurate claims, a verified update path, trust evidence and the usage gates above. Windows/Linux packaging, Homebrew and cross-vendor guard comparisons are follow-ups, not prerequisites for this focused launch.
-
-The [scale fixture](../docker/postgres/big.sql) contains 20M real rows plus a separate 2M-row table without a primary key. Its altered planner statistics are not a trillion-row performance result. Publish reproducible timings with actual cardinality, indexes, hardware, versions, cache/network conditions and UI versus database latency. Publish comparison methods and all outcomes if a cross-vendor study is undertaken; never require a win to publish.
 
 ## P1 · Engine profiles: about +22 databases, no new crates
 

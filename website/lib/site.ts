@@ -23,9 +23,9 @@ export const DEMOS = [
 ];
 export const TITLE = "TableIQ | Free, open-source database client for Mac";
 export const DESCRIPTION =
-  "Free, open-source Mac database client. Browse tables, write SQL and review data edits. Optional bring-your-own-key AI. Apple silicon developer preview.";
+  "Free, open-source database client for Mac. SQL and table tabs without a paywall. Optional AI with your own key. Apple silicon developer preview.";
 export const APP_LINE =
-  "TableIQ is a free, open-source Mac database client for browsing tables, running SQL and reviewing staged data edits, with optional bring-your-own-key AI and external-agent integrations.";
+  "TableIQ is a free, open-source Mac database client for browsing tables, running SQL and reviewing staged data edits without a paid tab limit, with optional bring-your-own-key AI and external-agent integrations.";
 export const OG_ALT = "TableIQ: A free, open-source database client for Mac. Browse. Query. Review your changes.";
 
 export const NAV = [
