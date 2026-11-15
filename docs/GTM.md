@@ -8,17 +8,22 @@ On November 15 the owner authorized an unsigned public Mac developer preview, a 
 
 ## Current delivery — November 15, 2026
 
+The live site, README and primary 55-second video now lead with the everyday database client and optional BYOK AI. MCP is in a lower, closed integration disclosure. Two independent client-first studies support this category framing while documenting competitor overlap: [Sol](launch/research/2026-11-15-client-first-positioning-sol.md) and [review](launch/research/2026-11-15-client-first-positioning-review.md). The film shows a verified manual query, not successful native AI generation. Current website deployment: `e8ad096c-29c9-40da-95b7-9970dd4e651e`.
+
+Latest patch: [v0.8.17](https://github.com/Table-IQ/Table-IQ/releases/tag/preview-v0.8.17) publishes the Keychain service rename with credential preservation. Its DMG was anonymously downloaded and checksum-verified; source CI `25bf8d3` passed all four jobs. See [the current artifact record](launch/RELEASE-VALIDATION.md#keychain-patch--0817). The v0.8.16 delivery below is retained as the preceding release record.
+
+
 - Public source: [Table-IQ/Table-IQ](https://github.com/Table-IQ/Table-IQ). The organization move is complete.
 - Published [v0.8.16 Apple silicon developer preview](https://github.com/Table-IQ/Table-IQ/releases/tag/preview-v0.8.16): seven release assets; anonymous DMG download returned HTTP 200 with the expected SHA-256. It is unsigned and not notarized, declares macOS 11 minimum, and has only been tested on macOS 27.0.1. Exact bytes/hash/source revision are in the release record.
 - [Website](https://tableiq.ideolyst.com/) now deploys v0.8.16 and all three films: Huashu Motion (56 s), Take One (50 s), and Argo narrated walkthrough (55.9 s). All native product footage is v0.8.15; it is not a recording of the later v0.8.16 AI/MCP UI changes. Live browser checks passed: all three videos expose native controls and seek to 30 seconds; actual durations are 55.9/56/50 seconds. The 390 px mobile view has no horizontal overflow and links the canonical v0.8.16 download.
-- Latest source: `ffe586293f886728a2556cfce279568cb48ee2f5`. [CI run 43714209338](https://github.com/Table-IQ/Table-IQ/actions/runs/43714209338) completed successfully across all four jobs. Latest local checks: 1,139 frontend tests across 102 files, 532 Rust library tests passed/four ignored, and 24 focused UI tests passed. Website: nine tests, typecheck and production build passed.
+- v0.8.16 application source: `ffe586293f886728a2556cfce279568cb48ee2f5`. [CI run 43714209338](https://github.com/Table-IQ/Table-IQ/actions/runs/43714209338) completed successfully across all four jobs. Latest local checks: 1,139 frontend tests across 102 files, 532 Rust library tests passed/four ignored, and 24 focused UI tests passed. Website: nine tests, typecheck and production build passed.
 - Native v0.8.15 warm/cold `.sql` opening and manual update check were verified. Native v0.8.16 automation is awaiting an OS Accessibility permission change; native Gemini still returns HTTP 401 pending credential comparison. Two of four tiny direct Google API probes completed; these are transport outcomes, not output-accuracy evidence. No successful native AI flow is claimed.
 
 Public preview distribution is complete. Signing/notarization, a clean older-Mac install, full packaged upgrade preservation and the remaining native acceptance checks remain open. The preview is for developer evaluation with disposable data, not a production-readiness declaration.
 
 ## Decision
 
-**The free, open-source public developer preview is published. Keep AGPL-3.0-only and the Table-IQ organization. Do not introduce a paid individual tier at launch. Broader promotion and future signed distribution need their remaining acceptance checks. Test everyday-client and agent demand separately; compare paid support, future individual value and team demand before choosing a paid product.**
+**The free, open-source public developer preview is published. Keep AGPL-3.0-only and the Table-IQ organization. Do not introduce a paid individual tier at launch. Broader promotion and future signed distribution need their remaining acceptance checks. Lead with the everyday database client for developers switching from TablePlus, DBeaver or another client. Present BYOK AI as optional assistance and MCP as an advanced integration. Validate repeat everyday use before choosing a paid product.**
 
 **Keep the current release account-free and without telemetry. Do not add mandatory Google sign-in, an email gate, or a compulsory name/email/country questionnaire to collect traction.** Use existing aggregate distribution evidence and an optional beta-feedback panel first. Identity, permission to contact someone, and repeated product use are different measures. The [independent onboarding study](launch/research/2026-11-15-onboarding-and-traction.md) compares current product documentation and source; the [blank traction scorecard](launch/TRACTION.md) turns this decision into a week-one operating plan. Future opt-in install measurement is a separate proposal, not shipped or authorized implementation.
 
@@ -30,19 +35,21 @@ The previous [October plan](launch/research/2026-10-19-gtm-archive.md) deferred 
 
 ## 1. What problem are we solving?
 
-Initial delivery scope: Mac/PostgreSQL backend developers. Mac-first is a release-capacity choice, not evidence that this is the largest underserved market. Test two groups: people frustrated by an everyday client workflow, and people already investigating data with a coding agent. Start with local/staging or a sanitized replica; do not encourage a first run on production. Other engines remain available with accurate support labels.
+Primary audience: backend and full-stack developers doing ordinary database work on the supported Mac preview, initially PostgreSQL/local or staging. They need to browse data, run SQL, inspect relationships and review changes. Other engines remain available with accurate support labels. The first task must be useful without an account, an AI key or a coding agent.
 
-Two recurring jobs to compare: (A) find/filter relevant records, run saved SQL and review a manual correction without setup or interaction friction; (B) investigate a data issue with an existing coding agent, inspect its calls and verify the conclusion in the client. Ask users to try one task beside their existing client; no immediate full switch is required.
+**Positioning decision, updated after the founder's correction:** a free, open-source database client for Mac, with optional AI using your own provider key. A practical alternative to TablePlus and DBeaver. MCP belongs in advanced integrations, not the hero, first explanation or primary launch video. See the [independent client-first research](launch/research/2026-11-15-client-first-positioning-sol.md).
 
-Candidate agent message to test:
+Primary message:
 
-> **Browse your database. See what your agent runs.**
+> **Your everyday database client. Free and open source.**
 >
-> A free, open-source Mac database client with chosen-connection MCP access, read-only defaults, a visible activity log, and staged manual edits.
+> Browse data, run SQL and review changes across your databases. Use AI with your own provider key when you want assistance. No TableIQ account required.
 
-Candidate everyday-client message: “Browse, query and review database edits. Free, with no account required.” This is deliberately factual until responsiveness or switching gains are measured. Test both messages with comparable task links; raw social engagement does not choose the winner.
+Lead demonstration: connect to a synthetic database, inspect its schema, open SQL, run it manually and inspect the actual results. Show additional browse/filter/staged-change steps only when recorded. Optional BYOK configuration can follow; do not imply a successful AI answer from configuration alone. Existing three MCP films remain advanced examples.
 
-This combines an everyday client with agent visibility. It is a **workflow hypothesis**, not an exclusive feature claim. Users who do not use agents must still find browsing, querying and editing worthwhile. Show that ordinary workflow as a second short demo; do not force AI into every interaction.
+Invite developers to complete one familiar task beside their current client, rather than demanding an immediate migration. Measure unaided completion and voluntary return. Provider choice, free use and open source support the offer, but do not prove superiority: DBeaver Community is already free/open source with AI, and TablePlus/TablePro offer provider choice. Avoid unmeasured speed, memory, completeness or uniqueness claims.
+
+The core recurring job is find/query/review. AI and MCP are optional extensions whose value is measured separately after that job works. There is no reason to force AI into ordinary navigation or to make agent use the entry requirement.
 
 Keep two different questions separate:
 
@@ -54,7 +61,7 @@ Keep two different questions separate:
 
 Ask “show me the last time this happened,” “what do you use now?”, and “what would make you stop using this?” Avoid “would you like a fast Rust client?” Ask users to complete a task before giving a product tour. Assisted sessions inform usability but do not count as unaided activation.
 
-**Strongest case against continuing:** a saturated client category plus mature free alternatives, overlapping MCP controls, switching costs, incomplete session behavior and a founder supporting many drivers. A good feature list and enthusiastic friends do not overcome those costs. If ordinary SQL usage retains users but MCP does not, change the message. If neither retains users, pause acquisition and feature breadth.
+**Strongest case against continuing:** a saturated client category plus mature free alternatives, overlapping MCP controls, switching costs, incomplete session behavior and a founder supporting many drivers. A good feature list and enthusiastic friends do not overcome those costs. Retention of ordinary SQL work is the main criterion; optional MCP use does not determine the primary positioning. If neither retains users, pause acquisition and feature breadth.
 
 ## 2. What the market actually shows
 

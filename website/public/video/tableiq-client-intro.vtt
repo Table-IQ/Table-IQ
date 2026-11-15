@@ -1,0 +1,42 @@
+WEBVTT
+
+1
+00:00:00.000 --> 00:00:04.520
+A database client for Mac, TableIQ is free
+and open source.
+
+2
+00:00:08.000 --> 00:00:11.660
+Open your connection. See your tables and
+schema at a glance.
+
+3
+00:00:16.000 --> 00:00:19.540
+Open an SQL script in the editor and
+review the query.
+
+4
+00:00:24.000 --> 00:00:27.040
+This query finds paid orders with no
+shipped record.
+
+5
+00:00:27.900 --> 00:00:29.960
+Choose Run and check the returned rows.
+
+6
+00:00:35.120 --> 00:00:38.560
+Two orders totaling 7,300 cents.
+
+7
+00:00:39.125 --> 00:00:43.485
+Optional AI settings let you choose a
+provider and use your own key.
+
+8
+00:00:47.000 --> 00:00:49.720
+An alternative to TablePlus and DBeaver.
+
+9
+00:00:50.080 --> 00:00:51.560
+Get the Mac Developer Preview.

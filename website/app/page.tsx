@@ -1,14 +1,13 @@
 import { Comparison } from "@/components/sections/comparison";
+import { AgentIntegrations } from "@/components/sections/agent-integrations";
 import { Demo } from "@/components/sections/demo";
 import { JsonLd } from "@/components/blocks/json-ld";
 import { Engines } from "@/components/sections/engines";
 import { FaqSection } from "@/components/sections/faq";
 import { FinalCta } from "@/components/sections/final-cta";
-import { Guides } from "@/components/sections/guides";
 import { Hero } from "@/components/sections/hero";
 import { HowItWorks } from "@/components/sections/how-it-works";
 import { Problem } from "@/components/sections/problem";
-import { Proof } from "@/components/sections/proof";
 import { Toolkit } from "@/components/sections/toolkit";
 import { WhatYouGet } from "@/components/sections/what-you-get";
 import { WhyUs } from "@/components/sections/why-us";
@@ -34,15 +33,14 @@ export default function Home() {
       <JsonLd data={schema} />
       <Hero />
       <Demo />
-      <Problem />
-      <HowItWorks />
-      <Proof />
       <WhatYouGet />
-      <Toolkit />
+      <HowItWorks />
       <WhyUs />
       <Comparison />
+      <Problem />
+      <Toolkit />
       <Engines />
-      <Guides />
+      <AgentIntegrations />
       <FaqSection />
       <FinalCta />
     </>

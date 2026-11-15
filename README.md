@@ -5,8 +5,8 @@
 <h1 align="center">TableIQ</h1>
 
 <p align="center">
-  <strong>Your database and coding agent, in one inspectable workflow.</strong><br>
-  A free, open-source desktop database client. Read the SQL. See the results. Review changes before they commit.
+  <strong>A free, open-source database client for Mac.</strong><br>
+  Browse data, write SQL and review changes. Use AI with your own provider key.
 </p>
 
 <p align="center">
@@ -24,12 +24,15 @@
   <a href="#contributing">Contribute</a>
 </p>
 
-![TableIQ — Let your agent in. See every query.](docs/brand/readme-banner.png)
+![TableIQ — Your databases. Your client. Open source.](docs/brand/readme-banner.png)
 
-Investigate a data issue with your coding agent, then inspect its SQL and results in
-TableIQ. Choose which connections the agent can access, keep writes disabled by
-default, and follow its calls in MCP Activity. Or use TableIQ on its own to browse,
-query, and edit your databases.
+An open-source alternative to TablePlus and DBeaver for everyday database work on
+Mac. Browse tables, run SQL, inspect results and review staged edits across
+PostgreSQL, MySQL, SQLite and more. Bring your own AI provider key when you want
+help with SQL; no TableIQ account is required.
+
+Coding-agent access through MCP is an optional integration. It is not required to
+use the database client or built-in AI.
 
 > **Preview:** The macOS Apple Silicon build is unsigned and not notarized. It is for
 > local testing; signed installers and automatic installation are not available yet.
@@ -39,28 +42,39 @@ query, and edit your databases.
 
 *Real-app capture from v0.8.10, using synthetic data.*
 
-### Watch TableIQ in use
+### Watch the everyday workflow
 
-[![Watch the 56-second native application demo](website/public/video/tableiq-huashu-poster.png)](https://tableiq.ideolyst.com/#demo)
+[![Watch the client-first TableIQ walkthrough](website/public/video/tableiq-client-poster.png)](https://tableiq.ideolyst.com/#demo)
 
-[Huashu Motion demo · 56 seconds](https://tableiq.ideolyst.com/video/tableiq-huashu-motion-56s.mp4)
-· [Take One story · 50 seconds](https://tableiq.ideolyst.com/video/tableiq-take-one-story-50s.mp4)
+[Watch the client walkthrough](https://tableiq.ideolyst.com/video/tableiq-client-intro.mp4):
+connect, inspect the schema, open SQL, run it manually and check the returned rows.
+The optional AI segment shows provider configuration, not a generated answer.
 
-[Argo narrated walkthrough · 56 seconds](https://tableiq.ideolyst.com/video/tableiq-argo-mcp-56s.mp4)
+Real native v0.8.15 captures, synthetic data and condensed time; no speed benchmark.
+[Try the same task without an AI key or agent](docs/launch/demo/README.md).
 
-All three films use real native v0.8.15 footage and synthetic data. Cuts condense time;
-these are demonstrations, not speed benchmarks. [Dataset and expected answer](docs/launch/demo/README.md).
+<details>
+<summary>Optional coding-agent / MCP demonstrations</summary>
+
+- [Huashu Motion · 56 seconds](https://tableiq.ideolyst.com/video/tableiq-huashu-motion-56s.mp4)
+- [Take One · 50 seconds](https://tableiq.ideolyst.com/video/tableiq-take-one-story-50s.mp4)
+- [Argo MCP walkthrough · 56 seconds](https://tableiq.ideolyst.com/video/tableiq-argo-mcp-56s.mp4)
+
+These advanced examples also use native v0.8.15 footage and synthetic data.
+[Dataset and expected answer](docs/launch/demo/README.md).
+
+</details>
 
 ## Features
 
 | What you want to do | How TableIQ helps |
 | --- | --- |
-| Inspect your agent's work | Share selected connections through the local MCP server and review calls in MCP Activity. Writes are disabled by default. |
 | Review data changes | Stage edits, inserts, and deletes; inspect the exact SQL before committing. Production connections ask for confirmation. |
 | Explore a database | Browse and filter rows, run SQL, inspect structure and relationships, and keep saved queries and history. Support varies by engine. |
 | Work across connections | Keep multiple connections open, switch between them, and retain each connection's tabs and SQL. |
 | Connect directly | Store credentials in the OS keychain. Connect to your database directly or through an SSH bastion with host-key verification. |
 | Use AI when you choose | Opt in to SQL generation, explanation, optimization, and fixes using your provider key or local Ollama. |
+| Inspect your agent's work | Share selected connections through the local MCP server and review calls in MCP Activity. Writes are disabled by default. |
 
 TableIQ has no required cloud service. AI providers and external coding agents can
 receive the context and results you share with them; a local MCP endpoint does not
@@ -70,7 +84,7 @@ mean that data stays on your machine.
 
 ### Try the Mac preview
 
-[Download the v0.8.16 Apple Silicon developer preview](https://github.com/Table-IQ/Table-IQ/releases/tag/preview-v0.8.16).
+[Download the v0.8.17 Apple Silicon developer preview](https://github.com/Table-IQ/Table-IQ/releases/tag/preview-v0.8.17).
 The release includes the installer, matching source archive, license notices, and
 checksums. No TableIQ account is required.
 
@@ -143,7 +157,7 @@ those releases.
 
 **What stays free forever:** every database engine, the MCP server and its guard, BYO-key AI,
 staged edits, SSH tunnels, unlimited connections, and every feature in our first public release
-(including this v0.8.16 public preview and the planned v0.9.0). We will never gate engines or device count. If we ever build team features, they add
+(including this v0.8.17 public preview and the planned v0.9.0). We will never gate engines or device count. If we ever build team features, they add
 governance on top (shared vaults, SSO, central agent policy, audit export) and never take away
 what is free.
 

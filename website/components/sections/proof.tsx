@@ -4,12 +4,12 @@ import { SectionShell } from "@/components/blocks/section-shell";
 
 export function Proof() {
   return (
-    <SectionShell id="agents" surface="paper-3" label="proof-title">
-      <SectionHeading id="proof-title" title="A real session: reads answered, one write refused." wide />
+    <SectionShell id="mcp-preview" surface="paper-3" label="proof-title">
+      <SectionHeading id="proof-title" title="MCP Activity, at a glance." wide />
       <figure className="rounded-card border border-rule bg-paper p-3 md:p-4">
-        <ProductShot name="mcp" sizes="100vw" width={2360} height={688} alt="MCP Activity showing Claude Code listing connections, describing a table and running two SELECT queries, then an UPDATE that TableIQ refused" />
+        <ProductShot name="mcp" sizes="100vw" width={2360} height={688} alt="Illustrative MCP Activity interface with read queries and a refused write" />
         <figcaption className="mt-4 max-w-3xl px-1 text-ink-2">
-          A real Claude Code session against a read-only connection: it listed tables, ran two queries, and its <code>UPDATE</code> was refused before it reached the database.
+          An interface preview with sample calls, including a refused write. This still is illustrative; the recordings below show actual native app interactions with synthetic data.
         </figcaption>
       </figure>
       <p className="mt-6 max-w-3xl text-sm text-muted">

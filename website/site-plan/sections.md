@@ -1,17 +1,20 @@
-# Home section spec (Stage 8)
+# Current home sections
 
-| # | Section | Job (question) | Archetype | Blocks | Background | Motion |
-|---|---|---|---|---|---|---|
-| 1 | Hero | What is it, who for, next step | Split: copy beside product frame | SectionShell, Button, ProductShot, TraceRow | paper | Signature: frame rises (y only), recorded MCP session rows resolve one by one with a Lumen scan, refused UPDATE lands last |
-| 2 | Problem | What are you solving | Contrast pair | SectionShell, SectionHeading, ContrastColumn | paper-2 | Heading reveal |
-| 3 | How it works | How, in three steps | Stepper | SectionShell, SectionHeading, StepItem | paper | Steps reveal in sequence on view |
-| 4 | Proof | Why believe it | Case card (wide real capture plus caption) and two quote cards | SectionShell, SectionHeading, ProductShot, StoryCard | paper-3 band | Heading reveal |
-| 5 | What you get | What exactly you get | Tabs, interactive real screens | SectionShell, SectionHeading, Tabs, ProductShot | paper | Tab indicator slides, screen crossfade |
-| 6 | Toolkit | Capabilities in depth | Bento grid of unequal cells | SectionShell, SectionHeading, FeatureItem | paper-2 | Heading reveal |
-| 7 | Why us | Why this, not a paid client | Stat band | SectionShell, StatItem | ink band (inverse) | Heading reveal |
-| 8 | Engines | Does it support my database | Logo strip plus disclosure index | SectionShell, SectionHeading, EngineMark | paper | none |
-| 9 | Guides | Where to start | Card pair | SectionShell, SectionHeading, Card | paper-2 | Card hover lift |
-| 10 | FAQ | What still stops me | Accordion over static dot field | SectionShell, Accordion | paper | none |
-| 11 | Final CTA | What now | Full-width band | SectionShell, Button | paper-3 | none |
+Client-first revision approved 2026-11-15. Existing design tokens, brand assets, typography, component primitives and light/dark themes remain in use.
 
-Variety: 11 sections, 11 archetypes, no repeats, one equal-card grid (Guides). Surfaces alternate.
+| Order | Section | Job | Evidence and boundary |
+|---|---|---|---|
+| 1 | Hero | Explain the free Mac database client and next action | Interface preview; no agent overlay; unsigned Apple silicon preview caveat |
+| 2 | Demo | Show ordinary real product use | Native browse/query/review footage; synthetic data; condensed timing |
+| 3 | Features | Explain SQL, reviewed grid edits and schema navigation | Clearly labeled interface previews; engine support varies |
+| 4 | How it works | Connect → query → review staged edits | SQL-editor execution is distinct from grid staging |
+| 5 | Free-use band | Explain free desktop/source/no-account terms | Provider API charges remain separate |
+| 6 | Comparison | Help evaluate beside TablePlus/DBeaver | Current primary-source links; no speed or universal parity claim |
+| 7 | Optional AI | Explain own provider/API key and setup | Configuration only; no claimed inference accuracy |
+| 8 | Toolkit | Surface supporting client capabilities | Factual Rust/system-webview architecture, no speed inference |
+| 9 | Engines | Expose support and validation differences | Generated profiles, beta labels and capability notes |
+| 10 | Optional agents | Collapsed advanced setup, previews and existing films/guides | Trace/still illustrative; recordings genuine native footage |
+| 11 | FAQ | Resolve ordinary install, free-use and AI questions | Same source as JSON-LD |
+| 12 | Download | Link verified preview and explain install | Unsigned/unnotarized; manual updates; disposable data first |
+
+Motion: client screenshot/headline rise, heading reveals and user-controlled screen tabs. MCP replay remains within the advanced disclosure. No automatic carousel. All copy is in initial HTML; reduced motion and JavaScript-disabled reading remain supported.

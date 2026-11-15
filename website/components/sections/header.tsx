@@ -13,13 +13,13 @@ export function Header() {
         </Link>
         <nav aria-label="Main navigation" className="flex items-center gap-1 md:gap-2">
           {NAV.map((n) => (
-            <Link key={n.href} href={n.href} className="hidden min-h-11 items-center px-3 text-sm text-ink-2 hover:text-ink lg:inline-flex">{n.label}</Link>
+            <Link key={n.href} href={n.href} className="hidden min-h-11 items-center whitespace-nowrap px-3 text-sm text-ink-2 hover:text-ink xl:inline-flex">{n.label}</Link>
           ))}
           <a href={GITHUB} className="hidden min-h-11 items-center px-3 text-sm text-ink-2 hover:text-ink sm:inline-flex">GitHub</a>
           <div className="hidden md:block">
             <Button href={DOWNLOAD_URL} variant="secondary">Download preview</Button>
           </div>
-          <details className="relative lg:hidden">
+          <details className="relative xl:hidden">
             <summary className="flex min-h-11 cursor-pointer list-none items-center rounded-pill border border-rule px-4 text-sm [&::-webkit-details-marker]:hidden">Menu</summary>
             <div className="absolute right-0 mt-2 grid w-60 gap-1 rounded-card border border-rule bg-paper p-2 shadow-xl">
               {[...NAV, { href: GITHUB, label: "GitHub" }, { href: "/#download", label: "Download developer preview" }].map((n) => (

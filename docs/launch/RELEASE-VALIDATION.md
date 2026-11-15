@@ -4,6 +4,16 @@
 
 The October batch below predates the owner’s November public-preview authorization. Passing source tests does not establish that a signed release exists.
 
+## Keychain patch — 0.8.17
+
+Published [v0.8.17](https://github.com/Table-IQ/Table-IQ/releases/tag/preview-v0.8.17), app source `25bf8d31bb663dd7f6f85fe080ba5cb95c750e71`. The unsigned arm64 DMG is **27,385,007 bytes**, SHA-256 `b7cf66885a6b86216ef5f2dee059fa16404f3fc319100856dda779ddd93eca0a`; anonymous download returned HTTP 200 and matched that digest. The packaged binary matched the read-only mounted installer. Minimum macOS remains 11; tested OS remains 27.0.1 only.
+
+All four jobs in [source CI 43720866377](https://github.com/Table-IQ/Table-IQ/actions/runs/43720866377) passed. Eight focused tests compiled from the actual credential helper/test source against pinned keyring 3.6.3 passed, with injected missing, denied, failed-copy, retry and deletion outcomes. No user secret was read for those tests. After installation, the real native app created a scoped QA MCP credential under `tableiq.ideolyst.com`; this was verified through metadata only. Existing secrets copy from the old service on first successful read and retain the original for rollback; macOS can show the old name while requesting that first permission. Updated values are saved only in the new service, and deletion removes both copies.
+
+A real native 0.8.17 dark-home capture confirms the transparent logo, Settings beside Theme, Check for updates and absence of a standalone MCP settings button. Native control remains intermittent across desktop/window transitions. Saving the supplied AI key in Settings was observed, but no successful native generation/execution is claimed. Existing Gemini 401 evidence is from the earlier preview; the new Keychain service is not presented as a proven AI-authentication fix.
+
+The client-first website is published at deployment `e8ad096c-29c9-40da-95b7-9970dd4e651e`, with the v0.8.17 DMG and a new 55-second Argo film (native 0.8.15 captures). Typecheck, static build, local links/schema and all nine Python tests pass. Live desktop/mobile widths 1440/390 have no overflow; the primary movie is 1920×1080, seeks to 36 seconds and serves HTTP 206 ranges. MCP is initially collapsed. The film demonstrates manual SQL and AI configuration only. An anchor-regression fixture was updated to target the new demo CTA and still proves broken anchors fail validation.
+
 ## Delivery evidence — November 15, 2026
 
 The owner authorized an **unsigned public Apple silicon developer preview**, publication and the move to **Table-IQ**. The repository is public at [Table-IQ/Table-IQ](https://github.com/Table-IQ/Table-IQ), and [preview v0.8.16](https://github.com/Table-IQ/Table-IQ/releases/tag/preview-v0.8.16) is published with seven assets. This records the current delivery; it does not claim signing/notarization, clean older-Mac acceptance, population retention or successful native AI generation.

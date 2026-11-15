@@ -33,6 +33,7 @@ export function WhatYouGet() {
         </dl>
         <div className="lg:col-span-8">
           <ScreenTabs screens={SCREENS} initial="query" />
+          <p className="mt-3 text-sm text-muted">Interface previews with sample data. Engine capabilities vary; see the supported database details below.</p>
         </div>
       </div>
     </SectionShell>

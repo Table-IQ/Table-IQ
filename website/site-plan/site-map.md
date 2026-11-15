@@ -1,15 +1,16 @@
-# Site map and track (Stage 5)
+# Current site map
 
-| Route | Intent | Source |
-|---|---|---|
-| `/` | "mac database client for coding agents", "mcp database client" | Home, rebuilt |
-| `/guides/postgres-investigation` | "claude code postgres mcp" how-to | Existing guide, wording verbatim |
-| `/guides/mcp-permissions` | "mcp database read-only permissions" | Existing guide, wording verbatim |
-| `/license` | "tableiq license agpl" | Existing page, wording verbatim |
-| `/llms.txt`, `/llms-full.txt`, `/*.md` | AI assistants | Generated after build by `scripts/seo.py` |
+Client-first update approved 2026-11-15.
 
-Not built (paused, see decisions D-07): comparison pages ("TableIQ vs TablePlus", "alternative to Tabularis"). Pricing page: none, the product is free.
+| Route | Intent |
+|---|---|
+| / | Free/open-source Mac database client; browse, SQL, reviewed edits; optional BYOK AI |
+| /#compare | Factual TablePlus/DBeaver comparison with current vendor citations |
+| /#ai | Optional provider/API-key configuration and billing/context boundaries |
+| /#agents | Collapsed optional MCP setup, activity illustrations and older real agent films |
+| /guides/postgres-investigation | Advanced agent/Postgres walkthrough, clearly named as such |
+| /guides/mcp-permissions | Optional agent sharing, token and read-only documentation |
+| /license | AGPL application license and third-party exceptions |
+| /llms.txt, /llms-full.txt, /*.md | Generated text alternatives reflecting the current public page |
 
-Track: **Motion**, chosen by the user (2026-11-13). Budget: one signature moment on the home hero (agent trace), micro-interactions elsewhere (heading reveals, tab indicator, step reveals). Guides and license stay still.
-
-Stack: Next.js 16 App Router, static export to `out/`, Tailwind 4 with tokens as CSS variables, `motion` 14 (`motion/react`), Cloudflare Workers static assets. Mirrors the HealthPass Ideolyst site.
+No new comparison landing pages or paid plan page are required. Preserve current routes. Stack: Next.js static export, Tailwind tokens and Motion; Cloudflare static assets. This work does not authorize an external deployment.

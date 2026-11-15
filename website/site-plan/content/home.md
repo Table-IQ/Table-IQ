@@ -1,27 +1,21 @@
-# Home content (Stage 7)
+# Current home content
 
-Primary intent: Mac database client that lets coding agents query databases visibly and read-only by default.
-Title: TableIQ: Mac database client with visible agent queries. H1 is single.
+Updated 2026-11-15 after the user explicitly approved client-first positioning. This supersedes the earlier MCP-first concept.
 
-Headline skim (top to bottom):
-1. Your Mac database client. See every agent query.
-2. An agent with a connection string leaves no trail.
-3. Share a connection. Connect your agent. Inspect every call.
-4. A real session: two reads answered, one write refused.
-5. Query data. Review changes. Commit.
-6. The rest of a full desktop client.
-7. Every supported database. Free forever.
-8. From Postgres to Qdrant, in one window.
-9. Investigate a Postgres data issue.
-10. Before you connect.
-11. TableIQ for Mac is coming soon.
+Primary intent: free, open-source database client for Mac. The everyday browse/query/review workflow is understandable without AI or agents.
 
-Section cards:
-- Problem. Q: what is solved. Takeaway: a raw connection string gives no record and no write guard. Proof: contrast list. Next: how it works.
-- How. Q: how. Steps: share chosen connections (local only, read-only by default); connect Claude Code, Claude Desktop or an MCP client; inspect SQL, rows and refusals in MCP Activity. Next: proof.
-- Proof. Real capture, caption verbatim from the old site, plus two consented beta user stories (Gulshan Yadav from DBeaver, Deepak Saxena from TablePlus free). TODO-HUMAN: each person approves their drafted quote before deploy.
-- Why us. Stats are facts, not metrics: 43 databases and cloud services (generated from the app's profiles), $0 for every engine and feature, 0 accounts required, AGPL-3.0-only.
-- FAQ: the existing seven questions, verbatim. FAQPage JSON-LD built from the same data.
+Title: TableIQ | Free, open-source database client for Mac
+H1: A free, open-source database client for Mac.
+Supporting copy: Browse your tables, write SQL and review changes before you commit. Connect to PostgreSQL, MySQL, SQLite and more. Use AI with your own API key when you want help with SQL.
 
-AEO: FAQ questions are question-form, answers 40 to 60 words where the existing approved answer allows. GEO: same one-line description everywhere; Organization, WebSite, SoftwareApplication, FAQPage, TechArticle and BreadcrumbList JSON-LD; llms.txt; AI crawlers allowed.
-Guides and license: wording verbatim from the previous site (security and legal text must not be paraphrased).
+Order: hero → real everyday-workflow demo → core features/interface previews → connect/query/review steps → free/open-source terms → TablePlus/DBeaver comparison → optional BYOK settings → toolkit → engine capabilities → collapsed external-agent integrations and earlier demos/guides → FAQ → download/install.
+
+Primary CTA: download the developer preview. Secondary CTA: watch the everyday workflow. Visible qualification: Apple silicon Mac, unsigned and not notarized, local/disposable data first. No required account. AI provider usage may cost money.
+
+The main film shows genuine native client actions, synthetic data, edited timing and no benchmark claim. AI configuration can appear, but no successful generated answer is claimed until actual native inference succeeds and the SQL is checked. Interface stills and animated sample traces are labeled as previews/illustrations. No fabricated screenshots or testimonials.
+
+Comparison source checks: TablePlus pricing, SQL preview and LLM plugin; DBeaver Community repository, AI and transaction documentation. DBeaver is free/open source and includes AI Chat. TablePlus sells perpetual licenses and offers a limited free trial, not a required subscription. Provider choice and MCP are not unique to TableIQ.
+
+Facts, FAQ answers and metadata are centralized in lib/site.ts. SoftwareApplication and FAQPage schema follow the same description. Engine support varies; separate query runs do not preserve a server session or open transaction. Current preview download details are updated only after the exact public artifact is checked.
+
+Research, relative to the repository root: docs/launch/research/2026-11-15-client-first-positioning-review.md.

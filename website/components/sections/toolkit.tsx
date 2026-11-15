@@ -3,7 +3,7 @@ import { SectionHeading } from "@/components/blocks/section-heading";
 import { SectionShell } from "@/components/blocks/section-shell";
 
 const LARGE = [
-  { title: "Built in Rust. Fast where it counts.", body: "Drivers, paging, staged commits and the MCP safety guard run in a native Rust core. Built on Tauri with the WebKit already in macOS: no Electron, no extra copy of Chromium." },
+  { title: "Rust core. Mac system webview.", body: "Database drivers, paging and staged commits run in a Rust backend. The Tauri app uses the WebKit already in macOS instead of bundling Chromium." },
   { title: "Keyset paging", body: "Pages load by key instead of OFFSET, the method that keeps deep pages practical. Exercised against a 20-million-row test table. Use ⌘. to cancel supported queries; cancellation support varies by engine." },
 ];
 const SMALL = [
@@ -11,7 +11,7 @@ const SMALL = [
   { title: "Many connections", body: "Keep several open. A rail switches between them without reconnecting." },
   { title: "SSH tunnels", body: "Password, agent or key-file auth, with host-key verification." },
   { title: "Environment tags", body: "Local to production. Production tints the title bar and guards commits." },
-  { title: "Bring-your-own-key AI", body: "Text to SQL, explain, optimize and fix with Anthropic, OpenAI, Gemini, OpenRouter or local Ollama. Review generated SQL before running it." },
+  { title: "Optional AI settings", body: "Configure Anthropic, OpenAI, Gemini, OpenRouter or local Ollama for SQL assistance. Provider usage may cost money. Inspect suggested SQL before running it." },
   { title: "Backup and restore", body: "pg_dump, mysqldump, SQL Server backups, SQLite and DuckDB files." },
   { title: "User management", body: "Create roles and change access on Postgres, MySQL and SQL Server, with a SQL preview." },
   { title: "Metrics board", body: "Read-only number, bar, line and table widgets that refresh on a timer." },

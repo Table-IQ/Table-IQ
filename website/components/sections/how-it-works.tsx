@@ -2,19 +2,18 @@ import { StepItem } from "@/components/blocks/items";
 import { SectionHeading } from "@/components/blocks/section-heading";
 import { SectionShell } from "@/components/blocks/section-shell";
 import { Reveal } from "@/components/motion/reveal";
-import { Button } from "@/components/ui/button";
 
 const STEPS = [
-  { title: "Share chosen connections", body: "Turn on the MCP server in Settings → MCP. It listens only on your Mac. Everything you do not select stays invisible, and writes stay off." },
-  { title: "Connect your agent", body: "Copy setup for Claude Code, Codex, OpenCode or Claude Desktop from Settings → MCP. Keep tokens in private client configuration and TableIQ running on the same Mac." },
-  { title: "Inspect every call", body: "Open MCP Activity to inspect recent redacted SQL, row counts and refused calls. Verify returned data separately in the query grid; a new query can reflect later data changes." },
+  { title: "Connect and browse", body: "Open a local SQLite file or add a database connection. Explore tables, inspect columns and filter the rows you need. Start with disposable data in this preview." },
+  { title: "Write and run SQL", body: "Use the SQL editor or open an existing .sql file. Run your query, inspect the returned rows and save useful SQL for later." },
+  { title: "Review a data edit", body: "Change a value in the table grid, inspect the staged SQL, then commit or discard the edit. Review applies to staged grid changes; SQL you run in the editor executes directly." },
 ];
 
 export function HowItWorks() {
   return (
     <SectionShell id="how" label="how-title">
-      <SectionHeading id="how-title" title="Share a connection. Connect your agent. Inspect every call.">
-        TableIQ’s built-in MCP server connects your coding agent to the databases you choose.
+      <SectionHeading id="how-title" title="Connect. Query. Review your changes.">
+        The everyday workflow, with your database and SQL in view. No AI setup or external agent required.
       </SectionHeading>
       <ol className="grid gap-10 md:grid-cols-3 md:gap-8">
         {STEPS.map((s, i) => (
@@ -27,9 +26,8 @@ export function HowItWorks() {
       </ol>
       <div className="mt-12 rounded-card border border-rule bg-paper-2 p-6 md:flex md:items-center md:justify-between md:gap-8">
         <p className="max-w-3xl text-ink-2">
-          <strong className="text-ink">Read-only is a starting point.</strong> Use a least-privilege database role. Read access can still expose sensitive data or run expensive queries, and results your agent receives may go to its model provider.
+          <strong className="text-ink">Start with one familiar task.</strong> Try TableIQ beside your current client. Capabilities vary by engine, and this preview does not preserve a server session or an open transaction between separate query runs.
         </p>
-        <div className="mt-4 shrink-0 md:mt-0"><Button href="/guides/mcp-permissions" variant="text">How permissions work</Button></div>
       </div>
     </SectionShell>
   );

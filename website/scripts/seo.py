@@ -227,7 +227,7 @@ llms = f"# TableIQ\n\n> {faq[0]['acceptedAnswer']['text']}\n\n## Availability\n\
 llms += "".join(f"- [{title}]({SITE}/{path.relative_to(dist).as_posix()}): Markdown of the public page\n" for title, path, _ in exports)
 llms += f"- [Complete reference]({SITE}/llms-full.txt): all public page content in one file\n"
 llms += f"- [Engine support]({SITE}/#engine-list): supported engines and Beta labels\n"
-llms += "\n## Permissions and privacy\n\n" + next(item["acceptedAnswer"]["text"] for item in faq if item["name"] == "Is it safe to point an agent at production?") + "\n"
+llms += "\n## Permissions and privacy\n\n" + next(item["acceptedAnswer"]["text"] for item in faq if item["name"] == "Does my data leave my Mac?") + "\n"
 save(dist / "llms.txt", llms)
 save(dist / "llms-full.txt", "# TableIQ public reference\n\n" + "\n\n---\n\n".join(markdown for _, _, markdown in exports))
 for name in ("llms.txt", "llms-full.txt", "indexnow-key.txt"):

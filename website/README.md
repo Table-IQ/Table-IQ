@@ -17,7 +17,7 @@ components/sections/         one file per page section
 components/motion/           client wrappers: MotionProvider, Reveal, AgentTrace, ScreenTabs, ThemeToggle
 content/*.html               guide and license bodies, kept verbatim (security and legal wording)
 lib/engines.ts               engine list built from ../src/lib/profiles.json at build time
-public/                      fonts, real screenshots (800w, 1200w and original), brand marks, licenses
+public/                      fonts, interface previews (800w, 1200w and original), real demo recordings, brand marks, licenses
 ```
 
 ## Develop and preview
@@ -37,7 +37,7 @@ npx --yes wrangler@4.158.0 dev --config wrangler.jsonc   # production-like routi
 
 ## Product motion
 
-Track: Motion (decision D-02). One signature moment: the hero replays the recorded Claude Code session from the MCP Activity capture, call by call, with a Lumen scan on each row and the refused `UPDATE` landing last. Rows are transcribed from the real capture, never invented. Supporting micro-interactions: section headings rise once on scroll, the screen tabs slide their indicator and settle the selected capture. Reference pattern from MotionSites (Data Relay, Intelligent Systems, Halftone FAQ); the pattern was taken, not the design.
+The main page leads with the free, open-source Mac database client, ordinary SQL/data work and optional AI using the developer's own provider key. A 55-second Argo film shows genuine native 0.8.15 connection/schema/SQL/manual-run/results captures followed by configuration-only AI. The three earlier MCP films and trace are in a lower, initially closed agent-integration disclosure. Interface-preview stills are labelled; they are not described as native recordings. Current positioning follows the founder's November 15 correction and the independent research in `docs/launch/research/`.
 
 Rules kept: transform and opacity only; the hero headline and screenshot never start invisible (CSS rise only); all copy is in the server HTML; `MotionConfig reducedMotion="user"` plus a pre-paint `motion` class, so reduced motion shows everything at rest; without JavaScript every capture and trace row stays visible and JS-only controls hide. No loops or auto-cycling.
 
@@ -58,6 +58,8 @@ Configure these in **Table-IQ/Table-IQ → Settings → Secrets and variables �
 - Variable or secret `CLOUDFLARE_ACCOUNT_ID`: `00da0456fc181154de7d4c4d84a6edd1`.
 
 Keep the API token outside source control and chat. Set it through GitHub's secret UI or `gh secret set CLOUDFLARE_API_TOKEN --repo Table-IQ/Table-IQ` (interactive hidden input). The existing desktop CI runs independently under its own policy.
+
+Always pass the explicit `--config website/wrangler.jsonc` path from the repository root. A bare `wrangler deploy` can auto-configure the desktop Vite project and target a different Worker.
 
 For local deployment and preview:
 
@@ -82,7 +84,7 @@ Verify home, guides, assets, and the custom domain after deployment. Workers ver
 - Tutorial snapshots came from `docs/launch/POSTGRES-WORKFLOW.md` and `docs/launch/MCP-PERMISSIONS.md` in the app workspace on October 20, 2026. They include unreleased development changes. Reconcile them with the shipped release before publication; the website must not become a second source of truth for engine guarantees.
 - No secrets, user consent records, or private customer data belong in this repository.
 
-The website links directly to the owner-authorized unsigned Apple silicon developer preview on GitHub Releases. The current public version is 0.8.16. All three captioned films use real native 0.8.15 footage and synthetic data. Developer ID signing, notarization and clean/older-Mac acceptance remain pending. The live site was deployed manually using local Wrangler OAuth; automatic deployments require the scoped CLOUDFLARE_API_TOKEN GitHub secret.
+The website links directly to the owner-authorized unsigned Apple silicon developer preview on GitHub Releases. The current public version is 0.8.17. The main 55-second client film and three advanced MCP films use genuine native 0.8.15 captures and synthetic data. Developer ID signing, notarization and clean/older-Mac acceptance remain pending. The live site was deployed manually using local Wrangler OAuth; automatic deployments require the scoped CLOUDFLARE_API_TOKEN GitHub secret.
 
 ## Publication gates
 

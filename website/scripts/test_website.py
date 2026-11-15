@@ -58,7 +58,7 @@ class WebsiteChecks(unittest.TestCase):
         self.assertIn("missing local file: /img/hero-light.jpg", result.stderr)
 
     def test_broken_anchor_fails(self):
-        self.change("index.html", 'href="#how"', 'href="#missing-feature"')
+        self.change("index.html", 'href="#demo"', 'href="#missing-feature"')
         result = self.run_script("validate.py")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("missing anchor: #missing-feature", result.stderr)

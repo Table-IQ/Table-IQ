@@ -10,7 +10,8 @@ export function WhyUs() {
       <Reveal className="grid gap-10 lg:grid-cols-2 lg:gap-8">
         <h2 id="why-title" className="text-section font-medium text-balance">Every supported database.<br />Free forever.</h2>
         <div className="space-y-4 text-lead text-band-muted">
-          <p>Unlimited connections. Local MCP. Staged edits. SSH tunnels. Bring-your-own-key AI. No engine or device-count paywall.</p>
+          <p>Unlimited connections. SQL editing. Reviewed data edits. SSH tunnels. Optional bring-your-own-key AI. No engine or device-count paywall in the current desktop app.</p>
+          <p>The desktop app is free. External AI providers may charge for API usage.</p>
           <p>Credentials stay in the macOS Keychain. Connect directly to your databases. No account or required cloud service.</p>
           <Button href="/license" variant="inverse">Read the license</Button>
         </div>

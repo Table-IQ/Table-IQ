@@ -3,7 +3,7 @@ import { stagger, useAnimate, useReducedMotion } from "motion/react";
 import { useCallback, useEffect } from "react";
 import { DUR, EASE } from "./tokens";
 
-// Transcribed from the recorded Claude Code session in /img/mcp-*.jpg (2026-10-29). Not invented data.
+// Illustrative sample calls. This animation is not a live activity log or native recording.
 const CALLS = [
   { tool: "list_connections", sql: "", rows: "1", ok: true },
   { tool: "describe_table", sql: "orders", rows: "6", ok: true },
@@ -67,7 +67,7 @@ export function AgentTrace() {
           </li>
         ))}
       </ol>
-      <p className="mt-3 text-xs text-muted">Illustration of a recorded Claude Code session. In TableIQ, connect to a database and choose MCP Activity in the top toolbar to inspect recent calls.</p>
+      <p className="mt-3 text-xs text-muted">Illustrative trace, not a live log. In TableIQ, open MCP Activity in the top toolbar to inspect recent calls.</p>
     </div>
   );
 }
