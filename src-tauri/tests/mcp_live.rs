@@ -158,6 +158,7 @@ fn text(result: &Value) -> &str {
 
 #[tokio::test]
 async fn sqlite_over_http_initialize_list_query_refuse() {
+    let _one = MCP_ONE.lock().await;
     let (url, stop) = start().await;
 
     let init = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -209,6 +210,7 @@ async fn sqlite_over_http_initialize_list_query_refuse() {
 /// or, underneath it, by the instance MCP locked down on first use.
 #[tokio::test]
 async fn duckdb_over_http_cannot_read_files() {
+    let _one = MCP_ONE.lock().await;
     let (url, stop) = start().await;
     let dir = config_dir();
     let secret = dir.join("secret.csv");
@@ -238,6 +240,7 @@ async fn duckdb_over_http_cannot_read_files() {
 /// refused. Over real HTTP against a live session.
 #[tokio::test]
 async fn postgres_over_http_refuses_sql_executing_builtins() {
+    let _one = MCP_ONE.lock().await;
     let Some(pg_url) = live_url("TIQ_PG_URL") else {
         return;
     };
@@ -265,8 +268,8 @@ async fn postgres_over_http_refuses_sql_executing_builtins() {
 /// A TiDB saved as plain `mysql` still uses snapshot reads and refuses writes in both modes.
 #[tokio::test]
 async fn tidb_over_http_reads_refuses_writes_and_requires_fresh_sharing() {
+    let _one = MCP_ONE.lock().await;
     let Some(url) = live_url("TIQ_TIDB_URL") else { return };
-    let _one = TIDB_ONE.lock().await;
     let drv = Arc::new(tableiq_lib::drivers::mysql::MySqlDriver::connect(&url).await.unwrap());
     let table = format!("tiq_mcp_tidb_{}", std::process::id());
     drv.run_script(&format!("DROP TABLE IF EXISTS {table}; CREATE TABLE {table} (n INT PRIMARY KEY); INSERT INTO {table} VALUES (1),(2),(3)")).await.unwrap();
@@ -302,8 +305,8 @@ async fn tidb_over_http_reads_refuses_writes_and_requires_fresh_sharing() {
 
 #[tokio::test]
 async fn tidb_named_profile_and_system_database_boundaries_over_http() {
+    let _one = MCP_ONE.lock().await;
     let Some(url) = live_url("TIQ_TIDB_URL") else { return };
-    let _one = TIDB_ONE.lock().await;
     use tableiq_lib::drivers::mysql::MySqlDriver;
     let drv = Arc::new(MySqlDriver::connect_as(&url, Some("tidb")).await.unwrap());
     let (http, stop) = start_sharing(&["tidb-profile"], false, |s| s.adopt_session("tidb-profile", drv)).await;
@@ -340,6 +343,7 @@ async fn tidb_named_profile_and_system_database_boundaries_over_http() {
 /// needs a short timeout and lives in `mcp::server`'s tests, also gated on this URL.)
 #[tokio::test]
 async fn sqlserver_over_http_reads_and_refuses() {
+    let _one = MCP_ONE.lock().await;
     let Some(ado) = live_url("TIQ_MSSQL_URL") else { return };
     let (mut host, mut port, mut user, mut pass) = ("127.0.0.1".to_string(), 1433u16, String::new(), String::new());
     for kv in ado.split(';') {
@@ -385,6 +389,7 @@ async fn run(drv: &dyn SqlDriver, stmts: &[String]) -> Result<Vec<Vec<Option<Str
 /// SELECT the guard does allow (`nextval`) is refused too.
 #[tokio::test]
 async fn postgres_read_only_transaction_refuses_writes() {
+    let _one = MCP_ONE.lock().await;
     let Some(url) = live_url("TIQ_PG_URL") else {
         return;
     };
@@ -408,6 +413,7 @@ async fn postgres_read_only_transaction_refuses_writes() {
 /// implicitly before it, ending the transaction — so for MySQL the guard is what stops it.
 #[tokio::test]
 async fn mysql_read_only_transaction_refuses_dml_and_ddl_escapes_it() {
+    let _one = MCP_ONE.lock().await;
     let Some(url) = live_url("TIQ_MYSQL_URL") else {
         return;
     };
@@ -429,10 +435,11 @@ async fn mysql_read_only_transaction_refuses_dml_and_ddl_escapes_it() {
     my.run_script("DROP TABLE mcp_ro_probe; DROP TABLE IF EXISTS mcp_ro_ddl").await.unwrap();
 }
 
-/// One CockroachDB test at a time, and one TiDB test: MCP's request slots are process-wide
-/// (four per kind), and TiDB fails a DDL that overlaps another's with "schema out of date".
-static CRDB_ONE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-static TIDB_ONE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// Every HTTP server in this binary shares the production process-wide request slots.
+/// The TiDB load case uses all four query slots itself, so another test must not
+/// compete for a fifth. Serialize test cases, preserving concurrency inside each
+/// case and the production limit. This also prevents overlapping TiDB fixture DDL.
+static MCP_ONE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// What a CockroachDB agent test works on: table `<name>` (rows 1..=3) and sequence `<name>_seq`,
 /// dropped by `drop_crdb`. `name` is unique per process, so parallel tests never share one.
@@ -468,8 +475,8 @@ async fn crdb_exists(crdb: &dyn SqlDriver, name: &str) -> bool {
 /// INSERT …` writes through the bare wrapper: the one-statement rule is load-bearing here).
 #[tokio::test]
 async fn cockroachdb_read_only_transaction_refuses_dml_and_ddl_escapes_it() {
+    let _one = MCP_ONE.lock().await;
     let Some(url) = live_url("TIQ_CRDB_URL") else { return };
-    let _one = CRDB_ONE.lock().await;
     let name = format!("tiq_mcp_ro_{}", std::process::id());
     let crdb = crdb_fixture(&url, &name).await;
     crdb.run_script(&format!("CREATE FUNCTION {name}_w() RETURNS INT LANGUAGE SQL AS 'INSERT INTO {name} VALUES (777) RETURNING 1'"))
@@ -555,8 +562,8 @@ fn crdb_read_only_attacks(t: &str) -> Vec<String> {
 /// suite is refused, and afterwards the table still has its three rows and nothing was created.
 #[tokio::test]
 async fn cockroachdb_over_http_reads_and_refuses() {
+    let _one = MCP_ONE.lock().await;
     let Some(url) = live_url("TIQ_CRDB_URL") else { return };
-    let _one = CRDB_ONE.lock().await;
     let name = format!("tiq_mcp_http_{}", std::process::id());
     let crdb = Arc::new(crdb_fixture(&url, &name).await);
     let (http, stop) = start_sharing(&["crdb"], false, |s| s.adopt_session("crdb", crdb.clone())).await;
@@ -581,8 +588,8 @@ async fn cockroachdb_over_http_reads_and_refuses() {
 /// session: `EXPORT` writes a file on the server and `SET CLUSTER SETTING` changes the cluster.
 #[tokio::test]
 async fn cockroachdb_over_http_with_writes_still_refuses_escapes() {
+    let _one = MCP_ONE.lock().await;
     let Some(url) = live_url("TIQ_CRDB_URL") else { return };
-    let _one = CRDB_ONE.lock().await;
     let name = format!("tiq_mcp_w_{}", std::process::id());
     let crdb = Arc::new(crdb_fixture(&url, &name).await);
     let (http, stop) = start_sharing(&["crdb"], true, |s| s.adopt_session("crdb", crdb.clone())).await;
@@ -644,8 +651,8 @@ async fn cockroachdb_over_http_with_writes_still_refuses_escapes() {
 /// CockroachDB was open to agents (rev 0) is refused by every tool until it is shared again.
 #[tokio::test]
 async fn an_unlabelled_cockroachdb_is_guarded_as_cockroachdb_and_old_entries_are_not_served() {
+    let _one = MCP_ONE.lock().await;
     let Some(url) = live_url("TIQ_CRDB_URL") else { return };
-    let _one = CRDB_ONE.lock().await;
     let name = format!("tiq_mcp_old_{}", std::process::id());
     let crdb = Arc::new(crdb_fixture(&url, &name).await);
     let adopt = |s: &ConnState| {
@@ -694,8 +701,8 @@ async fn an_unlabelled_cockroachdb_is_guarded_as_cockroachdb_and_old_entries_are
 /// so it is not a drop-in for the wrapper. TiDB stays closed to agents.
 #[tokio::test]
 async fn tidb_has_no_default_read_only_transaction() {
+    let _one = MCP_ONE.lock().await;
     let Some(url) = live_url("TIQ_TIDB_URL") else { return };
-    let _one = TIDB_ONE.lock().await;
     let tidb = tableiq_lib::drivers::mysql::MySqlDriver::connect(&url).await.unwrap();
     let t = format!("tiq_tidb_ro_{}", std::process::id());
     tidb.run_script(&format!("DROP TABLE IF EXISTS {t}; DROP TABLE IF EXISTS {t}_ddl; CREATE TABLE {t} (n INT PRIMARY KEY); INSERT INTO {t} VALUES (1)"))
