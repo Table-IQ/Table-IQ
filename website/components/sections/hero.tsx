@@ -1,6 +1,6 @@
 import { ProductShot } from "@/components/blocks/product-shot";
 import { Button } from "@/components/ui/button";
-import { DOWNLOAD_URL, PREVIEW } from "@/lib/site";
+import { DOWNLOAD_URL, PLATFORM_STATUS, PREVIEW } from "@/lib/site";
 
 export function Hero() {
   return (
@@ -17,6 +17,7 @@ export function Hero() {
             <Button href={DOWNLOAD_URL}>Download developer preview</Button>
             <Button href="#demo" variant="text">Watch the everyday workflow</Button>
           </div>
+          <p className="hero-rise-2 mt-4 max-w-xl text-sm text-ink-2">{PLATFORM_STATUS}</p>
           <p className="hero-rise-2 mt-10 flex flex-wrap gap-x-6 gap-y-1 text-sm text-muted">
             <span>No tab paywall</span>
             <span>No account required</span>

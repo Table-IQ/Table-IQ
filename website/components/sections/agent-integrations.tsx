@@ -7,9 +7,10 @@ import { GITHUB } from "@/lib/site";
 export function AgentIntegrations() {
   return (
     <section id="agents" className="scroll-mt-16 border-y border-rule bg-paper-2" aria-label="Optional coding-agent integrations">
+      <Proof />
       <details className="group">
         <summary className="mx-auto flex max-w-site cursor-pointer list-none items-center justify-between gap-6 px-gutter py-10 marker:content-none [&::-webkit-details-marker]:hidden">
-          <span><span className="block text-title font-medium">Optional: connect a coding agent</span><span className="mt-2 block text-ink-2">MCP setup, activity previews and advanced demonstrations.</span></span>
+          <span><span className="block text-title font-medium">Optional: connect a coding agent</span><span className="mt-2 block text-ink-2">MCP setup and advanced demonstrations.</span></span>
           <span aria-hidden="true" className="text-2xl transition-transform group-open:rotate-45">+</span>
         </summary>
         <div className="border-t border-rule">
@@ -23,7 +24,6 @@ export function AgentIntegrations() {
             </div>
             <div><AgentTrace /></div>
           </div>
-          <Proof />
           <div className="mx-auto max-w-site px-gutter pb-16"><AdvancedDemos /></div>
           <Guides />
         </div>
