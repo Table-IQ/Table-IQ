@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   claudeCodeCommand,
   claudeDesktopConfig,
+  codexConfig,
+  openCodeConfig,
   isMcpEngine,
   mcpEmptyNote,
   REDIS_SHARING_NOTE,
@@ -21,8 +23,31 @@ const base: McpConfig = { enabled: true, port: 7431, row_cap: 500, connections: 
 describe("MCP copy-config snippets", () => {
   it("builds the Claude Code command with the URL and bearer header", () => {
     expect(claudeCodeCommand(7431, "abc123")).toBe(
-      'claude mcp add --transport http tableiq http://127.0.0.1:7431/mcp --header "Authorization: Bearer abc123"',
+      "claude mcp add --transport http --scope user tableiq http://127.0.0.1:7431/mcp --header 'Authorization: Bearer abc123'",
     );
+  });
+
+  it("quotes shell metacharacters in a Claude token as literal header text", () => {
+    expect(claudeCodeCommand(7431, "a'$(whoami)`x`\"b")).toContain("'Authorization: Bearer a'\\''$(whoami)`x`\"b'");
+  });
+
+  it("configures Codex's native HTTP transport with correctly escaped private headers", () => {
+    const cfg = codexConfig(9000, 'token"\\end');
+    expect(cfg).toContain('[mcp_servers.tableiq]\nurl = "http://127.0.0.1:9000/mcp"');
+    expect(cfg).toContain(`Authorization = ${JSON.stringify('Bearer token"\\end')}`);
+    expect(cfg).not.toContain("mcp-remote");
+  });
+
+  it("uses OpenCode 2's server nesting and explicitly disables OAuth for token auth", () => {
+    const cfg = JSON.parse(openCodeConfig(9000, 'tok"\\end'));
+    expect(cfg.mcp.servers.tableiq).toEqual({ type: "remote", url: "http://127.0.0.1:9000/mcp", oauth: false, headers: { Authorization: 'Bearer tok"\\end' } });
+    expect(cfg.mcp.tableiq).toBeUndefined();
+  });
+
+  it("keeps OpenCode 1 configuration explicitly separate from the current schema", () => {
+    const cfg = JSON.parse(openCodeConfig(7431, "tok", "v1"));
+    expect(cfg.mcp.tableiq.headers.Authorization).toBe("Bearer tok");
+    expect(cfg.mcp.servers).toBeUndefined();
   });
 
   it("builds a Claude Desktop config that goes through mcp-remote", () => {

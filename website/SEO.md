@@ -1,12 +1,12 @@
 # TableIQ search and answer-engine readiness
 
-The owner enabled indexing for the coming-soon marketing site on November 5, 2026. The app download stays unavailable, and source/preview releases still require repository access.
+The owner enabled indexing on November 5, 2026 and authorized public developer-preview distribution on November 15. The current preview is for Apple silicon Macs, unsigned and not notarized. Deploy the release links only after public source and artifact availability are verified.
 
 ## Content and motion
 
-The older website explained the database client and manual workflow clearly. Those concrete facts remain: browse/query/edit, staged SQL review, schema exploration, database support, MCP connection sharing and its limits. The current design presents them with actual screenshots, short summaries, expandable reference details and existing task guides. It adds no keyword paragraphs, fabricated benchmarks, reviews or comparison pages.
+The older website explained the database client and manual workflow clearly. Those concrete facts remain: browse/query/edit, staged SQL review, schema exploration, database support, MCP connection sharing and its limits. The current design presents them with actual screenshots, short summaries, expandable reference details and existing task guides. A compact, dated comparison cites vendor sources and distinguishes free/community editions from commercial features. It adds no keyword paragraphs, fabricated benchmarks, ratings or paid endorsements.
 
-The public walkthrough is the main action while GitHub is private. The November 13 rebuild moved to Next.js with Motion at the owner's request; every word stays in the server HTML, claims never live only in animation, and every interaction keeps its reduced-motion and no-JavaScript fallback.
+The verified developer-preview download is the primary action, with the public walkthrough available for first setup. The November 13 rebuild moved to Next.js with Motion at the owner's request; every word stays in the server HTML, claims never live only in animation, and every interaction keeps its reduced-motion and no-JavaScript fallback.
 
 ## Technical changes
 

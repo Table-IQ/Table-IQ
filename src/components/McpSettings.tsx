@@ -14,6 +14,7 @@ import {
 import {
   claudeCodeCommand,
   claudeDesktopConfig,
+  codexConfig,
   DUCKDB_SHARING_NOTE,
   MONGODB_SHARING_NOTE,
   REDIS_SHARING_NOTE,
@@ -22,6 +23,7 @@ import {
   mcpEmptyNote,
   mcpRowState,
   mcpUrl,
+  openCodeConfig,
   pruneUnshareable,
   setShared,
   setWrites,
@@ -98,6 +100,7 @@ export function McpSettings() {
   const [busy, setBusy] = useState(false);
   const [confirmRegen, setConfirmRegen] = useState(false);
   const [copied, setCopied] = useState("");
+  const [client, setClient] = useState<"claude" | "codex" | "opencode" | "opencode-v1" | "desktop">("claude");
   const copiedTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   useEffect(() => {
@@ -147,11 +150,18 @@ export function McpSettings() {
     }
   };
 
-  const copy = (what: string, text: string) => {
-    void navigator.clipboard?.writeText(text);
-    setCopied(what);
-    clearTimeout(copiedTimer.current);
-    copiedTimer.current = setTimeout(() => setCopied(""), 1500);
+  const copy = async (what: string, text: string) => {
+    try {
+      if (!navigator.clipboard) throw new Error("Clipboard unavailable");
+      await navigator.clipboard.writeText(text);
+      setError("");
+      setCopied(what);
+      clearTimeout(copiedTimer.current);
+      copiedTimer.current = setTimeout(() => setCopied(""), 1500);
+    } catch {
+      setCopied("");
+      setError("Could not copy. Check clipboard access and try again.");
+    }
   };
 
   const regenerate = async () => {
@@ -178,6 +188,13 @@ export function McpSettings() {
     : status?.running
     ? `Running at ${status.url}`
     : status?.error ?? (cfg.enabled ? "Not running" : "Stopped");
+  const setup = {
+    claude: { title: "Claude Code", hint: "Run this command in your terminal. It adds TableIQ to your private user configuration.", text: (t: string) => claudeCodeCommand(cfg.port, t) },
+    codex: { title: "Codex", hint: "Merge this section into ~/.codex/config.toml, keeping your existing settings. Restart your local Codex app, CLI or IDE extension.", text: (t: string) => codexConfig(cfg.port, t) },
+    opencode: { title: "OpenCode 2", hint: "Merge this into your private ~/.config/opencode/opencode.json configuration, then restart OpenCode. V2 uses mcp.servers.", text: (t: string) => openCodeConfig(cfg.port, t) },
+    "opencode-v1": { title: "OpenCode 1 (legacy)", hint: "Merge this into your private ~/.config/opencode/opencode.json configuration. Select OpenCode 2 if you have upgraded.", text: (t: string) => openCodeConfig(cfg.port, t, "v1") },
+    desktop: { title: "Claude Desktop", hint: "Merge this into claude_desktop_config.json and restart Claude Desktop. The mcp-remote bridge needs Node.js and npx.", text: (t: string) => claudeDesktopConfig(cfg.port, t) },
+  }[client];
 
   return (
     <div className="space-y-5 p-4">
@@ -295,20 +312,32 @@ export function McpSettings() {
 
       <div className="space-y-2">
         <SectionLabel>Connect an agent</SectionLabel>
+        <p className="text-xs text-muted">
+          Keep TableIQ running on the same Mac as your agent. Turn the server on and share a connection above first.
+          Hosted cloud agents cannot reach this Mac&apos;s local endpoint.
+        </p>
+        <label className="flex items-center justify-between gap-3 text-xs text-text">
+          Agent client
+          <select className={`${input} w-auto`} value={client} onChange={(e) => { setClient(e.target.value as typeof client); setCopied(""); }}>
+            <option value="claude">Claude Code</option>
+            <option value="codex">Codex</option>
+            <option value="opencode">OpenCode 2</option>
+            <option value="opencode-v1">OpenCode 1 (legacy)</option>
+            <option value="desktop">Claude Desktop</option>
+          </select>
+        </label>
+        <p className="text-xs text-muted">{setup.hint}</p>
         <Snippet
-          title="Claude Code"
-          shown={claudeCodeCommand(cfg.port, maskToken(token))}
-          copied={copied === "code"}
-          onCopy={() => copy("code", claudeCodeCommand(cfg.port, token))}
-          disabled={!token}
+          title={setup.title}
+          shown={setup.text(maskToken(token))}
+          copied={copied === "setup"}
+          onCopy={() => void copy("setup", setup.text(token))}
+          disabled={!token || !status?.running}
         />
-        <Snippet
-          title="Claude Desktop (claude_desktop_config.json, via mcp-remote)"
-          shown={claudeDesktopConfig(cfg.port, maskToken(token))}
-          copied={copied === "desktop"}
-          onCopy={() => copy("desktop", claudeDesktopConfig(cfg.port, token))}
-          disabled={!token}
-        />
+        <p className="text-xs text-muted">
+          Copy includes your real token; the preview masks it. Keep copied setup in private user configuration, not a shared repository.
+          This copies setup only and does not change your agent&apos;s files. After setup, ask the agent to list TableIQ connections and confirm only the connections you shared appear.
+        </p>
         <p className="font-mono text-xs text-muted">{mcpUrl(cfg.port)}</p>
       </div>
 

@@ -1,0 +1,49 @@
+name: Beta feedback
+description: Tell us whether TableIQ helped with a real task. Completely optional.
+title: "[Beta feedback]: "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This creates a **public GitHub issue** under your GitHub account. Do not include email addresses, credentials, connection URLs, SQL, screenshots or results containing private data. This feedback is optional and never required to use TableIQ.
+  - type: input
+    id: version
+    attributes:
+      label: TableIQ version and Mac type
+      placeholder: "For example: 0.8.15, Apple silicon"
+  - type: input
+    id: database
+    attributes:
+      label: Database engine
+      placeholder: "For example: PostgreSQL or SQLite. No host or database names."
+  - type: textarea
+    id: task
+    attributes:
+      label: What task did you want to complete?
+      description: Describe the workflow without private data.
+  - type: dropdown
+    id: outcome
+    attributes:
+      label: How did it go?
+      options:
+        - I completed a useful task
+        - I got blocked installing the app
+        - I got blocked connecting a database
+        - A missing feature or bug blocked the task
+        - I have not tried a task yet
+        - I prefer my existing tool
+  - type: textarea
+    id: friction
+    attributes:
+      label: What helped or got in the way?
+  - type: input
+    id: source
+    attributes:
+      label: Where did you find TableIQ? (optional)
+  - type: checkboxes
+    id: followup
+    attributes:
+      label: Follow-up (optional)
+      options:
+        - label: The maintainer may ask me about my experience here on GitHub after 7 and 14 days.

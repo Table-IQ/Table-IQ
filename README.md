@@ -12,7 +12,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0--only-3E6694.svg" alt="License: AGPL-3.0-only"></a>
   <a href="#get-started"><img src="https://img.shields.io/badge/macOS-Unsigned_preview-0B7480.svg" alt="macOS: unsigned preview"></a>
-  <a href="https://github.com/RudreshNarwal/Table-IQ/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/CI-GitHub_Actions-3E6694.svg" alt="GitHub Actions workflow"></a>
+  <a href="https://github.com/Table-IQ/Table-IQ/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/CI-GitHub_Actions-3E6694.svg" alt="GitHub Actions workflow"></a>
 </p>
 
 <p align="center">
@@ -32,12 +32,22 @@ default, and follow its calls in MCP Activity. Or use TableIQ on its own to brow
 query, and edit your databases.
 
 > **Preview:** The macOS Apple Silicon build is unsigned and not notarized. It is for
-> local testing; signed installers and automatic updates are not available yet.
+> local testing; signed installers and automatic installation are not available yet.
 > See [getting started](#get-started) and [known limitations](#known-limitations).
 
 ![TableIQ browsing a synthetic storefront database in PostgreSQL](docs/brand/app-preview.jpg)
 
 *Real-app capture from v0.8.10, using synthetic data.*
+
+### Watch TableIQ in use
+
+[![Watch the 56-second native application demo](website/public/video/tableiq-huashu-poster.png)](https://tableiq.ideolyst.com/#demo)
+
+[Huashu Motion demo · 56 seconds](https://tableiq.ideolyst.com/video/tableiq-huashu-motion-56s.mp4)
+· [Take One story · 50 seconds](https://tableiq.ideolyst.com/video/tableiq-take-one-story-50s.mp4)
+
+Both films use real native v0.8.15 footage and synthetic data. Cuts condense time;
+these are demonstrations, not speed benchmarks. [Dataset and expected answer](docs/launch/demo/README.md).
 
 ## Features
 
@@ -58,13 +68,19 @@ mean that data stays on your machine.
 
 ### Try the Mac preview
 
-[Download the v0.8.11 Apple Silicon test build](https://github.com/RudreshNarwal/Table-IQ/releases/tag/preview-v0.8.11).
+[Download the v0.8.15 Apple Silicon developer preview](https://github.com/Table-IQ/Table-IQ/releases/tag/preview-v0.8.15).
 The release includes the installer, matching source archive, license notices, and
-checksums. Repository access is currently required to download it.
+checksums. No TableIQ account is required.
 
 Quit an existing TableIQ instance, open the DMG, and drag TableIQ into Applications.
 Choose Replace when updating. This preview is unsigned, so macOS may require you to
 approve opening it. Use a local database or a disposable copy for your first test.
+
+The connection screen has **Check for updates** and **Settings** beside the theme
+control. **Settings → Updates** can disable startup checks. Checks fetch public
+release metadata from GitHub; GitHub receives normal network information such as
+your IP address. No installation ID, email, SQL or connection details are sent.
+A newer version opens a notification; download and install it manually.
 
 Prefer to build it yourself? Follow [Development](#development).
 
@@ -99,12 +115,13 @@ for connection controls, editing, backup/restore, and administration behavior.
 | [MCP permissions](docs/launch/MCP-PERMISSIONS.md) | Sharing, read-only defaults, limits, and troubleshooting |
 | [Engine matrix](docs/ENGINES.md) | Support, verification status, and engine-specific differences |
 | [Changelog](CHANGELOG.md) | Changes included in each version |
+| [Launch strategy](docs/GTM.md) | Market research, seven-day beta launch, licensing and business validation |
 | [Roadmap](docs/ROADMAP.md) | Current focus and planned work |
 | [Design system](DESIGN.md) and [brand kit](docs/brand/README.md) | Product design rules and the original brand assets |
 
 ## Contributing
 
-[Report a bug or suggest an improvement](https://github.com/RudreshNarwal/Table-IQ/issues).
+[Report a bug or suggest an improvement](https://github.com/Table-IQ/Table-IQ/issues).
 Include your TableIQ version, database engine/version, and a minimal example using
 synthetic data. Keep credentials and private query results out of issues.
 
@@ -124,13 +141,13 @@ those releases.
 
 **What stays free forever:** every database engine, the MCP server and its guard, BYO-key AI,
 staged edits, SSH tunnels, unlimited connections, and every feature in our first public release
-(v0.9.0). We will never gate engines or device count. If we ever build team features, they add
+(including this v0.8.15 public preview and the planned v0.9.0). We will never gate engines or device count. If we ever build team features, they add
 governance on top (shared vaults, SSO, central agent policy, audit export) and never take away
 what is free.
 
 ## Known limitations
 
-- The preview has no code signing, notarization, or automatic updater.
+- The preview has no code signing, notarization, or automatic installation. Update checks and notifications are available.
 - SQL Server query cancellation and DuckDB's Stop button are not implemented.
 - Per-tab server sessions do not preserve an open transaction or `SET` between runs.
 - MCP protections differ by engine. Use least-privilege roles and account for what

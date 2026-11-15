@@ -1,6 +1,26 @@
 # Release verification record
 
-The reviewed app batch is committed locally; pushing remains deferred until the owner requests the coordinated push. Passing source tests does not establish that a signed release exists.
+> The November 15 preview evidence below supplements the historical October record. Current launch gates are in [GTM](../GTM.md). The website now lives in `website/` in this monorepo; older separate-repository references below are historical. A future signed release still needs signed/clean-Mac acceptance and upgrade testing from the actually distributed unsigned preview.
+
+The October batch below predates the owner’s November public-preview authorization. Passing source tests does not establish that a signed release exists.
+
+## Local evidence — November 15, 2026
+
+The owner authorized an **unsigned public Apple silicon developer preview**, publication and the move to the **Table-IQ** organization. The historical signed-release gate below remains for a future signed distribution; it does not describe this preview. The repository is now public at https://github.com/Table-IQ/Table-IQ. Signing/notarization and clean-old-macOS acceptance are not claimed.
+
+| Check | November 15 outcome |
+| --- | --- |
+| Frontend | 1,137 tests across 102 files passed; focused Settings/update suite 7 tests passed again after the notification fix; TypeScript and production frontend build passed |
+| Rust | Full library suite: 521 passed, four ignored. Added update-release selector suite: three passed. No new multi-engine live integration run claimed |
+| SQL Open With | Packaged 0.8.15 cold launch receives a UTF-8 script, queues until a SQL connection is selected, opens a new tab without executing it; manual Run returns the synthetic two-row result. Warm-app path not yet independently established |
+| MCP packaged app | Actual local Codex discovery/schema/bounded SELECT against synthetic SQLite: two rows, 7,300 cents. Separate manual Python probe receives a read-only refusal. Neither is a production-database test |
+| AI context | Source regressions cover engine/dialect/known and unknown relationships. No measured model-output accuracy improvement claimed |
+| Update notifications | Newer/equal/older/draft/no-download selection, startup opt-out and in-flight disable behavior tested; notification is nonmodal and never installs/restarts the app. Live native update check recorded separately after publication |
+| Website | TypeScript/static build, four-page local asset/JSON-LD/sitemap validation and nine Python tests pass. Two real MP4s/posters/WebVTT tracks included; desktop/mobile browser verification recorded in release notes |
+| Publication secret review | Full history and staged source checked with Gitleaks. Six specific historical public/disposable fixtures reviewed and narrowly fingerprinted; no unreviewed findings. No claim that automated scanning detects every possible secret |
+| Community | Contribution, conduct, private security-reporting guidance, licensing, support, bug/feature/beta templates added. Private vulnerability reporting and public-repository secret protection enabled |
+
+Local logs and original captures are in `/tmp/tableiq-launch-20261115/`, outside version control. No credentials/config files/agent logs are release assets. The release supplies matching source, project/upstream notices, build facts and SHA-256 checksums. The final artifact digest and public URL are in its release notes and `SHA256SUMS.txt`; never substitute the earlier 0.8.15 build that predates Settings/update checks.
 
 ## Local evidence — October 20, 2026
 
@@ -46,7 +66,7 @@ Record the exact artifact hash, OS version, hardware and outcomes below. Do not 
 | --- | --- | --- |
 | Signed/notarized download | Verification-script output for the exact app and download | Deferred by owner for 3–4 days; credentials absent |
 | Clean Mac installation | Download through a browser, open DMG, copy app, launch under Gatekeeper on a clean supported Mac | Test Mac not supplied |
-| Update preservation | Previous release to candidate with connections, settings, history and keychain access preserved | Previous signed build and test Mac required |
+| Update preservation | Previous release to candidate with connections, settings, history and keychain access preserved | Actually distributed previous preview and test Mac required; record unsigned-to-signed transition if applicable |
 | Advertised platform/size | Actual artifact bytes/hash and supported architecture/OS test results | No verified distribution artifact |
 | Release MCP trust checks | Refused write, unshared connection refusal, token rotation, engine isolation, recovery on the packaged release | Source/live-engine checks are separate evidence |
 | Cloud connections | `any_profile_smoke` against Neon, Supabase, CockroachDB Cloud and TiDB Cloud; record hard and soft checks | Test connection profiles not supplied |
@@ -71,7 +91,7 @@ Use disposable data and an isolated `TIQ_CONFIG_DIR`. Preserve a copy of the sta
 
 An automatic updater is not required for this launch. A verified manual replacement is required.
 
-1. Install the previous signed app. In an isolated config directory, save a disposable connection with a keychain password, change appearance/query settings, and create a saved query/history entry.
+1. Install the actually distributed previous preview, signed or unsigned. Record its exact version/signing status and test transition to the signed candidate; a first signed release does not require a previous signed build. In an isolated config directory, save a disposable connection with a keychain password, change appearance/query settings, and create a saved query/history entry.
 2. Quit the app. Back up the config directory and record hashes; keep the credential out of the report.
 3. Replace only the application bundle with the signed candidate. Keep the application identifier `ai.rhobots.tableiq` and data directory unchanged.
 4. Launch the candidate. Verify connection details, settings, saved query/history, and keychain-backed login. Check MCP remains disabled or retains the user's explicit sharing choices; newly supported engines require fresh confirmation.
@@ -80,4 +100,4 @@ An automatic updater is not required for this launch. A verified manual replacem
 
 ## Publication
 
-The landing page lives in the separate `tableiq-website` repository. Add its download link only after the Mac artifact, clean-install, update and release trust gates pass. Add real artifact requirements and sizes at that time. The beta activation/return-use thresholds in VALIDATION.md still govern the public launch timing.
+The landing page now lives in `website/` in this repository (updated November 15, 2026). Add its download link only after the Mac artifact, clean-install, update and release trust gates pass. Add real artifact requirements and sizes at that time. The current GTM distinguishes week-one beta readiness from post-launch return-use thresholds in VALIDATION.md. Return-use thresholds govern further investment, not a claim that two-week evidence already exists in week one.

@@ -1,117 +1,81 @@
-# Launch validation kit
+# Launch and demand validation kit
 
-Owner: founder. Strategy and thresholds: [GTM](../GTM.md). This is a blank operating kit, not evidence that interviews, usage or release checks have happened.
+Updated November 15, 2026. Owner: founder. [Current strategy and scorecard](../GTM.md). This is an operating template, not evidence that tests, interviews or commitments have happened. Release trust checks live in [RELEASE-VALIDATION.md](RELEASE-VALIDATION.md).
 
-## Start the study
+## Three different decisions
 
-1. Set Day 1 and enroll 20 Mac-based backend developers who use Postgres and a coding agent regularly. Start with existing beta users and voluntary referrals.
-2. Assign anonymous IDs P01–P20. Keep contact details, consent and raw notes outside the tracked repository, in access-controlled storage. A gitignored folder alone is not a privacy control.
-3. Explain what will be observed, what notes will be retained and how to withdraw. Screen recording and public quotations each require separate consent. Use synthetic or sanitized data; never collect credentials, tokens, customer rows or unredacted agent transcripts.
-4. Freeze the cohort before reporting the activation gate. Record incomplete attempts, nonresponses and withdrawals. Do not replace failed participants to improve the rate; report any later cohort separately.
-5. Schedule the first 10 interviews, five observed comparisons and follow-ups on days 8 and 14 after each participant's first launch. Record the app, database and agent versions used.
+1. **Limited preview/source publication:** accurate preview labels, license/source and privacy review; recruit technical testers with disposable data. This is not production readiness.
+2. **Broad downloadable public beta / Show HN:** the current GTM's installation, trust, public artifact, real demo and five-person usability gates. No requirement to pretend two-week retention exists in week one.
+3. **Further investment / paid product:** fixed-cohort activation, mature return windows, recurring task preference and real buyer commitments. A beta announcement does not satisfy these.
 
-## Interview and observation guide
+## Week-one readiness observation
 
-Ask about recent behavior before showing the product:
+Recruit five eligible Mac/Postgres users across ordinary-client and coding-agent tasks, at least three outside close friends/collaborators. Predefine each participant's task and report groups separately. This exploratory readiness sample does not select a market winner. Observe their current workflow first. Where comparing two tools, vary the order to limit practice effects. Use comparable synthetic tasks; label assisted sessions.
 
-- What was the last data issue you investigated? How often does this task recur?
-- Which client and agent did you use? Walk through the actual steps and where time was lost.
-- How did you provide database context and control what the agent could access?
-- What would make switching tools worthwhile? What would prevent it?
+At least four of five should install, connect and complete their assigned task correctly within 15 minutes without live help. Ordinary task: filter/find records, run SQL, stage/review a harmless manual edit, commit and verify. Agent task: investigate, inspect the Activity entry and verify SQL/results in the query grid. Report task-level outcomes alongside the total. Report all installation failures. Fix blockers and identify a retest as a new cohort; do not erase original failures. This small test is a usability gate, not a market estimate.
 
-Observe the participant completing a comparable sanitized task with their existing workflow and TableIQ. Alternate which tool goes first across the five sessions to reduce practice effects. Record task differences; five observations are qualitative evidence, not a comparative performance benchmark.
+Use the new seeded investigation when ready. The existing [CTE task](POSTGRES-WORKFLOW.md) is a transport smoke test because it gives the agent the SQL and answer. Activity shows redacted SQL, counts and outcomes, not saved result rows or a durable audit trail. Manual verification against unchanged synthetic data is a separate query.
 
-Give the task, not a guided click sequence. The [walkthrough](POSTGRES-WORKFLOW.md) is available as self-service documentation. Start the activation timer at first launch. Record install time/failure separately; an installation failure cannot count as activation. Mark any live help explicitly. After a failed unaided attempt, help diagnose the blocker, but do not relabel that attempt as successful activation.
+## Fixed longitudinal cohort
 
-Completion means the participant obtains a correct diagnostic result, inspects the SQL and results in TableIQ, and locates the corresponding MCP Activity entry. Record whether they can explain the finding. A successful connection alone is insufficient.
+After exploratory observations, select one task/segment and enroll 20 eligible users for it, assign anonymous IDs P01–P20 and freeze eligibility and task before reporting results. If testing both segments longitudinally, use separate 20-person cohorts; never combine different task definitions to improve activation. Keep contact details, consent and raw notes in access-controlled private storage outside the tracked repository. Recording and public quotation require separate consent. Do not collect tokens, passwords, real customer rows or unredacted transcripts. A gitignored folder alone is not a privacy control.
 
-Afterward ask:
+Schedule follow-ups 8 and 14 days after each participant's first launch. At launch day 14, some windows may be immature; wait until they close instead of misreporting return use. Record nonresponses, withdrawals, assistance and failures in denominators. Do not replace failed participants to improve conversion; report a later cohort separately.
 
-- Which step helped, and which step confused you?
-- For what recurring task would you choose TableIQ over your previous workflow?
-- What would make you stop using it?
+| Measure | Definition | Chosen decision threshold |
+| --- | --- | --- |
+| Activation | Within 15 minutes unaided: install/connect and correctly complete the cohort's predefined ordinary-client or agent task | At least 14 of fixed 20 |
+| Return | Activated user completes the qualifying workflow on a separate occasion during days 8–14 after their first launch | At least eight activated participants, after complete observation windows |
+| Switching evidence | Participant names a recurring task now preferred in TableIQ over the prior workflow | At least five participants |
+| Trust | Exact release artifact/native permission, refusal, recovery, clean-install and update checks; no critical advertised-workflow defects | Required for broad beta launch |
+| Commercial | Relevant professional/team/support-buyer interviews and commitments to the same scoped paid offer | At least five interviews and two commitments before paid build; target review by day 30 |
 
-## Cohort record template
+These are founder-selected thresholds, not industry benchmarks, product-market-fit certification or forecasts. Track non-agent client use separately so MCP does not receive credit for grid utility.
 
-Create one record per enrolled participant in private storage. No customer data belongs in this template repository.
+## Private tracking template
 
-| Field | Record |
-|---|---|
-| Participant ID / cohort / enrollment date | |
-| Target-audience eligibility / acquisition source | |
-| Consent date / observation / recording / quotation permissions | |
-| App version + commit / macOS + architecture / Postgres / agent version | |
-| Prior workflow / recurring task / task frequency | |
-| Installation outcome / elapsed time / first-launch timestamp | |
-| Task completion timestamp / elapsed minutes / correct result? | |
-| SQL and results inspected? / Activity entry found? | |
-| Live assistance given? / eligible activation yes or no | |
-| First blocker / severity / related issue / resolution verified? | |
-| Follow-up dates / response status | |
-| Repeat-use date / recurring task / observed or self-reported evidence | |
-| Specific reason to prefer TableIQ / prior tool displaced | |
-| Withdrawal or missing-data reason | |
+```text
+participant_id,eligibility,source_channel,app_version,os_arch,first_launch_at,
+install_success,connect_success,task_correct,grid_verified,activity_identified,
+minutes_to_completion,assistance_required,activation_pass,blocker,
+followup_day8_due,followup_day14_due,window_mature,qualifying_return_at,
+preferred_recurring_task,prior_workflow,reason_to_switch_or_stay,
+withdrawal_or_nonresponse,recording_consent_ref,quote_approval_ref
+```
 
-Use `not attempted`, `failed`, `completed`, `no response`, `not yet due` and `withdrawn` as distinct outcomes. Leave unknown facts unknown. Do not treat a missing response as proof that the person stopped using the app, or as evidence of retention.
+Keep free-text cells free of secrets and sensitive customer data. Explicitly distinguish “not observed,” “no return reported,” and “window incomplete.” Downloads include upgrades/retries and are not people. Track enrolled/activated/returning participants by source with sample sizes; small samples do not support precise conversion predictions. Telemetry remains optional; consented observation and follow-ups are sufficient.
 
-### Follow-up script
+## Interview and follow-up prompts
 
-On day 8, ask: “Since your first session, have you used TableIQ again? On which date, for which task, and what would you otherwise have used?” Ask for counts or a sanitized explanation, not SQL/results containing private data. On day 14, close the window and record any additional use. Record whether evidence was observed or self-reported.
+- Show the most recent data investigation and the tools used. What was hard, how often does it happen, and what does failure cost?
+- Complete the task in the old setup and TableIQ. Where do setup, editor, authentication or session behavior get in the way?
+- Did Activity change a decision or reveal anything useful? If removed, would you still use TableIQ?
+- Since the first session, when did you voluntarily open it again? Which task? Why use the old tool instead?
+- What single missing behavior prevents switching? What should we stop building?
 
-Repeat use requires a separate occasion during days 8–14 after first launch, not a rerun during the onboarding session or an earlier return. Count it only among eligible activations. Do not evaluate a participant's completed window before day 14.
+Do not coach toward MCP enthusiasm, speed or license preference. Record disconfirming observations prominently.
 
-### Weekly scorecard
+## Buyer experiment
 
-| Metric | Result / denominator | Evidence / next action |
-|---|---|---|
-| Interviews completed | / 10 | |
-| Observed workflow comparisons | / 5 | |
-| Eligible cohort enrolled | / 20 | |
-| Unaided correct completions within 15 minutes | / 20; gate 14 | |
-| Activated users returning on days 8–14 | count; gate 8 / activated users with completed windows | |
-| Completed / pending follow-up windows | report both | |
-| Nonresponses / withdrawals / assisted attempts | report separately | |
-| Concrete recurring-task switching reasons | / 20; gate 5 | |
-| Buyer interviews / conditional paid commitments | gates 5 / 2 by day 90 | |
-| Open critical release-workflow defects | gate 0 | |
+Compare professional individual users with engineering leads/budget owners. The expanded research does not assume team governance is the winning paid offer. Use Beekeeper/Yaak as model references, not proof of TableIQ demand. Start with their actual access/review/audit process and recent incidents. Ask which existing client, database permissions, Bytebase or identity provider already solves it. Record urgency, who approves budget and what concrete acceptance evidence is required.
 
-For each acquisition source, report enrolled, activated and returning users plus missing follow-ups. Rank channels by retained users, with sample size visible. Stars and release downloads are context, not activation measures.
+For the team path only, after learning current spend, test the existing **$99/team/month for up to five users** hypothesis for one narrowly specified future outcome. Separately investigate bounded paid assistance and new, unpromised individual productivity needs. Do not pool unrelated offer commitments or apply the team price to every interview. It is not a published tier or working product. A conditional commitment must include buyer authority, deliverable, acceptance test, delivery window, price and billing start. Test official-build licensing only as an alternative requiring rights/promise review; do not change current free or AGPL terms. No payment is requested for an undefined feature bundle. A compliment, free-trial signup or email address is not a commitment; a commitment is not yet paid recurring revenue.
 
-Select the three most common blockers from the records. Link each to a fix and a verification on the affected workflow. Address critical data-loss/access-control defects first regardless of frequency.
+```text
+buyer_id,role,budget_authority,problem_last_seen,current_solution,current_cost,
+urgency,required_outcome,acceptance_test,price_tested,objections,
+conditional_commitment_status,scope,delivery_window,billing_start,next_step
+```
 
-## Buyer discovery and conditional pilot
+Retain the free-feature pledge. Paid support/onboarding can be separately scoped; do not imply basic safety is paid or organization enforcement already exists.
 
-Begin during the first two weeks. Talk to engineering leads or other budget owners, including voluntary introductions from beta users.
+## Decisions after launch
 
-Ask what agents can access today, who manages permissions, how incidents are investigated, what approval/audit work costs, and what they already pay for alternatives. Establish the buyer, approver, budget and timing before presenting a price.
+- Fix installation/connectivity failures before increasing acquisition.
+- Strong activation with weak return use: investigate recurring need and missing workflows before adding engines.
+- Strong ordinary-client usage with weak MCP usage: adjust positioning; do not claim agent demand.
+- Strong return use with no buyer commitment: adoption may be real; business viability remains unproven.
+- Two cohorts still fail repeat-use goals after key blockers are fixed: pause breadth/ads/Team build and revisit audience or task.
+- A critical data-loss/access defect stops broad promotion until fixed and verified on the affected release path.
 
-Then test: “If we delivered the specific capability we agreed on, would your team commit to a pilot at $99 per month for up to five users?” Explain that this is a future, scoped pilot, not a currently available Team tier. Record objections and counteroffers without claiming willingness to pay from polite interest.
-
-| Pilot commitment field | Required detail |
-|---|---|
-| Buyer and authority | Private contact record and approval owner |
-| Repeated problem | Specific task, frequency and current alternative |
-| Scope and exclusions | One deliverable; no implied enterprise bundle |
-| Acceptance | Observable customer outcome and evaluation period |
-| Delivery and dependencies | Agreed window, access requirements and conditions |
-| Commercial terms | Agreed price, included users, billing start and cancellation terms |
-| Written commitment | Date and private evidence reference; distinguish conditional commitment from payment |
-| Free core | Existing free features remain free |
-
-Only scope a commercial build after several buyers identify the same problem. Two written conditional commitments are a discovery milestone, not booked revenue. Track actual paid and retained teams separately if pilots launch.
-
-## Release evidence and decision record
-
-For each check below, record release/commit, artifact checksum, platform, database version, role grants, MCP configuration, steps, expected/actual result and private or sanitized evidence location. Use `pass`, `fail`, `not run` or `not applicable` with a reason. This checklist is currently unexecuted.
-
-- Clean supported Mac: signature/notarization, installation, first launch, connection setup and a useful result.
-- Update from the previous beta: preserve settings/connections and verify reconnection. Document manual replacement if automatic updates are unavailable.
-- Read-only shared Postgres connection: successful diagnostic read; harmless write probe refused by TableIQ; unchanged data. A database permission error alone does not prove the app guard refused it.
-- Unshared connection: absent from listings and direct tool access refused. Do not expose an administrator connection during the demo.
-- Missing/invalid/rotated token: new tool requests rejected; valid replacement token restores access. Record limitations for already-running requests rather than assuming cancellation.
-- Disconnect/reconnect and restart: useful errors, recovery, no unintended writes or widened sharing.
-- Activity visibility: inspect a successful call and a refused call. Verify screenshots/recordings contain no tokens or real customer data.
-
-For comparative studies, additionally pin competitor versions/configuration and publish all outcomes and exclusions. For performance studies, use the reproducibility fields in [GTM](../GTM.md#claims-and-evidence-rules). Neither is a substitute for this release evidence.
-
-At each gate record date, cohort, release, evidence counts, unresolved defects, decision and next review date. At day 90 choose the branch in [GTM section 4](../GTM.md#4-success-measures-and-the-day-90-decision). An unmet gate delays its dependent announcement; it does not erase the observations.
+The old 90-day schedule is archived with the prior GTM; it is not a hidden additional prerequisite to an honest beta announcement. Current day-14/day-30/day-60 decisions are defined in [GTM](../GTM.md).

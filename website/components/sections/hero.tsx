@@ -1,6 +1,7 @@
 import { ProductShot } from "@/components/blocks/product-shot";
 import { AgentTrace } from "@/components/motion/agent-trace";
 import { Button } from "@/components/ui/button";
+import { DOWNLOAD_URL, PREVIEW } from "@/lib/site";
 
 export function Hero() {
   return (
@@ -11,17 +12,18 @@ export function Hero() {
             Your Mac database client. See every agent query.
           </h1>
           <p className="hero-rise-2 mt-6 max-w-xl text-lead text-ink-2">
-            Browse, query and edit PostgreSQL, MySQL, SQLite and more. Let Claude Code or Cursor query chosen connections, read-only by default, and inspect their SQL and results.
+            Browse, query and edit PostgreSQL, MySQL, SQLite and more. Let Claude Code, Codex or OpenCode query chosen connections, read-only by default, and inspect their SQL and results.
           </p>
           <div className="hero-rise-2 mt-8 flex flex-wrap items-center gap-x-6 gap-y-3">
-            <Button href="/guides/postgres-investigation">Read the walkthrough</Button>
+            <Button href={DOWNLOAD_URL}>Download developer preview</Button>
             <Button href="#how" variant="text">See how agents connect</Button>
           </div>
           <p className="hero-rise-2 mt-10 flex flex-wrap gap-x-6 gap-y-1 text-sm text-muted">
             <span>Free and open source</span>
             <span>Built in Rust for macOS</span>
-            <span>Download coming soon</span>
+            <span>{PREVIEW.platform}</span>
           </p>
+          <p className="mt-3 max-w-xl text-sm text-muted">Unsigned and not notarized by Apple. macOS will ask you to approve opening it. Start with a local database or disposable data.</p>
         </div>
         <div className="hero-rise-3 relative lg:col-span-6 xl:col-span-7">
           <ProductShot name="hero" priority width={2360} height={1475} alt="TableIQ showing the orders table of a storefront Postgres database, with the schema sidebar, a paged data grid and the table inspector" />

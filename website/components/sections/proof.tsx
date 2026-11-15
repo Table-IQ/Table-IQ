@@ -1,8 +1,6 @@
 import { ProductShot } from "@/components/blocks/product-shot";
 import { SectionHeading } from "@/components/blocks/section-heading";
 import { SectionShell } from "@/components/blocks/section-shell";
-import { StoryCard } from "@/components/blocks/story-card";
-import { STORIES } from "@/lib/site";
 
 export function Proof() {
   return (
@@ -14,10 +12,9 @@ export function Proof() {
           A real Claude Code session against a read-only connection: it listed tables, ran two queries, and its <code>UPDATE</code> was refused before it reached the database.
         </figcaption>
       </figure>
-      <h3 className="mt-16 mb-6 text-title font-medium">Why beta users switched</h3>
-      <div className="grid gap-6 md:grid-cols-2">
-        {STORIES.map((story) => <StoryCard key={story.name} story={story} />)}
-      </div>
+      <p className="mt-6 max-w-3xl text-sm text-muted">
+        Activity is a local view of the most recent 1,000 calls. SQL is redacted and can be shortened; full result sets are not stored here. It is not a permanent audit record.
+      </p>
     </SectionShell>
   );
 }

@@ -6,8 +6,8 @@ import { Button } from "@/components/ui/button";
 
 const STEPS = [
   { title: "Share chosen connections", body: "Turn on the MCP server in Settings → MCP. It listens only on your Mac. Everything you do not select stays invisible, and writes stay off." },
-  { title: "Connect your agent", body: "Claude Code and Claude Desktop have built-in configurations. Other compatible MCP clients use the local endpoint with a bearer token." },
-  { title: "Inspect every call", body: "Open MCP Activity to see the SQL, returned data and refused calls. Run the same SQL yourself and compare." },
+  { title: "Connect your agent", body: "Copy setup for Claude Code, Codex, OpenCode or Claude Desktop from Settings → MCP. Keep tokens in private client configuration and TableIQ running on the same Mac." },
+  { title: "Inspect every call", body: "Open MCP Activity to inspect recent redacted SQL, row counts and refused calls. Verify returned data separately in the query grid; a new query can reflect later data changes." },
 ];
 
 export function HowItWorks() {

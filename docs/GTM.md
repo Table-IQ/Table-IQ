@@ -1,115 +1,219 @@
-# TableIQ Go-To-Market
+# TableIQ launch and business decision
 
-_Last updated 2026-10-19 · [Roadmap](ROADMAP.md) · [Validation kit](launch/VALIDATION.md) · [Launch copy](launch/ASSETS.md)_
+Research expanded November 15, 2026 after independent research beyond Rerun/OpenCode. [Broader comparison study](launch/research/2026-11-15-broader-cases.md). Owner: Rudresh Narwal. This is a proposed operating plan, not evidence of customer validation or completed release checks. [Evidence and sources](launch/research/2026-11-15-market-evidence.md) · [Launch assets](launch/ASSETS.md) · [Release checks](launch/RELEASE-VALIDATION.md).
 
-## 1. Decision and market evidence
+## Current launch authorization
 
-TableIQ could become a useful niche product. Its current features do not establish a breakout advantage. Continue with a narrow launch and validate repeat usage before expanding features.
+On November 15 the owner authorized an unsigned public Mac developer preview, a real 45–60-second demonstration, community documents, `.sql` opening and easier local agent setup. The owner reports four or five testers and several feedback fixes; this is founder-reported evidence, not a completed independent cohort study. Signed distribution remains a future quality goal and is not a prerequisite to this explicitly labelled developer preview. Current execution/verification is recorded in RELEASE-VALIDATION.md; older broad-release recommendations below do not revoke this authorization.
 
-Assumptions: one founder, a small budget, equal adoption and revenue goals, and some beta users whose repeat usage is not yet measured. Day 1 starts when the founder enrolls the validation cohort; these dates are relative, not claims that work has happened.
+## Decision
 
-Research snapshot: October 19, 2026. The following are vendor-documented capabilities, not independently tested guarantees. Recheck material claims and pricing before publishing comparisons.
+**Launch a focused, free, open-source public beta within seven days if the installation and trust gates pass. Keep AGPL-3.0-only. Recommend a TableIQ GitHub organization. Do not introduce a paid individual tier at launch. Test everyday-client and agent demand separately; compare paid support, future individual value and team demand before choosing a paid product.**
 
-| Competitor | Evidence | Implication |
-|---|---|---|
-| [dbx](https://github.com/t8y2/dbx) | Apache-2.0, 100+ database profiles, AI, MCP permission modes, desktop/web/Docker; roughly 27,200 stars at research time | Free, broad, lightweight and MCP-enabled are occupied positions. Stars show attention, not revenue or retention. |
-| [TablePro](https://tablepro.app/features/ai-mcp) | Free Mac AI/MCP features, per-connection read-only defaults for external clients, permission checks and local activity logging | Mac polish plus free agent access is not unique. |
-| [Tabularis](https://tabularis.dev/wiki/mcp-readonly-mode) | Database-enforced read-only sessions for built-in PostgreSQL, MySQL/MariaDB and SQLite drivers; plugin drivers have different protection | Database-level enforcement is not an exclusive distinction. |
-| [DataGrip](https://blog.jetbrains.com/datagrip/2026/08/26/ai-agents-in-datagrip/) | Built-in MCP tools and database skills for agents | Customers can gain agent access without switching clients. |
-| [Supabase MCP](https://supabase.com/docs/guides/ai-tools/mcp) | Direct project-scoped and read-only access | Some developers need no additional desktop client. |
-| [Bytebase](https://www.bytebase.com/database-mcp-server/) | Markets access controls, masking, SQL review, approvals and audit for agents | A future Team product also enters an established category. |
+**Keep the current release account-free and without telemetry. Do not add mandatory Google sign-in, an email gate, or a compulsory questionnaire to collect traction.** Use existing aggregate distribution evidence and an optional beta-feedback panel first. Identity, permission to contact someone, and repeated product use are different measures. The [independent onboarding study](launch/research/2026-11-15-onboarding-and-traction.md) compares current product documentation and source; the [blank traction scorecard](launch/TRACTION.md) turns this decision into a week-one operating plan. Future opt-in install measurement is a separate proposal, not shipped or authorized implementation.
 
-[TablePlus Basic](https://tableplus.com/pricing) was $99 for one device at research time: a perpetual license with one year of updates/support. Renewal buys further updates, not continued access. Do not frame it as a mandatory annual subscription.
+There is a real category and credible demand for lighter database tools and more inspectable agent workflows. There is not yet evidence that TableIQ solves these problems better, that enough people will switch, or that they will pay. Desk research cannot establish product-market fit. The product merits a bounded experiment, not another quarter of feature expansion on faith.
 
-Inference: demand for database and agent workflows exists, but TableIQ must make a recurring task easier enough to justify adoption. Reliability, onboarding and user trust may become advantages; the feature list alone is not one. Do not infer competitor quality from issue counts or an underserved audience from community language alone.
+Research used two rounds of two independent tracks, with no researcher-to-researcher exchange, and a separate reviewer checked each round's conclusions. One researcher used GPT-6.1 Sol; the other and the reviewer used the session's inherited model. Opus 5.5 and “GPT Extra” were unavailable; this is not a cross-provider evaluation. Two additional agents independently researched the broader case groups after the founder requested stronger examples; the [follow-up study](launch/research/2026-11-15-broader-cases.md) records the findings and limits. Model agreement is not customer evidence.
 
-## 2. Audience, task and message
+The previous [October plan](launch/research/2026-10-19-gtm-archive.md) deferred Show HN until longitudinal validation. This revision distinguishes a usable **public beta** from **proven production adoption**: a beta can launch this week; two-week retention cannot be measured in seven days. Post-launch validation remains mandatory for further investment. No launch date overrides a failed trust gate.
 
-**Initial audience:** Mac-based backend developers at small software teams who use PostgreSQL and a coding agent regularly. Other supported platforms and engines remain available with their existing support labels. Freeze new engine breadth during this validation period; fix failures in engines target users already need.
+## 1. What problem are we solving?
 
-**Initial task:** investigate a data issue with a coding agent, then inspect the SQL and results in TableIQ.
+Initial delivery scope: Mac/PostgreSQL backend developers. Mac-first is a release-capacity choice, not evidence that this is the largest underserved market. Test two groups: people frustrated by an everyday client workflow, and people already investigating data with a coding agent. Start with local/staging or a sanitized replica; do not encourage a first run on production. Other engines remain available with accurate support labels.
 
-> **Your database and coding agent, in one inspectable workflow.**
+Two recurring jobs to compare: (A) find/filter relevant records, run saved SQL and review a manual correction without setup or interaction friction; (B) investigate a data issue with an existing coding agent, inspect its calls and verify the conclusion in the client. Ask users to try one task beside their existing client; no immediate full switch is required.
+
+Candidate agent message to test:
+
+> **Browse your database. See what your agent runs.**
 >
-> Free, open-source database client with read-only MCP defaults, connection controls, and a local agent activity view.
+> A free, open-source Mac database client with chosen-connection MCP access, read-only defaults, a visible activity log, and staged manual edits.
 
-This is a positioning hypothesis, not a claim of exclusivity. Compare completion of the task with users' existing client and connector. Lead demonstrations with a useful investigation; show a refused write afterward as supporting evidence. A refusal alone does not establish daily value.
+Candidate everyday-client message: “Browse, query and review database edits. Free, with no account required.” This is deliberately factual until responsiveness or switching gains are measured. Test both messages with comparable task links; raw social engagement does not choose the winner.
 
-Preserve the README's free-feature pledge: every engine, MCP and its guard, BYO-key AI, staged edits, SSH tunnels, unlimited connections, and every feature in the first public release remain free. Never gate engines or device count. A possible paid product must add value without taking these away.
+This combines an everyday client with agent visibility. It is a **workflow hypothesis**, not an exclusive feature claim. Users who do not use agents must still find browsing, querying and editing worthwhile. Show that ordinary workflow as a second short demo; do not force AI into every interaction.
 
-### Claims and evidence rules
+Keep two different questions separate:
 
-- Describe controls precisely. Read-only access does not prevent sensitive-data disclosure or expensive queries. A local MCP endpoint does not keep results local when an external agent sends them to its provider.
-- Use sanitized data and a least-privilege database role for onboarding. A production environment tag is not a database permission boundary.
-- Describe protection per engine using [ENGINES.md](ENGINES.md) and the [README limitations](../README.md#known-limitations). Do not generalize PostgreSQL read-only transactions to every driver or promise universal safety.
-- The [scale fixture](../docker/postgres/big.sql) has **20 million real rows**, with planner statistics altered to approximately one trillion, plus a separate two-million-row table without a primary key. It tests large estimates as well as real paging; it does not prove trillion-row performance.
-- Any performance publication must include release/commit, actual row count, schema/indexes, hardware, database version, network latency, cache conditions, query plans, repetitions, median/p95, and end-to-end UI timings separately from database timings. Report the synthetic-statistics test separately. Do not carry forward the old 2 ms headline without that evidence.
-- Publish versioned test methods, permissions, configurations, expected effects, passes, failures and exclusions. Do not condition publication on winning. Passing a suite supports only the tested claims. Report actual effects, not just whether a server returned an error.
-- Our own advertised protections need release evidence. A comprehensive cross-vendor runner is optional research, not a public-launch prerequisite.
+| Hypothesis | Test | What would weaken it? |
+| --- | --- | --- |
+| Developers want a lighter everyday client | Observe an existing task in their current client and TableIQ; measure startup, responsiveness and task completion | Their current tool is already fast enough; migration or missing features outweigh any gain |
+| Agent visibility saves work or increases justified trust | Same investigation with existing MCP/client setup versus TableIQ; counterbalance order | Users never consult Activity, or their existing connector already does the job |
+| Teams will pay for operational control | Interview actual buyers about a recent incident/process; ask for a scoped paid pilot | Individual enthusiasm with no buyer, budget, recurring need or payment commitment |
 
-## 3. Launch sequence and release gates
+Ask “show me the last time this happened,” “what do you use now?”, and “what would make you stop using this?” Avoid “would you like a fast Rust client?” Ask users to complete a task before giving a product tour. Assisted sessions inform usability but do not count as unaided activation.
 
-The founder owns execution. Use the [validation kit](launch/VALIDATION.md) to record evidence and decisions; no customer results are prefilled.
+**Strongest case against continuing:** a saturated client category plus mature free alternatives, overlapping MCP controls, switching costs, incomplete session behavior and a founder supporting many drivers. A good feature list and enthusiastic friends do not overcome those costs. If ordinary SQL usage retains users but MCP does not, change the message. If neither retains users, pause acquisition and feature breadth.
 
-| Period | Actions | Required outcome |
-|---|---|---|
-| Days 1–14 | Interview 10 existing beta users. Observe five doing a sanitized investigation in their current workflow and TableIQ. Begin buyer conversations. | A recurring task, setup obstacles and concrete reasons to return. |
-| Days 15–30 | Grow the target cohort to 20. Fix its three most common blockers. Prepare signed/notarized Mac distribution, a verified update path, setup instructions and security limitations. | Users install, connect, complete the task and return without live help. |
-| Days 31–45 | Publish a short task demo, one landing page and the two [Postgres walkthroughs](launch/POSTGRES-WORKFLOW.md). Submit to relevant MCP directories and one appropriate community per week. | Attribute activated users to their source channel. |
-| Days 46–60 | Launch on Show HN only after the usage and trust gates below pass. Include a working download, synthetic sample data, limitations and two user stories with publication consent. | Convert attention into completed workflows and subsequent returns. |
-| Days 61–90 | Focus on the channel producing retained users. Publish one useful workflow example weekly. Finish buyer interviews and seek paid-pilot commitments. | Evidence of sustained use and commercial interest. |
+## 2. What the market actually shows
 
-If a gate is unmet, move the dependent announcement; the calendar never overrides it. Installation failures count against activation. Fix them and validate a new, explicitly identified cohort rather than removing failed participants.
+Vendor descriptions are not independently tested performance or security guarantees. Prices are USD as observed November 15; recheck before publishing a comparison.
 
-### Public release checklist
+| Alternative | Verified public offer | Implication for TableIQ |
+| --- | --- | --- |
+| [TablePlus](https://tableplus.com/pricing), [MCP docs](https://tableplus.com/docs/preferences/mcp) | $99 Basic perpetual license, one device, one year of updates/support; built-in MCP with scoped tokens, read-only permissions and approval/activity controls | Even the incumbent already has agent access. It is native; Rust does not establish a speed advantage. Renewal is optional for continued use. |
+| [TablePro](https://tablepro.app/pricing), [MCP](https://tablepro.app/features/ai-mcp) | Free engines, SQL/grid, AI/MCP and Safe Mode. Pro $39/year, $4.99/month or $79 once. Team $10/seat/month billed yearly or $12 monthly, minimum two seats. Logs calls and applies scoped access controls | Both the free-client pitch and proposed team expansion have direct competitors. |
+| [Tabularis](https://tabularis.dev/wiki/intro), [read-only details](https://tabularis.dev/wiki/mcp-readonly-mode) | Apache-2.0; Tauri/Rust + React, MCP, read-only sessions on built-in drivers, audit/approval controls | Almost the same technology story. “Rust + MCP + free” is not a differentiated position. |
+| [dbx](https://github.com/t8y2/dbx) | Apache-2.0, broad database profiles, desktop/web/Docker, AI and MCP | Do not compete on engine count. Profiles and full native driver support are different claims. |
+| [Beekeeper Studio](https://www.beekeeperstudio.io/pricing/) | Free Community; paid desktop editions, support and business capabilities | A free/paid model can work; its existence does not prove TableIQ's willingness to pay. |
+| [Supabase MCP](https://supabase.com/docs/guides/ai-tools/mcp) | Project scoping and read-only options | Some users need an existing connector, not another desktop app. |
+| [Bytebase MCP](https://www.bytebase.com/database-mcp-server/) | Markets agent identity, governed reads/changes, masking and policy | Enterprise governance is another competitive market, not an empty upsell opportunity. |
 
-- [ ] Public repository under AGPL-3.0-only (with documented third-party exceptions), with history checked for secrets and the free-feature pledge intact.
-- [ ] Signed/notarized Mac release installs and starts on supported clean Macs; publish actual architecture, OS requirements and artifact sizes.
-- [ ] A verified update path preserves connections/settings. Until an auto-updater ships, document and test manual replacement; never advertise automatic updates as available.
-- [ ] Real release-build checks cover the investigation, refused writes, unshared connections, stale/invalid tokens, disconnect/reconnect and error recovery. No unresolved critical data-loss or access-control defects in the advertised workflow.
-- [ ] Publish methods and engine limitations alongside the relevant test evidence. Mock-browser QA is insufficient for a native release.
-- [ ] Working download, setup walkthrough, useful task demo and two consented user stories. Download and package-manager links must work before being advertised.
-- [ ] Activation, repeat-use and switching gates in section 4 pass before Show HN.
+Developer discussion supports the pain but also the objections. A recent [TablePro HN thread](https://news.ycombinator.com/item?id=50243653) mentions heaviness and specific switching blockers: formatting, app-wide keyboard navigation and database debugging. A [Rustable thread](https://news.ycombinator.com/item?id=50347524) challenges snarky copy and “native” claims. A [Tablething launch](https://news.ycombinator.com/item?id=48577807) received little visible engagement despite a local-first/BYOK proposition. These are small, selected discussions, not a representative market survey or a forecast of launch outcomes.
 
-Mac/Postgres is the launch focus. Windows/Linux packaging and Homebrew are useful follow-ups, not reasons to postpone a verified Mac release. Support labels must distinguish tested releases from source-build availability.
+### More useful references than a trending-repository list
 
-### Distribution priorities
+The expanded [case study](launch/research/2026-11-15-broader-cases.md) prioritizes similarity and attributable evidence rather than popularity.
 
-1. Existing beta users and voluntary referrals.
-2. Practical tutorials, relevant MCP directories and communities whose posting rules allow the contribution.
-3. Show HN after the gates pass. Use [draft copy](launch/ASSETS.md), a working artifact and reproducible examples.
-4. Product Hunt is optional; no arbitrary star threshold. Defer paid advertising until activation and retention work.
+| Reference | Concrete lesson | TableIQ action |
+| --- | --- | --- |
+| [Bruno migration guide](https://blog.usebruno.com/postman-to-bruno-migration-guide) | A structural workflow difference plus a practical move from the incumbent | Make the first connection and saved SQL easy to bring over; invite a side-by-side trial |
+| [Beekeeper business account](https://www.beekeeperstudio.io/blog/building-a-sustainable-open-source-project) | Paid desktop features can fund maintenance; downloads/donations need not | Compare individual productivity and support revenue with the team hypothesis |
+| [Yaak source/business model](https://yaak.app/about) | MIT source and paid official commercial builds coexist; this is not a generic source-available license | Investigate paid convenience/support; do not copy binary restrictions into current AGPL/free promises |
+| [DBDelve launch](https://news.ycombinator.com/item?id=50427934) | Recent direct competitor shows real interaction and migration, while users question missing workflows | Make the ordinary-client demo first-class; verify switching costs and measure any performance hook |
+| [Harlequin history](https://harlequin.sh/about) | One clear database job with relevant terminal/framework communities | Match a tutorial to a real workflow/community rather than advertise engine count |
+| [Hoppscotch launch account](https://dev.to/liyasthomas/postwoman-v1-0-a-free-fast-beautiful-alternative-to-postman-mn0) | Immediate trial and useful developer content can accompany distribution | Public download plus first-task guide; avoid adding a browser port this week |
+| [Ghostty reflection](https://mitchellh.com/writing/ghostty-1-0-reflection) | Beta feedback and support bandwidth matter; restricted access also frustrates users | Small feedback cohorts without manufactured scarcity |
 
-Publish useful workflow examples weekly. Release software when changes pass the relevant checks, not to manufacture an engine-count headline. Do not scrape company domains from stars/issues as a substitute for willing buyer contacts.
+These examples change the earlier plan: MCP is one acquisition hypothesis, and team governance is one revenue hypothesis. Neither is established as the best route. Founder audiences, funding, product age and later-edited retrospectives limit causal conclusions.
 
-## 4. Success measures and the day-90 decision
+### Secondary packaging references: OpenCode and Rerun
 
-These are chosen experiment thresholds, not industry benchmarks or forecasts.
+[OpenCode](https://opencode.ai/) has a clear category, immediate installation, provider choice and an extensible ecosystem. Its [YC profile](https://www.ycombinator.com/companies/opencode) connects it to the makers of SST/OpenNext; it is not a clean comparison with a new solo project's starting distribution. Its [repository](https://github.com/anomalyco/opencode) uses MIT.
 
-| Measure | Definition | Gate |
-|---|---|---|
-| Activation | Target participant completes the investigation, inspects SQL/results and identifies the relevant MCP Activity entry within 15 minutes of first launch, without live help | At least 14 of the fixed 20-person cohort |
-| Repeat use | An activated participant repeats the workflow on a separate occasion during days 8–14 after their first launch | At least 8 activated participants |
-| Switching evidence | Participant names a recurring task for which they now prefer TableIQ over the prior workflow | At least 5 cohort participants |
-| Trust | Release-specific refusal, isolation and recovery evidence; critical defects resolved | Required before public launch |
-| Revenue | Completed buyer interviews and written, conditional paid-pilot commitments | 5 interviews and 2 commitments by day 90 |
+The founder confirmed [Rerun](https://github.com/rerun-build/rerun) is **rerun-build**, not the robotics visualization project rerun-io. It is not the strategic benchmark. It presents self-hosting under AGPL alongside a [paid hosted service](https://rerun.build/pricing). Borrow the visible outcome, clear free/paid boundary and understandable first task. A desktop client does not automatically have Rerun's hosted-compute revenue opportunity.
 
-Keep telemetry off by default. Use consented observation and scheduled follow-ups. Record nonresponses, incomplete windows and withdrawals separately; never silently remove them from denominators. Assisted sessions inform usability but do not count as unaided activation. The kit defines the recording fields and follow-up script.
+Neither project's stars prove what caused growth or predict revenue. Avoid choosing only viral winners. OpenCode's [May 2025 Show HN](https://news.ycombinator.com/item?id=43988566) shows three points, while a [July submission](https://news.ycombinator.com/item?id=44482504) shows 319 at this snapshot. An initial quiet launch does not determine the outcome. A shareable demo creates an opportunity for attention; a useful product, working install and responsive maintainer give that attention somewhere to go. No guaranteed viral recipe exists.
 
-Stars, downloads, contributors and directory listings are secondary distribution signals. Downloads include upgrades/retries; npm downloads do not establish successful MCP use. Report each channel's enrolled, activated and returning users with sample size, not a conversion claim from tiny counts.
+## 3. One-week execution plan
 
-At day 90:
+Proposed dates if starting next Monday: **November 16–22, 2026, IST**. Shift dependent actions if a gate fails. Assume one founder, existing app, a small cash budget, and 25–35 focused launch hours excluding major bug fixes; this is a planning estimate. Freeze new engines, redesigns and speculative billing/SSO work.
 
-- Strong repeat use plus paid commitments: continue the focused workflow and scope one paid pilot.
-- Strong repeat use without payment: adoption has support; the business thesis remains unproven. Continue buyer discovery without a speculative Team build.
-- Weak repeat use: revisit the task and audience before adding engines or acquisition spend.
+| Day | Founder actions | Done means |
+| --- | --- | --- |
+| 1 — Mon Nov 16 | Choose one ordinary Postgres task and one agent investigation. Identify 10 willing testers across both groups; schedule five observations and two buyer/support conversations. Start the [traction scorecard](launch/TRACTION.md), assign campaign links, and arrange an optional beta-feedback route. Inventory release blockers. Choose canonical GitHub home and license policy. | Named owner, prioritized blockers, booked sessions, agreed metric definitions; no invented testimonials or usage counts |
+| 2 — Tue Nov 17 | Produce the exact signed/notarized Mac candidate if signing is available. Run artifact/native trust checks, clean installation and replacement/update preservation. Prepare matching source/notices/checksums. Review repository history before public visibility. | Candidate passes [release checklist](launch/RELEASE-VALIDATION.md); supported OS/architecture actually tested; anonymous source/download access checked when made public |
+| 3 — Wed Nov 18 | Observe five users, including at least three outside close friends/collaborators. Observe ordinary-client and agent tasks separately against the current workflow; fix the two most common setup failures. Draft a short switching guide using existing connection setup. | At least four of five complete their predefined task correctly in 15 minutes unaided; report task/group, all failures and any separate retest cohort |
+| 4 — Thu Nov 19 | Record real-app investigation and everyday-client clips. Give each a distinct first-task link; choose the main clip from observed user value. Setup walkthrough is optional. Reconcile README/site/release links and versions. Add thumbnail/video near README top. | Usable captions, synthetic data, accurate permissions, working video link and public source/install; no speed claim without measured evidence |
+| 5 — Fri Nov 20 | Release labelled public beta, publish founder's original explanation and demo on personal X/LinkedIn accounts; offer it to willing testers. Submit accurate metadata to relevant MCP directories after checking eligibility. | One canonical release URL; install/support issues triaged; voluntary source attribution recorded |
+| 6 — Sat Nov 21 | Submit one Show HN **only if gates pass and founder can stay available**. Founder personally writes title, explanation and replies. Link to a runnable release, source, demo and synthetic task. | No sign-up gate; human discussion of tradeoffs; 2–4 hours reserved for support, with follow-up next day |
+| 7 — Sun Nov 22 | Share a tailored practical walkthrough in one relevant Reddit/community venue whose rules permit it; publish a DEV/Hashnode technical explanation. Product Hunt is optional if assets/support capacity exist. Summarize installation and activation outcomes. | Channel log, top three objections, fixes and optional D7/D14 beta-feedback follow-ups scheduled relative to each first launch; later investment reviews retained |
 
-## 5. Commercial experiment
+“Every platform in a week” is an asset-reuse goal, not an obligation to blast every community. GitHub, owned social, one HN submission and one suitable community are the core. If HN on a weekend is impractical, move that submission; there is no evidence here for a magic posting time. Product Hunt, YouTube discovery, newsletters and additional subreddits can follow without holding the release hostage. Existing beta testers may receive explicit invitations to test; never request coordinated votes or promotional comments.
 
-Begin conversations now with engineering leads and voluntary introductions from beta users. Ask about existing agent access, policy enforcement, audit needs, approval budgets and buying authority. Several buyers must identify the same problem before a commercial build is scoped.
+### Hard gates for the broad binary launch / Show HN
 
-Test **$99 per team per month for five users** as an interview hypothesis for a narrowly agreed future Team pilot. It is not a published plan, a working paid feature or validated willingness to pay. Seek two written commitments conditional on an agreed deliverable, acceptance test, delivery window and billing start. Record objections and alternatives; do not count polite interest or a free trial as a paid commitment.
+- Public source and downloadable matching source for the distributed build; no repository invitation or email requirement. Review full history, release assets and tracked fixtures for secrets; rotate any exposed credentials before publication.
+- Exact Mac candidate signed/notarized, installs on a clean supported Mac, and passes native investigation, staged-write/recovery, token rotation, unshared-connection refusal and permission checks. No critical data-loss/access defects in the advertised workflow. Source tests alone are insufficient.
+- Manual replacement/update path preserves connections, keychain access, settings and history; automatic updates need not ship this week.
+- Five-person usability check above; no unexplained installation failure. This is a small beta readiness signal, not statistical proof of demand.
+- Working demo and reproducible synthetic dataset; platform/engine limitations next to relevant claims. Two customer stories are useful, not a launch requirement; publish only approved wording.
 
-SSO, shared vaults, central policy, audit export, web hosting and licensing are possible backlog items, not a bundle to build in advance. Select one paid problem from evidence and specify that pilot separately. Retain the free-feature pledge in every offer.
+If signing or critical native checks cannot finish this week, publish a clearly labelled source/limited preview announcement and recruit testers on disposable data. **Do not describe it as a production launch.** Source-build or unsigned early work can qualify for Show HN under its rules, but our recommendation is to reserve the broad TableIQ binary announcement until strangers can try it with low friction. No waitlist-only Show HN. The date never justifies bypassing safety tests.
 
-At the test price, 100 retained paying teams would produce $9,900 MRR before costs. This is arithmetic, not a forecast. Sponsorship can help support the open-source project but is not the revenue thesis.
+### Channel-specific execution
+
+- **GitHub:** public release, useful README, topics, issue templates, CONTRIBUTING/SECURITY, clear support scope, and three genuinely scoped newcomer issues. Keep the founder visible. Respond within a realistic stated window; do not promise 24/7 support.
+- **X / LinkedIn:** native short clip, concrete question/result, free/AGPL disclosure, canonical download/source link; founder explains why they built it. First frame must show useful work, not a logo animation.
+- **Hacker News:** founder writes and posts personally. [Current guidelines](https://news.ycombinator.com/newsguidelines.html) prohibit generated or AI-edited text and automated posting. Use this research as background, not submission prose. [Show HN rules](https://news.ycombinator.com/showhn.html) require something users can try, and forbid soliciting votes/comments. Do not delete/repost to chase visibility.
+- **Reddit:** check current rules/pinned promotion threads for r/PostgreSQL, r/selfhosted, r/opensource or a relevant agent community; choose only ones where this desktop workflow fits. Disclose authorship and ask about one concrete workflow. r/rust content should explain a technical tradeoff, not just a Rust product advertisement.
+- **DEV / Hashnode / YouTube:** publish the reproducible investigation or an honest paging/benchmark explanation. Tutorials should help even readers who do not install.
+- **MCP directories / integration communities:** verify native HTTP transport, supported clients and submission requirements. The shipped server is desktop-hosted; don't invent a standalone npm server. One directory listing is discovery, not a partnership.
+- **Product Hunt:** optional secondary exposure; concise demo, working release and available support. Avoid paid placements and preparation that displaces release fixes.
+
+## 4. README, video and performance proof
+
+Current README already has screenshots, features, AGPL disclosure and a walkthrough. The missing piece is motion showing a completed task. The linked preview is v0.8.11 while local manifests are v0.8.14; choose and verify the actual launch version before changing the link. Do not advertise v0.9.0 until it exists.
+
+Recommended README order: one concrete sentence → linked demo thumbnail with duration → correct download/platform/source labels → first task/sample data → why use it and limits → engine matrix → free pledge/license → contributing/development. Keep long details collapsed. Video is proof of interaction, not a substitute for readable setup instructions or accessible text.
+
+[Shot list and acceptance criteria](launch/ASSETS.md) specify two clips. The agent demo must show schema discovery, a meaningful join and the resulting finding, then human verification in the query grid, the Activity entry and a read-only refusal. The existing supplied-CTE tutorial remains a transport smoke test; it hands over the answer and is too weak as the main investigation demo. Prepare a small seeded orders/payments/shipments dataset for the recording. The everyday-client demo shows browsing and a **human-staged** correction reviewed before commit. Either can lead the launch provisionally; choose from observed task value and review return behavior before treating that choice as validated. Activity visibility does **not** mean every agent query pauses for approval or every MCP write enters the human edit queue. Do not imply controls the shipped product lacks. Activity is an in-memory ring of up to 1,000 events: redacted SQL/error text capped at 4 KiB, counts, timing, client label and outcome. It does not store full result rows or provide a durable audit trail. The client label is User-Agent metadata, not authenticated individual identity. Inspect data in the query grid; a later rerun can differ as data changes.
+
+**Rust claim:** “Rust core; uses the system webview” is factual. “Faster than TablePlus” is unproven. TablePlus is also native; database execution, network, driver, result serialization and grid rendering all influence timings.
+
+If measuring, use the same machine/database/network, app versions, projections, row limits, ordering, indexes and cache conditions. Measure cold/warm launch, idle/active process-tree memory, first-page rendering, scrolling, large-result interaction and user-task completion separately from server SQL time. Use repeated trials (target at least 20), disclose median/p95 and failures, and publish raw runs/method. Compare equivalent work, including TablePro/Tabularis if feasible. Do not make the whole benchmark a launch dependency.
+
+The scale fixture has **20 million actual rows**, planner stats altered to approximately one trillion, and another two-million-row table. Neither the stats nor a first-page screenshot establish trillion-row throughput. Publish neutral results even if TableIQ loses. A fair reproducible benchmark is more credible and shareable than an unexplained speed multiplier.
+
+## 5. Free/paid and how to earn money
+
+**Launch with one complete free application. The earlier team-only revenue recommendation was too narrow.** Keep every current/first-release promise: all engines, MCP/guard, BYOK/local AI, staged edits, SSH and unlimited connections. Do not reclassify existing features as paid or announce unbuilt plans.
+
+Compare these economic paths before choosing one:
+
+| Path | Buyer/value to test | Near-term action | Main constraint |
+| --- | --- | --- | --- |
+| Paid onboarding, migration help or support | A person/team paying for setup and a named support outcome | Test a bounded engagement with explicit hours, scope and exclusions | Founder capacity; avoid lifetime/unlimited support commitments |
+| New post-launch individual productivity value | A professional who repeatedly loses time on an unserved task | Observe the task and test a conditional paid prototype before choosing a feature/price | Existing features and promises stay free; paid architecture/rights and public wording need review |
+| Team operations | A budget owner needing central policy or durable cross-device records | Buyer interviews and a narrowly accepted pilot | Competes with existing tools; central enforcement is infrastructure, not a local toggle |
+| Official-build commercial licensing | Companies paying for supported official distribution | Research alternative economics only; no launch-week change | Yaak's source/binary terms differ; copying them can conflict with AGPL rights and TableIQ's free pledge |
+| Sponsorship | Supporters voluntarily funding maintenance | Optional sponsor link | Unpredictable income; not the business plan |
+
+Beekeeper's paid local/business offer supports keeping the individual path open. Yaak's [first-person report](https://yaak.app/blog/funding-open-source) describes both revenue and procurement/nonpayment/forking problems. These are examples, not proof of TableIQ demand. Do not build cloud sync or SSO just to create a paid SKU. The founder's support burden and maintenance appetite belong in the decision.
+
+Start with paid assistance around the free product while conducting individual and team interviews. Ask about a recent problem, existing alternatives, current spend, buying authority and acceptance criteria. Record refusals. A free user can be valuable without becoming an enterprise lead; do not force every user into the team funnel.
+
+The prior **$99/team/month for up to five users** remains only a private price hypothesis for the team path. Do not let it anchor all buyer interviews or turn it into the assumed business. TablePro's lower team price requires a concrete additional outcome. Seek two written conditional commitments for the **same scoped offer** before building it; commitments for unrelated products are not interchangeable evidence. Payment and renewal provide stronger proof than letters of intent.
+
+For an assistance experiment, first establish actual effort/cost and offer a fixed scope rather than inventing a market-standard price. A future individual paid feature requires its own discovery and commitment evidence. Preserve current free rights and explain any future additive scope clearly; source-visible proprietary code and AGPL code have different obligations.
+
+At $99/team/month, 20 paying teams would be $1,980 gross MRR before costs. That arithmetic applies only if the team experiment wins. Support engagements are service income, annual sales are not monthly subscriptions, and founder-reported revenue elsewhere is not a TableIQ forecast. If people use TableIQ but no offer pays for its maintenance, it may remain a useful open-source project without being a sustainable standalone company.
+
+## 6. License recommendation and limits of this review
+
+**Keep AGPL-3.0-only for the application. Do not switch to MIT to chase stars.** It fits the stated preference for reciprocal improvements and preserving an open core, including network-served modified forks. MIT fits a different priority: minimal reuse friction while permitting proprietary derivatives. AGPL may create procurement friction; count real blocked evaluations rather than assuming all companies reject it.
+
+| Choice | Benefit | Cost |
+| --- | --- | --- |
+| AGPL-3.0-only | Copyleft on covered distributions; additional source-offer obligations for modified versions used for remote network interaction | Integration/legal review friction; cannot assume proprietary linked extensions are permissible |
+| MIT | Simple permissive reuse, including proprietary forks with notices | No requirement for derivative improvements to return; not a monetization mechanism |
+
+AGPL permits commercial use and charging. Merely using the client to access a company's proprietary database does not require open-sourcing that database or unrelated application code. Distribution of covered binaries has corresponding-source obligations; section 13 addresses users interacting remotely with a modified version. It is not a blanket “all SaaS must pay” rule. Separate-process/network integration and combined-work boundaries are fact-specific. Sources: [AGPL text and summary](https://choosealicense.com/licenses/agpl-3.0/), [MIT text](https://choosealicense.com/licenses/mit/), and the repository [LICENSE](../LICENSE).
+
+The checked surface is consistent: root license, root package.json, Rust package, README, license-exceptions document and website license page identify AGPL-3.0-only. This is **not** a complete legal/dependency/provenance audit. Before release, verify rights to all contributed code/assets, generated dependency notices and corresponding-source/build-material delivery. The standalone sample plugin has no manifest license field; make its intended license explicit before inviting plugin authors. Keep database trademarks/font/dependency licenses separate.
+
+Previously released Apache-2.0 code remains available under its original grant; the AGPL change cannot revoke it. A paid proprietary edition or alternate commercial license requires sufficient rights from all relevant copyright holders and compatible dependency terms. A DCO is not a relicensing grant; don't promise dual licensing without a rights review. Paid AGPL software/services are also possible. For an unbuilt separate paid service, review the actual code/linking boundary before selecting its license. Revisit permissive licensing only if adoption/reuse goals change and the necessary rights exist.
+
+## 7. Personal account or TableIQ organization?
+
+**Recommend a product organization before broad launch if the desired name is available.** Example `TableIQ` / `tableiq-dev`; availability and trademark clearance are unverified. Keep `Table-IQ` as repository name if avoiding unnecessary renames. An organization is a permission/continuity/brand choice, not evidence of quality or a viral-growth tactic. Keep Rudresh's personal account visibly attached as founder/maintainer and use it for the launch story.
+
+Use GitHub's **transfer**, not a new empty repository or copied history. [GitHub documents](https://docs.github.com/en/repositories/creating-and-managing-repositories/transferring-a-repository) preservation of issues, pull requests, stars and Git history, with old repository URL redirects. Audit actual settings after transfer; redirects do not fix all integrations. Do not recreate the old owner/repo path because that can break redirects.
+
+Checklist: org ownership/2FA/recovery; least-privilege collaborator roles; canonical URL/website/issue links; Actions and release permissions/secrets; Cloudflare deployment, webhooks and OIDC if used; release assets/source links; local remotes and any package-manager references; license/NOTICE legal owner accuracy. An organization does not by itself transfer copyright or create a legal company. Test old/new URLs while logged out. If the transfer threatens release infrastructure, defer it instead of losing the launch week. No organization or remote change was executed during this research.
+
+## 8. Scorecard and investment limits
+
+Treat the following as chosen experiment thresholds, not market norms. Keep identities and observation notes private and report full denominators. The current release adds no telemetry; consented observation and voluntary follow-ups supply activation/return evidence. Track channel attribution with existing aggregate referrers/UTMs where supported and an optional “where did you find us?” question, not scraped stargazer outreach. A campaign link identifies distribution source, not an installed person; do not infer an installation's source or retention from a download link alone.
+
+### Account-free onboarding and week-one traction
+
+Use the [blank operating scorecard](launch/TRACTION.md). Log each channel's visits where available, download-link clicks, release-asset requests and voluntary feedback enrollments separately. Exclude known automated/repeated requests only where the data supports it; record the method and unknowns. Never relabel downloads as people, installations or active users. Stars and video views describe attention. Report observed activation and self-reported return use with their cohort sizes and collection methods.
+
+Offer a voluntary feedback relationship through an existing support route or founder-managed form: optional email, intended workflow/database, source, and explicit permission for the planned follow-ups. No account, company/name requirement or download gate. Keep newsletter permission separate, and store contact details outside the public repository. Ask D7 feedback participants whether they completed a real task and used TableIQ again; D14 asks about qualifying return tasks during days 8–14. These contacts are relative to each participant's first launch. The fixed cohort's day-8/day-14 contacts and days 8–14 investment criterion in [VALIDATION.md](launch/VALIDATION.md) remain unchanged; an optional D7 check-in is early feedback, not a substitute for the later return window. Week one cannot establish D14 retention.
+
+If follow-up burden or missing behavioral evidence later justifies measurement, scope a separate **default-off, explicit opt-in pseudonymous install** proposal. Publish exact events and retention/deletion controls before implementing a collector. Generate an ID only after consent; include no SQL, results, credentials, hostnames, file paths, database/table names or raw errors. Such IDs identify app data stores, not verified people; reinstalls, multiple devices, offline use and opt-in selection bias remain. Show activation/return denominators for that consented cohort and never extrapolate its rate to every download. This plan does not implement or authorize auth, analytics, a collector or website tracking.
+
+Revisit accounts when shared workspaces, hosted sync, billing, paid model quotas or organization access actually require identity. Require sign-in at the relevant service boundary and choose providers from customer needs. Mandatory Google-only sign-in merely to obtain user details is not the current strategy. The earlier acquisition plan needed a clearer feedback and retention loop; adding a login wall would not by itself supply that evidence.
+
+**Activation:** install → connect to disposable Postgres → complete a predefined task correctly within 15 minutes unaided. Ordinary-client task: find/filter records, run SQL, review and commit a manual edit, verify the result. Agent task: complete investigation, inspect the call and verify SQL/results in the grid. Choose and freeze the task/eligibility for each cohort; never pool different tasks to inflate activation. After exploratory observations, select one segment for the fixed 20-person longitudinal cohort; if testing both, enroll/report separate cohorts. Installation failures count. Downloads, stars and video views are secondary attention signals.
+
+| When | Decision evidence | Action |
+| --- | --- | --- |
+| Launch week | Five-person readiness check above; working public install/source; no critical trust failure | Public beta if passed; otherwise limited preview and fix blockers |
+| Day 14 after launch | Recruit a fixed 20-person target cohort; aim for ≥14 unaided activations. For each activated user, measure a repeat qualifying workflow on days 8–14 after first use; aim for ≥8 returners after full windows mature, and ≥5 naming a recurring task they prefer in TableIQ | Cohort enrollment and data review start by day 14; final retention readout waits until each full window matures. Report late enrollments/nonresponses rather than inventing retention |
+| Day 30 | Two independent cohorts if feasible; repeat use/switching reasons; at least five interviews across relevant individual/team/support buyers and two commitments to the same scoped paid offer | Continue focused product if use repeats. Build one paid pilot or deliver one support offer only if its buyer/rights/cost conditions pass. Revenue remains unproven until customers pay |
+| Day 60 | Recurring usage and paid-pilot acceptance/payment evidence | Invest only where both user value and support economics hold; if two cohorts still fail repeat-use goals, pause new engines, paid ads and speculative team features and revisit audience/task |
+
+Separate attrition causes: cannot install; cannot connect; missing required workflow; no recurring need; doesn't trust it; existing setup is better. Choose a follow-up fix from evidence. A great HN response with poor return use is a distribution success and a product warning. A quiet launch with a small returning cohort can be worth continuing.
+
+Suggested week-one cash cap: **$200 incremental launch spend**, excluding existing equipment and any locally priced signing enrollment/tax. Prefer $0 on ads/paid launch services. This is a founder budget guard, not a vendor price estimate. If the scope cannot fit, cut channels/assets before cutting release checks. Reassess founder time and sustainable support load at day 30.
+
+## Immediate priority order
+
+1. Verify public source/download and Mac release readiness.
+2. Observe five target users across the two predefined tasks; identify the strongest reason to return and the largest switching friction.
+3. Record real interaction and place a linked demo near the README top.
+4. Launch the free beta with honest limits and a visible maintainer.
+5. Measure return use and buyer commitments before further expansion.

@@ -54,6 +54,15 @@ export const tabGuard = {
   async openQuery(...a: Parameters<TabActions["openQuery"]>) {
     if (await guard("switch")) useTabs.getState().openQuery(...a);
   },
+  /** An OS-opened file belongs to the connection selected when its guard began.
+   *  A connection change during the confirmation must not redirect its contents. */
+  async openQueryForConnection(connId: string, sql: string, title: string): Promise<boolean> {
+    if (useConnections.getState().active?.id !== connId) return false;
+    if (!(await guard("switch"))) return false;
+    if (useConnections.getState().active?.id !== connId) return false;
+    useTabs.getState().openQuery(sql, title);
+    return true;
+  },
   async openErd() {
     if (await guard("switch")) useTabs.getState().openErd();
   },

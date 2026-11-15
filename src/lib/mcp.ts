@@ -28,7 +28,30 @@ export function mcpUrl(port: number): string {
 
 /** Claude Code: `claude mcp add` over Streamable HTTP with the bearer header. */
 export function claudeCodeCommand(port: number, token: string): string {
-  return `claude mcp add --transport http tableiq ${mcpUrl(port)} --header "Authorization: Bearer ${token}"`;
+  // A copied command is shell code, even though today's generated tokens are hex.
+  const header = `Authorization: Bearer ${token}`.replace(/'/g, "'\\''");
+  return `claude mcp add --transport http --scope user tableiq ${mcpUrl(port)} --header '${header}'`;
+}
+
+/** Codex CLI, app and IDE extension share ~/.codex/config.toml. Native HTTP needs
+ *  no Node bridge. JSON string quoting is valid for these TOML basic strings. */
+export function codexConfig(port: number, token: string): string {
+  return `[mcp_servers.tableiq]\nurl = ${JSON.stringify(mcpUrl(port))}\nhttp_headers = { Authorization = ${JSON.stringify(`Bearer ${token}`)} }`;
+}
+
+/** OpenCode 2 moved named servers under mcp.servers; keep an explicit V1 option
+ *  instead of silently emitting the obsolete shape to current installations. */
+export function openCodeConfig(port: number, token: string, version: "v1" | "v2" = "v2"): string {
+  const server = {
+    type: "remote",
+    url: mcpUrl(port),
+    oauth: false,
+    headers: { Authorization: `Bearer ${token}` },
+  };
+  return JSON.stringify({
+    $schema: "https://opencode.ai/config.json",
+    mcp: version === "v2" ? { servers: { tableiq: server } } : { tableiq: server },
+  }, null, 2);
 }
 
 /** Claude Desktop (`claude_desktop_config.json`) reaches an HTTP server through the
@@ -39,7 +62,7 @@ export function claudeDesktopConfig(port: number, token: string): string {
     mcpServers: {
       tableiq: {
         command: "npx",
-        args: ["mcp-remote", mcpUrl(port), "--allow-http", "--header", "Authorization:${AUTH_HEADER}"],
+        args: ["-y", "mcp-remote", mcpUrl(port), "--allow-http", "--header", "Authorization:${AUTH_HEADER}"],
         env: { AUTH_HEADER: `Bearer ${token}` },
       },
     },

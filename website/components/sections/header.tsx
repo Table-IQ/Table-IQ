@@ -2,7 +2,7 @@ import Link from "next/link";
 import { BrandLogo } from "@/components/blocks/brand-logo";
 import { ThemeToggle } from "@/components/motion/theme-toggle";
 import { Button } from "@/components/ui/button";
-import { GITHUB, NAV } from "@/lib/site";
+import { DOWNLOAD_URL, GITHUB, NAV } from "@/lib/site";
 
 export function Header() {
   return (
@@ -15,14 +15,14 @@ export function Header() {
           {NAV.map((n) => (
             <Link key={n.href} href={n.href} className="hidden min-h-11 items-center px-3 text-sm text-ink-2 hover:text-ink lg:inline-flex">{n.label}</Link>
           ))}
-          <a href={GITHUB} className="hidden min-h-11 items-center px-3 text-sm text-ink-2 hover:text-ink sm:inline-flex" title="Repository access required while TableIQ is in preview">GitHub</a>
+          <a href={GITHUB} className="hidden min-h-11 items-center px-3 text-sm text-ink-2 hover:text-ink sm:inline-flex">GitHub</a>
           <div className="hidden md:block">
-            <Button href="/#download" variant="secondary">Get TableIQ <span className="text-xs text-muted">Coming soon</span></Button>
+            <Button href={DOWNLOAD_URL} variant="secondary">Download preview</Button>
           </div>
           <details className="relative lg:hidden">
             <summary className="flex min-h-11 cursor-pointer list-none items-center rounded-pill border border-rule px-4 text-sm [&::-webkit-details-marker]:hidden">Menu</summary>
             <div className="absolute right-0 mt-2 grid w-60 gap-1 rounded-card border border-rule bg-paper p-2 shadow-xl">
-              {[...NAV, { href: GITHUB, label: "GitHub (access required)" }, { href: "/#download", label: "Get TableIQ (coming soon)" }].map((n) => (
+              {[...NAV, { href: GITHUB, label: "GitHub" }, { href: "/#download", label: "Download developer preview" }].map((n) => (
                 <a key={n.href} href={n.href} className="flex min-h-12 items-center rounded-pill px-3 text-ink-2 hover:bg-paper-2 hover:text-ink">{n.label}</a>
               ))}
             </div>

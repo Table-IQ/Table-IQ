@@ -102,3 +102,38 @@ describe("tabGuard", () => {
     spy.mockRestore();
   });
 });
+
+
+describe("SQL files use the selected connection and preserve staged work", () => {
+  const active = (id: string) => ({ id, engine: "postgres" } as NonNullable<ReturnType<typeof useConnections.getState>["active"]>);
+
+  it("appends an editor document without replacing the existing query", async () => {
+    seed(false);
+    useConnections.setState({ active: active("one") });
+    useTabs.getState().openQuery("SELECT 'unsaved';", "Keep me");
+    expect(await tabGuard.openQueryForConnection("one", "DROP TABLE orders;", "review.sql")).toBe(true);
+    expect(useTabs.getState().tabs.filter((t) => t.kind === "query").map((t) => t.sql)).toEqual(["SELECT 'unsaved';", "DROP TABLE orders;"]);
+  });
+
+  it("does not open or discard the document when staged edits are retained", async () => {
+    seed(true);
+    useConnections.setState({ active: active("one") });
+    confirm.mockResolvedValue(false);
+    expect(await tabGuard.openQueryForConnection("one", "SELECT 1;", "file.sql")).toBe(false);
+    expect(useTabs.getState().activeKey).toBe(orders.key);
+  });
+
+  it("cannot redirect a file if the selected connection changes during confirmation", async () => {
+    seed(true);
+    useConnections.setState({ active: active("one") });
+    const connectionStore = await import("./connectionStore");
+    let resolve!: (ok: boolean) => void;
+    const spy = vi.spyOn(connectionStore, "canLeaveSession").mockImplementation(() => new Promise<boolean>((r) => { resolve = r; }));
+    const opened = tabGuard.openQueryForConnection("one", "SELECT 1;", "file.sql");
+    useConnections.setState({ active: active("two") });
+    resolve(true);
+    expect(await opened).toBe(false);
+    expect(useTabs.getState().tabs.some((t) => t.title === "file.sql")).toBe(false);
+    spy.mockRestore();
+  });
+});

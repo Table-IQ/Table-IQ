@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { create } from "zustand";
 import { AiSettingsForm } from "./AiSettings";
 import { McpSettings } from "./McpSettings";
+import { UpdateSettings } from "./UpdateSettings";
 import { loadRailLabel, saveRailLabel, type RailLabel } from "./ConnectionRail";
 import {
   clampEditorFontSize,
@@ -20,7 +21,7 @@ import { DEFAULT_HIDDEN_TOOLBAR_IDS, DEFAULT_TOOLBAR_PREF, TOOLBAR_ITEMS } from 
 import { loadBackupToolDir, saveBackupToolDir } from "../lib/backup";
 import { detectBackupTools, type BackupToolInfo } from "../lib/commands";
 
-export type Section = "general" | "editor" | "ai" | "toolbar" | "backup" | "mcp";
+export type Section = "general" | "editor" | "ai" | "toolbar" | "backup" | "mcp" | "updates";
 
 const SECTIONS: { key: Section; label: string }[] = [
   { key: "general", label: "General" },
@@ -29,6 +30,7 @@ const SECTIONS: { key: Section; label: string }[] = [
   { key: "toolbar", label: "Toolbar" },
   { key: "backup", label: "Backup tools" },
   { key: "mcp", label: "MCP" },
+  { key: "updates", label: "Updates" },
 ];
 
 interface SettingsUiState {
@@ -428,6 +430,8 @@ function sectionBody(section: Section) {
       return <BackupSection />;
     case "mcp":
       return <McpSettings />;
+    case "updates":
+      return <UpdateSettings />;
   }
 }
 

@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.8.15 — 2026-11-15 (developer preview)
+
+### Added
+- Connection-screen Settings shortcut beside the theme control, manual update checks and startup notifications for newer downloadable Mac releases. Startup checks can be disabled; installation stays manual and no installation identifier is sent.
+- macOS Open With support for UTF-8 `.sql` scripts up to 4 MiB. Scripts open in new query tabs after choosing a SQL connection; opening never executes them. Existing tabs and staged-edit guards are preserved.
+- Copyable MCP setup for local Codex and OpenCode 2, plus explicit legacy OpenCode 1, Claude Code and Claude Desktop options. The local endpoint is not a hosted/cloud connector.
+- Public-beta contribution, security, conduct, licensing and support guides, issue templates and a reproducible synthetic SQLite investigation.
+
+### Changed
+- AI generation, explanation, optimization and fix requests now receive the target SQL dialect, known primary/foreign keys and explicit unknown metadata. Optimization instructions preserve query semantics; output accuracy still depends on the model and requires human verification.
+- Website developer-preview download, factual client comparison and precise Activity/privacy limitations. The Mac preview is unsigned, not notarized and uses manual updates.
+
+
 ## 0.8.14 — 2026-11-02
 
 ### Fixed

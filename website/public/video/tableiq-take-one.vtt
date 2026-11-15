@@ -1,0 +1,65 @@
+WEBVTT
+
+1
+00:00:00.000 --> 00:00:04.000
+Paid. Not shipped.
+A database question. Follow the evidence.
+Synthetic demo.
+
+2
+00:00:04.000 --> 00:00:07.000
+TableIQ. Trace the answer.
+Your database. Your agent. The work in view.
+
+3
+00:00:07.000 --> 00:00:11.000
+Which paid orders haven’t shipped?
+Real app. Synthetic data.
+
+4
+00:00:11.000 --> 00:00:15.000
+Start with the data.
+
+5
+00:00:15.000 --> 00:00:18.000
+See the agent’s tool calls.
+Codex MCP Activity. Real capture.
+
+6
+00:00:18.000 --> 00:00:23.000
+Paid, with no shipped record.
+Actual MCP SQL excerpt: WHERE EXISTS a paid payment
+AND NOT EXISTS a shipped shipment.
+Source: actual Codex query. Synthetic data.
+
+7
+00:00:23.000 --> 00:00:27.000
+Check the SQL. Synthetic data.
+
+8
+00:00:27.000 --> 00:00:31.000
+Check the rows. Synthetic data.
+
+9
+00:00:31.000 --> 00:00:36.000
+2 orders. 7,300 cents.
+Orders 102 and 104. Synthetic example.
+Answer verified against rows.
+
+10
+00:00:36.000 --> 00:00:40.000
+Writes off by default.
+Local MCP settings.
+
+11
+00:00:40.000 --> 00:00:45.000
+Check the returned rows.
+102: 4,200 cents. 104: 3,100 cents.
+2 orders. Synthetic example.
+
+12
+00:00:45.000 --> 00:00:50.000
+TableIQ. Download the Mac developer preview.
+Apple Silicon. Free. AGPL-3.0.
+Unsigned. Not notarized.
+tableiq.ideolyst.com

@@ -1,0 +1,43 @@
+name: Mac developer preview
+
+on:
+  push:
+    tags: ['preview-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  mac-preview:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec tsc --noEmit
+      - run: pnpm test
+      - name: Build Apple silicon developer preview
+        # This workflow intentionally has no Developer ID/notarization secrets.
+        run: pnpm tauri build --target aarch64-apple-darwin --bundles app,dmg
+      - name: Package as build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tableiq-mac-developer-preview
+          path: |
+            src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/TableIQ*.dmg
+          if-no-files-found: error
+      # Publication is deliberate: attach matching source, notices, checksums and
+      # preview limitations to a prerelease after reviewing this exact candidate.

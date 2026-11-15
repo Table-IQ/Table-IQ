@@ -78,7 +78,7 @@ Verify home, guides, assets, and the custom domain after deployment. Workers ver
 ## Ownership
 
 - This repo: landing page, public guide presentation, future verified screenshots and release demo.
-- [Table-IQ](https://github.com/RudreshNarwal/Table-IQ): desktop source, tests, authoritative engine/security documentation, and GitHub Release installers.
+- [Table-IQ](https://github.com/Table-IQ/Table-IQ): desktop source, tests, authoritative engine/security documentation, and GitHub Release installers.
 - Tutorial snapshots came from `docs/launch/POSTGRES-WORKFLOW.md` and `docs/launch/MCP-PERMISSIONS.md` in the app workspace on October 20, 2026. They include unreleased development changes. Reconcile them with the shipped release before publication; the website must not become a second source of truth for engine guarantees.
 - No secrets, user consent records, or private customer data belong in this repository.
 
@@ -87,13 +87,13 @@ The website stores no installers. Keep the “Coming soon” download state unti
 ## Publication gates
 
 - Review all claims against the candidate release; replace development wording only where verified.
-- Verify the download's signature, notarization, supported Mac versions/architectures, artifact size, clean installation and update behavior before adding a download button.
-- Record the actual signed app completing the investigation and refusal. The expandable synthetic example is not recorded product footage or performance evidence.
+- For the owner-authorized developer preview, verify the actual public artifact, architecture, installation/update path and source/notices/checksums; prominently disclose that it is unsigned and not notarized. A future signed-release claim requires signature/notarization evidence.
+- Record the actual preview build completing the investigation and refusal; label its version and preview status accurately. The expandable synthetic example is not recorded product footage or performance evidence.
 - Add real user stories only with approved wording and publication consent. Keep consent evidence in private storage.
 - Check desktop/mobile layout, links, keyboard access, page titles and descriptions after content changes.
-- Coordinate the public product launch with the app's beta activation and retention gates.
+- Use actual beta readiness checks before public distribution. Measure retention after complete follow-up windows; do not claim it is already established by launch-day attention.
 
-Two beta user stories (Gulshan Yadav, moved from DBeaver; Deepak Saxena, moved from the TablePlus free plan) are published with their consent, which the owner holds privately. Their quotes in `lib/site.ts` were drafted from the reasons they gave for switching and must be approved word for word by each person before deploy. No traction counts, download availability, or performance benchmarks have been invented.
+Beta user quotation drafts remain in `lib/site.ts` for owner review but are not rendered: exact wording approval must be recorded privately before publication. No traction counts or performance benchmarks have been invented.
 
 ## Screenshots
 
@@ -101,7 +101,7 @@ Two beta user stories (Gulshan Yadav, moved from DBeaver; Deepak Saxena, moved f
 
 ## Download button
 
-There is no verified signed DMG yet. The homepage directs visitors to the walkthrough and GitHub and states “Download for Mac: coming soon” in `#download` (`components/sections/final-cta.tsx`). When the notarized release exists, add its verified release-asset link there and update the hero action.
+The founder authorized a public unsigned developer preview. Shared release configuration in `lib/site.ts` controls the header, hero and final download actions. Keep the unsigned/not-notarized disclosure visible; verify public source and release access before deploying. This change does not imply that a signed/notarized build exists.
 
 ## Engine logos
 
@@ -109,7 +109,7 @@ The logo strip and the Engines index are built at `next build` by `lib/engines.t
 
 ## SEO, AEO and GEO
 
-The coming-soon website is indexable, by owner request. This does not announce a downloadable signed app. `robots.txt` permits search and AI crawlers; HTML uses `index, follow, max-image-preview:large`. Cloudflare account-level bot controls still apply independently.
+The website is indexable, by owner request. The developer-preview download is explicitly unsigned and must not be represented as a signed release. `robots.txt` permits search and AI crawlers; HTML uses `index, follow, max-image-preview:large`. Cloudflare account-level bot controls still apply independently.
 
 - Next.js metadata (`lib/meta.ts`) owns canonical URLs, Open Graph/Twitter metadata and alternate-format links; `app/sitemap.ts` and `app/robots.ts` own those files; JSON-LD is rendered per page from `lib/site.ts` (FAQPage uses the same list as the visible FAQ). Canonical URLs are extensionless; old `.html` links still redirect natively.
 - `scripts/seo.py` runs after every build and derives `index.md`, both guide Markdown files, `license.md`, `llms.txt`, and `llms-full.txt` from public HTML. It preserves SQL and security/legal content. There is no separate keyword-only content or invented evidence.
@@ -139,3 +139,12 @@ and bundled asset/font notices. Sync these from the app repository when terms ch
 ## Interaction and design
 
 See `design.md` and `site-plan/sections.md`. Native disclosures hold the engine index and FAQ; mobile navigation works without JavaScript. Hallmark review records (`.hallmark/`) and Wrangler state (`.wrangler/`) are ignored.
+
+
+## Developer preview launch configuration
+
+`lib/site.ts` is the single source for preview version, release page and verified DMG URL (`PREVIEW`). The release-page fallback must exist and be public before deploying. Set `dmgUrl` only after verifying the exact public artifact URL; do not guess an installer filename. Header, hero and final download actions share `DOWNLOAD_URL`. The preview is explicitly Apple silicon, unsigned and not notarized, with manual update instructions. Minimum OS claims belong to verified release notes.
+
+The compact comparison section cites current vendor docs and distinguishes DBeaver Community from commercial AI/MCP editions, and an MCP server from an assistant connecting to external MCP tools. Recheck sources/date before future comparison changes; no speed multipliers or feature-parity claims are made.
+
+The optional real demo renders only when `DEMO` in `lib/site.ts` provides a verified MP4 path, English VTT caption path and actual duration. Copy finished assets into `public/` (or use stable public URLs), then build/check local references. No empty player or invented recording is shown while `DEMO` is null.

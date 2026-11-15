@@ -98,6 +98,7 @@ import { isMenuId, menuBlocked } from "../lib/menuEvents";
 import { usePaletteCommands } from "./shell/usePaletteCommands";
 import { supportsBackup, supportsRestore } from "../lib/backup";
 import { loadPins, savePins, livePins } from "../lib/pins";
+import { openPendingSqlFiles, useSqlFiles } from "../lib/sqlFileOpen";
 
 /** The schema a connection should open on. Every engine has a conventional
  *  "your stuff lives here" schema; alphabetical order picks `auth` over
@@ -292,6 +293,15 @@ export function MainShell() {
    *  errors, so they must not read as one. */
   const [noticeMsg, setNoticeMsg] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState<string | null>(null);
+  const pendingSqlFiles = useSqlFiles((s) => s.files);
+  const sqlFilesOpening = useSqlFiles((s) => s.opening);
+  const sqlFilesPaused = useSqlFiles((s) => s.paused);
+  useEffect(() => {
+    // Opening before hydration would be overwritten by the restored tab slice.
+    if (active && hydrated === active.id && !connecting && !sqlFilesOpening && !sqlFilesPaused) {
+      void openPendingSqlFiles(active.id);
+    }
+  }, [active?.id, hydrated, connecting, pendingSqlFiles, sqlFilesOpening, sqlFilesPaused]);
 
   // Keep the sidebar schema selection valid across connection/database switches.
   useEffect(() => {

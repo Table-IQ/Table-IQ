@@ -19,6 +19,8 @@ pub mod plugins;
 pub mod profiles;
 pub mod query;
 pub mod sql_log;
+pub mod sql_files;
+pub mod updates;
 pub mod ssh;
 
 /// Lock a mutex, recovering from poisoning instead of panicking. A panic while one lock is
@@ -139,6 +141,8 @@ pub fn invoke_handler<R: tauri::Runtime>(
         mcp::mcp_token,
         mcp::mcp_regenerate_token,
         mcp::mcp_activity,
+        sql_files::take_opened_sql_files,
+        updates::check_for_updates,
     ]
 }
 
@@ -149,6 +153,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(ConnState::new())
+        .manage(sql_files::OpenedSqlFiles::default())
         .invoke_handler(invoke_handler());
     // Native View/Help menus (macOS only: `Builder::menu` becomes every window's menu, and
     // Windows/Linux have no designed menu bar). Items emit `tiq:menu` (src/lib/menuEvents.ts).
@@ -161,8 +166,23 @@ pub fn run() {
             tauri::async_runtime::spawn(mcp::autostart(app.handle().clone()));
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { urls } = event {
+                use tauri::{Emitter, Manager};
+                app.state::<sql_files::OpenedSqlFiles>().receive(urls);
+                // The native queue survives events delivered before the webview listens.
+                let _ = app.emit(sql_files::OPENED_EVENT, ());
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
+        });
 }
 
 #[cfg(test)]

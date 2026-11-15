@@ -98,9 +98,10 @@ export function AiSettingsForm() {
         </label>
       )}
       <p className="text-[11px] leading-snug text-muted">
-        Your key never leaves the keychain. NL→SQL sends only the schema card shown in
-        "What gets sent" — never table data. Generated SQL is inserted for you to review
-        and run.
+        Your key is stored in the OS keychain and authenticates requests to your chosen provider.
+        AI sends your request and the metadata shown in "What gets sent", including SQL dialect
+        and known keys. Explain, optimize and fix also send the query and relevant error text.
+        Table rows are not added automatically. Generated SQL is inserted for you to review and run.
       </p>
       <div className="flex items-center gap-2 pt-1">
         {status && <span className="text-xs text-ok">{status}</span>}

@@ -17,7 +17,7 @@ export function WhyUs() {
       </Reveal>
       <div className="mt-16 grid gap-8 sm:grid-cols-2 lg:grid-cols-4">
         <StatItem value={String(ENGINE_TOTAL)} label="databases and cloud services" />
-        <StatItem value="$0" label="for every engine and feature" />
+        <StatItem value="$0" label="for the current desktop app" />
         <StatItem value="0" label="accounts or cloud services required" />
         <StatItem value="AGPL" label="3.0-only, open source" />
       </div>

@@ -1,0 +1,9 @@
+# Reviewed historical false positives: public IndexNow verification keys;
+# literal test passwords; authentication keys for disposable local libsql fixtures.
+# Fingerprints are specific to these commits/lines, not blanket path exclusions.
+8944d22e41655a7981db64d09d93a28be9f8ffb3:website/dist/indexnow.json:generic-api-key:3
+bd3c685c148b869ae4f6b5c8b730ead03e32a48a:website/dist/indexnow.json:generic-api-key:3
+9c25b6e935b6ed3b36c6adc119b071e2c61973ba:src-tauri/tests/influxdb_live.rs:generic-api-key:80
+1d658cf32171d725f5cb707916d1b1cb046d0370:src-tauri/tests/influxdb_live.rs:generic-api-key:80
+9ff45038662e910ace885e75a0bd1dc4e0060809:docker/libsql/docker-compose.yml:generic-api-key:31
+35590384445c61a5c4e1a431b43f13cf29d139e1:docker/libsql/docker-compose.yml:generic-api-key:31

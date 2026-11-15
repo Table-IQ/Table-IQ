@@ -6,7 +6,9 @@ import { useSettingsUi } from "./Settings";
 import { Onboarding } from "./Onboarding";
 import { EngineIcon, engineLabel } from "./ui/EngineIcon";
 import { Elapsed } from "./ui/Elapsed";
-import { IconExport, IconImport, IconPlus, IconRefresh, IconSearch } from "./ui/Icon";
+import { IconExport, IconImport, IconPlus, IconRefresh, IconSearch, IconSliders } from "./ui/Icon";
+import { IconButton } from "./ui/IconButton";
+import { useUpdates } from "../lib/updates";
 import { ContextMenu } from "./ui/ContextMenu";
 import { ConnectionSheet, type SheetStatus } from "./ConnectionSheet";
 import {
@@ -412,6 +414,13 @@ export function ConnectionManager({ editor }: {
         <div className="px-5 pb-5">
           <div className="flex flex-col gap-1.5">
             <button
+              onClick={() => { useSettingsUi.getState().show("updates"); void useUpdates.getState().check(); }}
+              className="flex h-8 items-center gap-2 rounded-[var(--radius)] border border-border bg-bg/70 px-3 text-[12px] text-text shadow-[var(--shadow-soft)] transition-colors hover:bg-bg"
+            >
+              <IconRefresh size={12} className="text-muted" />
+              Check for updates
+            </button>
+            <button
               onClick={async () => {
                 try {
                   await downloadText(
@@ -461,7 +470,10 @@ export function ConnectionManager({ editor }: {
               <span className="tiq-kbd">⌘N</span> new ·{" "}
               <span className="tiq-kbd">⌘F</span> filter
             </span>
-            <ThemeToggle />
+            <div className="flex items-center gap-1">
+              <IconButton icon={<IconSliders />} label="Settings" shortcut="⌘," onClick={() => useSettingsUi.getState().show("general")} />
+              <ThemeToggle />
+            </div>
           </div>
         </div>
       </aside>

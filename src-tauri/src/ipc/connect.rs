@@ -2279,9 +2279,19 @@ pub fn save_ai_config(
 /// Exactly the text that would be sent to the provider (the "what gets sent" control).
 #[tauri::command]
 pub async fn ai_egress_preview(state: State<'_, ConnState>, id: String) -> Result<String, String> {
-    let drv = state.session(&id)?;
+    ai_schema_context(&state, &id).await
+}
+
+/// Shared metadata path keeps "What gets sent" aligned with generation/explain/fix.
+/// One optional FK lookup avoids a per-table index introspection fan-out.
+async fn ai_schema_context(state: &ConnState, id: &str) -> Result<String, String> {
+    let conn = state.configs().into_iter().find(|c| c.id == id)
+        .ok_or_else(|| "Connection configuration is unavailable. Reconnect before using AI.".to_string())?;
+    let drv = state.session(id)?;
     let model = drv.introspect().await.map_err(|e| e.to_string())?;
-    Ok(ai::schema_card(&model))
+    let keys = tokio::time::timeout(std::time::Duration::from_secs(3), drv.foreign_keys())
+        .await.ok().and_then(Result::ok);
+    Ok(ai::schema_context(&model, &conn.engine, conn.profile.as_deref(), keys.as_deref()))
 }
 
 /// Generate SQL from natural language. Returns SQL only — the UI inserts it into the editor
@@ -2300,9 +2310,7 @@ pub async fn ai_generate_sql(
         connections::get_password(&ai::key_account(&cfg.provider))
             .map_err(|_| "No AI API key configured. Add one in AI settings.".to_string())?
     };
-    let drv = state.session(&id)?;
-    let schema = drv.introspect().await.map_err(|e| e.to_string())?;
-    let card = ai::schema_card(&schema);
+    let card = ai_schema_context(&state, &id).await?;
     let (system, user) = ai::build_prompt(&card, &prompt);
     let provider = ai::provider::ByokProvider::new(&cfg.provider, &cfg.model, &key);
     use ai::provider::LlmProvider;
@@ -2319,9 +2327,7 @@ async fn ai_setup(state: &ConnState, id: &str) -> Result<(ai::provider::ByokProv
         connections::get_password(&ai::key_account(&cfg.provider))
             .map_err(|_| "No AI API key configured. Add one in AI settings.".to_string())?
     };
-    let drv = state.session(id)?;
-    let schema = drv.introspect().await.map_err(|e| e.to_string())?;
-    let card = ai::schema_card(&schema);
+    let card = ai_schema_context(state, id).await?;
     Ok((ai::provider::ByokProvider::new(&cfg.provider, &cfg.model, &key), card))
 }
 

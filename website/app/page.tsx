@@ -1,3 +1,5 @@
+import { Comparison } from "@/components/sections/comparison";
+import { Demo } from "@/components/sections/demo";
 import { JsonLd } from "@/components/blocks/json-ld";
 import { Engines } from "@/components/sections/engines";
 import { FaqSection } from "@/components/sections/faq";
@@ -31,12 +33,14 @@ export default function Home() {
     <>
       <JsonLd data={schema} />
       <Hero />
+      <Demo />
       <Problem />
       <HowItWorks />
       <Proof />
       <WhatYouGet />
       <Toolkit />
       <WhyUs />
+      <Comparison />
       <Engines />
       <Guides />
       <FaqSection />

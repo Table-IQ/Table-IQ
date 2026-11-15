@@ -13,7 +13,9 @@ export function Footer() {
         <div className="flex flex-col gap-6 md:items-end">
           <nav aria-label="Footer" className="flex flex-wrap gap-x-6 gap-y-2 text-sm text-ink-2">
             <a href={GITHUB} className="hover:text-ink">GitHub</a>
+            <a href={`${GITHUB}/issues/new?template=beta-feedback.yml`} className="hover:text-ink">Beta feedback</a>
             <Link href="/#features" className="hover:text-ink">Features</Link>
+            <Link href="/#compare" className="hover:text-ink">Compare</Link>
             <Link href="/#engines" className="hover:text-ink">Engines</Link>
             <Link href="/#guides" className="hover:text-ink">Guides</Link>
             <Link href="/license" className="hover:text-ink">License</Link>
