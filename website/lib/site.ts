@@ -5,7 +5,7 @@ export const NAME = "TableIQ";
 
 // Update only after the release and exact asset are verified publicly accessible.
 // The release page remains the fallback until a DMG URL is confirmed.
-const PREVIEW_VERSION = "0.8.15";
+const PREVIEW_VERSION = "0.8.16";
 export const PREVIEW = {
   version: PREVIEW_VERSION,
   tag: `preview-v${PREVIEW_VERSION}`,

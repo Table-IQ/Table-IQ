@@ -52,12 +52,12 @@ This repository owns the website source and deploys directly to the existing `ta
 - Manual runs deploy only from `main`; other branches only validate.
 - Production deployments are serialized and reject commits superseded by newer `main` commits.
 
-Configure these in **RudreshNarwal/Table-IQ → Settings → Secrets and variables → Actions**:
+Configure these in **Table-IQ/Table-IQ → Settings → Secrets and variables → Actions**:
 
 - Secret `CLOUDFLARE_API_TOKEN`: a token limited to the hosting account and `ideolyst.com` zone. Use Cloudflare's **Edit Cloudflare Workers** template, with Workers Scripts edit and Zone Workers Routes edit permissions for deployment and custom-domain management. Do not use a Global API Key or a short-lived Wrangler OAuth token for CI.
 - Variable or secret `CLOUDFLARE_ACCOUNT_ID`: `00da0456fc181154de7d4c4d84a6edd1`.
 
-Keep the API token outside source control and chat. Set it through GitHub's secret UI or `gh secret set CLOUDFLARE_API_TOKEN --repo RudreshNarwal/Table-IQ` (interactive hidden input). The existing desktop CI runs independently under its own policy.
+Keep the API token outside source control and chat. Set it through GitHub's secret UI or `gh secret set CLOUDFLARE_API_TOKEN --repo Table-IQ/Table-IQ` (interactive hidden input). The existing desktop CI runs independently under its own policy.
 
 For local deployment and preview:
 
@@ -82,7 +82,7 @@ Verify home, guides, assets, and the custom domain after deployment. Workers ver
 - Tutorial snapshots came from `docs/launch/POSTGRES-WORKFLOW.md` and `docs/launch/MCP-PERMISSIONS.md` in the app workspace on October 20, 2026. They include unreleased development changes. Reconcile them with the shipped release before publication; the website must not become a second source of truth for engine guarantees.
 - No secrets, user consent records, or private customer data belong in this repository.
 
-The website stores no installers. Keep the “Coming soon” download state until a verified signed installer is available. Deployment of this draft does not imply the product launch gates have passed.
+The website links directly to the owner-authorized unsigned Apple silicon developer preview on GitHub Releases. The current public version is 0.8.16. All three captioned films use real native 0.8.15 footage and synthetic data. Developer ID signing, notarization and clean/older-Mac acceptance remain pending. The live site was deployed manually using local Wrangler OAuth; automatic deployments require the scoped CLOUDFLARE_API_TOKEN GitHub secret.
 
 ## Publication gates
 

@@ -143,7 +143,7 @@ those releases.
 
 **What stays free forever:** every database engine, the MCP server and its guard, BYO-key AI,
 staged edits, SSH tunnels, unlimited connections, and every feature in our first public release
-(including this v0.8.15 public preview and the planned v0.9.0). We will never gate engines or device count. If we ever build team features, they add
+(including this v0.8.16 public preview and the planned v0.9.0). We will never gate engines or device count. If we ever build team features, they add
 governance on top (shared vaults, SSO, central agent policy, audit export) and never take away
 what is free.
 

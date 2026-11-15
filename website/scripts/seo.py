@@ -210,7 +210,7 @@ class Markdown(HTMLParser):
 
 
 exports = []
-headers = ["# Static assets served by Cloudflare Workers.", "/img/*", "  Cache-Control: public, max-age=604800", "", "/fonts/*", "  Cache-Control: public, max-age=604800", ""]
+headers = ["# Static assets served by Cloudflare Workers.", "/img/*", "  Cache-Control: public, max-age=604800", "", "/fonts/*", "  Cache-Control: public, max-age=604800", "", "/video/*", "  Accept-Ranges: bytes", ""]
 for path in [home, *sorted((dist / "guides").glob("*.html")), dist / "license.html"]:
     url = page_url(path)
     reader = Markdown(url)

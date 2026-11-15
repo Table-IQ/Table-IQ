@@ -1,8 +1,8 @@
 # Launch asset production brief
 
-Updated November 15, 2026. Owner: founder. The initial brief below is retained for context. Two real-app films and the synthetic SQLite dataset have now been produced; see the delivery record below. No measured performance benchmark or approved testimonial is implied. Follow [GTM](../GTM.md) and [release gates](RELEASE-VALIDATION.md).
+Updated November 15, 2026. Owner: founder. The initial brief below is retained for context. Three real-app films and the synthetic SQLite dataset have been delivered; the public v0.8.16 preview and website are published. See the delivery record below. No measured performance benchmark or approved testimonial is implied. Follow [GTM](../GTM.md) and [release gates](RELEASE-VALIDATION.md).
 
-The marketing site now lives in `website/` in this repository and deploys through its Cloudflare workflow. Older launch records describe a separate site repository; that topology is historical. The live site was browser-checked during this research and still advertises “Download coming soon” and source/preview access restrictions.
+The marketing site lives in `website/` in the public [Table-IQ/Table-IQ repository](https://github.com/Table-IQ/Table-IQ). The [live site](https://tableiq.ideolyst.com/) now advertises v0.8.16 and all three films. It was deployed manually with Wrangler, deployment `6b001ff5-b767-45a9-99b7-eb05bfaaa348`; the separate GitHub Actions website workflow is blocked by missing `CLOUDFLARE_API_TOKEN`. Website nine tests, typecheck and production build passed. Live checks verified all three MP4 durations/native controls and seeking to 30 seconds, a canonical v0.8.16 download link, and no horizontal overflow at 390 px width. `/video/*` advertises byte ranges and serves partial-content requests. Earlier separate-repository, coming-soon and restricted-access observations describe the research snapshot, not the current site.
 
 ## Deliverables, in priority order
 
@@ -18,9 +18,11 @@ Expanded research now tests everyday-client and agent-investigation messages sep
 | First-task dataset | Small seeded synthetic orders/payments/shipments database and expected finding | Linked from tutorial/release | Reproducible setup, least-privilege role, bounded investigation; actual release-build verification |
 | Technical article | Original practical explanation and reproducible steps | DEV/Hashnode or founder site | Helps the reader investigate a database issue even without switching clients |
 
-The original research phase did not create a video or seeded multi-table dataset. The November 15 implementation adds [the synthetic dataset](demo/README.md) and the two films below. The existing [CTE walkthrough](POSTGRES-WORKFLOW.md) works as a quick transport check; it supplies the SQL and answer, so it is not a convincing standalone investigation demo. Record the new dataset and path only once tested.
+The original research phase did not create a video or seeded multi-table dataset. The November 15 delivery adds [the synthetic dataset](demo/README.md) and the three films below. The existing [CTE walkthrough](POSTGRES-WORKFLOW.md) works as a quick transport check; it supplies the SQL and answer, so it is not a convincing standalone investigation demo. The synthetic SQLite path was exercised through native TableIQ v0.8.15 and real local Codex MCP calls; the films are edited demonstrations, not real-time task benchmarks.
 
-## Agent video shot list
+## Original agent-video shot list
+
+This is the planning storyboard. The delivered films below use actual MCP settings rather than showing a refused write; the refusal evidence is a separately identified Python probe. Do not describe every planned shot as present in the exports.
 
 Use synthetic data only. Put the problem on screen in the opening frame. Avoid a long logo intro, cinematic animation or unreadable terminal text. Keep the ordinary client visible enough to understand the role it plays.
 
@@ -45,7 +47,7 @@ Open a prepared disposable connection → browse/filter records → change a non
 
 Put a static app thumbnail linked to the real demo URL directly after the opening sentence/banner and before the long feature list. Add a clear duration and adjacent text transcript/setup link. GitHub Markdown video handling varies by upload/link method; test the actual README while logged out. A small optimized GIF is optional, but keep a still-image fallback and do not commit large raw recordings.
 
-Do not add an empty player or dead placeholder. Use the actual release and supported architecture, reconcile v0.8.11 README links with v0.8.14 source manifests, and update versioned tutorial/caption labels. Keep the existing free pledge and limitations. AGPL applies to app source; third-party marks/notices remain separately governed.
+Do not add an empty player or dead placeholder. The current README/site link [v0.8.16](https://github.com/Table-IQ/Table-IQ/releases/tag/preview-v0.8.16), an unsigned Apple silicon preview. All three films retain v0.8.15 native-footage labels; their recordings do not establish acceptance of later v0.8.16 UI or AI changes. Keep the existing free pledge and limitations. AGPL applies to app source; third-party marks/notices remain separately governed.
 
 ## Messaging and claim corrections
 
@@ -53,8 +55,8 @@ Proposition to test: “Browse your database. See what your agent runs.” Expla
 
 Before broad promotion, reconcile README/site claims with source:
 
-- The live site's “An agent with a connection string leaves no trail” is too absolute. Agents/database servers can have logs. Describe the specific visibility TableIQ adds without asserting all alternatives lack records.
-- “Every call's SQL, rows and outcome sit in MCP Activity” overstates stored data. Say recent calls show redacted SQL, row counts and outcomes; inspect data in the query grid. Activity is not durable audit storage.
+- Do not restore the earlier “An agent with a connection string leaves no trail” comparison. Agents/database servers can have logs. Describe the specific visibility TableIQ adds without asserting all alternatives lack records.
+- Do not restore “Every call's SQL, rows and outcome sit in MCP Activity”; it overstates stored data. Say recent calls show redacted SQL, row counts and outcomes; inspect data in the query grid. Activity is not durable audit storage.
 - Scope “$0 for every engine and feature” to the current free application/first-release pledge, so it does not imply all future team services will be free.
 - Do not say “production safe,” “first MCP database client,” “only client with read-only controls,” “all data stays local,” “trillion-row benchmark,” or “faster than TablePlus” without the precise evidence such a claim requires.
 - TablePlus is a native client and has MCP. Do not attack it as Electron or describe its perpetual license as a required subscription.
@@ -80,15 +82,21 @@ Use a plain title beginning “Show HN” when following [Show HN rules](https:/
 
 Founder social posts can use a native clip with a concrete problem/result, honest authorship and one canonical link. Community posts need venue-specific rules and a useful tutorial/technical tradeoff. Directory metadata must identify the actual desktop-hosted HTTP MCP server; no unshipped npm package, integration partnership or client support promise.
 
-For every published asset, privately record owner, exact release/hash, claim-check date, actual URL, channel/source label and resulting installations/activations. Consent to recording and consent to quoting are separate. No publication or external outreach was performed as part of this research.
+For every published asset, privately record owner, exact release/hash, claim-check date, actual URL, channel/source label and available distribution/voluntary-cohort outcomes. Download requests are not installations or people. Consent to recording and consent to quoting are separate. The research phase performed no outreach; the subsequent November 15 delivery published the repository, preview and website. No social/community posting is established by that publication.
 
 ## November 15 delivery
 
-- Huashu Motion: 56 seconds, 1920×1080/30fps, real native TableIQ 0.8.15 footage, original local score; [watch/download](https://tableiq.ideolyst.com/video/tableiq-huashu-motion-56s.mp4).
-- Take One: 50 seconds, 1920×1080/60fps, real native footage plus explicitly labelled SQL excerpts; [watch/download](https://tableiq.ideolyst.com/video/tableiq-take-one-story-50s.mp4).
-- Both are captioned, use fictional SQLite storefront data, condense elapsed time, and show two orders totalling 7,300 cents. Neither film shows a refused write; the final edits show the unchecked Allow writes setting instead.
-- Native recordings were captured before the later update-check/connection-screen Settings additions to the same unreleased version. No filmed claim depends on those additions.
-- Source bundles, provenance, original music and review records accompany the release delivery. Audio was metered; the founder should listen to both on actual speakers/headphones before choosing the leading cut.
-- These are two creative treatments of the agent workflow, not separate validation of the ordinary-client positioning hypothesis. The ordinary-client task observation remains in the scorecard.
+| Film | Export | Native footage / additional material | Published URL |
+| --- | --- | --- | --- |
+| Huashu Motion | 56 s, 1920×1080, 30 fps | Actual TableIQ v0.8.15, synthetic SQLite storefront, original local score | [Watch/download](https://tableiq.ideolyst.com/video/tableiq-huashu-motion-56s.mp4) |
+| Take One | 50 s, 1920×1080, 60 fps | Actual TableIQ v0.8.15 plus explicitly labelled SQL excerpts; synthetic data | [Watch/download](https://tableiq.ideolyst.com/video/tableiq-take-one-story-50s.mp4) |
+| Argo narrated walkthrough | 55.9 s, 1920×1080, 30 fps | Actual TableIQ v0.8.15 MCP setup, Activity and manual query/grid verification; narration | [Watch/download](https://tableiq.ideolyst.com/video/tableiq-argo-mcp-56s.mp4) |
 
-Use campaign-specific landing URLs and record available aggregate counts plus voluntary feedback. The site does not silently collect identities or send video analytics. Publishing both films is not a controlled A/B experiment; any claimed conversion difference requires comparable channels and actual measurement.
+- All three films are completed and included in the deployed website with posters and caption tracks. They condense elapsed time and use fictional SQLite storefront data; the verified finding is two orders totalling 7,300 cents.
+- Actual local Codex performed discovery/schema/bounded SELECT calls. The manual SQL/grid verification is a separate read. A manual Python read-only-refusal probe is separate evidence, not an agent action; the films do not show a refused write and instead show the unchecked Allow writes setting.
+- Every native product shot is v0.8.15. Earlier recordings predate subsequent update/Settings and v0.8.16 AI/MCP access/branding changes. Do not relabel them as v0.8.16 acceptance footage or proof of successful native Gemini generation.
+- Editable projects, provenance, music and review records belong with the production handoff; preserve each export's actual review status and open notes. Audio was metered; the founder should listen to all three on speakers/headphones before choosing the leading treatment. Export completion alone is not a claim that every review concern passed.
+- These are three creative treatments of the agent workflow, not separate validation of the everyday-client positioning hypothesis. The ordinary-client task observation remains in the scorecard.
+- Public [v0.8.16 release](https://github.com/Table-IQ/Table-IQ/releases/tag/preview-v0.8.16): seven assets, source revision `ffe586293f886728a2556cfce279568cb48ee2f5`, unsigned arm64 DMG, 27,383,481 bytes. Anonymous download returned HTTP 200 and matched SHA-256 `0a952fa0bbd717bd8246904e739495ab74ec8eefcfe5c0d1189ca792996a99cd`. See [release validation](RELEASE-VALIDATION.md) for test scope and remaining native/signing checks.
+
+Use campaign-specific landing URLs and record available aggregate counts plus voluntary feedback. The site does not silently collect identities or send video analytics. Publishing three films is not a controlled A/B experiment; any claimed conversion difference requires comparable channels and actual measurement. Do not require Google login or name/email/country to view, download or use the local preview.

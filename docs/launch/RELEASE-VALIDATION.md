@@ -4,23 +4,38 @@
 
 The October batch below predates the owner’s November public-preview authorization. Passing source tests does not establish that a signed release exists.
 
-## Local evidence — November 15, 2026
+## Delivery evidence — November 15, 2026
 
-The owner authorized an **unsigned public Apple silicon developer preview**, publication and the move to the **Table-IQ** organization. The historical signed-release gate below remains for a future signed distribution; it does not describe this preview. The repository is now public at https://github.com/Table-IQ/Table-IQ. Signing/notarization and clean-old-macOS acceptance are not claimed.
+The owner authorized an **unsigned public Apple silicon developer preview**, publication and the move to **Table-IQ**. The repository is public at [Table-IQ/Table-IQ](https://github.com/Table-IQ/Table-IQ), and [preview v0.8.16](https://github.com/Table-IQ/Table-IQ/releases/tag/preview-v0.8.16) is published with seven assets. This records the current delivery; it does not claim signing/notarization, clean older-Mac acceptance, population retention or successful native AI generation.
 
-| Check | November 15 outcome |
+| Artifact fact | Verified delivery record |
 | --- | --- |
-| Frontend | 1,137 tests across 102 files passed; focused Settings/update suite 7 tests passed again after the notification fix; TypeScript and production frontend build passed |
-| Rust | Full library suite: 521 passed, four ignored. Added update-release selector suite: three passed. No new multi-engine live integration run claimed |
-| SQL Open With | Packaged 0.8.15 cold launch receives a UTF-8 script, queues until a SQL connection is selected, opens a new tab without executing it; manual Run returns the synthetic two-row result. Warm-app path not yet independently established |
-| MCP packaged app | Actual local Codex discovery/schema/bounded SELECT against synthetic SQLite: two rows, 7,300 cents. Separate manual Python probe receives a read-only refusal. Neither is a production-database test |
-| AI context | Source regressions cover engine/dialect/known and unknown relationships. No measured model-output accuracy improvement claimed |
-| Update notifications | Newer/equal/older/draft/no-download selection, startup opt-out and in-flight disable behavior tested; notification is nonmodal and never installs/restarts the app. Live native update check recorded separately after publication |
-| Website | TypeScript/static build, four-page local asset/JSON-LD/sitemap validation and nine Python tests pass. Two real MP4s/posters/WebVTT tracks included; desktop/mobile browser verification recorded in release notes |
-| Publication secret review | Full history and staged source checked with Gitleaks. Six specific historical public/disposable fixtures reviewed and narrowly fingerprinted; no unreviewed findings. No claim that automated scanning detects every possible secret |
-| Community | Contribution, conduct, private security-reporting guidance, licensing, support, bug/feature/beta templates added. Private vulnerability reporting and public-repository secret protection enabled |
+| Application source revision | [`ffe586293f886728a2556cfce279568cb48ee2f5`](https://github.com/Table-IQ/Table-IQ/commit/ffe586293f886728a2556cfce279568cb48ee2f5) |
+| Preview | v0.8.16, unsigned and not notarized, Apple silicon / arm64 only |
+| DMG bytes | 27,383,481 |
+| DMG SHA-256 | `0a952fa0bbd717bd8246904e739495ab74ec8eefcfe5c0d1189ca792996a99cd` |
+| Anonymous download | HTTP 200; downloaded bytes matched the expected SHA-256 |
+| OS scope | Declares macOS 11 minimum; tested only on macOS 27.0.1. The declaration is not an older-macOS test result |
+| Source CI | [Run 43714209338](https://github.com/Table-IQ/Table-IQ/actions/runs/43714209338), source `ffe5862`: all four jobs completed successfully. Preceding `9c6c33f` CI also passed all four jobs |
+| Website deployment | v0.8.16 plus three films deployed manually with Wrangler, deployment `6b001ff5-b767-45a9-99b7-eb05bfaaa348`. The Actions website workflow remains blocked by missing `CLOUDFLARE_API_TOKEN` |
 
-Local logs and original captures are in `/tmp/tableiq-launch-20261115/`, outside version control. No credentials/config files/agent logs are release assets. The release supplies matching source, project/upstream notices, build facts and SHA-256 checksums. The final artifact digest and public URL are in its release notes and `SHA256SUMS.txt`; never substitute the earlier 0.8.15 build that predates Settings/update checks.
+| Check | November 15 outcome and limit |
+| --- | --- |
+| Frontend | 1,139 tests across 102 files passed; 24 focused UI tests passed; TypeScript and production frontend build passed |
+| Rust | Full library suite: 532 passed, four ignored. The completed source CI includes required live suites and clippy; do not reinterpret ignored/absent-fixture local cases as live passes |
+| MCP live-suite CI regression | Parallel integration cases shared the production process-wide four-request cap; TiDB's four-worker load collided with other cases. Suite-local serialization in `9c6c33f` fixed test isolation. Internal load concurrency and production limits were preserved; subsequent CI is green |
+| SQL Open With | Native packaged v0.8.15 warm and cold `.sql` paths verified: a script opens in a query tab for review/manual Run, not automatic execution. This is prior-version evidence, not a completed v0.8.16 native rerun |
+| MCP packaged app | Native v0.8.15 actual local Codex discovery/schema/bounded SELECT against synthetic SQLite returned two rows totalling 7,300 cents. A separate manual Python probe received a read-only refusal. Neither is a production-database test or a claim that Codex issued that refusal probe |
+| AI context/provider source | Source checks cover engine/dialect/known and unknown relationships, provider response/error handling and editable model IDs. Generate inserts SQL for review; Run remains manual. No measured model-output accuracy improvement claimed |
+| Native Gemini | HTTP 401 remains unresolved pending credential comparison. Two of four tiny direct Google API probes completed; those are transport outcomes, not native-workflow acceptance or accuracy evaluation. Never include credentials or raw credential-bearing logs in this record |
+| Native v0.8.16 automation | Blocked awaiting the OS Accessibility permission change. Do not label attempted clicks/screenshots as completed acceptance; repeat the relevant checks after permission is granted |
+| Update notifications | Source checks cover release selection and opt-out; notifications are nonmodal and never install/restart the app. The v0.8.15 native manual check was verified. Packaged manual replacement/preservation is a separate open gate |
+| Website | Nine tests, typecheck and production build passed. Three real MP4s/posters/caption tracks deployed. Live browser checks verified native video controls, actual 55.9/56/50 s durations and seeking to 30 seconds for all three; `/video/*` advertises byte ranges and serves HTTP 206. At 390 px mobile width, scroll width is 390 px with no horizontal overflow; download links v0.8.16 |
+| Films | Huashu Motion 56 s / 1080p30; Take One 50 s / 1080p60; Argo narrated walkthrough 55.9 s / 1080p30. All native footage is v0.8.15; films use synthetic data and edited elapsed time. They show writes disabled in settings, not a refused-write sequence. See [assets/provenance](ASSETS.md) |
+| Publication secret review | Full history/source checked with Gitleaks. Six specific historical public/disposable fixtures reviewed and narrowly fingerprinted; no unreviewed findings. Automated scanning is not a guarantee of absence of secrets |
+| Community/onboarding | Public contribution, conduct, security, licensing, support and feedback routes available. No mandatory login, Google account, email gate or name/email/country form. Feedback is optional; donations do not unlock features |
+
+Local logs and original captures are in `/tmp/tableiq-launch-20261115/`, outside version control. No credentials, user config or raw agent logs are release assets. Use the exact v0.8.16 artifact/hash/source above, the public release notes and `SHA256SUMS.txt`; do not substitute an earlier v0.8.15 build. Existing films and prior native checks explicitly retain their v0.8.15 scope. Signing, clean older-Mac installation, full packaged update preservation and the remaining native acceptance sequence are still open.
 
 ## Local evidence — October 20, 2026
 
@@ -54,26 +69,26 @@ Limits: the aggregate restore run explicitly skipped unavailable native-client c
 
 Reproduce source checks with `pnpm test`, `pnpm build`, `cargo test --locked --lib` and `cargo clippy --locked --all-targets -- -D warnings` (Cargo commands from `src-tauri`). Supply disposable engine URLs for live suites and set `TIQ_REQUIRE_LIVE=1` for required engine-specific runs. The workflow in `.github/workflows/ci.yml` defines the required provisioned suites; do not treat absent-fixture skips as live verification.
 
-## Mac artifact gate
+## Future signed Mac artifact gate
 
 Run `scripts/verify-macos-release.sh /path/TableIQ.app /path/download.dmg` against the exact distribution build. It requires Developer ID signing, a stapled notarization ticket, and Gatekeeper acceptance, then reports version, declared minimum OS, architectures, installed size, download bytes and SHA-256. It does not launch or upload anything.
 
-The current development Mac reports **zero valid signing identities**. No Apple signing variables were configured. The release workflow now fails if required signing secrets are absent instead of producing a Mac release without those credentials.
+The earlier development-Mac check found **zero valid signing identities** and no configured Apple signing variables. No current signing/notarization success is claimed. The signed-release workflow fails if required secrets are absent; the owner-authorized unsigned preview is a separate distribution path.
 
 Record the exact artifact hash, OS version, hardware and outcomes below. Do not substitute a debug bundle for a signed-release check.
 
 | Gate | Evidence required | Current state |
 | --- | --- | --- |
-| Signed/notarized download | Verification-script output for the exact app and download | Deferred by owner for 3–4 days; credentials absent |
+| Signed/notarized download | Verification-script output for the exact future signed app/download | Open; published v0.8.16 remains unsigned and not notarized |
 | Clean Mac installation | Download through a browser, open DMG, copy app, launch under Gatekeeper on a clean supported Mac | Test Mac not supplied |
 | Update preservation | Previous release to candidate with connections, settings, history and keychain access preserved | Actually distributed previous preview and test Mac required; record unsigned-to-signed transition if applicable |
-| Advertised platform/size | Actual artifact bytes/hash and supported architecture/OS test results | No verified distribution artifact |
-| Release MCP trust checks | Refused write, unshared connection refusal, token rotation, engine isolation, recovery on the packaged release | Source/live-engine checks are separate evidence |
+| Advertised platform/size | Actual artifact bytes/hash and supported architecture/OS test results | v0.8.16 arm64 DMG verified above; declared minimum macOS 11, only macOS 27.0.1 tested. A future signed artifact needs its own hash/checks |
+| Release MCP trust checks | Refused write, unshared connection refusal, token rotation, engine isolation, recovery on the exact packaged release | v0.8.15 Codex read and separate Python refusal recorded above; complete the remaining v0.8.16 native acceptance sequence after Accessibility is enabled. CI/source checks are separate evidence |
 | Cloud connections | `any_profile_smoke` against Neon, Supabase, CockroachDB Cloud and TiDB Cloud; record hard and soft checks | Test connection profiles not supplied |
-| User stories | Two genuine users, approved wording, publication scope and consent references in private storage | No stories or consent supplied |
-| Release demo | Actual signed-build investigation and refusal, with versions recorded and credentials hidden | Synthetic illustration lives in the separate website repo; recording pending |
+| User stories | Genuine users, approved wording, publication scope and consent references in private storage | Website wording is not independent cohort evidence; retain private exact-wording approval before use. Stories are not required for an honestly labelled preview |
+| Release demo | Accurate version/platform/controls, actual native footage and hidden credentials | Three completed films on the monorepo website use v0.8.15 synthetic-data footage. They do not demonstrate a signed build, later v0.8.16 UI/AI changes or a refused write |
 
-## Native workflow acceptance sequence
+## Remaining native workflow acceptance sequence
 
 Use disposable data and an isolated `TIQ_CONFIG_DIR`. Preserve a copy of the starting config. Never use a real production database for fault injection.
 
@@ -89,7 +104,7 @@ Use disposable data and an isolated `TIQ_CONFIG_DIR`. Preserve a copy of the sta
 
 ## Manual update acceptance sequence
 
-An automatic updater is not required for this launch. A verified manual replacement is required.
+The published preview uses update notifications and manual installation; it never downloads/installs an executable automatically. A native manual **check** on v0.8.15 is verified, but full replacement/preservation is still open. The following sequence applies to the future signed candidate; do not count the check button as upgrade acceptance.
 
 1. Install the actually distributed previous preview, signed or unsigned. Record its exact version/signing status and test transition to the signed candidate; a first signed release does not require a previous signed build. In an isolated config directory, save a disposable connection with a keychain password, change appearance/query settings, and create a saved query/history entry.
 2. Quit the app. Back up the config directory and record hashes; keep the credential out of the report.
@@ -100,4 +115,8 @@ An automatic updater is not required for this launch. A verified manual replacem
 
 ## Publication
 
-The landing page now lives in `website/` in this repository (updated November 15, 2026). Add its download link only after the Mac artifact, clean-install, update and release trust gates pass. Add real artifact requirements and sizes at that time. The current GTM distinguishes week-one beta readiness from post-launch return-use thresholds in VALIDATION.md. Return-use thresholds govern further investment, not a claim that two-week evidence already exists in week one.
+Completed: public repository, v0.8.16 release with seven assets, anonymous DMG download/checksum verification, and the live v0.8.16 site with three films. The website is in this monorepo; its current manual Wrangler deployment is recorded above. Live browser/media-range checks passed for all three films, including seeking to 30 seconds; mobile 390 px has no overflow and the download link targets v0.8.16. Automatic website deployment still requires the owner to configure `CLOUDFLARE_API_TOKEN`.
+
+The current unsigned preview was expressly authorized with its limitations. Future signing, clean older-Mac installation, full upgrade preservation and remaining native tests are quality/acceptance work, not evidence that the current public links are private or coming soon. Do not broaden tested-platform or production-readiness claims until those checks pass. Native Gemini's 401 and OS Accessibility block remain explicit open items.
+
+Use [GTM](../GTM.md), [asset delivery](ASSETS.md) and the [traction scorecard](TRACTION.md) for follow-through. No mandatory identity collection or new analytics is introduced. Optional GitHub feedback is available; GitHub Sponsors requires the owner's identity/banking/payout setup before a verified checkout can be advertised. Paid assistance and later team work remain bounded demand-validation experiments. Day-14 return-use criteria govern further investment; they are not evidence available from a one-day publication.

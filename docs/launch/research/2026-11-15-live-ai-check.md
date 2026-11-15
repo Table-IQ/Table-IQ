@@ -14,3 +14,7 @@ Two of four target outcomes completed as specified. This small sample is not an 
 The native walkthrough will define the payment/shipment status literals in its natural-language question, then show actual generated SQL, manual review/Run and returned rows. Condensing the wait in a film must be disclosed. No response is fabricated or replaced with a canned answer.
 
 OpenAI, Claude and OpenRouter IDs/protocols were verified from current primary documentation/catalogs and parser regressions. No key for those services was supplied; live inference for them is not claimed.
+
+## Native verification status
+
+The supplied key still authenticated direct Google catalog requests, but the native saved-key request returned HTTP 401 (invalid API key). The cause is unproven: a safe equality check of the Keychain entry requires the owner to allow the macOS prompt. After installing 0.8.16, Orca reported Accessibility access blocked despite permissions showing granted. Native AI generation, manual execution and its success screenshot remain pending those operating-system access steps. Failed recordings are not release assets. The published films demonstrate actual external-agent MCP and manual SQL workflows, not built-in AI success.
