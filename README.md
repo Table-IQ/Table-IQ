@@ -37,6 +37,10 @@ is limited to two tabs; its paid license is perpetual. DBeaver Community is free
 and open source—compare the workflow on your own Mac; no speed advantage is
 claimed without a matched benchmark.
 
+**Built with Rust and Tauri, using macOS's system webview.** The
+[v0.8.17 Apple silicon preview](https://github.com/Table-IQ/Table-IQ/releases/tag/preview-v0.8.17)
+is a **27.4 MB download**.
+
 Coding-agent access through MCP is an optional integration. It is not required to
 use the database client or built-in AI.
 
