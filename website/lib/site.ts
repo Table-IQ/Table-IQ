@@ -14,6 +14,7 @@ export const PREVIEW = {
   platform: "Mac · Apple silicon",
 };
 export const DOWNLOAD_URL = PREVIEW.dmgUrl || PREVIEW.releaseUrl;
+export const PLATFORM_STATUS = "Mac developer preview available · Windows and Linux coming soon.";
 
 // Populate with the real, verified recording and its captions; no placeholder player.
 export const DEMOS = [
@@ -43,7 +44,7 @@ export type Faq = { q: string; a: string; link?: { text: string; href: string } 
 export const FAQ: Faq[] = [
   { q: "What is TableIQ?", a: "TableIQ is a free, open-source database client for macOS. Browse tables, run SQL, review staged data edits and explore schemas. It works without AI or an external coding agent. Optional AI settings let you configure your own provider; advanced MCP integrations are available separately." },
   { q: "Is TableIQ really free?", a: "Yes. TableIQ-owned application code is open source under AGPL-3.0-only. Third-party components retain their original licenses; see the license exceptions. Previously released Apache-2.0 versions retain their permissions. Every database engine, the MCP server and its guard, BYO-key AI, staged edits, SSH tunnels, unlimited connections and every feature in the first public release stay free. There is no engine or device-count paywall.", link: { text: "license exceptions", href: "/license#third-party" } },
-  { q: "Which Macs does it run on?", a: "The developer preview is for Apple silicon Macs. It is unsigned and not notarized by Apple. See the release notes for tested macOS versions. Intel, Windows and Linux installers are not part of this preview." },
+  { q: "Which platforms are available?", a: "The Mac developer preview is available for Apple silicon. Windows and Linux versions are coming soon. The current Mac preview is unsigned and not notarized by Apple; see the release notes for tested macOS versions. An Intel Mac installer is not included in this preview." },
   { q: "Does my data leave my Mac?", a: "TableIQ connects straight to your databases, or through your SSH bastion. There is no required account or product telemetry, and credentials stay in the macOS Keychain. Startup update checks fetch public release information from GitHub and can be disabled in Settings. No installation ID, email, SQL or connection details are sent; GitHub receives normal network information such as your IP address. The built-in AI sends context to the provider you configure when you use it. External agents follow their own provider’s rules." },
   { q: "Do I need AI or an account to use it?", a: "No. Connect, browse, run SQL and review grid edits without an account, AI key or coding agent. The current desktop features have no engine or device-count paywall. AI is optional, and external providers may charge separately for API usage." },
   { q: "Which AI providers can I configure?", a: "Settings → AI includes Anthropic, OpenAI, Gemini, OpenRouter and local Ollama. Cloud providers need their own API credentials and may bill for usage; a consumer chat subscription may not include API access. Provider and model compatibility varies in this preview. Check any suggested SQL before running it." },

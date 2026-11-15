@@ -4,6 +4,8 @@ Updated 2026-11-15 after the user explicitly approved client-first positioning. 
 
 Primary intent: free, open-source database client for Mac. The everyday browse/query/review workflow is understandable without AI or agents.
 
+Platform status: Mac developer preview available for Apple silicon. Windows and Linux coming soon. Keep this visible beside the hero download action and in the download section; the current installer remains Mac only.
+
 Title: TableIQ | Free, open-source database client for Mac
 H1: A free, open-source database client for Mac.
 Supporting copy: Browse your tables, write SQL and review changes before you commit. Connect to PostgreSQL, MySQL, SQLite and more. Use AI with your own API key when you want help with SQL.

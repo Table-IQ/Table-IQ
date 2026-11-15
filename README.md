@@ -98,6 +98,9 @@ mean that data stays on your machine.
 The release includes the installer, matching source archive, license notices, and
 checksums. No TableIQ account is required.
 
+**Platforms:** Mac developer preview available for Apple silicon. **Windows and
+Linux coming soon.**
+
 Quit an existing TableIQ instance, open the DMG, and drag TableIQ into Applications.
 Choose Replace when updating. This preview is unsigned, so macOS may require you to
 approve opening it. Use a local database or a disposable copy for your first test.

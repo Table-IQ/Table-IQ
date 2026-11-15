@@ -1,6 +1,6 @@
 import { SectionShell } from "@/components/blocks/section-shell";
 import { Button } from "@/components/ui/button";
-import { DOWNLOAD_URL, GITHUB, PREVIEW } from "@/lib/site";
+import { DOWNLOAD_URL, GITHUB, PLATFORM_STATUS, PREVIEW } from "@/lib/site";
 
 export function FinalCta() {
   return (
@@ -11,6 +11,7 @@ export function FinalCta() {
           <h2 id="download-title" className="text-section font-medium">Try the Mac developer preview.</h2>
           <p className="mt-4 text-ink-2">This free Apple silicon preview is unsigned and not notarized by Apple. Use a local database or a disposable copy for your first test. The release includes installation instructions, source, license notices and checksums.</p>
           <p className="mt-2 text-sm text-muted">v{PREVIEW.version} · {PREVIEW.platform} · Manual updates</p>
+          <p className="mt-2 text-sm text-ink-2">{PLATFORM_STATUS}</p>
         </div>
         <div className="flex flex-wrap gap-4 md:col-span-4 md:justify-end">
           <Button href={DOWNLOAD_URL}>Download developer preview</Button>
