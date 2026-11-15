@@ -13,7 +13,7 @@ Client-first revision approved 2026-11-15. Existing design tokens, brand assets,
 | 7 | Optional AI | Explain own provider/API key and setup | Configuration only; no claimed inference accuracy |
 | 8 | Toolkit | Surface supporting client capabilities | Factual Rust/system-webview architecture, no speed inference |
 | 9 | Engines | Expose support and validation differences | Generated profiles, beta labels and capability notes |
-| 10 | Optional agents | Collapsed advanced setup, previews and existing films/guides | Trace/still illustrative; recordings genuine native footage |
+| 10 | MCP Activity and optional agents | Visible activity explanation, interface preview and real-walkthrough link, followed by collapsed advanced setup and films/guides | Calls/SQL/counts/outcomes; still illustrative; recordings genuine native footage; recent local activity is not a permanent audit log |
 | 11 | FAQ | Resolve ordinary install, free-use and AI questions | Same source as JSON-LD |
 | 12 | Download | Link verified preview and explain install | Unsigned/unnotarized; manual updates; disposable data first |
 

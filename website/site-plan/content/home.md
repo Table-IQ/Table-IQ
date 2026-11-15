@@ -6,11 +6,13 @@ Primary intent: free, open-source database client for Mac. The everyday browse/q
 
 Platform status: Mac developer preview available for Apple silicon. Windows and Linux coming soon. Keep this visible beside the hero download action and in the download section; the current installer remains Mac only.
 
+MCP Activity: a visible lower-page section and navigation link explain recent agent calls, redacted SQL, timing, row counts and outcomes, with an illustrative interface preview and a link to the genuine 56-second MCP walkthrough. Detailed setup and additional films remain in an optional disclosure. Do not imply permanent audit storage or approval before every agent query.
+
 Title: TableIQ | Free, open-source database client for Mac
 H1: A free, open-source database client for Mac.
 Supporting copy: Browse your tables, write SQL and review changes before you commit. Connect to PostgreSQL, MySQL, SQLite and more. Use AI with your own API key when you want help with SQL.
 
-Order: hero → real everyday-workflow demo → core features/interface previews → connect/query/review steps → free/open-source terms → TablePlus/DBeaver comparison → optional BYOK settings → toolkit → engine capabilities → collapsed external-agent integrations and earlier demos/guides → FAQ → download/install.
+Order: hero → real everyday-workflow demo → core features/interface previews → connect/query/review steps → free/open-source terms → TablePlus/DBeaver comparison → optional BYOK settings → toolkit → engine capabilities → visible MCP Activity section → collapsed external-agent setup and earlier demos/guides → FAQ → download/install.
 
 Primary CTA: download the developer preview. Secondary CTA: watch the everyday workflow. Visible qualification: Apple silicon Mac, unsigned and not notarized, local/disposable data first. No required account. AI provider usage may cost money.
 

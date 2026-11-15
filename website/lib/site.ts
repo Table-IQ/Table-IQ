@@ -34,6 +34,7 @@ export const NAV = [
   { href: "/#how", label: "How it works" },
   { href: "/#features", label: "Features" },
   { href: "/#ai", label: "Optional AI" },
+  { href: "/#mcp-preview", label: "MCP Activity" },
   { href: "/#compare", label: "Compare" },
   { href: "/#engines", label: "Engines" },
 ];
