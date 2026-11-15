@@ -105,11 +105,6 @@ fn token_account(config_dir: Option<&std::ffi::OsStr>) -> String {
     }
 }
 
-fn keychain_entry() -> Result<keyring::Entry, String> {
-    let account = token_account(std::env::var_os("TIQ_CONFIG_DIR").as_deref());
-    keyring::Entry::new(crate::connections::KEYRING_SERVICE, &account).map_err(|e| e.to_string())
-}
-
 /// Two v4 UUIDs: 244 random bits, as 64 hex characters.
 fn new_token() -> String {
     format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple())
@@ -128,13 +123,11 @@ pub fn regenerate_token() -> Result<String, String> {
 }
 
 fn load_or_rotate_token(rotate: bool) -> Result<String, String> {
+    let account = token_account(std::env::var_os("TIQ_CONFIG_DIR").as_deref());
     token_with(&TOKEN, rotate, || {
-        match keychain_entry()?.get_password() {
-            Ok(t) => Ok(Some(t)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(format!("Could not read the MCP token from the keychain: {e}")),
-        }
-    }, |t| keychain_entry()?.set_password(t).map_err(|e| e.to_string()))
+        crate::connections::get_optional_password(&account)
+            .map_err(|e| format!("Could not read the MCP token from the keychain: {e}"))
+    }, |t| crate::connections::set_password(&account, t))
 }
 
 /// One lock owns both persistent and cached state. Publish only after persistence succeeds;

@@ -9,7 +9,11 @@ use serde::{Deserialize, Serialize};
 use crate::ssh::SshConfig;
 pub use crate::ssh::ssh_secret_account;
 
-pub(crate) const KEYRING_SERVICE: &str = "ai.rhobots.tableiq";
+const KEYRING_SERVICE: &str = "tableiq.ideolyst.com";
+const LEGACY_KEYRING_SERVICE: &str = "ai.rhobots.tableiq";
+// Prevent a first-read migration from overwriting a concurrent save or reviving
+// a credential that another command is deleting.
+static KEYRING_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ConnConfig {
@@ -338,27 +342,55 @@ impl ConnStore {
 
 // ── keychain ────────────────────────────────────────────────────────────
 pub fn set_password(conn_id: &str, password: &str) -> Result<(), String> {
+    let _guard = KEYRING_LOCK.lock().map_err(|_| "Credential storage is unavailable")?;
     keyring::Entry::new(KEYRING_SERVICE, conn_id)
         .and_then(|e| e.set_password(password))
         .map_err(|e| e.to_string())
 }
 
 pub fn get_password(conn_id: &str) -> Result<String, String> {
-    keyring::Entry::new(KEYRING_SERVICE, conn_id)
-        .and_then(|e| e.get_password())
-        .map_err(|e| e.to_string())
+    let _guard = KEYRING_LOCK.lock().map_err(|_| "Credential storage is unavailable")?;
+    read_password(conn_id).map_err(|e| e.to_string())
+}
+
+pub(crate) fn get_optional_password(account: &str) -> Result<Option<String>, String> {
+    let _guard = KEYRING_LOCK.lock().map_err(|_| "Credential storage is unavailable")?;
+    match read_password(account) {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+fn read_password(account: &str) -> keyring::Result<String> {
+    migrate_password_with(
+        |service| keyring::Entry::new(service, account)?.get_password(),
+        |service, value| keyring::Entry::new(service, account)?.set_password(value),
+    )
+}
+
+/// Copy an old credential only when the new service has no entry. Keep the old
+/// copy for rollback; denied/locked reads and failed copies remain visible errors.
+fn migrate_password_with(
+    mut read: impl FnMut(&str) -> keyring::Result<String>,
+    write: impl FnOnce(&str, &str) -> keyring::Result<()>,
+) -> keyring::Result<String> {
+    match read(KEYRING_SERVICE) {
+        Ok(value) => Ok(value),
+        Err(keyring::Error::NoEntry) => {
+            let value = read(LEGACY_KEYRING_SERVICE)?;
+            write(KEYRING_SERVICE, &value)?;
+            Ok(value)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Testing an edited connection preserves its saved password when the input is blank.
 /// Missing credentials mean an empty password; a locked/unavailable keychain is an error.
 pub fn password_for_test(conn_id: &str, typed: &str) -> Result<String, String> {
-    resolve_test_password(typed, || {
-        match keyring::Entry::new(KEYRING_SERVICE, conn_id).and_then(|e| e.get_password()) {
-            Ok(value) => Ok(Some(value)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(format!("Could not read the saved database password: {e}")),
-        }
-    })
+    resolve_test_password(typed, || get_optional_password(conn_id)
+        .map_err(|e| format!("Could not read the saved database password: {e}")))
 }
 
 fn resolve_test_password(typed: &str, read: impl FnOnce() -> Result<Option<String>, String>) -> Result<String, String> {
@@ -367,16 +399,111 @@ fn resolve_test_password(typed: &str, read: impl FnOnce() -> Result<Option<Strin
 }
 
 pub fn delete_password(conn_id: &str) -> Result<(), String> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, conn_id).map_err(|e| e.to_string())?;
-    match entry.delete_credential() {
-        Ok(()) => Ok(()),
-        Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(e.to_string()),
+    let _guard = KEYRING_LOCK.lock().map_err(|_| "Credential storage is unavailable")?;
+    delete_password_with(|service| keyring::Entry::new(service, conn_id)?.delete_credential())
+        .map_err(|e| e.to_string())
+}
+
+fn delete_password_with(mut delete: impl FnMut(&str) -> keyring::Result<()>) -> keyring::Result<()> {
+    // Remove the fallback first: if that fails, keep the current credential so
+    // a later read cannot silently restore the old value.
+    for service in [LEGACY_KEYRING_SERVICE, KEYRING_SERVICE] {
+        match delete(service) {
+            Ok(()) | Err(keyring::Error::NoEntry) => {}
+            Err(e) => return Err(e),
+        }
     }
+    Ok(())
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
+    fn locked_keychain() -> keyring::Error {
+        keyring::Error::NoStorageAccess(Box::new(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied, "locked test keychain",
+        )))
+    }
+
+    #[test]
+    fn keychain_service_migration_preserves_legacy_and_prefers_the_new_value() {
+        use std::{cell::RefCell, collections::HashMap};
+        let store = RefCell::new(HashMap::from([(LEGACY_KEYRING_SERVICE, "old".to_owned())]));
+        let read = |service: &str| store.borrow().get(service).cloned().ok_or(keyring::Error::NoEntry);
+        let copy = |_: &str, value: &str| {
+            store.borrow_mut().insert(KEYRING_SERVICE, value.to_owned());
+            Ok(())
+        };
+        assert_eq!(migrate_password_with(read, copy).unwrap(), "old");
+        assert_eq!(store.borrow()[LEGACY_KEYRING_SERVICE], "old");
+        assert_eq!(store.borrow()["tableiq.ideolyst.com"], "old");
+        store.borrow_mut().insert(KEYRING_SERVICE, "new".to_owned());
+        assert_eq!(migrate_password_with(read, |_, _| panic!("must not overwrite a new credential")).unwrap(), "new");
+    }
+
+    #[test]
+    fn keychain_service_migration_does_not_read_legacy_when_current_exists() {
+        assert_eq!(migrate_password_with(|service| {
+            assert_eq!(service, KEYRING_SERVICE);
+            Ok(String::new())
+        }, |_, _| panic!("must not copy an existing credential")).unwrap(), "");
+    }
+
+    #[test]
+    fn keychain_service_migration_preserves_denied_reads() {
+        for deny_legacy in [false, true] {
+            let mut calls = Vec::new();
+            let result = migrate_password_with(|service| {
+                calls.push(service.to_owned());
+                if deny_legacy && service == KEYRING_SERVICE { Err(keyring::Error::NoEntry) }
+                else { Err(locked_keychain()) }
+            }, |_, _| panic!("denied credentials must not be replaced"));
+            assert!(matches!(result, Err(keyring::Error::NoStorageAccess(_))));
+            assert_eq!(calls.len(), if deny_legacy { 2 } else { 1 });
+        }
+    }
+
+    #[test]
+    fn keychain_service_migration_leaves_missing_entries_missing() {
+        let result = migrate_password_with(|_| Err(keyring::Error::NoEntry),
+            |_, _| panic!("missing credentials must not be created"));
+        assert!(matches!(result, Err(keyring::Error::NoEntry)));
+    }
+
+    #[test]
+    fn keychain_service_migration_failed_copy_is_reported_and_retryable() {
+        use std::{cell::RefCell, collections::HashMap};
+        let store = RefCell::new(HashMap::from([(LEGACY_KEYRING_SERVICE, "saved".to_owned())]));
+        let read = |service: &str| store.borrow().get(service).cloned().ok_or(keyring::Error::NoEntry);
+        assert!(matches!(migrate_password_with(read, |_, _| Err(locked_keychain())),
+            Err(keyring::Error::NoStorageAccess(_))));
+        assert_eq!(store.borrow().len(), 1);
+        assert_eq!(migrate_password_with(read, |_, value| {
+            store.borrow_mut().insert(KEYRING_SERVICE, value.to_owned()); Ok(())
+        }).unwrap(), "saved");
+        assert_eq!(store.borrow()[LEGACY_KEYRING_SERVICE], "saved");
+    }
+
+    #[test]
+    fn keychain_service_delete_removes_fallback_before_current_and_tolerates_missing() {
+        for missing in [false, true] {
+            let mut calls = Vec::new();
+            delete_password_with(|service| {
+                calls.push(service.to_owned());
+                if missing { Err(keyring::Error::NoEntry) } else { Ok(()) }
+            }).unwrap();
+            assert_eq!(calls, [LEGACY_KEYRING_SERVICE, KEYRING_SERVICE]);
+        }
+    }
+
+    #[test]
+    fn keychain_service_delete_keeps_current_if_fallback_removal_is_denied() {
+        let mut calls = Vec::new();
+        assert!(matches!(delete_password_with(|service| {
+            calls.push(service.to_owned()); Err(locked_keychain())
+        }), Err(keyring::Error::NoStorageAccess(_))));
+        assert_eq!(calls, [LEGACY_KEYRING_SERVICE]);
+    }
+
     #[test]
     fn test_password_uses_saved_only_for_blank_input_and_preserves_keychain_errors() {
         assert_eq!(super::resolve_test_password("typed", || panic!("must not read keychain")).unwrap(), "typed");

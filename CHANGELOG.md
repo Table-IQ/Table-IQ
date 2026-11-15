@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.8.17 — 2026-11-15 (developer preview)
+
+### Changed
+- Keychain credentials now use `tableiq.ideolyst.com` as their service name. Existing database passwords, SSH secrets, AI keys and MCP tokens are copied on first read from the old service; the original remains for rollback. Locked or denied reads remain errors. macOS may show the old name while asking permission for this first read. The application identifier and configuration directory are unchanged.
+
 ## 0.8.16 — 2026-11-15 (developer preview)
 
 ### Fixed

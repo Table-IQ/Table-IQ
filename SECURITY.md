@@ -23,3 +23,9 @@ Do not test on systems or data you do not have permission to use. The project do
 - Safeguards differ by engine. See [permissions](docs/launch/MCP-PERMISSIONS.md), [engine matrix](docs/ENGINES.md) and [README limitations](README.md#known-limitations).
 
 Routine bugs should use the issue templates with synthetic data.
+
+## Keychain service name
+
+Starting with 0.8.17, credentials use `tableiq.ideolyst.com`. If a credential is absent there, TableIQ reads its existing `ai.rhobots.tableiq` entry and copies it without deleting the original. macOS may display the old name when requesting permission for that first read. Denied or locked reads and failed copies remain errors; the application identifier and configuration directory stay unchanged.
+
+Older app versions use the retained original entry. Credentials changed in 0.8.17 are saved only under the new service, so an older version may require those updated values to be entered again. Removing a credential in 0.8.17 removes both entries so the fallback cannot restore a deleted secret.
