@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.8.16 — 2026-11-15 (developer preview)
+
+### Fixed
+- Dark connection-screen logo no longer renders an opaque square behind the artwork.
+- The SQL title bar shows the full MCP Activity label. MCP configuration remains under the Settings icon; the standalone home-screen configuration button is removed.
+- Live MCP integration tests coordinate their shared process-wide request budget, preserving the production limit and the internal concurrency exercise.
+
 ## 0.8.15 — 2026-11-15 (developer preview)
 
 ### Added

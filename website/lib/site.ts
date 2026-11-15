@@ -10,13 +10,14 @@ export const PREVIEW = {
   version: PREVIEW_VERSION,
   tag: `preview-v${PREVIEW_VERSION}`,
   releaseUrl: `${GITHUB}/releases/tag/preview-v${PREVIEW_VERSION}`,
-  dmgUrl: "",
+  dmgUrl: `${GITHUB}/releases/download/preview-v${PREVIEW_VERSION}/TableIQ_${PREVIEW_VERSION}_aarch64.dmg`,
   platform: "Mac · Apple silicon",
 };
 export const DOWNLOAD_URL = PREVIEW.dmgUrl || PREVIEW.releaseUrl;
 
 // Populate with the real, verified recording and its captions; no placeholder player.
 export const DEMOS = [
+  { id: "argo", title: "A narrated walkthrough", maker: "Argo", src: "/video/tableiq-argo-mcp-56s.mp4", poster: "/video/tableiq-argo-poster.png", captions: "/video/tableiq-argo.vtt", duration: 56, description: "Follow the real MCP setup, inspect the agent’s calls, then verify the answer with a manual query." },
   { id: "huashu", title: "Follow the investigation", maker: "Huashu Motion", src: "/video/tableiq-huashu-motion-56s.mp4", poster: "/video/tableiq-huashu-poster.png", captions: "/video/tableiq-huashu.vtt", duration: 56, description: "Choose an agent connection, inspect its calls and SQL, then verify two returned orders." },
   { id: "take-one", title: "Trace the answer", maker: "Take One", src: "/video/tableiq-take-one-story-50s.mp4", poster: "/video/tableiq-take-one-poster.png", captions: "/video/tableiq-take-one.vtt", duration: 50, description: "A short story about finding paid orders that haven’t shipped and checking the evidence." },
 ];

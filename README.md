@@ -46,7 +46,9 @@ query, and edit your databases.
 [Huashu Motion demo · 56 seconds](https://tableiq.ideolyst.com/video/tableiq-huashu-motion-56s.mp4)
 · [Take One story · 50 seconds](https://tableiq.ideolyst.com/video/tableiq-take-one-story-50s.mp4)
 
-Both films use real native v0.8.15 footage and synthetic data. Cuts condense time;
+[Argo narrated walkthrough · 56 seconds](https://tableiq.ideolyst.com/video/tableiq-argo-mcp-56s.mp4)
+
+All three films use real native v0.8.15 footage and synthetic data. Cuts condense time;
 these are demonstrations, not speed benchmarks. [Dataset and expected answer](docs/launch/demo/README.md).
 
 ## Features
@@ -68,7 +70,7 @@ mean that data stays on your machine.
 
 ### Try the Mac preview
 
-[Download the v0.8.15 Apple Silicon developer preview](https://github.com/Table-IQ/Table-IQ/releases/tag/preview-v0.8.15).
+[Download the v0.8.16 Apple Silicon developer preview](https://github.com/Table-IQ/Table-IQ/releases/tag/preview-v0.8.16).
 The release includes the installer, matching source archive, license notices, and
 checksums. No TableIQ account is required.
 

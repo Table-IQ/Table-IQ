@@ -47,7 +47,7 @@ export function AgentTrace() {
           MCP Activity · Storefront (read-only)
         </span>
         <button type="button" data-needs-js onClick={play} className="min-h-8 rounded-pill px-2 text-muted underline decoration-rule underline-offset-4 hover:text-ink">
-          Replay
+          Replay animation
         </button>
       </div>
       <ol aria-label="Agent calls recorded in MCP Activity" className="space-y-1 font-mono text-xs md:text-sm">
@@ -67,7 +67,7 @@ export function AgentTrace() {
           </li>
         ))}
       </ol>
-      <p className="mt-3 text-xs text-muted">Transcribed from a recorded Claude Code session against a read-only connection.</p>
+      <p className="mt-3 text-xs text-muted">Illustration of a recorded Claude Code session. In TableIQ, connect to a database and choose MCP Activity in the top toolbar to inspect recent calls.</p>
     </div>
   );
 }

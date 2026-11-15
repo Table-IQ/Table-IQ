@@ -1,0 +1,58 @@
+WEBVTT
+
+1
+00:00:00.000 --> 00:00:01.780
+Which paid orders haven't shipped?
+
+2
+00:00:02.460 --> 00:00:06.660
+Trace the answer with TableIQ in this
+condensed synthetic demo.
+
+3
+00:00:08.000 --> 00:00:11.060
+Share only the demo connection with your
+coding agent.
+
+4
+00:00:11.560 --> 00:00:12.980
+Writes are off by default.
+
+5
+00:00:14.400 --> 00:00:19.160
+Here, Codex discovers the schema and runs
+a select query through MCP.
+
+6
+00:00:20.387 --> 00:00:22.067
+Inspect the real tool calls.
+
+7
+00:00:22.827 --> 00:00:24.287
+Check the SQL logic.
+
+8
+00:00:24.867 --> 00:00:26.827
+A paid payment with no shipped record.
+
+9
+00:00:27.933 --> 00:00:30.013
+Now verify the answer yourself.
+
+10
+00:00:30.713 --> 00:00:33.333
+Run a matching query in the SQL editor.
+
+11
+00:00:35.080 --> 00:00:40.440
+Two orders, 102 and 104, 7,300
+
+12
+00:00:40.460 --> 00:00:44.140
+Cents. Check those rows against the
+agent's answer.
+
+13
+00:00:47.867 --> 00:00:52.647
+Try TableIQ's free Mac developer preview
+and tell us what needs work.

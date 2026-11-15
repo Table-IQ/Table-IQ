@@ -47,10 +47,10 @@ describe("TitleBar", () => {
     expect(html).not.toContain('aria-label="Command palette"');
   });
 
-  it("keeps a visible MCP label outside customizable toolbar items, including file connections", () => {
+  it("keeps the full MCP Activity label visible outside customizable toolbar items, including file connections", () => {
     for (const fileEngine of [false, true]) {
       const html = renderToStaticMarkup(<TitleBar {...props} items={[]} fileEngine={fileEngine} />);
-      expect(html).toMatch(/aria-label="MCP Activity"[^>]*><span[^>]*>MCP<\/span><\/button>/);
+      expect(html).toMatch(/aria-label="MCP Activity"[^>]*><span[^>]*>MCP Activity<\/span><\/button>/);
       expect(html).not.toContain('aria-label="More toolbar items"');
       expect(html).toContain('aria-label="Open connection"');
     }

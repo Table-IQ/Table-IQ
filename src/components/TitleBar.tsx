@@ -209,7 +209,7 @@ export function TitleBar(p: TitleBarProps) {
         />
         <CapsuleButton icon={<IconErd {...ICON} />} label="ERD" onClick={p.onOpenErd} />
         <CapsuleButton
-          icon={<span className="font-mono text-xs font-medium tracking-tight">MCP</span>}
+          icon={<span className="whitespace-nowrap text-xs font-medium">MCP Activity</span>}
           label="MCP Activity"
           onClick={p.onOpenMcpActivity}
         />
@@ -242,7 +242,7 @@ export function TitleBar(p: TitleBarProps) {
       <div
         data-testid="conn-capsule"
         title={pillText(seg)}
-        className="tiq-no-drag flex h-9 min-w-[140px] flex-1 items-center gap-2 overflow-hidden rounded-full border px-4 font-mono text-[12px]"
+        className="tiq-no-drag flex h-9 min-w-24 flex-1 items-center gap-2 overflow-hidden rounded-full border px-2 font-mono text-[12px] min-[1180px]:px-4"
         style={{
           background: `var(--env-${tone})`,
           color: `var(--env-${tone}-text)`,

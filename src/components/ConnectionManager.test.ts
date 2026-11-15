@@ -7,9 +7,9 @@ import { defaultSshConfig } from "../lib/ssh";
 import { ThemeProvider } from "../theme/ThemeProvider";
 
 describe("connection-home settings access", () => {
-  it("offers MCP settings before a database connection is open", () => {
+  it("keeps configuration behind Settings without a standalone MCP shortcut", () => {
     const html = renderToStaticMarkup(createElement(ThemeProvider, null, createElement(ConnectionManager)));
-    expect(html).toMatch(/<button[^>]*>[\s\S]*?MCP settings<\/button>/);
+    expect(html).not.toContain("MCP settings");
     expect(html).toContain('aria-label="Settings"');
     expect(html).toContain("Check for updates");
   });
