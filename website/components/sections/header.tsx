@@ -20,7 +20,12 @@ export function Header() {
             <Button href={DOWNLOAD_URL} variant="secondary">Download preview</Button>
           </div>
           <details className="relative xl:hidden">
-            <summary className="flex min-h-11 cursor-pointer list-none items-center rounded-pill border border-rule px-4 text-sm [&::-webkit-details-marker]:hidden">Menu</summary>
+            <summary title="Menu" className="grid size-11 cursor-pointer list-none place-items-center rounded-pill border border-rule text-ink-2 transition-colors hover:border-accent hover:text-ink [&::-webkit-details-marker]:hidden">
+              <svg aria-hidden="true" viewBox="0 0 24 24" className="size-5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+                <path d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+              <span className="sr-only">Menu</span>
+            </summary>
             <div className="absolute right-0 mt-2 grid w-60 gap-1 rounded-card border border-rule bg-paper p-2 shadow-xl">
               {[...NAV, { href: GITHUB, label: "GitHub" }, { href: "/#download", label: "Download developer preview" }].map((n) => (
                 <a key={n.href} href={n.href} className="flex min-h-12 items-center rounded-pill px-3 text-ink-2 hover:bg-paper-2 hover:text-ink">{n.label}</a>
