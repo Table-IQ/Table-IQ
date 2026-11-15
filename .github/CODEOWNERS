@@ -1,0 +1,4 @@
+# Request the maintainer's review on ready pull requests from other contributors.
+# main's ruleset requires PRs and CI; required approvals remain zero while there
+# is one maintainer. Enable required approval when another maintainer is added.
+* @RudreshNarwal
