@@ -56,6 +56,7 @@ export interface TitleBarProps {
   onOpenDatabase(): void;
   onNewQuery(): void;
   onOpenErd(): void;
+  onOpenMcpActivity(): void;
   onNewTable(): void;
   onImport(): void;
   onDiff(): void;
@@ -207,6 +208,11 @@ export function TitleBar(p: TitleBarProps) {
           onClick={p.onNewQuery}
         />
         <CapsuleButton icon={<IconErd {...ICON} />} label="ERD" onClick={p.onOpenErd} />
+        <CapsuleButton
+          icon={<span className="font-mono text-xs font-medium tracking-tight">MCP</span>}
+          label="MCP Activity"
+          onClick={p.onOpenMcpActivity}
+        />
         <CapsuleDivider />
         <span ref={moreRef} className="inline-flex">
           <CapsuleButton

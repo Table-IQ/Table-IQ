@@ -414,6 +414,14 @@ export function ConnectionManager({ editor }: {
         <div className="px-5 pb-5">
           <div className="flex flex-col gap-1.5">
             <button
+              type="button"
+              onClick={() => useSettingsUi.getState().show("mcp")}
+              className="flex h-8 items-center gap-2 rounded-[var(--radius)] border border-border bg-bg/70 px-3 text-[12px] text-text shadow-[var(--shadow-soft)] transition-colors hover:bg-bg"
+            >
+              <IconSliders size={12} className="text-muted" />
+              MCP settings
+            </button>
+            <button
               onClick={() => { useSettingsUi.getState().show("updates"); void useUpdates.getState().check(); }}
               className="flex h-8 items-center gap-2 rounded-[var(--radius)] border border-border bg-bg/70 px-3 text-[12px] text-text shadow-[var(--shadow-soft)] transition-colors hover:bg-bg"
             >

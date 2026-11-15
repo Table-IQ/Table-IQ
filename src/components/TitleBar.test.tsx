@@ -23,7 +23,7 @@ const props: TitleBarProps = {
   ],
   canBackup: true, canRestore: false,
   onToggleSidebar: noop, onToggleInspector: noop, onOpenConnection: noop, onOpenDatabase: noop,
-  onNewQuery: noop, onOpenErd: noop, onNewTable: noop, onImport: noop, onDiff: noop, onBackup: noop, onRestore: noop,
+  onNewQuery: noop, onOpenErd: noop, onOpenMcpActivity: noop, onNewTable: noop, onImport: noop, onDiff: noop, onBackup: noop, onRestore: noop,
   onCancelQueries: noop, onCustomizeToolbar: noop, onDisconnect: noop,
 };
 
@@ -31,7 +31,7 @@ describe("TitleBar", () => {
   it("renders the fixed groups, the customizable G4 items, and the pill", () => {
     const html = renderToStaticMarkup(<TitleBar {...props} />);
     for (const label of ["Toggle sidebar", "Open connection", "Discard changes", "Review changes", "Commit changes",
-      "Open database", "New query", "ERD", "More", "Refresh schema", "Command palette", "SQL log",
+      "Open database", "New query", "ERD", "MCP Activity", "More", "Refresh schema", "Command palette", "SQL log",
       "Cancel running queries", "Settings", "Toggle inspector", "Disconnect"]) {
       expect(html).toContain(`aria-label="${label}"`);
     }
@@ -45,6 +45,15 @@ describe("TitleBar", () => {
     const html = renderToStaticMarkup(<TitleBar {...props} items={[props.items[2], props.items[0]]} />);
     expect(html.indexOf('aria-label="SQL log"')).toBeLessThan(html.indexOf('aria-label="Refresh schema"'));
     expect(html).not.toContain('aria-label="Command palette"');
+  });
+
+  it("keeps a visible MCP label outside customizable toolbar items, including file connections", () => {
+    for (const fileEngine of [false, true]) {
+      const html = renderToStaticMarkup(<TitleBar {...props} items={[]} fileEngine={fileEngine} />);
+      expect(html).toMatch(/aria-label="MCP Activity"[^>]*><span[^>]*>MCP<\/span><\/button>/);
+      expect(html).not.toContain('aria-label="More toolbar items"');
+      expect(html).toContain('aria-label="Open connection"');
+    }
   });
 
   it("disables staged-edit actions when nothing is staged and hides ⌘D for file engines", () => {

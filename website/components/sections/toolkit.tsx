@@ -11,7 +11,7 @@ const SMALL = [
   { title: "Many connections", body: "Keep several open. A rail switches between them without reconnecting." },
   { title: "SSH tunnels", body: "Password, agent or key-file auth, with host-key verification." },
   { title: "Environment tags", body: "Local to production. Production tints the title bar and guards commits." },
-  { title: "Bring-your-own-key AI", body: "Text to SQL, explain, optimize and fix with Anthropic, OpenAI, Gemini or local Ollama." },
+  { title: "Bring-your-own-key AI", body: "Text to SQL, explain, optimize and fix with Anthropic, OpenAI, Gemini, OpenRouter or local Ollama. Review generated SQL before running it." },
   { title: "Backup and restore", body: "pg_dump, mysqldump, SQL Server backups, SQLite and DuckDB files." },
   { title: "User management", body: "Create roles and change access on Postgres, MySQL and SQL Server, with a SQL preview." },
   { title: "Metrics board", body: "Read-only number, bar, line and table widgets that refresh on a timer." },

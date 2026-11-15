@@ -12,6 +12,7 @@ import { IconClose, IconKey, IconLink, IconSearch } from "./ui/Icon";
 import { useSelectedRow } from "../state/selectedRowStore";
 import { useStaged } from "../state/stagedStore";
 import { loadForeignKeys, loadTableMeta } from "../state/connectionStore";
+import { useSettingsUi } from "./Settings";
 
 /** Whether the row-detail fields can be edited: the grid's own rule (`readOnlyReason`), so a
  *  view, a table without a primary key and a session without multi-statement transactions
@@ -31,8 +32,8 @@ export function fieldsEditable(object: ObjectInfo | null, pk: string[], transact
  *   - **Object metadata** — fall-through for when no row is selected. Shows
  *     object kind, row estimate, full column list, and FK relationships.
  *
- * The user toggles to the Assistant tab for AI chat (placeholder until a
- * provider is configured under AI Settings).
+ * The AI tools tab explains the existing overview/query actions and links to
+ * provider configuration. It does not offer chat inside the inspector.
  */
 export function Inspector({
   connId,
@@ -151,7 +152,7 @@ export function Inspector({
         <Tabs
           tabs={[
             { key: "details", label: "Details" },
-            { key: "assistant", label: "Assistant" },
+            { key: "ai-tools", label: "AI tools" },
           ]}
           active={tab}
           onSelect={setTab}
@@ -202,10 +203,17 @@ export function Inspector({
           </div>
         )
       ) : (
-        <div className="min-h-0 flex-1 overflow-auto p-3 text-[11px] text-muted">
-          <div className="mb-1 text-text">Assistant</div>
-          Ask questions about the schema or your query. Live AI chat lands once a provider key
-          or local Ollama is configured under <strong>AI Settings</strong>.
+        <div className="min-h-0 flex-1 space-y-3 overflow-auto p-3 text-[11px] text-muted">
+          <p>Use <strong className="text-text">Ask</strong> on the connection home to describe a query in plain English.</p>
+          <p>In a query tab, open <strong className="text-text">AI</strong> to generate SQL, explain a query, optimize it, or fix an error.</p>
+          <p>Generated or revised SQL is inserted into the editor for review. Choose <strong className="text-text">Run</strong> separately when you are ready.</p>
+          <button
+            type="button"
+            onClick={() => useSettingsUi.getState().show("ai")}
+            className="rounded-md border border-border px-3 py-1.5 text-xs text-text hover:bg-surface-2"
+          >
+            Configure AI
+          </button>
         </div>
       )}
     </div>

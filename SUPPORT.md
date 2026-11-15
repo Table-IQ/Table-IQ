@@ -4,7 +4,7 @@ TableIQ's developer preview is free, including commercial use under its open-sou
 
 ## Get help
 
-Use [issues](https://github.com/RudreshNarwal/Table-IQ/issues) for reproducible bugs and feature requests. Include versions and a small synthetic example. For vulnerabilities, use [SECURITY.md](SECURITY.md). The free preview has no guaranteed response time.
+Use [issues](https://github.com/Table-IQ/Table-IQ/issues) for reproducible bugs and feature requests. Include versions and a small synthetic example. For vulnerabilities, use [SECURITY.md](SECURITY.md). The free preview has no guaranteed response time.
 
 ## Financial support
 

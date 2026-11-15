@@ -1739,7 +1739,7 @@ export interface AiConfig {
 }
 
 export async function getAiConfig(): Promise<AiConfig> {
-  if (!inTauri()) return { provider: "anthropic", model: "claude-sonnet-4-6" };
+  if (!inTauri()) return { provider: "anthropic", model: "claude-sonnet-5-5" };
   return invoke<AiConfig>("get_ai_config");
 }
 

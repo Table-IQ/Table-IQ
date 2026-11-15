@@ -40,3 +40,40 @@ A persistent random ID is pseudonymous, not a verified person or guaranteed anon
 ## When accounts become appropriate
 
 Shared workspaces, hosted sync, billing, paid AI quotas and organization permissions create concrete identity requirements. Request sign-in at those service boundaries, with providers selected from customer needs rather than Google-only convenience. A protected allowlisted beta can also justify access control if that is an explicit product decision. TableIQ's current public local preview has no such requirement. “We need details to show traction” is not sufficient reason to gate it. Implementing auth/analytics now would expand the release scope without establishing repeat value.
+
+## Follow-up: could Supabase/Google be free, or should first launch require name/email/country?
+
+**Checked November 15, 2026: a small Google-login deployment can fit a $0 Supabase bill. That does not make mandatory login, or a mandatory personal-details form, the right onboarding for this local app.** Keep the current account-free release and optional GitHub feedback. The question is which user problem identity solves, not whether the first hosting invoice is zero. No Auth project, email provider, form backend or collector was created for this research.
+
+### What the current free tiers actually include
+
+| Service / measure | Verified current official terms | Implication |
+| --- | --- | --- |
+| Supabase Free | $0/month; 50,000 Auth MAUs; social OAuth providers included; two active projects; 500 MB database; 5 GB egress; free projects pause after a week of inactivity. [Pricing](https://supabase.com/pricing) | Google social sign-in can start within free quotas. Free is a capacity/availability offer, not a guarantee of permanent zero operating cost. |
+| Supabase Pro | From $25/month; 100,000 included Auth MAUs, then $0.00325 per additional MAU. Other usage/add-ons can add costs. [Pricing](https://supabase.com/pricing) | Do not describe 50,000 as total registered-user capacity, or promise that a paid deployment costs exactly $25 regardless of resources. |
+| Auth MAU definition | Distinct users signing in **or refreshing their token** during the billing cycle; each is counted once in that cycle, including social login. [MAU documentation](https://supabase.com/docs/guides/platform/manage-your-usage/monthly-active-users) | An auth billing counter is not TableIQ meaningful-task activity, D7/D14 retention or proof that a developer used the database client. |
+| Supabase built-in email sender | Testing/best-effort only; sends only to pre-authorized project-team addresses; currently two messages/hour across the project. Public email-based flows need custom SMTP or another configured sending route. [SMTP guide](https://supabase.com/docs/guides/auth/auth-smtp), [testing guide](https://supabase.com/docs/guides/auth/testing-auth-flows) | The Auth free tier is not a production email-delivery allowance. Paying for Supabase alone does not remove the built-in sender's restrictions. |
+| Custom SMTP | Supabase initially limits the new setup to 30 messages/hour, adjustable in Auth rate-limit settings; the sending provider has its own independent quotas. [SMTP setup](https://supabase.com/docs/guides/auth/auth-smtp) | A launch can hit the Auth sending cap even when the provider's monthly allowance remains. |
+| Example sending providers | Resend Free: 3,000 transactional emails/month, capped at 100/day. Brevo Free: 300 sends/day, unused daily sends do not carry over; transactional email included. [Resend official pricing](https://resend.com/pricing.md), [Brevo official plan documentation](https://help.brevo.com/hc/en-us/articles/208589409-About-Brevo-s-pricing-plans) | Low-volume email delivery can also start free, but monthly and daily quotas are different. These are capacity examples, not a provider selection or an instruction to add email infrastructure. |
+
+### Google login is separate from Gmail and email delivery
+
+“Sign in with Google” authenticates a Google Account. It does not give TableIQ a Gmail mailbox, permission to read/send Gmail, or a free transactional email service. Supabase's documented scopes are `openid`, email and profile; additional API permissions are separate. Ordinary Google OAuth can complete without a TableIQ confirmation email; if a flow adds email confirmation, invitations, magic links or password resets, its email-delivery requirements apply. [Supabase Google guide](https://supabase.com/docs/guides/auth/social-sign-in/auth-google), [SMTP flow requirements](https://supabase.com/docs/guides/auth/auth-smtp).
+
+Google's identity documentation describes a stable account subject, email and optional profile/name/locale claims. A locale is not verified country of residence, and a name is not guaranteed. Do not request Gmail API access or infer reliable country merely to populate a traction dashboard. Google-account identity also does not establish buying authority or payment intent. [Google OpenID Connect documentation](https://developers.google.com/identity/openid-connect/openid-connect).
+
+Managed Auth reduces implementation work but does not remove operating work: OAuth app/consent configuration, allowed redirects, desktop browser-to-app return handling, session/token storage and refresh, sign-out, account deletion/support, abuse controls and outage behavior. Supabase and Google document client/callback setup and redirect allowlists. This is a new dependency for a product that currently opens local databases without a vendor account. [Google provider setup](https://supabase.com/docs/guides/auth/social-sign-in/auth-google), [redirect configuration](https://supabase.com/docs/guides/auth/redirect-urls). These are engineering/operating implications, not a claim that Auth is unsuitable when a real identity-dependent service exists.
+
+### Minimum useful data and the onboarding decision
+
+| Proposed field / action | Needed to open a local database? | Recommendation now |
+| --- | --- | --- |
+| Name | No | Omit. A voluntary display name may help a conversation but does not measure adoption. |
+| Email | No | Request only when someone voluntarily wants a reply, interview or specific updates; explain the purpose and keep marketing permission separate. No login is needed just to offer feedback. |
+| Country | No | Omit. Ask optionally in a later survey only if a specific regional/support decision depends on it. Do not collect it for a vanity distribution map. |
+| Main task / database type / blocker | No | Optional feedback after trying a task is more useful for product decisions than a required identity form. No server/connection names or credentials. |
+| Google authentication | No | Revisit at a future shared-workspace, hosted-service or billing boundary; keep local use available without it. |
+
+A mandatory unverified email/name/country form does not solve identity quality: invented entries and missing outcomes remain. Keeping answers only on the device cannot tell the founder who used the app; transmitting them requires a disclosed destination and retention/access process. Neither route establishes completed work or repeat use. Conversely, Google login can provide a stable account identifier and easier future multi-device identity; that is a valid benefit once a user-facing service needs it, rather than a reason to invent a gate now.
+
+**Action now:** ship the current first-run path; keep [public GitHub feedback](../../../SUPPORT.md) available, without asking people to publish email addresses or personal details. Recruit willing follow-up participants privately through an appropriate existing contact route. Use [TRACTION.md](../TRACTION.md) for channel/download requests and eligible-cohort task/return evidence. If contactability is repeatedly a problem, propose a small optional “Get involved / Send feedback” form after the user sees value, with an immediate skip and email only when a reply is requested. Decide its purpose/storage first; do not build full authentication merely to store a contact list.

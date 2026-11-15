@@ -2,13 +2,7 @@ import { useEffect, useState } from "react";
 import { getAiConfig, localLlmAvailable, saveAiConfig } from "../lib/commands";
 import { logError } from "../lib/report";
 import { StatusDot } from "./ui/StatusBar";
-
-const MODELS: Record<string, string[]> = {
-  anthropic: ["claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"],
-  openai: ["gpt-4.1", "gpt-4o", "o4-mini"],
-  gemini: ["gemini-2.5-pro", "gemini-2.5-flash"],
-  ollama: ["qwen2.5-coder:7b", "qwen2.5-coder:1.5b", "llama3.1:8b"],
-};
+import { AI_MODELS, isAiProvider, type AiProvider } from "../lib/aiModels";
 
 const field =
   "w-full rounded-md border border-border bg-bg px-2.5 py-1.5 text-sm text-text placeholder:text-muted focus:border-primary focus:outline-none";
@@ -19,15 +13,21 @@ const field =
  * own drawer opened from the Query tab.
  */
 export function AiSettingsForm() {
-  const [provider, setProvider] = useState("anthropic");
-  const [model, setModel] = useState("claude-sonnet-4-6");
+  const [provider, setProvider] = useState<AiProvider>("anthropic");
+  const [model, setModel] = useState<string>(AI_MODELS.anthropic[0]);
   const [apiKey, setApiKey] = useState("");
   const [status, setStatus] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const [ollamaUp, setOllamaUp] = useState<boolean | null>(null);
 
   useEffect(() => {
     getAiConfig()
       .then((c) => {
+        if (!isAiProvider(c.provider)) {
+          setError("The saved provider is unsupported. Choose a provider and model before saving.");
+          return;
+        }
         setProvider(c.provider);
         setModel(c.model);
       })
@@ -40,9 +40,15 @@ export function AiSettingsForm() {
   const isLocal = provider === "ollama";
 
   const save = async () => {
-    await saveAiConfig(provider, model, apiKey || undefined);
-    setStatus("Saved");
-    setApiKey("");
+    if (!model.trim() || saving) return;
+    setSaving(true); setError(null); setStatus(null);
+    try {
+      await saveAiConfig(provider, model.trim(), apiKey.trim() || undefined);
+      setStatus("Saved");
+      setApiKey("");
+    } catch {
+      setError("Could not save AI settings. Check that your OS keychain is unlocked and try again.");
+    } finally { setSaving(false); }
   };
 
   return (
@@ -52,14 +58,19 @@ export function AiSettingsForm() {
         <select
           className={field}
           value={provider}
+          disabled={saving}
           onChange={(e) => {
-            setProvider(e.target.value);
-            setModel(MODELS[e.target.value][0]);
+            const next = e.target.value;
+            if (!isAiProvider(next)) return;
+            setProvider(next);
+            setModel(AI_MODELS[next][0]);
+            setApiKey(""); setStatus(null); setError(null);
           }}
         >
           <option value="anthropic">Anthropic</option>
           <option value="openai">OpenAI</option>
           <option value="gemini">Gemini</option>
+          <option value="openrouter">OpenRouter</option>
           <option value="ollama">Ollama (local · zero egress)</option>
         </select>
       </label>
@@ -77,14 +88,11 @@ export function AiSettingsForm() {
       )}
       <label className="block text-xs text-muted">
         Model
-        <select className={field} value={model} onChange={(e) => setModel(e.target.value)}>
-          {MODELS[provider].map((m) => (
-            <option key={m} value={m}>
-              {m}
-            </option>
-          ))}
-        </select>
+        <input className={field} value={model} list="tiq-ai-models" spellCheck={false} disabled={saving} onChange={(e) => { setModel(e.target.value); setStatus(null); }} />
+        <datalist id="tiq-ai-models">{AI_MODELS[provider].map((m) => <option key={m} value={m} />)}</datalist>
       </label>
+      <p className="text-[11px] text-muted">Suggestions checked November 15, 2026. Choose one or enter any model ID available to your account. Saved models stay unchanged until you save.</p>
+      {provider === "openrouter" && <p className="text-[11px] text-muted">Use an OpenRouter API key and a namespaced model ID. OpenRouter routes requests to the selected provider; its availability and data policy apply.</p>}
       {!isLocal && (
         <label className="block text-xs text-muted">
           API key (stored in OS keychain)
@@ -92,8 +100,10 @@ export function AiSettingsForm() {
             className={field}
             type="password"
             value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder="sk-…"
+            disabled={saving}
+            onChange={(e) => { setApiKey(e.target.value); setStatus(null); }}
+            placeholder="Leave blank to keep this provider’s saved key"
+            autoComplete="off"
           />
         </label>
       )}
@@ -105,12 +115,14 @@ export function AiSettingsForm() {
       </p>
       <div className="flex items-center gap-2 pt-1">
         {status && <span className="text-xs text-ok">{status}</span>}
+        {error && <span role="alert" className="text-xs text-danger">{error}</span>}
         <span className="ml-auto" />
         <button
           onClick={save}
+          disabled={saving || !model.trim()}
           className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white hover:bg-primary-hover"
         >
-          Save
+          {saving ? "Saving…" : "Save"}
         </button>
       </div>
     </div>

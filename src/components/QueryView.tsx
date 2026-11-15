@@ -351,8 +351,10 @@ export function QueryView({
     setEgress(await aiEgressPreview(connId).catch((e) => `error: ${e}`));
   }, [connId]);
 
+  const aiRequestInFlight = useRef(false);
   const aiGenerate = useCallback(async () => {
-    if (!aiPrompt.trim()) return;
+    if (aiRequestInFlight.current || !aiPrompt.trim()) return;
+    aiRequestInFlight.current = true;
     setAiBusy(true);
     setError(null);
     try {
@@ -360,14 +362,17 @@ export function QueryView({
     } catch (e) {
       setError(`AI: ${e}`);
     } finally {
+      aiRequestInFlight.current = false;
       setAiBusy(false);
     }
   }, [connId, aiPrompt, setEditorText]);
 
   const aiAction = useCallback(
     async (kind: "explain" | "optimize" | "fix") => {
+      if (aiRequestInFlight.current) return;
       const sql = editorRef.current?.getDoc() ?? sqlRef.current;
       if (!sql.trim()) return;
+      aiRequestInFlight.current = true;
       setAiBusy(true);
       setError(null);
       setExplanation(null);
@@ -378,6 +383,7 @@ export function QueryView({
       } catch (e) {
         setError(`AI: ${e}`);
       } finally {
+        aiRequestInFlight.current = false;
         setAiBusy(false);
       }
     },

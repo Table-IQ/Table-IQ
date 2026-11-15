@@ -8,7 +8,7 @@ The current Mac developer-preview release receives fixes on a best-effort basis.
 
 ## Report a vulnerability privately
 
-Use [GitHub private vulnerability reporting](https://github.com/RudreshNarwal/Table-IQ/security/advisories/new) when enabled. If that route is unavailable, use a private contact route on the [maintainer profile](https://github.com/RudreshNarwal) or GitHub Support to arrange secure contact. Do not publish an exploit or credentials in a normal issue while trying to reach the maintainer.
+Use [GitHub private vulnerability reporting](https://github.com/Table-IQ/Table-IQ/security/advisories/new) when enabled. If that route is unavailable, use a private contact route on the [maintainer profile](https://github.com/RudreshNarwal) or GitHub Support to arrange secure contact. Do not publish an exploit or credentials in a normal issue while trying to reach the maintainer.
 
 Include affected versions, platform/database engine, expected/observed behavior, impact and a minimal synthetic reproduction. Redact credentials and customer data. If relevant, distinguish a refusal before execution, a database error, timeout/cancellation request, and an observed committed effect.
 

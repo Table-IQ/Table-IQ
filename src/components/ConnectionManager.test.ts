@@ -1,7 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { isDirty, isFileEngine, sortByRecency } from "./ConnectionManager";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { ConnectionManager, isDirty, isFileEngine, sortByRecency } from "./ConnectionManager";
 import type { ConnConfig } from "../lib/commands";
 import { defaultSshConfig } from "../lib/ssh";
+import { ThemeProvider } from "../theme/ThemeProvider";
+
+describe("connection-home settings access", () => {
+  it("offers MCP settings before a database connection is open", () => {
+    const html = renderToStaticMarkup(createElement(ThemeProvider, null, createElement(ConnectionManager)));
+    expect(html).toMatch(/<button[^>]*>[\s\S]*?MCP settings<\/button>/);
+    expect(html).toContain('aria-label="Settings"');
+    expect(html).toContain("Check for updates");
+  });
+});
 
 function conn(id: string, name: string, engine: ConnConfig["engine"] = "postgres"): ConnConfig {
   return {

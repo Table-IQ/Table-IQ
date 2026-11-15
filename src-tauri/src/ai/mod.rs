@@ -124,7 +124,7 @@ pub fn extract_sql(raw: &str) -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiConfig {
-    pub provider: String, // "anthropic" | "openai" | "gemini"
+    pub provider: String, // "anthropic" | "openai" | "gemini" | "openrouter" | "ollama"
     pub model: String,
 }
 
@@ -132,7 +132,7 @@ impl Default for AiConfig {
     fn default() -> Self {
         Self {
             provider: "anthropic".into(),
-            model: "claude-sonnet-4-6".into(),
+            model: "claude-sonnet-5-5".into(),
         }
     }
 }

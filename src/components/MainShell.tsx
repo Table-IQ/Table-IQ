@@ -860,6 +860,7 @@ export function MainShell() {
         onOpenDatabase={() => void openDbPicker()}
         onNewQuery={() => void tabGuard.openQuery()}
         onOpenErd={() => void tabGuard.openErd()}
+        onOpenMcpActivity={() => void tabGuard.openView("mcp", "MCP Activity")}
         onNewTable={() => setShowStructure(true)}
         onImport={() => setShowImport(true)}
         onDiff={() => setShowDiff(true)}
