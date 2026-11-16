@@ -9,12 +9,13 @@ Platform status: Mac developer preview available for Apple silicon. Windows and 
 MCP Activity: a visible lower-page section and navigation link explain recent agent calls, redacted SQL, timing, row counts and outcomes, with an illustrative interface preview and a link to the genuine 56-second MCP walkthrough. Detailed setup and additional films remain in an optional disclosure. Do not imply permanent audit storage or approval before every agent query.
 
 Title: TableIQ | Free, open-source database client for Mac
-H1: A free, open-source database client for Mac.
-Supporting copy: Browse your tables, write SQL and review changes before you commit. Connect to PostgreSQL, MySQL, SQLite and more. Use AI with your own API key when you want help with SQL.
+H1, two lines: A database client. / Free and open source.
+Supporting copy: Browse, query and review your data without a tab paywall. Optional AI uses your own key.
+Layout: centered copy and actions above a full-width interface preview. Contained floating header; no hero overlay or repeated benefit badges. The owner delegated this visual revision on November 16, 2026.
 
 Order: hero → real everyday-workflow demo → core features/interface previews → connect/query/review steps → free/open-source terms → TablePlus/DBeaver comparison → optional BYOK settings → toolkit → engine capabilities → visible MCP Activity section → collapsed external-agent setup and earlier demos/guides → FAQ → download/install.
 
-Primary CTA: download the developer preview. Secondary CTA: watch the everyday workflow. Visible qualification: Apple silicon Mac, unsigned and not notarized, local/disposable data first. No required account. AI provider usage may cost money.
+Primary CTA: Download for Mac. Secondary CTA: Watch demo. Consolidated hero qualification: Apple silicon Mac, unsigned/not notarized, Windows and Linux coming soon. Installation instructions and disposable-data guidance remain in the download section. No required account. AI provider usage may cost money.
 
 The main film shows genuine native client actions, synthetic data, edited timing and no benchmark claim. AI configuration can appear, but no successful generated answer is claimed until actual native inference succeeds and the SQL is checked. Interface stills and animated sample traces are labeled as previews/illustrations. No fabricated screenshots or testimonials.
 

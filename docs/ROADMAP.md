@@ -29,6 +29,7 @@ Prioritize first-run proof, three useful observations and the top blocker over e
 - [x] Public unsigned Apple silicon v0.8.17 DMG, matching source, notices and checksums. Declared minimum macOS 11; tested here only on macOS 27.0.1.
 - [x] Client-first website/README, a 55-second real client introduction, and three advanced MCP examples. Footage is v0.8.15; AI is configuration-only.
 - [x] .sql Open With, visible MCP Activity, Settings/update checks and compatible Keychain service rename. See the release record for exact native/source evidence.
+- [x] Production website deployment through GitHub Actions, verified November 16 using a scoped Cloudflare token. Main-branch protection and required CI remain enforced.
 - [ ] Clean/older-Mac acceptance, full packaged upgrade preservation, signing/notarization and remaining native checks.
 - [ ] Successful native AI generation, measured comparative performance and voluntary repeated use.
 - [ ] Owner-activated funding checkout and demonstrated willingness to pay.
