@@ -1,0 +1,6 @@
+node_modules/
+.hyperframes/
+.thumbnails/
+boards/.film.html
+boards/.posed.html
+*.mp4

@@ -12,6 +12,8 @@ The site, README and primary 55-second video lead with the everyday database cli
 
 Latest patch: [v0.8.17](https://github.com/Table-IQ/Table-IQ/releases/tag/preview-v0.8.17) publishes the Keychain service rename with credential preservation. Its DMG was anonymously downloaded and checksum-verified; source CI `25bf8d3` passed all four jobs. See [the current artifact record](launch/RELEASE-VALIDATION.md#keychain-patch--0817). The v0.8.16 delivery below is retained as the preceding release record.
 
+November 16 follow-up: [PR #38](https://github.com/Table-IQ/Table-IQ/pull/38) merged the simpler centered hero and genuine native AI example. [Automatic GitHub-to-Cloudflare deployment](https://github.com/Table-IQ/Table-IQ/actions/runs/43809861755) passed; the live page and mobile menu were verified. The founder’s new video reference is developed as a [script and nine-frame storyboard](launch/video/client-launch-v2/README.md), with light Pearl editorial scenes and real app proof. This new treatment is at storyboard stage; the four published films remain unchanged.
+
 
 - Public source: [Table-IQ/Table-IQ](https://github.com/Table-IQ/Table-IQ). The organization move is complete.
 - Published [v0.8.16 Apple silicon developer preview](https://github.com/Table-IQ/Table-IQ/releases/tag/preview-v0.8.16): seven release assets; anonymous DMG download returned HTTP 200 with the expected SHA-256. It is unsigned and not notarized, declares macOS 11 minimum, and has only been tested on macOS 27.0.1. Exact bytes/hash/source revision are in the release record.

@@ -1,0 +1,83 @@
+[
+  {
+    "file": "workspace.png",
+    "source": "Published client film 6s; native 0.8.15 workspace",
+    "crop": [
+      245,
+      180,
+      1678,
+      985
+    ],
+    "sha256": "ec026c41bb5ccdfe0d909bc4836c5350389e6762c0f9f3cbfd7970a9427f0324"
+  },
+  {
+    "file": "schema.png",
+    "source": "Published client film 6s; native 0.8.15 schema",
+    "crop": [
+      1070,
+      710,
+      1570,
+      980
+    ],
+    "sha256": "8400eb50f29e465f83925f66593770781def1d2f5b9fefc5567a301bb67b9a74"
+  },
+  {
+    "file": "activity.png",
+    "source": "Published Argo MCP film 18s; native 0.8.15 Codex Activity",
+    "crop": [
+      300,
+      196,
+      1620,
+      714
+    ],
+    "sha256": "39569ffad1ef82a23b0b96e64859212d03dd3ba4f6080cefa3aed5a76260d110"
+  },
+  {
+    "file": "result-crop.png",
+    "source": "Unchanged actual native 0.8.17 AI result screenshot",
+    "crop": [
+      442,
+      565,
+      1140,
+      817
+    ],
+    "sha256": "1d0716374d540f38217b4ead0ce2da59df4cecec13b360a76b3a749f40e86b52"
+  },
+  {
+    "file": "ai-settings.png",
+    "source": "Published client film 42s; native 0.8.15 provider settings, no credential visible",
+    "crop": [
+      482,
+      322,
+      1439,
+      820
+    ],
+    "sha256": "2edc5961516b855d402ad9471eb2b83a423fcc6ebcebedc13bd34428191338ca"
+  },
+  {
+    "file": "ai-generated.png",
+    "source": "Actual native 0.8.17 generated SQL, before manual execution; acceptance report",
+    "sha256": "66a636369825b815d8b8bbb229e29df6b76f9a7aa98729e200f3bbcab7df2d85"
+  },
+  {
+    "file": "ai-result.png",
+    "source": "Unchanged actual native 0.8.17 result screenshot; acceptance report",
+    "sha256": "ae4122243a4d1fefaaeb4540ec88ac158168557b6114d79aeb87fe1d6703111d"
+  },
+  {
+    "file": "tableiq-logo-horizontal-light.svg",
+    "source": "Supplied TableIQ brand kit",
+    "sha256": "7651519afc53cd771eaf7c44b8916c6e3cbe26b7e1ee7b616dbc5706a6c76a58"
+  },
+  {
+    "file": "sql-crop.png",
+    "source": "Actual 0.8.17 idle generated-SQL screenshot",
+    "crop": [
+      213,
+      49,
+      1030,
+      282
+    ],
+    "sha256": "ee4de04c58340d5138aa97e8b5a19e2f7010d134f8792d2dfdb8f417daabab94"
+  }
+]
