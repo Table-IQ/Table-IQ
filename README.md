@@ -5,8 +5,9 @@
 <h1 align="center">TableIQ</h1>
 
 <p align="center">
-  <strong>A free, open-source database client for Mac.</strong><br>
-  Browse data, write SQL and review changes. Use AI with your own provider key.
+  <strong>Your databases. Your client. Open source.</strong><br>
+  A free database client for Mac. Browse tables, write SQL and review your changes.<br>
+  Use AI with your own key when you want it.
 </p>
 
 <p align="center">
@@ -16,45 +17,62 @@
 </p>
 
 <p align="center">
+  <a href="#why-tableiq">Why TableIQ?</a> &nbsp;·&nbsp;
+  <a href="#tableiq-in-15-seconds">At a glance</a> &nbsp;·&nbsp;
+  <a href="#features">Features &amp; screenshots</a> &nbsp;·&nbsp;
   <a href="#get-started"><strong>Get started</strong></a> &nbsp;·&nbsp;
-  <a href="#features">Features</a> &nbsp;·&nbsp;
   <a href="#database-support">Databases</a> &nbsp;·&nbsp;
-  <a href="#documentation">Documentation</a> &nbsp;·&nbsp;
-  <a href="https://tableiq.ideolyst.com">Website</a> &nbsp;·&nbsp;
-  <a href="#contributing">Contribute</a>
+  <a href="#documentation">Docs</a>
 </p>
 
 ![TableIQ — Your databases. Your client. Open source.](docs/brand/readme-banner.png)
 
-An open-source alternative to TablePlus and DBeaver for everyday database work on
-Mac. Browse tables, run SQL, inspect results and review staged edits across
-PostgreSQL, MySQL, SQLite and more. Bring your own AI provider key when you want
-help with SQL; no TableIQ account is required.
+[**Download for Mac · Apple silicon · v0.8.17**](https://github.com/Table-IQ/Table-IQ/releases/download/preview-v0.8.17/TableIQ_0.8.17_aarch64.dmg)
+— [Release notes and checksums](https://github.com/Table-IQ/Table-IQ/releases/tag/preview-v0.8.17)
+· [Website](https://tableiq.ideolyst.com)
 
-**Keep the SQL and table tabs you need open. No paid tab limit.** The current
-desktop app also has no engine or device-count paywall. [TablePlus's free edition](https://tableplus.com/docs/utilities/licensing)
-is limited to two tabs; its paid license is perpetual. DBeaver Community is free
-and open source—compare the workflow on your own Mac; no speed advantage is
-claimed without a matched benchmark.
+> **Developer preview:** the Mac build is unsigned and not notarized. Windows,
+> Linux and Intel Mac installers are not available in this preview. Start with a
+> local database or a disposable copy; see [known limitations](#known-limitations).
 
-**Built with Rust and Tauri, using macOS's system webview.** The
-[v0.8.17 Apple silicon preview](https://github.com/Table-IQ/Table-IQ/releases/tag/preview-v0.8.17)
-is a **27.4 MB download**.
+## Why TableIQ?
 
-Coding-agent access through MCP is an optional integration. It is not required to
-use the database client or built-in AI.
+TableIQ is for developers who want one place to inspect data, write queries and
+review database changes. If you use TablePlus or DBeaver, try it alongside your
+current client on one familiar task.
 
-> **Preview:** The macOS Apple Silicon build is unsigned and not notarized. It is for
-> local testing; signed installers and automatic installation are not available yet.
-> See [getting started](#get-started) and [known limitations](#known-limitations).
+- **Keep your working context.** Open the SQL and table tabs you need, across
+  multiple connections. No paid tab limit, engine paywall or device-count gate.
+- **See the change before it lands.** Grid edits, inserts and deletes are staged.
+  Review the generated SQL, then commit or discard. Production connections ask
+  for confirmation before committing.
+- **Use it without AI. Add AI when it helps.** Ordinary database work needs no
+  account, provider key or coding agent. Optional built-in AI uses your own
+  provider; MCP lets you share selected connections with an external agent.
+- **Connect from your Mac.** Work directly with your databases, or through your
+  SSH bastion, with credentials in the macOS Keychain. No required TableIQ cloud
+  service or product telemetry.
+- **Own your tools.** The application source is AGPL-3.0-only. The first-release
+  features [stay free](#license-and-what-stays-free). Built with Rust and Tauri,
+  using the system webview; the current Apple silicon installer is 27.4 MB.
 
-![TableIQ browsing a synthetic storefront database in PostgreSQL](docs/brand/app-preview.jpg)
+## TableIQ in 15 seconds
 
-*Real-app capture from v0.8.10, using synthetic data.*
+**Connect → browse → query → review.**
 
-### Watch the everyday workflow
+Open a database, find the rows you need, run SQL and review staged edits before
+committing. Explore relationships without guessing joins. When you want help,
+bring your own AI key—or let a coding agent query a connection you explicitly share.
 
-[![Watch the 75-second TableIQ walkthrough](website/public/video/tableiq-launch-walkthrough-v5-poster.jpg)](https://tableiq.ideolyst.com/#demo)
+No account or AI setup is needed to begin. Here is the full narrated demo:
+
+<a id="watch-the-everyday-workflow"></a>
+
+### Watch the everyday workflow · 75 seconds
+
+**75-second narrated walkthrough** — play below and unmute to hear the narration.
+
+https://github.com/user-attachments/assets/0ecd4908-f08f-4cfb-bf69-6aa6853ed2ea
 
 [Watch the 75-second walkthrough](https://tableiq.ideolyst.com/video/tableiq-launch-walkthrough-v5.mp4):
 open more tabs, inspect relationships, enter SQL, click Run and check two matching orders.
@@ -62,127 +80,219 @@ Optional BYOK AI follows, using a labelled previously verified native example; t
 
 Real development UI connected to the Rust backend, a labelled native v0.8.17 AI still,
 synthetic data and edited time; no speed benchmark or general AI accuracy claim.
-[Compare all three launch cuts](https://tableiq.ideolyst.com/launch-films/).
 [Try the same task without an AI key or agent](docs/launch/demo/README.md).
 
 <details>
-<summary>Optional coding-agent / MCP demonstrations</summary>
+<summary>Watch the other two versions: motion and story (75 seconds each)</summary>
 
-- [Huashu Motion · 56 seconds](https://tableiq.ideolyst.com/video/tableiq-huashu-motion-56s.mp4)
-- [Take One · 50 seconds](https://tableiq.ideolyst.com/video/tableiq-take-one-story-50s.mp4)
-- [Argo MCP walkthrough · 56 seconds](https://tableiq.ideolyst.com/video/tableiq-argo-mcp-56s.mp4)
+**Motion version · music and on-screen text**
 
-These advanced examples also use native v0.8.15 footage and synthetic data.
-[Dataset and expected answer](docs/launch/demo/README.md).
+https://github.com/user-attachments/assets/0046727e-9975-4f7b-b585-3ab72a68ffca
+
+[Watch or download the motion version](https://tableiq.ideolyst.com/video/tableiq-launch-motion-v5.mp4)
+
+**Story version · narration**
+
+https://github.com/user-attachments/assets/bedb28f9-e208-4931-b3da-8017848f9f3c
+
+[Watch or download the story version](https://tableiq.ideolyst.com/video/tableiq-launch-story-v5.mp4)
+
+Both use the same reviewed footage and synthetic data as the walkthrough.
+[Compare all three versions, with captions](https://tableiq.ideolyst.com/launch-films/).
 
 </details>
 
+
 ## Features
 
-| What you want to do | How TableIQ helps |
-| --- | --- |
-| Review data changes | Stage edits, inserts, and deletes; inspect the exact SQL before committing. Production connections ask for confirmation. |
-| Explore a database | Browse and filter rows, run SQL, inspect structure and relationships, and keep saved queries and history. Support varies by engine. |
-| Work across connections | Keep multiple connections open, switch between them, and retain each connection's tabs and SQL. |
-| Connect directly | Store credentials in the OS keychain. Connect to your database directly or through an SSH bastion with host-key verification. |
-| Use AI when you choose | Opt in to SQL generation, explanation, optimization, and fixes using your provider key or local Ollama. |
-| Inspect your agent's work | Share selected connections through the local MCP server and review calls in MCP Activity. Writes are disabled by default. |
+These are real app screenshots using synthetic storefront data. The browsing,
+SQL, staged-edit, ERD and MCP captures are from v0.8.10, through the real Rust
+backend; the separately labelled AI capture is from native v0.8.17. They illustrate
+the workflows rather than claim that every image shows the latest UI.
 
-TableIQ has no required cloud service. AI providers and external coding agents can
-receive the context and results you share with them; a local MCP endpoint does not
-mean that data stays on your machine.
+### Browse data and write SQL in the same workspace
+
+Filter and sort table rows, inspect a record, then open a query tab beside it.
+Run SQL, keep useful queries in your library, return to query history and export
+results as CSV or JSON. SQL and table tabs stay together for each connection.
+
+![SQL editor and query results in TableIQ, showing synthetic PostgreSQL orders](website/public/img/sql-dark-1200.jpg)
+
+### Review edits before committing
+
+Change cells, add rows or mark rows for deletion without immediately writing them
+to the database. Inspect the generated SQL and commit a supported staged batch in
+one transaction, or discard it. Production connections require an extra confirmation.
+This is the grid-editing workflow; running SQL directly is a separate action.
+
+![TableIQ reviewing three staged updates and their generated SQL before committing](website/public/img/staged-dark-1200.jpg)
+
+### Understand how your tables connect
+
+Inspect columns, indexes and triggers in Structure, then open an entity-relationship
+diagram to follow actual foreign keys. Use the schema alongside your queries to
+check how records relate before writing a join.
+
+![TableIQ light-theme schema diagram connecting customers, orders, order items, products and shipments](website/public/img/erd-light-1200.jpg)
+
+### Work across connections without losing your place
+
+Keep multiple connections open and switch between them with the connection rail.
+Each retains its own tabs and SQL. Add a connection from a supported URL or fill in
+the fields, label its environment and test it before saving. SSH tunnels support
+password, agent and key-file authentication.
+
+### Bring your own AI
+
+Generate SQL from a question, or ask for an explanation, optimization or fix.
+Settings → AI supports Anthropic, OpenAI, Gemini, OpenRouter and local Ollama.
+Review suggested SQL before running it. Cloud providers can charge for API use;
+a chat subscription may not include API access, and compatibility varies by model.
+
+<details>
+<summary>Screenshot: native v0.8.17 AI-generated SQL and manually verified results</summary>
+
+![Native TableIQ v0.8.17 displaying AI-generated SQLite SQL and two manually verified result rows](website/public/img/ai-native-0817.png)
+
+This example used Gemini on synthetic data. The generated query was run manually;
+the result is orders 102 and 104. It demonstrates this specific case, not general
+AI accuracy. [Verification record](docs/launch/research/2026-11-16-native-ai-acceptance.md).
+
+</details>
+
+### See what your coding agent runs
+
+Enable MCP in Settings, share only the connections you choose and keep writes
+disabled unless you explicitly need them. Compatible agents can inspect schemas
+and run queries through TableIQ's local MCP server. Recent calls in **MCP Activity**
+show redacted SQL, row counts, timings and outcomes.
+
+![TableIQ MCP Activity showing real Claude Code calls, read queries and a refused write](website/public/img/mcp-dark-1200.jpg)
+
+Activity is bounded, in-memory metadata, not a permanent audit log or a replay of
+full results. Verify answers in the query grid. MCP writes are separate from the
+human staged-edit workflow. [Set up your first agent query](docs/launch/POSTGRES-WORKFLOW.md).
+
+<details>
+<summary>More tools and keyboard shortcuts</summary>
+
+- **Move data:** CSV import and CSV/JSON result export.
+- **Inspect activity:** SQL log, saved queries and per-connection query history.
+- **Track metrics:** read-only number, bar, line and table widgets on the Metrics Board.
+- **Manage supported databases:** user/role management and backup/restore; engine
+  support and required external tools differ. See **Detailed features and engine
+  behavior** below.
+- **Make the workspace yours:** light/dark appearance, editor font settings and a
+  configurable toolbar.
+
+| On Mac | Action |
+| --- | --- |
+| ⌘K | Search commands, tables, databases and saved queries |
+| ⌘O | Open another connection |
+| ⌘D | Switch database |
+| ⌘, | Open Settings |
+| ⌘. | Request cancellation of running queries, where supported |
+| ⌘⇧C | Toggle SQL Log |
+
+</details>
 
 ## Get started
 
-### Try the Mac preview
+1. [Download the v0.8.17 Apple silicon preview](https://github.com/Table-IQ/Table-IQ/releases/tag/preview-v0.8.17).
+   Quit an existing TableIQ instance, open the DMG and drag TableIQ into Applications.
+2. Open TableIQ. Because this preview is unsigned, macOS may require you to approve
+   opening it. Check the release notes before installing.
+3. Add a connection: choose your engine and enter its details, or paste a supported
+   connection URL locally. For SQLite or DuckDB, choose a database file. Test the
+   connection, then connect.
+4. Open a table or **New Query**. Browse, run SQL and inspect the results. No TableIQ
+   account, AI key or MCP setup is required.
 
-[Download the v0.8.17 Apple Silicon developer preview](https://github.com/Table-IQ/Table-IQ/releases/tag/preview-v0.8.17).
-The release includes the installer, matching source archive, license notices, and
-checksums. No TableIQ account is required.
+Prefer to compile it yourself? See [Development](#development).
 
-**Platforms:** Mac developer preview available for Apple silicon. **Windows and
-Linux coming soon.**
+### Try a small database with a known answer
 
-Quit an existing TableIQ instance, open the DMG, and drag TableIQ into Applications.
-Choose Replace when updating. This preview is unsigned, so macOS may require you to
-approve opening it. Use a local database or a disposable copy for your first test.
+Use the [synthetic SQLite storefront](docs/launch/demo/README.md) to investigate:
+**Which paid orders have not shipped?** It needs no database server, AI or agent.
 
-The connection screen has **Check for updates** and **Settings** beside the theme
-control. **Settings → Updates** can disable startup checks. Checks fetch public
-release metadata from GitHub; GitHub receives normal network information such as
-your IP address. No installation ID, email, SQL or connection details are sent.
-A newer version opens a notification; download and install it manually.
+<details>
+<summary>Create the sample database without cloning the repo</summary>
 
-Prefer to build it yourself? Follow [Development](#development).
+In a Mac terminal with `curl` and `sqlite3` available:
 
-### Inspect your first agent query
+```sh
+demo_dir="$(mktemp -d "${TMPDIR:-/tmp}/tableiq-demo.XXXXXX")"
+curl -fsSL https://raw.githubusercontent.com/Table-IQ/Table-IQ/main/docs/launch/demo/seed.sql -o "$demo_dir/seed.sql"
+curl -fsSL https://raw.githubusercontent.com/Table-IQ/Table-IQ/main/docs/launch/demo/investigate.sql -o "$demo_dir/investigate.sql"
+sqlite3 "$demo_dir/storefront.sqlite" < "$demo_dir/seed.sql"
+open "$demo_dir"
+```
 
-1. Connect to a test PostgreSQL database using a least-privilege role.
-2. In **Settings → MCP**, select the connection to share and keep writes disabled.
-3. Connect your coding agent using TableIQ's configuration, ask a data question,
-   and inspect the SQL and outcome in **MCP Activity**.
+Add a SQLite connection to `storefront.sqlite` in the folder that opens. Browse
+`customers`, `orders`, `payments` and `shipments`. Open `investigate.sql` in TableIQ,
+review it and choose **Run**. Opening a SQL file does not execute it.
 
-The [Postgres walkthrough](docs/launch/POSTGRES-WORKFLOW.md) includes synthetic data,
-a concrete investigation, and troubleshooting. Read-only access can still expose
-sensitive data or run expensive queries; see the [permissions guide](docs/launch/MCP-PERMISSIONS.md).
+| Order | Customer | Total (cents) |
+| --- | --- | --- |
+| 102 | Northstar Demo | 4,200 |
+| 104 | Acme Demo | 3,100 |
+
+The result should contain these two orders, totalling **7,300 cents**. This is the
+same small dataset used in the narrated walkthrough. See the
+[fixture and optional agent exercise](docs/launch/demo/README.md).
+
+</details>
+
+To evaluate a switch, bring one test connection and a familiar query first. Keep
+your current client configured. TableIQ connection bundles use its own JSON format;
+TablePlus and DBeaver connection-file import is not verified.
+[One-task switching guide](docs/launch/SWITCHING.md).
 
 ## Database support
 
-| Experience | Databases |
+| Database family | Available workflow |
 | --- | --- |
-| Relational grid, SQL, structure, and ERD | PostgreSQL, MySQL/MariaDB, SQL Server, SQLite, DuckDB |
-| Document and key-value browsing | MongoDB and Redis, with dedicated shells |
-| Additional engines and compatible products | Support and verification vary; consult the engine matrix before choosing a connection |
+| PostgreSQL, MySQL/MariaDB, SQL Server, SQLite, DuckDB | Relational grid, SQL editor, Structure and foreign-key diagrams; specific features vary by engine. |
+| MongoDB, Redis | Document and key-value browsing with dedicated shells. |
+| ClickHouse, libSQL/Turso, rqlite | Engine-specific HTTP drivers; capabilities differ from the core relational engines. |
+| Elasticsearch/OpenSearch, Meilisearch, Qdrant, ChromaDB, Weaviate, InfluxDB | Read-only browsing/query surfaces for supported APIs; not the full relational editing workflow. |
+| PostgreSQL/MySQL-compatible products | Profiles such as TiDB, CockroachDB and TimescaleDB; verified and Beta profiles are distinguished in the engine matrix. |
 
-The [engine matrix](docs/ENGINES.md) records verified and beta profiles, MCP support,
-and per-engine limitations. Expand **Detailed features and engine behavior** below
-for connection controls, editing, backup/restore, and administration behavior.
+A profile in the picker is not proof of complete compatibility. Grid editing, MCP,
+cancellation, backup/restore and administration have different support per engine.
+See the [engine matrix](docs/ENGINES.md) and **Detailed features and engine behavior**
+below for the precise limits and verification record.
 
-## Documentation
+## How it works and where data goes
 
-| Start here | What it covers |
+TableIQ runs on your Mac and connects directly to your databases, or through an
+SSH bastion you configure. The React/TypeScript interface talks to the Rust backend
+through Tauri; no TableIQ-hosted server is required for database work.
+
+| When you use… | Where data goes |
 | --- | --- |
-| [Postgres investigation](docs/launch/POSTGRES-WORKFLOW.md) | A complete agent-assisted investigation with synthetic data |
-| [MCP permissions](docs/launch/MCP-PERMISSIONS.md) | Sharing, read-only defaults, limits, and troubleshooting |
-| [Engine matrix](docs/ENGINES.md) | Support, verification status, and engine-specific differences |
-| [Changelog](CHANGELOG.md) | Changes included in each version |
-| [Launch strategy](docs/GTM.md) | Market research, seven-day beta launch, licensing and business validation |
-| [Roadmap](docs/ROADMAP.md) | Current focus and planned work |
-| [Design system](DESIGN.md) and [brand kit](docs/brand/README.md) | Product design rules and the original brand assets |
+| Normal browsing and SQL | Between your Mac and the database you connect to. Credentials use the macOS Keychain. |
+| Built-in AI | Context goes to the provider you configure when you use the feature; local Ollama is an option. |
+| An external agent through MCP | The agent can receive schema and query results from the connections you share; its provider settings govern further transmission. |
+| Update checks | Public release metadata is fetched from GitHub. GitHub receives normal network information, such as your IP address; no installation ID, email, SQL or connection details are sent. |
 
-## Contributing
+The MCP endpoint is local, but that does not make an external agent's processing
+local. Read-only access still permits reading sensitive data and running expensive
+queries; use least-privilege database roles. [MCP permissions](docs/launch/MCP-PERMISSIONS.md).
 
-[Report a bug or suggest an improvement](https://github.com/Table-IQ/Table-IQ/issues).
-Include your TableIQ version, database engine/version, and a minimal example using
-synthetic data. Keep credentials and private query results out of issues.
-
-Documentation fixes, engine verification, and focused pull requests are welcome.
-Use the [development setup](#development) and run checks relevant to your change.
-
-## License and what stays free
-
-TableIQ-owned application code is open source under the
-[GNU Affero General Public License, version 3 only (AGPL-3.0-only)](LICENSE).
-Third-party dependencies, database marks, and fonts retain their original licenses;
-see [license exceptions and notices](LICENSE-EXCEPTIONS.md).
-
-Previously released Apache-2.0 versions retain their original permissions. This
-change applies to the current source and subsequent changes, not retroactively to
-those releases.
-
-**What stays free forever:** every database engine, the MCP server and its guard, BYO-key AI,
-staged edits, SSH tunnels, unlimited connections, and every feature in our first public release
-(including this v0.8.17 public preview and the planned v0.9.0). We will never gate engines or device count. If we ever build team features, they add
-governance on top (shared vaults, SSO, central agent policy, audit export) and never take away
-what is free.
+Updates are manual. The app can notify you about a newer release and open its
+page; **Settings → Updates** can disable startup checks.
 
 ## Known limitations
 
-- The preview has no code signing, notarization, or automatic installation. Update checks and notifications are available.
-- SQL Server query cancellation and DuckDB's Stop button are not implemented.
-- Per-tab server sessions do not preserve an open transaction or `SET` between runs.
-- MCP protections differ by engine. Use least-privilege roles and account for what
-  your external agent sends to its provider.
+- **Preview distribution:** unsigned, not notarized, Apple silicon only; no
+  automatic installation of updates.
+- **Session state:** separate query runs do not preserve a per-tab server session,
+  an open transaction or `SET` state.
+- **Cancellation:** SQL Server query cancellation and DuckDB's Stop button are not
+  implemented. An MCP timeout reports a cancellation request, not confirmation.
+- **Engine differences:** some profiles are Beta, some surfaces are read-only and
+  MCP protections differ by engine. Check the matrix for the workflow you need.
 
 <details>
 <summary>Full limitations and MCP guard behavior</summary>
@@ -227,6 +337,48 @@ See the [permissions guide](docs/launch/MCP-PERMISSIONS.md) and
 [release verification record](docs/launch/RELEASE-VALIDATION.md).
 
 </details>
+
+
+## Documentation
+
+| Start here | What it covers |
+| --- | --- |
+| [Sample database and investigation](docs/launch/demo/README.md) | A disposable SQLite dataset, query and expected result |
+| [Postgres agent walkthrough](docs/launch/POSTGRES-WORKFLOW.md) | Share a connection, inspect calls and verify a finding |
+| [MCP permissions](docs/launch/MCP-PERMISSIONS.md) | Sharing, read-only defaults, limits and troubleshooting |
+| [Database compatibility](docs/ENGINES.md) | Engine capabilities, verified/Beta profiles and test records |
+| [Switching one task](docs/launch/SWITCHING.md) | Try TableIQ alongside your current client |
+| [Changelog](CHANGELOG.md) and [roadmap](docs/ROADMAP.md) | What changed and what is planned |
+| [Contributing](CONTRIBUTING.md) | Development workflow, checks and pull requests |
+| [Security](SECURITY.md) | How to report a vulnerability privately |
+| [Brand kit](docs/brand/README.md) and [design system](DESIGN.md) | Visual assets and UI conventions |
+
+## Contributing
+
+Focused fixes, documentation, reproducible bug reports and database verification
+are welcome. [Open an issue](https://github.com/Table-IQ/Table-IQ/issues) with your
+TableIQ version, OS, engine, expected behavior and a small synthetic reproduction.
+Leave out passwords, connection URLs with credentials and private query results.
+Report vulnerabilities through [SECURITY.md](SECURITY.md).
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR against `main`. Each
+human contributor must sign the [CLA](CLA.md); you retain copyright and grant
+Rudresh Narwal additional rights, including commercial sublicensing and relicensing.
+Follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## License and what stays free
+
+TableIQ-owned application code is open source under
+[AGPL-3.0-only](LICENSE). Dependencies, database marks and fonts keep their own
+licenses; see [exceptions and notices](LICENSE-EXCEPTIONS.md) and the
+[licensing guide](LICENSING.md). Earlier Apache-2.0 releases retain their permissions.
+
+**What stays free forever:** every database engine, the MCP server and its guard,
+BYO-key AI, staged edits, SSH tunnels, unlimited connections, and every feature in
+our first public release, including the v0.8.17 public preview and planned v0.9.0.
+We will never gate engines or device count. Future team features may add shared
+vaults, SSO, central agent policy or audit export; they will not take away what is free.
+Third-party AI provider usage may still cost money.
 
 ## Development
 
