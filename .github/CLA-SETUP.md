@@ -92,3 +92,9 @@ Keep at least one working, verified CLA enforcement path required throughout.
   #46 and returned **All CLA requirements met**. The dashboard still showed zero
   signatures: exemption success did not manufacture acceptance.
 - Actual external signature persistence and reuse have not been exercised yet.
+- Protect main now requires hosted `license/cla` in place of the old Action's
+  `CLA signature`; `web`, `rust`, `http-engines` and `search-engines` remain
+  required, with their GitHub Actions source bindings unchanged. Strict required
+  checks, PR requirements and the other branch protections remain enabled.
+- PR #45 merged after the hosted owner exemption and all four CI checks passed.
+  PR #46 removes the obsolete workflow and aligns the repository guidance.
