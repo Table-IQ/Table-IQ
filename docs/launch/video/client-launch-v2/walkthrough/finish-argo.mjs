@@ -36,4 +36,11 @@ fs.writeFileSync(`${base}/narration-voice.wav`,createWavBuffer(aligned.samples,2
 fs.writeFileSync('argo-placements.json',JSON.stringify(aligned.placements,null,2));
 execFileSync('ffmpeg',['-hide_banner','-loglevel','error','-i',`${base}/narration-voice.wav`,'-i',version==='v4'?'assets/launch-score-v4.wav':'assets/launch-score.wav','-filter_complex','[1:a]volume=0.14[m];[0:a][m]amix=inputs=2:duration=first:normalize=0[a]','-map','[a]','-ar','48000','-ac','2','-c:a','pcm_s16le','-y',`${base}/narration-aligned.wav`],{stdio:'inherit'});
 execFileSync(process.execPath,['node_modules/@argo-video/cli/bin/argo.js','export',demo],{stdio:'inherit'});
+if(version==='v4'){
+  // Argo supplies aligned/exported sound. Preserve the reviewed HyperFrames picture:
+  // the additional Argo picture transcode changes the measured brand colours.
+  const exported=`videos/${demo}.mp4`,preserved=`videos/${demo}-picture-preserved.mp4`;
+  execFileSync('ffmpeg',['-hide_banner','-loglevel','error','-i',path.resolve(input),'-i',exported,'-map','0:v:0','-map','1:a:0','-c','copy','-map_metadata','-1','-movflags','+faststart','-y',preserved],{stdio:'inherit'});
+  fs.renameSync(preserved,exported);
+}
 console.log(`Argo export complete: videos/${demo}.mp4; overflow ${aligned.overflowMs}ms`);

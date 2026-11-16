@@ -17,3 +17,5 @@ A landscape film cannot make every full SQL statement readable at phone width; t
 Audio is generated locally, measured and transcribed, not independently listened to. Captions correct brand/acronym spelling against the approved script. The encoded-file checks and hashes are recorded in `delivery/technical-verification-v4.json`. The earlier review is retained at `delivery/REVIEW-v3.md`; original published v2/v3 files remain available.
 
 The sources can be edited in the HyperFrames desktop app. Delivery exports retain the same seek-safe scene files that passed review.
+
+The final walkthrough preserves the reviewed HyperFrames picture stream after official Argo import/alignment/export. A decoded-frame comparison caught a color shift in Argo’s intermediate picture transcode; retaining the original picture restores the same brand colours as the other cuts while keeping Argo’s aligned/exported sound. This final remux does not invent product frames or change timing.
