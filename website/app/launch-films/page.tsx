@@ -17,9 +17,9 @@ const FILMS = [
     duration: "56 seconds",
     description: "Music and short headings lead from query tabs to the free database client, optional AI and visible MCP calls.",
     maker: "HyperFrames composition",
-    src: "/video/tableiq-launch-motion-v2.mp4",
-    poster: "/video/tableiq-launch-motion-v2-poster.jpg",
-    captions: "/video/tableiq-launch-motion-v2.vtt",
+    src: "/video/tableiq-launch-motion-v3.mp4",
+    poster: "/video/tableiq-launch-motion-v3-poster.jpg",
+    captions: "/video/tableiq-launch-motion-v3.vtt",
   },
   {
     id: "story",
@@ -27,9 +27,9 @@ const FILMS = [
     duration: "57.5 seconds",
     description: "A narrated investigation follows paid orders without a shipped shipment, through the query and its two matching results.",
     maker: "HyperFrames composition with local narration",
-    src: "/video/tableiq-launch-story-v2.mp4",
-    poster: "/video/tableiq-launch-story-v2-poster.jpg",
-    captions: "/video/tableiq-launch-story-v2.vtt",
+    src: "/video/tableiq-launch-story-v3.mp4",
+    poster: "/video/tableiq-launch-story-v3-poster.jpg",
+    captions: "/video/tableiq-launch-story-v3.vtt",
   },
   {
     id: "walkthrough",
@@ -37,9 +37,9 @@ const FILMS = [
     duration: "57 seconds",
     description: "Narration guides the client workflow, explains bring your own key AI and shows the verified result and actual MCP Activity.",
     maker: "HyperFrames picture with Argo alignment and export",
-    src: "/video/tableiq-launch-walkthrough-v2.mp4",
-    poster: "/video/tableiq-launch-walkthrough-v2-poster.jpg",
-    captions: "/video/tableiq-launch-walkthrough-v2.vtt",
+    src: "/video/tableiq-launch-walkthrough-v3.mp4",
+    poster: "/video/tableiq-launch-walkthrough-v3-poster.jpg",
+    captions: "/video/tableiq-launch-walkthrough-v3.vtt",
   },
 ];
 

@@ -4,9 +4,9 @@ import { DEMOS, DOWNLOAD_URL, GITHUB } from "@/lib/site";
 
 const CLIENT_DEMO = {
   title: "TableIQ for everyday database work",
-  src: "/video/tableiq-client-intro.mp4",
-  poster: "/video/tableiq-client-poster.png",
-  captions: "/video/tableiq-client-intro.vtt",
+  src: "/video/tableiq-launch-walkthrough-v3.mp4",
+  poster: "/video/tableiq-launch-walkthrough-v3-poster.jpg",
+  captions: "/video/tableiq-launch-walkthrough-v3.vtt",
 };
 
 type FilmProps = { title: string; src: string; poster: string; captions: string };
@@ -28,7 +28,7 @@ export function Demo() {
         See the everyday workflow: inspect your schema, open SQL, run it and check the returned rows. Configure your own AI provider when you want assistance.
       </SectionHeading>
       <Film {...CLIENT_DEMO} />
-      <p className="mt-4 text-sm text-muted">Created with Argo · Real native TableIQ 0.8.15 captures · Synthetic data · Edited time · The AI segment shows configuration, not a generated answer.</p>
+      <p className="mt-4 text-sm text-muted">Argo + HyperFrames · Real development recordings · Labelled native 0.8.17 AI evidence · Synthetic data · Edited time</p>
       <div className="mt-5 flex flex-wrap gap-x-6 gap-y-3 text-sm">
         <a href={DOWNLOAD_URL} className="font-semibold underline underline-offset-4">Try the Mac developer preview</a>
         <a href={CLIENT_DEMO.src} download className="underline underline-offset-4">Download the video</a>

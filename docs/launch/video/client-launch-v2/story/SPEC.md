@@ -1,22 +1,20 @@
-# TableIQ story — delivery specification
+# TableIQ story — revision v3 specification
 
-GOAL: Establish a free, open-source Mac database client, then demonstrate optional BYOK AI and visible MCP activity through one synthetic investigation.
-OUTPUT: 1920×1080, 30 fps, H.264/AAC, 57.5s.
-LOOK: Brand Pearl #F1F6FB, Ledger Ink #0C1A2B, Lumen Deep #0B7480; supplied Instrument Sans 500/600; native app colors unchanged. Headings 80–126px; evidence captions 28px. 192px title margins.
-MOTION: One title entrance per scene, alternate a horizontal handoff, clipped text reveal and a scale settle; 0.35–0.6s power3.out/power3.inOut. Titles hold still after landing. Actual video supplies product actions. Native AI stills have no simulated cursor, click, typing or streamed output.
-SOUND: Reused original TableIQ launch score measured at 120 BPM. Local Kokoro af_heart narration, 1.05 speed, with a quieter score bed. The voice sets the reading clock.
-PROOF: Client/settings/MCP sections are actual development-build UI connected to real Rust handlers and SQLite. Native AI before/after images come from the separate passed 0.8.17 Gemini case. New live generation was blocked in the test process at macOS Keychain; no successful new run is claimed. A real local MCP protocol client performs discovery/schema/SELECT, not a newly recorded LLM agent.
-BANNED: Fake app controls/results/cursors; claims of faster-than performance; mandatory subscription claim about TablePlus; claims that DBeaver is not free; tiny app in a dark void; neon/particles/3D tilted UI; logo-only opening; three feature cards; text drifting during reading.
-QA: Check every scene midpoint, +/-0.2s around cuts, first frame and final CTA, 360px preview, encoded frames, all audio streams, duration, peaks/loudness, actual source rows 102/104/7300cents and key-free capture frames.
+OUTPUT: 1920×1080, 30 fps, H.264/AAC, 57.5 seconds.
+LOOK: Supplied Instrument Sans/Plex; Pearl #F1F6FB, Ledger Ink #0C1A2B, Lumen #0B7480; actual product colors preserved. Title/action-safe margins follow the checked composition.
+STORY: Free open-source Mac database client first; optional BYOK AI second; a separate real local MCP-client log later. Hook/problem/brand/BYOK are editorial graphics. Screens appear only as task proof.
+CAMERA: Start the focus after an observed control/state change; settle, hold, return to the original context. Workflow: order1.40×, Structure1.24×, schema1.55×. MCP: expansion at local1.6s, 1.35× over0.55s, readable hold, final1.1s return. Exact source-state and crop evidence are in ../production-media/manifest.json and ../VISUAL-REVISION.md.
+TRANSITIONS: Directional type handoffs connect related editorial scenes; direct proof cuts expose genuine evidence immediately. No repeated screenshot-card wipe, arbitrary continuous zoom, fake cursor/click/typing or simulated model output.
+PROOF: Native v0.8.17 AI SQL/result evidence is a separate earlier passed case. Exact EXISTS/NOT EXISTS excerpts are labelled editorial; result stills are prominently identified. Rows102/104,4200/3100 total7300cents. MCP uses a real local protocol client, not a newly recorded LLM conversation.
+BANNED: False performance/accuracy/user counts; mandatory-subscription claims about TablePlus; implying DBeaver Community is paid; fake app controls; logo-only opener; neon/particles/3D tilted UI; credentials or production data.
+SOUND: Existing local score and narration are unchanged in source timing. Mastered levels and stream metadata are in ../delivery/technical-verification-v3.json. No human audio rating is claimed.
 
 SHOTS:
-- 0–5.5s: Paid. Still unshipped.; source=intro; voice=story-hook.
-- 5.5–13s: Keep the investigation together; source=browse; voice=story-client.
+- 0–5.5s: Paid. Still unshipped.; source=editorial typography; voice=story-hook.
+- 5.5–13s: Keep the investigation together.; source=editorial typography; voice=story-client.
 - 13–20s: Browse. Query. Review.; source=browse; voice=workflow.
-- 20–27s: AI, with your own key; source=byok; voice=story-ai.
+- 20–27s: AI, with your own key; source=editorial typography; voice=story-ai.
 - 27–35s: Which paid orders have no shipped shipment?; source=ask; voice=ask.
 - 35–43s: Two orders to investigate; source=result; voice=story-result.
-- 43–49s: See your agent’s queries; source=mcp; voice=music only.
-- 49–57.5s: Get the Mac developer preview; source=supplied brand end card; voice=story-end.
-
-FINAL DELIVERY NOTE: Query scenes use labelled editorial SQL excerpts (not an animated app editor). Result scenes use prominently labelled genuine native stills. Final tab-strip asset is 1920×132 to avoid letterboxing. See REVIEW.md and film-plan.json for final timing.
+- 43–49s: See your agent’s queries; source=mcp; voice=story-mcp.
+- 49–57.5s: Get the Mac developer preview; source=editorial typography; voice=download.

@@ -4,10 +4,14 @@ The intervals below follow the local Whisper transcription of each individual vo
 clip. Spelling is corrected against the narration script, including TableIQ, AI,
 SQL, and the exact sample question. Motion has descriptive text, not a voiceover.
 """
+import argparse
 import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+parser=argparse.ArgumentParser()
+parser.add_argument("--version",default="v3",choices=["v2","v3"])
+args=parser.parse_args()
 CUES = {
     "hook": [(0,1.6,"Still counting query tabs?")],
     "room": [(0,2.3,"When one investigation needs another query,"),(2.75,4.25,"a tab limit breaks the flow.")],
@@ -45,7 +49,7 @@ for name in ["motion","story","walkthrough"]:
     for i,(start,end,text) in enumerate(cues,1):
         assert 0<=start<end<=plan["duration"]
         out += [str(i),f"{stamp(start)} --> {stamp(end)}",text,""]
-    dest=ROOT/"renders"/f"tableiq-launch-{name}-v2.vtt"
+    dest=ROOT/"renders"/f"tableiq-launch-{name}-{args.version}.vtt"
     dest.parent.mkdir(exist_ok=True)
     dest.write_text("\n".join(out),encoding="utf-8")
     print(dest.name,len(cues))

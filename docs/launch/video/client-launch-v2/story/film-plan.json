@@ -10,20 +10,21 @@
         "Paid.",
         "Still unshipped."
       ],
-      "capture": "result",
+      "capture": null,
       "voice": "story-hook",
-      "environment": "Verified native AI example · After manual Run · Still"
+      "environment": ""
     },
     {
       "id": "client",
       "start": 5.5,
       "duration": 7.5,
       "title": [
-        "Keep the investigation together"
+        "Keep the investigation",
+        "together."
       ],
-      "capture": "tabstrip",
+      "capture": null,
       "voice": "story-client",
-      "environment": "Real TableIQ development capture · Synthetic data · Edited time"
+      "environment": ""
     },
     {
       "id": "workflow",
@@ -43,9 +44,9 @@
       "title": [
         "AI, with your own key"
       ],
-      "capture": "byok",
+      "capture": null,
       "voice": "story-ai",
-      "environment": "Real TableIQ development capture · Synthetic data · Edited time"
+      "environment": ""
     },
     {
       "id": "ask",
@@ -57,7 +58,7 @@
       ],
       "capture": "ask",
       "voice": "ask",
-      "environment": "Excerpts from the verified native AI output · Full SQL in source"
+      "environment": "Verified native v0.8.17 SQL excerpts · Full SQL in source"
     },
     {
       "id": "result",
