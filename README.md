@@ -361,9 +361,11 @@ TableIQ version, OS, engine, expected behavior and a small synthetic reproductio
 Leave out passwords, connection URLs with credentials and private query results.
 Report vulnerabilities through [SECURITY.md](SECURITY.md).
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR against `main`. Each
-human contributor must sign the [CLA](CLA.md); you retain copyright and grant
-Rudresh Narwal additional rights, including commercial sublicensing and relicensing.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR against `main`. Outside
+contributors sign the [CLA](CLA.md) through the bot's GitHub-authenticated signing
+page; the recipient's own account, `RudreshNarwal`, is exempt. You retain copyright
+and grant Rudresh Narwal additional rights, including commercial sublicensing and
+relicensing.
 Follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License and what stays free

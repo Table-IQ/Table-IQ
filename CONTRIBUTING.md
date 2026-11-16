@@ -68,12 +68,24 @@ Live integration suites need the documented disposable databases. State which en
 Contributions to TableIQ-owned application code are published under AGPL-3.0-only unless the affected files explicitly carry another license. Only contribute material you have the right to license; retain required attribution for third-party work.
 
 Before your first contribution can be merged, read and sign the
-[Contributor License Agreement](CLA.md). CLA Assistant will prompt each commit
-author to post `I have read the CLA Document and I hereby sign the CLA` on the
-pull request. You keep your copyright and grant **Rudresh Narwal** additional
-rights, including commercial sublicensing and relicensing. Sign only if you have
-authority to grant those rights. Signing metadata is public on the
-`cla-signatures` branch. If a check needs refreshing, comment `recheck`.
+[Contributor License Agreement](CLA.md). The hosted **CLA Assistant** bot posts a
+signing link on the pull request. Open that link, sign in with your own GitHub
+account and explicitly accept the agreement. Once recorded, the `license/cla`
+check passes automatically for later PRs under the same agreement version. Each
+commit author must be covered, not just the person opening the PR.
+
+You keep your copyright and grant **Rudresh Narwal** additional rights, including
+commercial sublicensing and relicensing. Sign only if you have authority to grant
+those rights. You can open a PR and receive reviews before signing; acceptance is
+required for merging. A reviewer approving a PR or checking a Markdown box does
+not sign on your behalf. The recipient's own account, `RudreshNarwal`, and the
+explicitly approved Dependabot and Renovate accounts are exempt; collaborator or
+maintainer access alone does not grant an exemption.
+
+Signatures are managed by hosted CLA Assistant, not by PR signing comments or
+the historical `cla-signatures` branch. If a check stays red after signing, verify
+that you used the account associated with your commits and follow the bot's
+recheck link. The maintainer can also recheck the PR from the service dashboard.
 
 The agreement covers the pull request where you sign and subsequent submissions;
 previously merged contributions and third-party work keep their existing terms. See
