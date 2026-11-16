@@ -1,0 +1,53 @@
+{
+  "ok": true,
+  "outputDir": "/Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/story/review/v4-first-frames",
+  "frames": [
+    {
+      "path": "/Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/story/review/v4-first-frames/frame-00-at-2s.png",
+      "time": 2
+    },
+    {
+      "path": "/Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/story/review/v4-first-frames/frame-01-at-6s.png",
+      "time": 6
+    },
+    {
+      "path": "/Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/story/review/v4-first-frames/frame-02-at-9s.png",
+      "time": 9
+    },
+    {
+      "path": "/Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/story/review/v4-first-frames/frame-03-at-15s.png",
+      "time": 15
+    },
+    {
+      "path": "/Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/story/review/v4-first-frames/frame-04-at-22.5s.png",
+      "time": 22.5
+    },
+    {
+      "path": "/Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/story/review/v4-first-frames/frame-05-at-47s.png",
+      "time": 47
+    },
+    {
+      "path": "/Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/story/review/v4-first-frames/frame-06-at-53s.png",
+      "time": 53
+    },
+    {
+      "path": "/Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/story/review/v4-first-frames/frame-07-at-60s.png",
+      "time": 60
+    },
+    {
+      "path": "/Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/story/review/v4-first-frames/frame-08-at-70s.png",
+      "time": 70
+    }
+  ],
+  "contactSheets": [
+    "/Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/story/review/v4-first-frames/contact-sheet.jpg"
+  ],
+  "_meta": {
+    "version": "0.9.56",
+    "latestVersion": "0.9.56",
+    "updateAvailable": false,
+    "checkedAt": "2026-11-16T10:47:35.970Z",
+    "skillsOutdated": 6,
+    "skillsMissing": 0
+  }
+}

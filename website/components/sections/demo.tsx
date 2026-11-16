@@ -4,9 +4,9 @@ import { DEMOS, DOWNLOAD_URL, GITHUB } from "@/lib/site";
 
 const CLIENT_DEMO = {
   title: "TableIQ for everyday database work",
-  src: "/video/tableiq-launch-walkthrough-v3.mp4",
-  poster: "/video/tableiq-launch-walkthrough-v3-poster.jpg",
-  captions: "/video/tableiq-launch-walkthrough-v3.vtt",
+  src: "/video/tableiq-launch-walkthrough-v4.mp4",
+  poster: "/video/tableiq-launch-walkthrough-v4-poster.jpg",
+  captions: "/video/tableiq-launch-walkthrough-v4.vtt",
 };
 
 type FilmProps = { title: string; src: string; poster: string; captions: string };

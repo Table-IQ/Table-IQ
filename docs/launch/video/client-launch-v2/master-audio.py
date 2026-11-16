@@ -7,14 +7,15 @@ from pathlib import Path
 parser=argparse.ArgumentParser()
 parser.add_argument("input",type=Path)
 parser.add_argument("output",type=Path)
+parser.add_argument("--true-peak",type=float,default=-2.0,help="Limiter target before AAC encoding; allow extra headroom for re-encoding.")
 args=parser.parse_args()
 assert args.input.resolve()!=args.output.resolve(), "Use a separate output file."
 measurement=subprocess.run([
     "ffmpeg","-hide_banner","-i",str(args.input),"-af",
-    "loudnorm=I=-16:TP=-2:LRA=11:print_format=json","-f","null","-"
+    f"loudnorm=I=-16:TP={args.true_peak}:LRA=11:print_format=json","-f","null","-"
 ],capture_output=True,text=True,check=True)
 d=json.JSONDecoder().raw_decode(measurement.stderr[measurement.stderr.rfind("{"):])[0]
-filt=(f"loudnorm=I=-16:TP=-2:LRA=11:measured_I={d['input_i']}:"
+filt=(f"loudnorm=I=-16:TP={args.true_peak}:LRA=11:measured_I={d['input_i']}:"
       f"measured_TP={d['input_tp']}:measured_LRA={d['input_lra']}:"
       f"measured_thresh={d['input_thresh']}:offset={d['target_offset']}:linear=true")
 subprocess.run([

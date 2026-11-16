@@ -54,13 +54,15 @@ use the database client or built-in AI.
 
 ### Watch the everyday workflow
 
-[![Watch the client-first TableIQ walkthrough](website/public/video/tableiq-client-poster.png)](https://tableiq.ideolyst.com/#demo)
+[![Watch the 75-second TableIQ walkthrough](website/public/video/tableiq-launch-walkthrough-v4-poster.jpg)](https://tableiq.ideolyst.com/#demo)
 
-[Watch the client walkthrough](https://tableiq.ideolyst.com/video/tableiq-client-intro.mp4):
-connect, inspect the schema, open SQL, run it manually and check the returned rows.
-The optional AI segment shows provider configuration, not a generated answer.
+[Watch the 75-second walkthrough](https://tableiq.ideolyst.com/video/tableiq-launch-walkthrough-v4.mp4):
+open more tabs, inspect relationships, enter SQL, click Run and check two matching orders.
+Optional BYOK AI follows, using a labelled previously verified native example; then see actual MCP Activity.
 
-Real native v0.8.15 captures, synthetic data and condensed time; no speed benchmark.
+Real development UI connected to the Rust backend, a labelled native v0.8.17 AI still,
+synthetic data and edited time; no speed benchmark or general AI accuracy claim.
+[Compare all three launch cuts](https://tableiq.ideolyst.com/launch-films/).
 [Try the same task without an AI key or agent](docs/launch/demo/README.md).
 
 <details>

@@ -1,0 +1,641 @@
+{
+  "duration_seconds": 75,
+  "fps": 30,
+  "width": 1920,
+  "height": 1080,
+  "script": "APPROVED-SCRIPT-v4.md",
+  "native_window_capture": false,
+  "manual_query": {
+    "sql": "SELECT o.id, c.name AS customer_name, o.total_cents\nFROM main.orders AS o JOIN main.customers AS c ON c.id = o.customer_id\nWHERE EXISTS (\n  SELECT 1 FROM main.payments AS p\n  WHERE p.order_id = o.id AND p.status = 'paid')\nAND NOT EXISTS (\n  SELECT 1 FROM main.shipments AS s\n  WHERE s.order_id = o.id AND s.status = 'shipped')\nORDER BY o.id;",
+    "rows": [
+      [
+        102,
+        "Northstar Demo",
+        4200
+      ],
+      [
+        104,
+        "Acme Demo",
+        3100
+      ]
+    ],
+    "manualRun": true,
+    "backend": "Real TableIQ Rust IPC bridge, SQLite fixture",
+    "frontend": "Actual TableIQ development UI 0.8.17",
+    "mockResponses": false,
+    "marks": {
+      "start": 0.001,
+      "typing": 0.806,
+      "query-ready": 1.78,
+      "run-click": 5.105,
+      "result-ready": 5.734
+    },
+    "decodedArrowRows": [
+      [
+        "102",
+        "Northstar Demo",
+        "4200"
+      ],
+      [
+        "104",
+        "Acme Demo",
+        "3100"
+      ]
+    ],
+    "arrowResultSha256": "c7ca52d078b2ce87bbb42aa2945592fc9f72ceaeac0f828303377f8521047dc4",
+    "verification": "Actual Arrow IPC decoded with apache-arrow tableFromIPC and compared exactly; SQL editor and real Run response verified; final picture inspected."
+  },
+  "checks": {
+    "motion": {
+      "ok": true,
+      "strict": false,
+      "browserSkipped": false,
+      "lint": {
+        "ok": true,
+        "errorCount": 0,
+        "warningCount": 0,
+        "infoCount": 0,
+        "findings": [],
+        "filesScanned": 8
+      },
+      "runtime": {
+        "ok": true,
+        "errorCount": 0,
+        "warningCount": 0,
+        "infoCount": 0,
+        "findings": []
+      },
+      "layout": {
+        "ok": true,
+        "errorCount": 0,
+        "warningCount": 0,
+        "infoCount": 0,
+        "findings": [],
+        "duration": 75,
+        "samples": [
+          2,
+          6,
+          9,
+          15,
+          22.5,
+          29,
+          31,
+          32.2,
+          33.5,
+          37,
+          41.5,
+          47,
+          53,
+          60,
+          70
+        ],
+        "transitionSamples": [],
+        "transitionSamplesDropped": 0,
+        "tolerance": 2,
+        "totalIssueCount": 0,
+        "truncated": false
+      },
+      "motion": {
+        "ok": true,
+        "errorCount": 0,
+        "warningCount": 0,
+        "infoCount": 0,
+        "findings": [],
+        "enabled": false,
+        "samples": 0
+      },
+      "contrast": {
+        "ok": true,
+        "errorCount": 0,
+        "warningCount": 0,
+        "infoCount": 0,
+        "findings": [],
+        "enabled": true,
+        "samples": [
+          2,
+          15,
+          32.2,
+          41.5,
+          70
+        ],
+        "checked": 22,
+        "passed": 22
+      },
+      "craft": {
+        "ok": true,
+        "errorCount": 0,
+        "warningCount": 0,
+        "infoCount": 0,
+        "findings": [],
+        "enabled": true,
+        "step": 0.125,
+        "samples": 599
+      },
+      "audio": {
+        "ok": true,
+        "errorCount": 0,
+        "warningCount": 0,
+        "infoCount": 0,
+        "findings": []
+      },
+      "hdr": {
+        "autoPromotion": null,
+        "inspection": "available"
+      },
+      "snapshots": {
+        "enabled": false,
+        "files": [],
+        "times": [],
+        "findingFiles": []
+      },
+      "saved": {
+        "id": "8754c480-c9b6-4ff3-8e6e-b3a55f583f10",
+        "revision": null,
+        "report": "/Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/.hyperframes/artifacts/checks/8754c480-c9b6-4ff3-8e6e-b3a55f583f10.json",
+        "attribution": "inputs-changed"
+      },
+      "_meta": {
+        "version": "0.9.56",
+        "latestVersion": "0.9.56",
+        "updateAvailable": false,
+        "checkedAt": "2026-11-16T10:47:35.970Z",
+        "skillsOutdated": 6,
+        "skillsMissing": 0
+      }
+    },
+    "story": {
+      "ok": true,
+      "strict": false,
+      "browserSkipped": false,
+      "lint": {
+        "ok": true,
+        "errorCount": 0,
+        "warningCount": 0,
+        "infoCount": 0,
+        "findings": [],
+        "filesScanned": 8
+      },
+      "runtime": {
+        "ok": true,
+        "errorCount": 0,
+        "warningCount": 0,
+        "infoCount": 0,
+        "findings": []
+      },
+      "layout": {
+        "ok": true,
+        "errorCount": 0,
+        "warningCount": 0,
+        "infoCount": 0,
+        "findings": [],
+        "duration": 75,
+        "samples": [
+          2,
+          6,
+          9,
+          15,
+          22.5,
+          29,
+          31,
+          32.2,
+          33.5,
+          37,
+          41.5,
+          47,
+          53,
+          60,
+          70
+        ],
+        "transitionSamples": [],
+        "transitionSamplesDropped": 0,
+        "tolerance": 2,
+        "totalIssueCount": 0,
+        "truncated": false
+      },
+      "motion": {
+        "ok": true,
+        "errorCount": 0,
+        "warningCount": 0,
+        "infoCount": 0,
+        "findings": [],
+        "enabled": false,
+        "samples": 0
+      },
+      "contrast": {
+        "ok": true,
+        "errorCount": 0,
+        "warningCount": 0,
+        "infoCount": 0,
+        "findings": [],
+        "enabled": true,
+        "samples": [
+          2,
+          15,
+          32.2,
+          41.5,
+          70
+        ],
+        "checked": 22,
+        "passed": 22
+      },
+      "craft": {
+        "ok": true,
+        "errorCount": 0,
+        "warningCount": 0,
+        "infoCount": 0,
+        "findings": [],
+        "enabled": true,
+        "step": 0.125,
+        "samples": 599
+      },
+      "audio": {
+        "ok": true,
+        "errorCount": 0,
+        "warningCount": 0,
+        "infoCount": 0,
+        "findings": []
+      },
+      "hdr": {
+        "autoPromotion": null,
+        "inspection": "available"
+      },
+      "snapshots": {
+        "enabled": false,
+        "files": [],
+        "times": [],
+        "findingFiles": []
+      },
+      "saved": {
+        "id": "e5a6b5f1-1ebe-4037-a55d-c8ea1f4d813c",
+        "revision": null,
+        "report": "/Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/story/.hyperframes/artifacts/checks/e5a6b5f1-1ebe-4037-a55d-c8ea1f4d813c.json",
+        "attribution": "inputs-changed"
+      },
+      "_meta": {
+        "version": "0.9.56",
+        "latestVersion": "0.9.56",
+        "updateAvailable": false,
+        "checkedAt": "2026-11-16T10:47:35.970Z",
+        "skillsOutdated": 6,
+        "skillsMissing": 0
+      }
+    },
+    "walkthrough": {
+      "ok": true,
+      "strict": false,
+      "browserSkipped": false,
+      "lint": {
+        "ok": true,
+        "errorCount": 0,
+        "warningCount": 0,
+        "infoCount": 0,
+        "findings": [],
+        "filesScanned": 8
+      },
+      "runtime": {
+        "ok": true,
+        "errorCount": 0,
+        "warningCount": 0,
+        "infoCount": 0,
+        "findings": []
+      },
+      "layout": {
+        "ok": true,
+        "errorCount": 0,
+        "warningCount": 0,
+        "infoCount": 0,
+        "findings": [],
+        "duration": 75,
+        "samples": [
+          2,
+          6,
+          9,
+          15,
+          22.5,
+          29,
+          31,
+          32.2,
+          33.5,
+          37,
+          41.5,
+          47,
+          53,
+          60,
+          70
+        ],
+        "transitionSamples": [],
+        "transitionSamplesDropped": 0,
+        "tolerance": 2,
+        "totalIssueCount": 0,
+        "truncated": false
+      },
+      "motion": {
+        "ok": true,
+        "errorCount": 0,
+        "warningCount": 0,
+        "infoCount": 0,
+        "findings": [],
+        "enabled": false,
+        "samples": 0
+      },
+      "contrast": {
+        "ok": true,
+        "errorCount": 0,
+        "warningCount": 0,
+        "infoCount": 0,
+        "findings": [],
+        "enabled": true,
+        "samples": [
+          2,
+          15,
+          32.2,
+          41.5,
+          70
+        ],
+        "checked": 22,
+        "passed": 22
+      },
+      "craft": {
+        "ok": true,
+        "errorCount": 0,
+        "warningCount": 0,
+        "infoCount": 0,
+        "findings": [],
+        "enabled": true,
+        "step": 0.125,
+        "samples": 599
+      },
+      "audio": {
+        "ok": true,
+        "errorCount": 0,
+        "warningCount": 0,
+        "infoCount": 0,
+        "findings": []
+      },
+      "hdr": {
+        "autoPromotion": null,
+        "inspection": "available"
+      },
+      "snapshots": {
+        "enabled": false,
+        "files": [],
+        "times": [],
+        "findingFiles": []
+      },
+      "saved": {
+        "id": "ecff9245-ff0b-4575-a571-38ac8c2b7143",
+        "revision": null,
+        "report": "/Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/walkthrough/.hyperframes/artifacts/checks/ecff9245-ff0b-4575-a571-38ac8c2b7143.json",
+        "attribution": "inputs-changed"
+      },
+      "_meta": {
+        "version": "0.9.56",
+        "latestVersion": "0.9.56",
+        "updateAvailable": false,
+        "checkedAt": "2026-11-16T10:47:35.970Z",
+        "skillsOutdated": 6,
+        "skillsMissing": 0
+      }
+    }
+  },
+  "audio_review": "Locally synthesized, measured and transcribed. No independent human listening assessment.",
+  "render_verification": "All3 encoded H.264/AAC files75s1920x1080/30fps,48kHzstereo. Decoded evidence under delivery/encoded-v4. Allwithin1LU of\u221216LUFS and truepeak\u2264\u22121.8dBTP.",
+  "renders": [
+    {
+      "name": "tableiq-launch-motion-v4.mp4",
+      "bytes": 9294566,
+      "sha256": "b1a3588d72e302cd38041078c76b18b5d11a7b3df71ffa368226d3bc3ec3b8e8",
+      "ffprobe": {
+        "programs": [],
+        "stream_groups": [],
+        "streams": [
+          {
+            "codec_name": "h264",
+            "width": 1920,
+            "height": 1080,
+            "r_frame_rate": "30/1"
+          },
+          {
+            "codec_name": "aac",
+            "sample_rate": "48000",
+            "channels": 2,
+            "r_frame_rate": "0/0"
+          }
+        ],
+        "format": {
+          "duration": "75.000000",
+          "size": "9294566"
+        }
+      },
+      "loudness": {
+        "input_i": "-16.00",
+        "input_tp": "-3.69",
+        "input_lra": "7.50",
+        "input_thresh": "-26.46",
+        "output_i": "-15.16",
+        "output_tp": "-2.00",
+        "output_lra": "6.10",
+        "output_thresh": "-25.50",
+        "normalization_type": "dynamic",
+        "target_offset": "-0.84"
+      },
+      "caption_cues": 7
+    },
+    {
+      "name": "tableiq-launch-story-v4.mp4",
+      "bytes": 8842929,
+      "sha256": "e637d6996b5b3eb06725da98e3d495858ee8ab113179c75725f2605fd4213797",
+      "ffprobe": {
+        "programs": [],
+        "stream_groups": [],
+        "streams": [
+          {
+            "codec_name": "h264",
+            "width": 1920,
+            "height": 1080,
+            "r_frame_rate": "30/1"
+          },
+          {
+            "codec_name": "aac",
+            "sample_rate": "48000",
+            "channels": 2,
+            "r_frame_rate": "0/0"
+          }
+        ],
+        "format": {
+          "duration": "75.000000",
+          "size": "8842929"
+        }
+      },
+      "loudness": {
+        "input_i": "-16.18",
+        "input_tp": "-1.90",
+        "input_lra": "9.30",
+        "input_thresh": "-26.66",
+        "output_i": "-16.38",
+        "output_tp": "-2.00",
+        "output_lra": "8.70",
+        "output_thresh": "-26.70",
+        "normalization_type": "dynamic",
+        "target_offset": "0.38"
+      },
+      "caption_cues": 23
+    },
+    {
+      "name": "tableiq-launch-walkthrough-v4.mp4",
+      "bytes": 9502629,
+      "sha256": "e54bae0e65741141bd681a8ee6e9a3cee34c91a1a2ca95f838e219560dd0b53a",
+      "ffprobe": {
+        "programs": [],
+        "stream_groups": [],
+        "streams": [
+          {
+            "codec_name": "h264",
+            "width": 1920,
+            "height": 1080,
+            "r_frame_rate": "30/1"
+          },
+          {
+            "codec_name": "aac",
+            "sample_rate": "48000",
+            "channels": 2,
+            "r_frame_rate": "0/0"
+          },
+          {
+            "codec_name": "bin_data",
+            "r_frame_rate": "0/0"
+          }
+        ],
+        "format": {
+          "duration": "75.000000",
+          "size": "9502629"
+        }
+      },
+      "loudness": {
+        "input_i": "-16.29",
+        "input_tp": "-2.26",
+        "input_lra": "8.20",
+        "input_thresh": "-26.66",
+        "output_i": "-16.09",
+        "output_tp": "-2.19",
+        "output_lra": "8.00",
+        "output_thresh": "-26.35",
+        "normalization_type": "dynamic",
+        "target_offset": "0.09"
+      },
+      "caption_cues": 23
+    }
+  ],
+  "independent_visual_review": {
+    "motion": "pass",
+    "walkthrough": "pass",
+    "story": "P1 MCP leftcrop corrected; root inspected correctedfullresolutionframe and focusedcheck passes",
+    "unresolved_P0_P1": 0
+  },
+  "story_focused_check": {
+    "ok": true,
+    "strict": false,
+    "browserSkipped": false,
+    "lint": {
+      "ok": true,
+      "errorCount": 0,
+      "warningCount": 0,
+      "infoCount": 0,
+      "findings": [],
+      "filesScanned": 8
+    },
+    "runtime": {
+      "ok": true,
+      "errorCount": 0,
+      "warningCount": 0,
+      "infoCount": 0,
+      "findings": []
+    },
+    "layout": {
+      "ok": true,
+      "errorCount": 0,
+      "warningCount": 0,
+      "infoCount": 0,
+      "findings": [],
+      "duration": 75,
+      "samples": [
+        60,
+        60.5,
+        61
+      ],
+      "transitionSamples": [],
+      "transitionSamplesDropped": 0,
+      "tolerance": 2,
+      "totalIssueCount": 0,
+      "truncated": false
+    },
+    "motion": {
+      "ok": true,
+      "errorCount": 0,
+      "warningCount": 0,
+      "infoCount": 0,
+      "findings": [],
+      "enabled": false,
+      "samples": 0
+    },
+    "contrast": {
+      "ok": true,
+      "errorCount": 0,
+      "warningCount": 0,
+      "infoCount": 0,
+      "findings": [],
+      "enabled": true,
+      "samples": [
+        60,
+        60.5,
+        61
+      ],
+      "checked": 12,
+      "passed": 12
+    },
+    "craft": {
+      "ok": true,
+      "errorCount": 0,
+      "warningCount": 0,
+      "infoCount": 0,
+      "findings": [],
+      "enabled": true,
+      "step": 0.125,
+      "samples": 599
+    },
+    "audio": {
+      "ok": true,
+      "errorCount": 0,
+      "warningCount": 0,
+      "infoCount": 0,
+      "findings": []
+    },
+    "hdr": {
+      "autoPromotion": null,
+      "inspection": "available"
+    },
+    "snapshots": {
+      "enabled": false,
+      "files": [],
+      "times": [],
+      "findingFiles": []
+    },
+    "saved": {
+      "id": "cac49fef-1219-4910-b457-772e3adaad52",
+      "revision": null,
+      "report": "/Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/story/.hyperframes/artifacts/checks/cac49fef-1219-4910-b457-772e3adaad52.json",
+      "attribution": "inputs-changed"
+    },
+    "_meta": {
+      "version": "0.9.56",
+      "latestVersion": "0.9.56",
+      "updateAvailable": false,
+      "checkedAt": "2026-11-16T10:47:35.970Z",
+      "skillsOutdated": 6,
+      "skillsMissing": 0
+    }
+  },
+  "argo_overflow_ms": 0,
+  "browser_playback": "Local browser: all3 played and sought to37s,75s1920x1080, captions7/23/23, no media errors. Gallery has no overflow at390px; homepage selects v4walkthrough. Live verification follows GitHub deployment and is recorded separately.",
+  "picture_preservation": "Argo import/alignment/export supplies narration and music; reviewed HyperFrames picture is stream-copied back without re-encoding. Decoded backgroundRGB242/247/250 matches motion/story; the intermediate Argo transcode had shifted it to224/228/231."
+}

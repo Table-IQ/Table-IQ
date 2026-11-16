@@ -1,97 +1,86 @@
 {
+  "revision": "v4-approved",
   "treatment": "story",
-  "duration": 57.5,
+  "duration": 75,
   "shots": [
     {
       "id": "hook",
-      "start": 0.0,
-      "duration": 5.5,
+      "start": 0,
+      "duration": 8,
       "title": [
-        "Paid.",
-        "Still unshipped."
+        "Hitting TablePlus’s",
+        "two-tab free limit?"
       ],
       "capture": null,
-      "voice": "story-hook",
+      "voice": "v4-hook",
       "environment": ""
     },
     {
-      "id": "client",
-      "start": 5.5,
-      "duration": 7.5,
+      "id": "offer",
+      "start": 8,
+      "duration": 10,
       "title": [
-        "Keep the investigation",
-        "together."
+        "Free. Open source.",
+        "A database client for Mac."
       ],
-      "capture": null,
-      "voice": "story-client",
-      "environment": ""
-    },
-    {
-      "id": "workflow",
-      "start": 13.0,
-      "duration": 7,
-      "title": [
-        "Browse. Query. Review."
-      ],
-      "capture": "browse",
-      "voice": "workflow",
+      "capture": "tabs",
+      "voice": "v4-offer",
       "environment": "Real TableIQ development capture · Synthetic data · Edited time"
     },
     {
-      "id": "byok",
-      "start": 20.0,
-      "duration": 7,
+      "id": "client",
+      "start": 18,
+      "duration": 9,
       "title": [
-        "AI, with your own key"
+        "Coming from DBeaver?"
       ],
-      "capture": null,
-      "voice": "story-ai",
+      "capture": "browse",
+      "voice": "v4-client",
+      "environment": "Browse data · Inspect relationships · Write SQL"
+    },
+    {
+      "id": "investigation",
+      "start": 27,
+      "duration": 16,
+      "title": [
+        "Which paid orders haven’t shipped?"
+      ],
+      "capture": "manual-query",
+      "voice": "v4-investigation",
+      "environment": "Real TableIQ development capture · Synthetic data · Manual SQL and Run"
+    },
+    {
+      "id": "ai",
+      "start": 43,
+      "duration": 13,
+      "title": [
+        "Want help writing SQL?"
+      ],
+      "capture": "ask",
+      "voice": "v4-ai",
       "environment": ""
     },
     {
-      "id": "ask",
-      "start": 27.0,
-      "duration": 8,
-      "title": [
-        "Which paid orders",
-        "have no shipped shipment?"
-      ],
-      "capture": "ask",
-      "voice": "ask",
-      "environment": "Verified native v0.8.17 SQL excerpts · Full SQL in source"
-    },
-    {
-      "id": "result",
-      "start": 35.0,
-      "duration": 8,
-      "title": [
-        "Two orders to investigate"
-      ],
-      "capture": "result",
-      "voice": "story-result",
-      "environment": "Verified native AI example · After manual Run · Still"
-    },
-    {
       "id": "activity",
-      "start": 43.0,
-      "duration": 6,
+      "start": 56,
+      "duration": 9,
       "title": [
-        "See your agent’s queries"
+        "See your coding agent’s queries."
       ],
       "capture": "mcp",
-      "voice": "story-mcp",
+      "voice": "v4-activity",
       "environment": "Development capture · Local MCP client · Separate sample session"
     },
     {
       "id": "download",
-      "start": 49.0,
-      "duration": 8.5,
+      "start": 65,
+      "duration": 10,
       "title": [
-        "Get the Mac",
-        "developer preview"
+        "Get the free Mac",
+        "developer preview."
       ],
       "capture": null,
-      "voice": "download",
+      "voice": "v4-download",
       "environment": ""
     }
   ]

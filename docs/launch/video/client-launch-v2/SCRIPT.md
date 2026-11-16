@@ -1,3 +1,5 @@
+> Historical planning artifact. The current approved production script is [APPROVED-SCRIPT-v4.md](APPROVED-SCRIPT-v4.md).
+
 # TableIQ launch film — client first
 
 Direction selected November 16, 2026. This is the script and storyboard stage, **not a newly rendered video**. Target: 56 seconds, 1920 × 1080, 30 fps. The existing published films remain unchanged.

@@ -1,0 +1,98 @@
+{
+  "treatment": "story",
+  "duration": 57.5,
+  "shots": [
+    {
+      "id": "hook",
+      "start": 0.0,
+      "duration": 5.5,
+      "title": [
+        "Paid.",
+        "Still unshipped."
+      ],
+      "capture": null,
+      "voice": "story-hook",
+      "environment": ""
+    },
+    {
+      "id": "client",
+      "start": 5.5,
+      "duration": 7.5,
+      "title": [
+        "Keep the investigation",
+        "together."
+      ],
+      "capture": null,
+      "voice": "story-client",
+      "environment": ""
+    },
+    {
+      "id": "workflow",
+      "start": 13.0,
+      "duration": 7,
+      "title": [
+        "Browse. Query. Review."
+      ],
+      "capture": "browse",
+      "voice": "workflow",
+      "environment": "Real TableIQ development capture · Synthetic data · Edited time"
+    },
+    {
+      "id": "byok",
+      "start": 20.0,
+      "duration": 7,
+      "title": [
+        "AI, with your own key"
+      ],
+      "capture": null,
+      "voice": "story-ai",
+      "environment": ""
+    },
+    {
+      "id": "ask",
+      "start": 27.0,
+      "duration": 8,
+      "title": [
+        "Which paid orders",
+        "have no shipped shipment?"
+      ],
+      "capture": "ask",
+      "voice": "ask",
+      "environment": "Verified native v0.8.17 SQL excerpts · Full SQL in source"
+    },
+    {
+      "id": "result",
+      "start": 35.0,
+      "duration": 8,
+      "title": [
+        "Two orders to investigate"
+      ],
+      "capture": "result",
+      "voice": "story-result",
+      "environment": "Verified native AI example · After manual Run · Still"
+    },
+    {
+      "id": "activity",
+      "start": 43.0,
+      "duration": 6,
+      "title": [
+        "See your agent’s queries"
+      ],
+      "capture": "mcp",
+      "voice": "story-mcp",
+      "environment": "Development capture · Local MCP client · Separate sample session"
+    },
+    {
+      "id": "download",
+      "start": 49.0,
+      "duration": 8.5,
+      "title": [
+        "Get the Mac",
+        "developer preview"
+      ],
+      "capture": null,
+      "voice": "download",
+      "environment": ""
+    }
+  ]
+}

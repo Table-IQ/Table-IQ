@@ -10,9 +10,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 parser=argparse.ArgumentParser()
-parser.add_argument("--version",default="v3",choices=["v2","v3"])
+parser.add_argument("--version",default="v3",choices=["v2","v3","v4"])
 args=parser.parse_args()
 CUES = {
+    # v4 intervals checked against local Whisper word times; spelling follows the approved script.
+    "v4-hook": [(0.26,2.45,"Hitting TablePlus’s two-tab free limit?"),(2.8,4.1,"Meet TableIQ.")],
+    "v4-offer": [(0,2.95,"A free, open-source database client for Mac."),(3.45,5.4,"Open another table, another query,"),(5.55,7.05,"and keep your work in view.")],
+    "v4-client": [(0,1.3,"Coming from DBeaver?"),(1.45,3.35,"Try the same everyday task here."),(3.7,5.85,"Browse your data, inspect relationships,"),(6.05,7.25,"and write your SQL.")],
+    "v4-investigation": [(0,1.9,"Which paid orders haven’t shipped?"),(2.2,3.5,"Follow payments to shipments,"),(3.65,5.3,"review the query, and run it."),(5.5,6.55,"Two matching orders."),(6.75,7.8,"There’s your answer.")],
+    "v4-ai": [(0,1.6,"Want help writing SQL?"),(2.0,3.8,"Use your own AI key for a draft."),(4.05,5.45,"Review it before you run it."),(5.6,6.8,"AI is optional.")],
+    "v4-activity": [(0,1.65,"Using a coding agent?"),(2.05,3.55,"Inspect the database queries"),(3.55,5.35,"it sends through TableIQ.")],
+    "v4-download": [(0.1,1.85,"Get the free Mac developer preview"),(1.85,4.95,"at tableiq.ideolyst.com.")],
     "hook": [(0,1.6,"Still counting query tabs?")],
     "room": [(0,2.3,"When one investigation needs another query,"),(2.75,4.25,"a tab limit breaks the flow.")],
     "client": [(0.15,3.95,"TableIQ is a free, open-source database client for Mac.")],
@@ -37,7 +45,7 @@ for name in ["motion","story","walkthrough"]:
     plan=json.loads((ROOT/name/"film-plan.json").read_text())
     cues=[]
     if name=="motion":
-        cues.append((0,2.8,"[Music] Still counting query tabs?"))
+        cues.append((0,7.8,"[Music] Hitting TablePlus’s two-tab free limit? Meet TableIQ.") if args.version=="v4" else (0,2.8,"[Music] Still counting query tabs?"))
         for shot in plan["shots"][1:]:
             cues.append((shot["start"]+.25,shot["start"]+shot["duration"]-.15," ".join(shot["title"])))
     else:
