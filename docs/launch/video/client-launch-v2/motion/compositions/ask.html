@@ -1,0 +1,11 @@
+<template><div id="motion-ask" class="scene query" data-composition-id="motion-ask" data-width="1920" data-height="1080" data-duration="10"><div class="title-mask"><h1 id="motion-ask-heading" class="heading"><span>Ask. Review the SQL.</span></h1></div><p class="support">Paid payments. No shipped shipment.</p><p class="transcript-label">Verified SQL excerpts</p><div class="clause clause-paid"><h2>A paid payment exists</h2><pre>WHERE EXISTS (
+  SELECT 1
+  FROM main.payments AS p
+  WHERE p.order_id = o.id
+    AND <span class="sql-signal">p.status = &#x27;paid&#x27;</span>
+)</pre></div><div id="motion-ask-unshipped" class="clause clause-unshipped"><h2>No shipped shipment</h2><pre><span id="motion-ask-negation" class="negation">AND NOT EXISTS</span> (
+  SELECT 1
+  FROM main.shipments AS s
+  WHERE s.order_id = o.id
+    AND <span id="motion-ask-shipped">s.status = &#x27;shipped&#x27;</span>
+)</pre></div><p class="note">Excerpts from the verified native AI output · Full SQL in source</p></div><script>const tl=gsap.timeline({paused:true});tl.fromTo("#motion-ask-heading",{scale:0.94,opacity:0.2},{scale:1,opacity:1,duration:0.35,ease:"power3.out",transformOrigin:"0% 50%"},0);tl.fromTo("#motion-ask-unshipped",{opacity:0,y:24},{opacity:1,y:0,duration:0.4,ease:"power3.out"},2.2);tl.to("#motion-ask-negation",{color:"#0B7480",duration:0.25},4.9);tl.to("#motion-ask-shipped",{color:"#0B7480",duration:0.25},6.9);window.__timelines["motion-ask"]=tl;</script></template>

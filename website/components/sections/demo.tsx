@@ -11,7 +11,7 @@ const CLIENT_DEMO = {
 
 type FilmProps = { title: string; src: string; poster: string; captions: string };
 
-function Film({ title, src, poster, captions }: FilmProps) {
+export function Film({ title, src, poster, captions }: FilmProps) {
   return (
     <video controls playsInline preload="none" poster={poster} className="aspect-video w-full rounded-card border border-rule bg-paper-3" aria-label={title}>
       <source src={src} type="video/mp4" />
@@ -32,6 +32,7 @@ export function Demo() {
       <div className="mt-5 flex flex-wrap gap-x-6 gap-y-3 text-sm">
         <a href={DOWNLOAD_URL} className="font-semibold underline underline-offset-4">Try the Mac developer preview</a>
         <a href={CLIENT_DEMO.src} download className="underline underline-offset-4">Download the video</a>
+        <a href="/launch-films/" className="underline underline-offset-4">Compare the launch films</a>
         <a href={`${GITHUB}/issues/new?template=beta-feedback.yml`} className="underline underline-offset-4">Share beta feedback</a>
       </div>
     </SectionShell>

@@ -1,0 +1,6 @@
+node_modules/
+.hyperframes/
+.thumbnails/
+.argo/
+*.mp4
+assets/*.wav

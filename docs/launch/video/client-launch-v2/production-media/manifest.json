@@ -1,0 +1,196 @@
+{
+  "intro": {
+    "kind": "real-app-recording",
+    "source_name": "video.mp4",
+    "source_capture": "capture-v2",
+    "source_range_seconds": [
+      0.0,
+      1.444
+    ],
+    "crop": [
+      430,
+      90,
+      2100,
+      1020
+    ],
+    "duration": 6,
+    "caption": "Real TableIQ development capture · Synthetic data · Edited time",
+    "sha256": "3b19be0433cb64f1f144e9fa617d9d25c427ab0248aea53c6b8a7c9e0a5af7c6"
+  },
+  "tabs": {
+    "kind": "real-app-recording",
+    "source_name": "video.mp4",
+    "source_capture": "capture-v2",
+    "source_range_seconds": [
+      1.504,
+      4.726000000000001
+    ],
+    "crop": [
+      430,
+      102,
+      1500,
+      620
+    ],
+    "duration": 6,
+    "caption": "Real TableIQ development capture · Synthetic data · Edited time",
+    "sha256": "7c5b222ebce94492fd972a767c6878adbcc76e1e101c714ad22735c04731402d"
+  },
+  "tabstrip": {
+    "kind": "real-app-recording",
+    "source_name": "video.mp4",
+    "source_capture": "capture-v2",
+    "source_range_seconds": [
+      4.146000000000001,
+      4.716
+    ],
+    "crop": [
+      430,
+      102,
+      1460,
+      98
+    ],
+    "duration": 8,
+    "caption": "Real TableIQ development capture · Synthetic data · Edited time",
+    "sha256": "aa5b4da0191a01c71d737b72558ca8971b40766597a861ded37be23bc8368f78",
+    "output_size": [
+      1920,
+      132
+    ]
+  },
+  "byok": {
+    "kind": "real-app-recording",
+    "source_name": "video.mp4",
+    "source_capture": "capture-v2",
+    "source_range_seconds": [
+      10.246,
+      13.024
+    ],
+    "crop": [
+      740,
+      470,
+      1460,
+      608
+    ],
+    "duration": 7,
+    "caption": "Real TableIQ development capture · Synthetic data · Edited time",
+    "sha256": "6a8257e7aadee3806709421f1bff787f2651758c6570fbf19f8e9bcf5f191c23"
+  },
+  "browse": {
+    "kind": "real-app-recording",
+    "source_capture": "capture-v2",
+    "cuts": [
+      {
+        "range": [
+          4.746,
+          6.546
+        ],
+        "duration": 1.8,
+        "crop": [
+          430,
+          70,
+          2210,
+          1000
+        ]
+      },
+      {
+        "range": [
+          6.546,
+          8.248999999999999
+        ],
+        "duration": 1.6,
+        "crop": [
+          430,
+          120,
+          1600,
+          800
+        ]
+      },
+      {
+        "range": [
+          8.248999999999999,
+          9.049
+        ],
+        "duration": 0.8,
+        "crop": [
+          430,
+          150,
+          2210,
+          1400
+        ]
+      },
+      {
+        "range": [
+          9.049,
+          10.019
+        ],
+        "duration": 4.8,
+        "crop": [
+          610,
+          650,
+          1240,
+          520
+        ]
+      }
+    ],
+    "duration": 9,
+    "caption": "Real TableIQ development capture · Synthetic data · Edited time",
+    "sha256": "69ccb9ea95e271863289300aa4c9889d2dc7e60c331732d89fb07a627d60dd22"
+  },
+  "mcp": {
+    "kind": "real-app-recording",
+    "source_capture": "capture-mcp-v2",
+    "source_ranges_seconds": [
+      [
+        1.359,
+        2.759
+      ],
+      [
+        2.759,
+        7.558
+      ]
+    ],
+    "crops": [
+      [
+        430,
+        70,
+        2210,
+        1000
+      ],
+      [
+        1100,
+        105,
+        1540,
+        640
+      ]
+    ],
+    "duration": 8,
+    "caption": "Development capture · Local MCP client · Separate sample session",
+    "sha256": "b0958414ab06b46425d709b6051a3276ab5f06079ee657588dbd9a8586374197"
+  },
+  "ask": {
+    "kind": "genuine-native-still",
+    "source_name": "ai-generated.png",
+    "crop": [
+      214,
+      49,
+      760,
+      236
+    ],
+    "duration": 10,
+    "caption": "Verified native AI example · SQL before Run · Still",
+    "sha256": "c3fc5802db706c1935cf1dcbb0d18df7dfdbeed132b2e3120aabf7a57f99df75"
+  },
+  "result": {
+    "kind": "genuine-native-still",
+    "source_name": "ai-result.png",
+    "crop": [
+      442,
+      565,
+      698,
+      252
+    ],
+    "duration": 8,
+    "caption": "Verified native AI example · After manual Run · Still",
+    "sha256": "72a029a3035ff1bfa137eab438f173e36ecc2b7b5574829aed4c68b4f53d825f"
+  }
+}
