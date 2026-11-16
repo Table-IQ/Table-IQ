@@ -1,0 +1,56 @@
+[
+  {
+    "scene": "hook",
+    "text": "Still counting query tabs?",
+    "voice": "af_heart",
+    "speed": 1.05
+  },
+  {
+    "scene": "room",
+    "text": "When one investigation needs another query, a tab limit breaks the flow.",
+    "voice": "af_heart",
+    "speed": 1.05
+  },
+  {
+    "scene": "client",
+    "text": "Table eye cue is a free, open source database client for Mac.",
+    "voice": "af_heart",
+    "speed": 1.05
+  },
+  {
+    "scene": "workflow",
+    "text": "Browse your tables, inspect your schema, and keep your S Q L together.",
+    "voice": "af_heart",
+    "speed": 1.05
+  },
+  {
+    "scene": "byok",
+    "text": "When you want help, use your own A I provider key.",
+    "voice": "af_heart",
+    "speed": 1.05
+  },
+  {
+    "scene": "ask",
+    "text": "Ask which paid orders have no shipped shipment. Review the generated S Q L.",
+    "voice": "af_heart",
+    "speed": 1.05
+  },
+  {
+    "scene": "result",
+    "text": "You decide when to run it. Two matching orders, totaling seven thousand, three hundred cents.",
+    "voice": "af_heart",
+    "speed": 1.05
+  },
+  {
+    "scene": "activity",
+    "text": "Working with a coding agent? Open M C P Activity to inspect its calls and queries.",
+    "voice": "af_heart",
+    "speed": 1.05
+  },
+  {
+    "scene": "download",
+    "text": "Built with Rust. Get the Mac developer preview. No Table eye cue account required.",
+    "voice": "af_heart",
+    "speed": 1.05
+  }
+]

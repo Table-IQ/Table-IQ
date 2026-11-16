@@ -78,94 +78,56 @@
   "browse": {
     "kind": "real-app-recording",
     "source_capture": "capture-v2",
-    "cuts": [
-      {
-        "range": [
-          4.746,
-          6.546
-        ],
-        "duration": 1.8,
-        "crop": [
-          430,
-          70,
-          2210,
-          1000
-        ]
-      },
-      {
-        "range": [
-          6.546,
-          8.248999999999999
-        ],
-        "duration": 1.6,
-        "crop": [
-          430,
-          120,
-          1600,
-          800
-        ]
-      },
-      {
-        "range": [
-          8.248999999999999,
-          9.049
-        ],
-        "duration": 0.8,
-        "crop": [
-          430,
-          150,
-          2210,
-          1400
-        ]
-      },
-      {
-        "range": [
-          9.049,
-          10.019
-        ],
-        "duration": 4.8,
-        "crop": [
-          610,
-          650,
-          1240,
-          520
-        ]
-      }
+    "source_range_seconds": [
+      4.746,
+      10.019
+    ],
+    "crop": [
+      430,
+      70,
+      2210,
+      1390
+    ],
+    "output_size": [
+      1920,
+      1208
     ],
     "duration": 9,
     "caption": "Real TableIQ development capture · Synthetic data · Edited time",
-    "sha256": "69ccb9ea95e271863289300aa4c9889d2dc7e60c331732d89fb07a627d60dd22"
+    "sha256": "dd06f0eaf240d402d52fcce20f0c9bc9397b4a451b1fc83370cef03a3771f295",
+    "framing": "One consistent wide crop; smooth focus is authored in the composition camera. Final source frame is held to fill the existing scene slot.",
+    "action_reference": {
+      "order_selection": 0,
+      "structure_state": 1.8,
+      "schema_state": 3.4,
+      "timing_note": "State windows corroborated against the capture script and actual source frames; subframe click telemetry is not present."
+    }
   },
   "mcp": {
     "kind": "real-app-recording",
     "source_capture": "capture-mcp-v2",
-    "source_ranges_seconds": [
-      [
-        1.359,
-        2.759
-      ],
-      [
-        2.759,
-        7.558
-      ]
+    "source_range_seconds": [
+      1.359,
+      7.558
     ],
-    "crops": [
-      [
-        430,
-        70,
-        2210,
-        1000
-      ],
-      [
-        1100,
-        105,
-        1540,
-        640
-      ]
+    "crop": [
+      430,
+      70,
+      2210,
+      1000
+    ],
+    "output_size": [
+      1920,
+      868
     ],
     "duration": 8,
     "caption": "Development capture · Local MCP client · Separate sample session",
-    "sha256": "b0958414ab06b46425d709b6051a3276ab5f06079ee657588dbd9a8586374197"
+    "sha256": "2429440702f646c7b8c44bcba7955627be89971f7123ff80bb7e0e47ac655490",
+    "framing": "One consistent wide crop; smooth focus is authored in the composition camera. Final source frame is held to fill the existing scene slot.",
+    "action_reference": {
+      "show_full_sql": 1.6,
+      "timing_note": "Exact expanded mark relative to selected source range."
+    }
   },
   "ask": {
     "kind": "genuine-native-still",

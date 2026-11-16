@@ -7,7 +7,7 @@ audience: Developers using Mac database clients
 mode: autonomous
 ---
 
-AI proof uses the actual verified native SQL and result. SQL is transcribed as an editorial graphic; result stills are identified. Client/settings/MCP actions are real development captures.
+AI proof uses the actual verified native SQL and result. SQL is transcribed as an editorial graphic; result stills are identified. Only client workflow and MCP use real development recordings; hook, problem, brand and BYOK are editorial typography. Native results remain labelled stills. Camera punch-ins follow selected source actions; no clicks or cursor effects are simulated.
 
 ## Frame 1 — Paid. Still unshipped. (0–5.5s)
 
@@ -19,19 +19,19 @@ AI proof uses the actual verified native SQL and result. SQL is transcribed as a
 - reads: “Paid. Still unshipped.” (0.4–5.3s); the real task content holds below.
 - sound: Narration and music
 
-Verified native AI example · After manual Run · Still
+Supplied brand and verified platform metadata.
 
-## Frame 2 — Keep the investigation together (5.5–13s)
+## Frame 2 — Keep the investigation together. (5.5–13s)
 
 - status: animated
 - src: compositions/client.html
 - duration: 7.5s
 - poster: 9.25s
-- scene: Keep the investigation together
-- reads: “Keep the investigation together” (0.4–7.3s); the real task content holds below.
+- scene: Keep the investigation together.
+- reads: “Keep the investigation together.” (0.4–7.3s); the real task content holds below.
 - sound: Narration and music
 
-Real TableIQ development capture · Synthetic data · Edited time
+Supplied brand and verified platform metadata.
 
 ## Frame 3 — Browse. Query. Review. (13–20s)
 
@@ -55,7 +55,7 @@ Real TableIQ development capture · Synthetic data · Edited time
 - reads: “AI, with your own key” (0.4–6.8s); the real task content holds below.
 - sound: Narration and music
 
-Real TableIQ development capture · Synthetic data · Edited time
+Supplied brand and verified platform metadata.
 
 ## Frame 5 — Which paid orders have no shipped shipment? (27–35s)
 
@@ -67,7 +67,7 @@ Real TableIQ development capture · Synthetic data · Edited time
 - reads: “Which paid orders have no shipped shipment?” (0.4–7.8s); the real task content holds below.
 - sound: Narration and music
 
-Excerpts from the verified native AI output · Full SQL in source
+Verified native v0.8.17 SQL excerpts · Full SQL in source
 
 ## Frame 6 — Two orders to investigate (35–43s)
 

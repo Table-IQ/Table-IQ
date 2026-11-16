@@ -7,7 +7,7 @@ audience: Developers using Mac database clients
 mode: autonomous
 ---
 
-AI proof uses the actual verified native SQL and result. SQL is transcribed as an editorial graphic; result stills are identified. Client/settings/MCP actions are real development captures.
+AI proof uses the actual verified native SQL and result. SQL is transcribed as an editorial graphic; result stills are identified. Only client workflow and MCP use real development recordings; hook, problem, brand and BYOK are editorial typography. Native results remain labelled stills. Camera punch-ins follow selected source actions; no clicks or cursor effects are simulated.
 
 ## Frame 1 — Still counting query tabs? (0–3s)
 
@@ -19,19 +19,19 @@ AI proof uses the actual verified native SQL and result. SQL is transcribed as a
 - reads: “Still counting query tabs?” (0.4–2.8s); the real task content holds below.
 - sound: Narration and music
 
-Real TableIQ development capture · Synthetic data · Edited time
+Supplied brand and verified platform metadata.
 
-## Frame 2 — Keep your investigation together (3–8.5s)
+## Frame 2 — Keep your investigation together. (3–8.5s)
 
 - status: animated
 - src: compositions/room.html
 - duration: 5.5s
 - poster: 5.75s
-- scene: Keep your investigation together
-- reads: “Keep your investigation together” (0.4–5.3s); the real task content holds below.
+- scene: Keep your investigation together.
+- reads: “Keep your investigation together.” (0.4–5.3s); the real task content holds below.
 - sound: Narration and music
 
-Real TableIQ development capture · Synthetic data · Edited time
+Supplied brand and verified platform metadata.
 
 ## Frame 3 — Free. Open source. Local first. (8.5–14s)
 
@@ -43,7 +43,7 @@ Real TableIQ development capture · Synthetic data · Edited time
 - reads: “Free. Open source. Local first.” (0.4–5.3s); the real task content holds below.
 - sound: Narration and music
 
-Real TableIQ development capture · Synthetic data · Edited time
+Supplied brand and verified platform metadata.
 
 ## Frame 4 — Browse. Query. Review. (14–21s)
 
@@ -67,7 +67,7 @@ Real TableIQ development capture · Synthetic data · Edited time
 - reads: “AI, with your own key” (0.4–4.8s); the real task content holds below.
 - sound: Narration and music
 
-Real TableIQ development capture · Synthetic data · Edited time
+Supplied brand and verified platform metadata.
 
 ## Frame 6 — Ask. Review the SQL. (26–34s)
 
@@ -79,7 +79,7 @@ Real TableIQ development capture · Synthetic data · Edited time
 - reads: “Ask. Review the SQL.” (0.4–7.8s); the real task content holds below.
 - sound: Narration and music
 
-Excerpts from the verified native AI output · Full SQL in source
+Verified native v0.8.17 SQL excerpts · Full SQL in source
 
 ## Frame 7 — You choose when to run (34–42s)
 

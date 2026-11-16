@@ -1,4 +1,8 @@
-# Delivery provenance — November 16, 2026
+# Delivery provenance — visual revision v3, November 16, 2026
+
+## Current visual revision
+
+V3 replaces hook, problem, brand and BYOK screenshot scenes with editorial typography. Only workflow, result and MCP scenes contain screens; AI query excerpts remain plainly editorial. The curated browse/MCP assets are continuous selected source ranges with consistent framing. Camera focus/hold/return is keyed to recorded UI control/state changes, not fabricated subframe click telemetry. Exact source ranges, observed event windows and SHA-256 hashes are in the updated manifest. V2 assets remain historical and keep their public URLs.
 
 ## Real product material
 
@@ -15,7 +19,7 @@
 - Walkthrough: official `@argo-video/cli` 0.42.1, source [shreyaskarnik/argo](https://github.com/shreyaskarnik/argo), inspected commit `5f715496522c4e682f4dc4aeffae5528e866ad5e`. Actual recording/import/cache/align/export APIs are used. Its lockfile pins the exact dependencies. Narration overflow is zero.
 - Narration: locally generated Kokoro82M q8 CPU, `af_heart`, speed 1.05, through `kokoro-js` 1.2.1. No voice cloning, paid voice service or account signup. [Model card](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX) identifies Apache-2.0. Measured local Whisper word times inform captions; brand/acronym spelling and homophones are corrected against the script.
 - Score: reused original local TableIQ launch score from the previously delivered 56-second motion film. Its local speech transcription contains only “upbeat music”; no old spoken narration is layered into the new films. Beat analysis indicates 120 BPM. No LinkedIn reference video/music is redistributed. Fade at 53–56 seconds with a silent CTA tail on the longer versions.
-- Sound is measured and locally transcribed, not independently heard or human-rated. Exact encoded levels are recorded in `delivery/technical-verification.json`.
+- Sound is measured and locally transcribed, not independently heard or human-rated. Exact current encoded levels are recorded in `delivery/technical-verification-v3.json`; the original v2 report is retained separately.
 
 ## Brand and notices
 

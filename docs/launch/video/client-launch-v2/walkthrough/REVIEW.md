@@ -1,13 +1,11 @@
-# Walkthrough film review — November 16, 2026
+# Walkthrough — revision v3 delivery review
 
-Delivery: 57.000000s, 1920×1080, 30 fps H.264, 48 kHz stereo AAC. The final MP4 is nonempty and its duration matches the composition. Integrated loudness -16.38 LUFS; true peak -1.47 dBTP. Audio was measured/transcribed, not heard.
+Rendered November 16, 2026: 57.000000s, 1920×1080, 30 fps H.264, 48 kHz stereo AAC. Encoded integrated loudness -16.38 LUFS and true peak -1.47 dBTP. Audio was measured and the unchanged local voice clips were transcribed; no independent human listening is claimed.
 
-The final HyperFrames check passes with zero errors. Motion has no warnings. Story/walkthrough retain one intentional CTA hold (`dead_stretch`): the narration finishes and the download URL remains stable. No distracting motion was added to that reading hold.
+Editorial hook/problem/brand/BYOK scenes replace repetitive screenshots. Table/schema and MCP footage now use continuous wide source clips, with a camera focus tied to recorded control/state changes, readable holds and returns to context. Exact move timings and capture limits are in ../VISUAL-REVISION.md. Proof scenes keep genuine UI colors, native result still identification and exact SQL/rows. Durations, voice IDs and all audio offsets match v2.
 
-Beat frames, cut seams and phone sheets were inspected. The corrected tab-strip frame supersedes the earlier letterboxed version in the full review sheet. Encoded first, client, schema, SQL, result, MCP and final CTA frames were inspected separately. All three approved treatments were built.
+All three final HyperFrames checks pass. Story's final report is review/revision-check.json; motion/walkthrough also have review/v3-delivery-check.json after a small hook-copy correction. Fresh beat/phone/seam sheets, 36 dense camera frames and 32 scene-boundary frames were inspected. The independent reviewer found no remaining P0/P1. Encoded first/brand/workflow/zoom/BYOK/SQL/result/MCP/return/CTA frames were decoded and inspected separately. See ../delivery/technical-verification-v3.json.
 
-The fresh independent review found no remaining P0/P1 after these fixes: both EXISTS/NOT EXISTS conditions are fully visible in clearly editorial query excerpts; the native result has a prominent still label; the real three-tab strip fills its intended width.
+Weakest shot: the MCP log. Its initial empty view establishes the arriving calls but carries little information; expanded SQL remains dense at phone width. Headlines, result rows and the download CTA carry the small-screen read. Larger playback supplies SQL detail. No vertical-specific edit is claimed.
 
-Weakest shot: MCP Activity. At phone width its raw SQL/metadata is dense; the headline and log structure communicate monitoring, while larger playback provides detail. Provider settings microcopy and evidence footnotes also need larger playback. Future social-specific cuts should focus each dense control individually. No vertical version is claimed.
-
-Real client/settings/MCP footage is a development capture; native AI SQL/result evidence is the separate verified v0.8.17 example. No new live AI success is claimed. Synthetic rows and edited time are disclosed.
+No new live AI success is shown. Editorial SQL excerpts and prominently labelled native v0.8.17 result stills come from the earlier passed case. The actual local MCP protocol client is a separate sample session. Mac Apple silicon developer preview remains unsigned/not notarized; Windows/Linux are coming soon. All three approved treatments were built.

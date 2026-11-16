@@ -10,20 +10,21 @@
         "Still counting",
         "query tabs?"
       ],
-      "capture": "intro",
+      "capture": null,
       "voice": "hook",
-      "environment": "Real TableIQ development capture · Synthetic data · Edited time"
+      "environment": ""
     },
     {
       "id": "room",
       "start": 3.0,
       "duration": 5.5,
       "title": [
-        "Keep your investigation together"
+        "Keep your investigation",
+        "together."
       ],
-      "capture": "tabs",
+      "capture": null,
       "voice": "room",
-      "environment": "Real TableIQ development capture · Synthetic data · Edited time"
+      "environment": ""
     },
     {
       "id": "client",
@@ -33,9 +34,9 @@
         "Free. Open source.",
         "Local first."
       ],
-      "capture": "tabstrip",
+      "capture": null,
       "voice": "client",
-      "environment": "Real TableIQ development capture · Synthetic data · Edited time"
+      "environment": ""
     },
     {
       "id": "workflow",
@@ -55,9 +56,9 @@
       "title": [
         "AI, with your own key"
       ],
-      "capture": "byok",
+      "capture": null,
       "voice": "byok",
-      "environment": "Real TableIQ development capture · Synthetic data · Edited time"
+      "environment": ""
     },
     {
       "id": "ask",
@@ -68,7 +69,7 @@
       ],
       "capture": "ask",
       "voice": "ask",
-      "environment": "Excerpts from the verified native AI output · Full SQL in source"
+      "environment": "Verified native v0.8.17 SQL excerpts · Full SQL in source"
     },
     {
       "id": "result",

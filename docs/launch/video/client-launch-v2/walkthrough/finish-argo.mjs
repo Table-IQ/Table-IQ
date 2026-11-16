@@ -8,8 +8,10 @@ import {alignClips} from './node_modules/@argo-video/cli/dist/tts/align.js';
 import {parseWavHeader,createWavBuffer} from './node_modules/@argo-video/cli/dist/tts/engine.js';
 
 const input=process.argv[2];
-if(!input)throw new Error('Usage: node finish-argo.mjs <HyperFrames-picture.mp4>');
-const demo='tableiq-walkthrough-v2';
+if(!input)throw new Error('Usage: node finish-argo.mjs <HyperFrames-picture.mp4> [v2|v3]');
+const version=process.argv[3]??'v3';
+if(!['v2','v3'].includes(version))throw new Error('Version must be v2 or v3');
+const demo=`tableiq-walkthrough-${version}`;
 const plan=JSON.parse(fs.readFileSync('film-plan.json'));
 const lines=new Map(JSON.parse(fs.readFileSync('../production-media/voices/lines.json')));
 await importVideo({videoPath:path.resolve(input),cwd:process.cwd(),demo,demosDir:'demos',force:true});

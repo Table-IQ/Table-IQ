@@ -27,6 +27,30 @@ def still(source, seconds, crop, target):
     filt=f"crop={w}:{h}:{x}:{y},scale=1920:800:force_original_aspect_ratio=decrease:flags=lanczos,pad=1920:800:(ow-iw)/2:(oh-ih)/2:color=0x0C1A2B,setsar=1"
     run(["-loop","1","-framerate","30","-i",str(source),"-an","-vf",filt,"-t",str(seconds),"-c:v","libx264","-preset","fast","-crf","16","-pix_fmt","yuv420p","-movflags","+faststart","-y",str(target)])
 
+def prepare_focus_captures(record, mcp_times):
+    """Keep a single source crop so authored cameras can move without baked cuts.
+
+    Can be called independently to replace only these two visual assets; it never
+    writes voices, music, captions, or the other captured evidence.
+    """
+    times={k:v/1000 for k,v in json.loads((record/".argo/capture-v2/.timing.json").read_text()).items()}
+    expanded=mcp_times["expanded"]
+    specs=[
+        ("browse",record/".argo/capture-v2/video.mp4",times["browse"],times["byok"]-0.03,9,(430,70,2210,1390),(1920,1208)),
+        ("mcp",record/".argo/capture-mcp-v2/video.mp4",max(0,expanded-1.6),mcp_times["end"]-0.05,8,(430,70,2210,1000),(1920,868)),
+    ]
+    out={}
+    for name,source,start,end,duration,crop,size in specs:
+        target=DEST/(name+".mp4")
+        clip(source,start,end,duration,crop,target,size)
+        caption="Real TableIQ development capture · Synthetic data · Edited time" if name=="browse" else "Development capture · Local MCP client · Separate sample session"
+        out[name]={"kind":"real-app-recording","source_capture":source.parent.name,"source_range_seconds":[start,end],"crop":crop,"output_size":size,"duration":duration,"caption":caption,"sha256":hashlib.sha256(target.read_bytes()).hexdigest(),"framing":"One consistent wide crop; smooth focus is authored in the composition camera. Final source frame is held to fill the existing scene slot."}
+        if name=="browse":
+            out[name]["action_reference"]={"order_selection":0,"structure_state":1.8,"schema_state":3.4,"timing_note":"State windows corroborated against the capture script and actual source frames; subframe click telemetry is not present."}
+        else:
+            out[name]["action_reference"]={"show_full_sql":round(expanded-start,3),"timing_note":"Exact expanded mark relative to selected source range."}
+    return out
+
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument("--capture-root",type=Path,required=True)
@@ -52,26 +76,7 @@ def main():
         clip(source,start,end,seconds,crop,target,output_size)
         caption="Real TableIQ development capture · Synthetic data · Edited time"
         manifest[name]={"kind":"real-app-recording","source_name":source.name,"source_capture":source.parent.name,"source_range_seconds":[start,end],"crop":crop,"output_size":output_size,"duration":seconds,"caption":caption,"sha256":hashlib.sha256(target.read_bytes()).hexdigest()}
-    # Ordinary client actions, then a readable close-up of the actual relationships.
-    browse_parts=[
-        (times["browse"],times["browse"]+1.8,1.8,(430,70,2210,1000)),
-        (times["browse"]+1.8,times["byok"]-1.8,1.6,(430,120,1600,800)),
-        (times["byok"]-1.8,times["byok"]-1.0,0.8,(430,150,2210,1400)),
-        (times["byok"]-1.0,times["byok"]-0.03,4.8,(610,650,1240,520)),
-    ]
-    inputs=[];filters=[]
-    for i,(start,end,seconds,crop) in enumerate(browse_parts):
-        f=DEST/f"browse-{i}.mp4";clip(raw,start,end,seconds,crop,f);inputs += ["-i",str(f)];filters.append(f"[{i}:v]")
-    run([*inputs,"-filter_complex",''.join(filters)+"concat=n=4:v=1:a=0[v]","-map","[v]","-an","-c:v","libx264","-preset","fast","-crf","17","-pix_fmt","yuv420p","-movflags","+faststart","-y",str(DEST/"browse.mp4")])
-    manifest["browse"]={"kind":"real-app-recording","source_capture":"capture-v2","cuts":[{"range":[a,b],"duration":d,"crop":c} for a,b,d,c in browse_parts],"duration":9,"caption":"Real TableIQ development capture · Synthetic data · Edited time","sha256":hashlib.sha256((DEST/"browse.mp4").read_bytes()).hexdigest()}
-    # Establish Activity, then punch into the actual Tool/SQL/Rows/Status columns.
-    # The two consecutive source ranges preserve the real Expand interaction.
-    close_at=max(0,mcp_times["expanded"]-0.2)
-    wide_start=max(0,close_at-1.4)
-    clip(mcp_raw,wide_start,close_at,1.4,(430,70,2210,1000),DEST/"mcp-wide.mp4")
-    clip(mcp_raw,close_at,mcp_times["end"]-0.05,6.6,(1100,105,1540,640),DEST/"mcp-close.mp4")
-    run(["-i",str(DEST/"mcp-wide.mp4"),"-i",str(DEST/"mcp-close.mp4"),"-filter_complex","[0:v][1:v]concat=n=2:v=1:a=0[v]","-map","[v]","-an","-c:v","libx264","-crf","17","-preset","fast","-pix_fmt","yuv420p","-movflags","+faststart","-y",str(DEST/"mcp.mp4")])
-    manifest["mcp"]={"kind":"real-app-recording","source_capture":"capture-mcp-v2","source_ranges_seconds":[[wide_start,close_at],[close_at,mcp_times["end"]-0.05]],"crops":[[430,70,2210,1000],[1100,105,1540,640]],"duration":8,"caption":"Development capture · Local MCP client · Separate sample session","sha256":hashlib.sha256((DEST/"mcp.mp4").read_bytes()).hexdigest()}
+    manifest.update(prepare_focus_captures(record, mcp_times))
     # These are actual native captures from the passed acceptance case, not new live output.
     for name,source,seconds,crop,caption in [
         ("ask",ROOT/"assets/ai-generated.png",10,(214,49,760,236),"Verified native AI example · SQL before Run · Still"),

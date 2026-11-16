@@ -1,0 +1,111 @@
+{
+  "ok": true,
+  "strict": false,
+  "browserSkipped": false,
+  "lint": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": [],
+    "filesScanned": 9
+  },
+  "runtime": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": []
+  },
+  "layout": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": [],
+    "duration": 57.5,
+    "samples": [
+      3.194,
+      9.583,
+      15.972,
+      22.361,
+      28.75,
+      35.139,
+      41.528,
+      47.917,
+      54.306
+    ],
+    "transitionSamples": [],
+    "transitionSamplesDropped": 0,
+    "tolerance": 2,
+    "totalIssueCount": 0,
+    "truncated": false
+  },
+  "motion": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": [],
+    "enabled": false,
+    "samples": 0
+  },
+  "contrast": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": [],
+    "enabled": true,
+    "samples": [
+      3.194,
+      15.972,
+      28.75,
+      41.528,
+      54.306
+    ],
+    "checked": 22,
+    "passed": 22
+  },
+  "craft": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": [],
+    "enabled": true,
+    "step": 0.125,
+    "samples": 460
+  },
+  "audio": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": []
+  },
+  "hdr": {
+    "autoPromotion": null,
+    "inspection": "available"
+  },
+  "snapshots": {
+    "enabled": false,
+    "files": [],
+    "times": [],
+    "findingFiles": []
+  },
+  "saved": {
+    "id": "b72fded1-41ed-4c5d-9580-4d04d8db7082",
+    "revision": "c34fd73e-6645-48d8-abf8-7fcd2560e3e7",
+    "report": "/Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/story/.hyperframes/artifacts/checks/b72fded1-41ed-4c5d-9580-4d04d8db7082.json",
+    "attribution": "recorded-revision"
+  },
+  "_meta": {
+    "version": "0.9.56",
+    "latestVersion": "0.9.56",
+    "updateAvailable": false,
+    "checkedAt": "2026-11-16T07:25:42.619Z",
+    "skillsOutdated": 6,
+    "skillsMissing": 0
+  }
+}
