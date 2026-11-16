@@ -56,7 +56,7 @@ use the database client or built-in AI.
 
 **75-second narrated walkthrough** — play below and unmute to hear the narration.
 
-https://github.com/user-attachments/assets/98294dd5-2227-401f-8d75-5b84bc928e89
+https://github.com/user-attachments/assets/0ecd4908-f08f-4cfb-bf69-6aa6853ed2ea
 
 [Watch the 75-second walkthrough](https://tableiq.ideolyst.com/video/tableiq-launch-walkthrough-v5.mp4):
 open more tabs, inspect relationships, enter SQL, click Run and check two matching orders.
@@ -71,13 +71,13 @@ synthetic data and edited time; no speed benchmark or general AI accuracy claim.
 
 **Motion version · music and on-screen text**
 
-https://github.com/user-attachments/assets/d656cbae-20ce-4627-b6d9-5ee7627645a9
+https://github.com/user-attachments/assets/0046727e-9975-4f7b-b585-3ab72a68ffca
 
 [Watch or download the motion version](https://tableiq.ideolyst.com/video/tableiq-launch-motion-v5.mp4)
 
 **Story version · narration**
 
-https://github.com/user-attachments/assets/adedfc18-bab7-419d-9d56-e24cfa40f68b
+https://github.com/user-attachments/assets/bedb28f9-e208-4931-b3da-8017848f9f3c
 
 [Watch or download the story version](https://tableiq.ideolyst.com/video/tableiq-launch-story-v5.mp4)
 
