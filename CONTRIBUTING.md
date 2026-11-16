@@ -65,6 +65,18 @@ Live integration suites need the documented disposable databases. State which en
 
 ## License and attribution
 
-Contributions to TableIQ-owned application code are made under AGPL-3.0-only unless the affected files explicitly carry another license. Only contribute material you have the right to license; retain required attribution for third-party work. This contribution policy does not assign your copyright or grant an unrestricted right to relicense it. See [LICENSING.md](LICENSING.md) and [LICENSE-EXCEPTIONS.md](LICENSE-EXCEPTIONS.md).
+Contributions to TableIQ-owned application code are published under AGPL-3.0-only unless the affected files explicitly carry another license. Only contribute material you have the right to license; retain required attribution for third-party work.
+
+Before your first contribution can be merged, read and sign the
+[Contributor License Agreement](CLA.md). CLA Assistant will prompt each commit
+author to post `I have read the CLA Document and I hereby sign the CLA` on the
+pull request. You keep your copyright and grant **Rudresh Narwal** additional
+rights, including commercial sublicensing and relicensing. Sign only if you have
+authority to grant those rights. Signing metadata is public on the
+`cla-signatures` branch. If a check needs refreshing, comment `recheck`.
+
+The agreement covers the pull request where you sign and subsequent submissions;
+previously merged contributions and third-party work keep their existing terms. See
+[LICENSING.md](LICENSING.md) and [LICENSE-EXCEPTIONS.md](LICENSE-EXCEPTIONS.md).
 
 The maintainer may request changes or decline work outside the current focus. Response times depend on maintainer availability; there is no support SLA for the free preview. Follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).

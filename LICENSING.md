@@ -17,3 +17,12 @@ Released binaries should be accompanied by their matching source, required notic
 All database engines, MCP/guard, BYOK AI, staged edits, SSH, unlimited connections and all features in the first public release remain free under the published pledge. Optional donations or paid assistance do not restrict those rights. Future paid services or genuinely new capabilities require their own defined scope; they are not available merely because they appear in a plan.
 
 Alternate commercial licensing requires sufficient rights from all relevant copyright holders and compatible dependency terms. No alternate license is offered by this document. See [SUPPORT.md](SUPPORT.md) for help and sustainability options.
+
+## Contributor agreement
+
+New contributions require the [Contributor License Agreement](CLA.md), which
+grants Rudresh Narwal additional rights, including commercial sublicensing and
+relicensing, while contributors retain copyright. The CLA does not change the
+published AGPL license, third-party terms or rights in contributions submitted
+and merged before acceptance. Earlier contributors need separate agreements before their
+work can be relicensed beyond its existing terms.
