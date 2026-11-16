@@ -1,0 +1,110 @@
+[
+  {
+    "id": "hook",
+    "start": 0,
+    "end": 3,
+    "title": "Still counting query tabs?",
+    "act": "Hook",
+    "words": "Large type lands first; the actual editor enters from the lower edge. No logo intro.",
+    "action": "9-frame title wipe; 15-frame horizontal handoff to the workspace.",
+    "source": "Real native 0.8.17 editor, before manual Run. Editorial title outside the app.",
+    "sound": "Opening beat; one restrained accent on ‘query tabs’.",
+    "body": "<h1 class=\"hook-title\"><span>Still counting</span><span class=\"signal\">query tabs?</span></h1><img class=\"hook-editor\" src=\"assets/ai-generated.png\" alt=\"Actual idle native SQL editor\" data-layout-allow-overflow>"
+  },
+  {
+    "id": "room",
+    "start": 3,
+    "end": 7,
+    "title": "Keep your investigation together",
+    "act": "Problem",
+    "words": "The missing shot is three real tabs opening. This still establishes the workspace; no tab interaction is fabricated.",
+    "action": "Record orders → customers → query tabs; hold the third tab open.",
+    "source": "Real native 0.8.15 workspace crop. Multi-tab capture pickup required.",
+    "sound": "Clicks on the real tab-opening actions, once recorded.",
+    "body": "<h1 class=\"heading two-line\">Keep your investigation together</h1><img class=\"workspace\" src=\"assets/workspace.png\" alt=\"Real storefront database workspace\">"
+  },
+  {
+    "id": "client",
+    "start": 7,
+    "end": 12,
+    "title": "Free. Open source. Local first.",
+    "act": "Solution",
+    "words": "Name the ordinary database client before the AI or MCP features. The client is local first; cloud AI is optional.",
+    "action": "Wordmark reveals once, then the real workspace expands to fill the next shot.",
+    "source": "Supplied TableIQ vector wordmark and native 0.8.15 workspace.",
+    "sound": "Bed resolves at the product reveal; gentle handoff accent.",
+    "body": "<img class=\"brand\" src=\"assets/tableiq-logo-horizontal-light.svg\" alt=\"TableIQ\"><h1 class=\"solution-title\"><span>Free. Open source.</span><span class=\"signal\">Local first.</span></h1><p class=\"category\">A database client for Mac</p><img class=\"solution-workspace\" src=\"assets/workspace.png\" alt=\"Real native database workspace\">"
+  },
+  {
+    "id": "workflow",
+    "start": 12,
+    "end": 21,
+    "title": "Browse. Query. Review.",
+    "act": "Proof",
+    "words": "Establish the database, then isolate table, schema and editor actions. Use the same sample database throughout.",
+    "action": "Real table selection → schema → SQL editor; 12–18 frame camera moves, then holds.",
+    "source": "Native 0.8.15 schema and native 0.8.17 editor stills. Matching-version recording pickup required.",
+    "sound": "Three quiet action clicks; headings stay still while read.",
+    "body": "<h1 class=\"heading\">Browse. Query. Review.</h1><img class=\"workflow-schema\" src=\"assets/schema.png\" alt=\"Real sample database schema\"><img class=\"workflow-sql\" src=\"assets/ai-generated.png\" alt=\"Real SQL editor before execution\">"
+  },
+  {
+    "id": "byok",
+    "start": 21,
+    "end": 27,
+    "title": "AI, with your own key",
+    "act": "Optional AI",
+    "words": "AI helps when requested. Settings are genuine, and no API credential is visible.",
+    "action": "Push into real provider selection, then hand off to the investigation’s question.",
+    "source": "Real native 0.8.15 AI settings crop; configuration only. Refresh on 0.8.17 before final cut.",
+    "sound": "One settings click; music stays under proposed narration.",
+    "body": "<h1 class=\"heading\">AI, with your own key</h1><img class=\"settings\" src=\"assets/ai-settings.png\" alt=\"Real provider settings without a visible credential\"><p class=\"support\">Optional AI · Provider API charges apply</p>"
+  },
+  {
+    "id": "review",
+    "start": 27,
+    "end": 37,
+    "title": "Ask. Review the SQL.",
+    "act": "AI proof",
+    "words": "Question summary: paid orders with no shipped shipment. Show the real generated SQL while the editor is idle.",
+    "action": "Record exact question submission; cut to verified generated SQL; focus EXISTS and NOT EXISTS without rewriting the result.",
+    "source": "Genuine 0.8.17 Gemini-generated SQL. A continuous prompt-to-editor recording is still required.",
+    "sound": "Question submission click; any condensed generation wait is labeled.",
+    "body": "<h1 class=\"heading\">Ask. Review the SQL.</h1><p class=\"question\">Paid orders with no shipped shipment</p><img class=\"sql-proof\" src=\"assets/sql-crop.png\" alt=\"Actual Gemini-generated SQL and manual Run control, cropped from the idle editor\">"
+  },
+  {
+    "id": "result",
+    "start": 37,
+    "end": 44,
+    "title": "You choose when to run",
+    "act": "Payoff",
+    "words": "The actual returned rows are order 102 and order 104, totaling 7,300 cents in this sample.",
+    "action": "Hold on manual Run; show returned rows at normal speed. Before/after stills do not simulate a live click.",
+    "source": "Genuine native 0.8.17 result crop; exact rows independently checked against SQLite.",
+    "sound": "Brief bed reduction before manual Run; one restrained result accent.",
+    "body": "<h1 class=\"heading\">You choose when to run</h1><img class=\"result-proof\" src=\"assets/result-crop.png\" alt=\"Actual rows: 102 Northstar Demo 4200, 104 Acme Demo 3100\"><p class=\"result-line\">2 orders <span>· 7,300 cents</span></p>"
+  },
+  {
+    "id": "activity",
+    "start": 44,
+    "end": 50,
+    "title": "See your agent’s queries",
+    "act": "MCP extension",
+    "words": "Only now introduce agent integration. This is a separately recorded local Codex session, not a continuation of the Gemini question.",
+    "action": "Open actual MCP Activity; isolate discovery → schema → run_query calls. Keep client and query context visible.",
+    "source": "Real native 0.8.15 Activity crop from the published Argo film. Current-toolbar entry-point pickup required.",
+    "sound": "Activity click; separate-session narration bridge.",
+    "body": "<h1 class=\"heading\">See your agent’s queries</h1><img class=\"activity-proof\" src=\"assets/activity.png\" alt=\"Recorded Codex calls in actual MCP Activity\"><p class=\"session-note\">Separate Codex session · Real MCP Activity</p>"
+  },
+  {
+    "id": "download",
+    "start": 50,
+    "end": 56,
+    "title": "Get the Mac developer preview",
+    "act": "CTA",
+    "words": "One destination: tableiq.ideolyst.com. Mac Apple silicon preview available; Windows and Linux coming soon.",
+    "action": "Wordmark resolves into a stable end card. Hold the download URL for at least three seconds.",
+    "source": "Supplied wordmark; current public preview release metadata. No new platforms implied.",
+    "sound": "Final musical resolution and a clean ending, with no reference soundtrack reuse.",
+    "body": "<img class=\"end-brand\" src=\"assets/tableiq-logo-horizontal-light.svg\" alt=\"TableIQ\"><h1 class=\"cta-title\"><span>Get the Mac</span><span>developer preview</span></h1><p class=\"url\">tableiq.ideolyst.com</p><p class=\"cta-meta\">Built with Rust · No TableIQ account required</p><p class=\"platform\">Mac Apple silicon · Unsigned / not notarized</p><p class=\"soon\">Windows and Linux coming soon</p>"
+  }
+]

@@ -1,0 +1,62 @@
+[
+  {
+    "id": "room",
+    "duration": 4.725
+  },
+  {
+    "id": "story-end",
+    "duration": 7.8
+  },
+  {
+    "id": "hook",
+    "duration": 2.15
+  },
+  {
+    "id": "story-ai",
+    "duration": 5.275
+  },
+  {
+    "id": "result",
+    "duration": 5.925
+  },
+  {
+    "id": "ask",
+    "duration": 5.175
+  },
+  {
+    "id": "story-result",
+    "duration": 5.675
+  },
+  {
+    "id": "download",
+    "duration": 5.6
+  },
+  {
+    "id": "client",
+    "duration": 4.5
+  },
+  {
+    "id": "workflow",
+    "duration": 4.6
+  },
+  {
+    "id": "story-hook",
+    "duration": 4.3
+  },
+  {
+    "id": "story-client",
+    "duration": 6.675
+  },
+  {
+    "id": "byok",
+    "duration": 3.375
+  },
+  {
+    "id": "activity",
+    "duration": 6.2
+  },
+  {
+    "id": "story-mcp",
+    "duration": 3.45
+  }
+]

@@ -1,0 +1,79 @@
+[
+  {
+    "tool": "list_connections",
+    "arguments": {},
+    "response": {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "[{\"id\":\"12f06dd5-047c-4fe3-b41b-56b1878e7dee\",\"name\":\"Storefront AI check\",\"engine\":\"sqlite\",\"database\":\"/tmp/tableiq-launch-20261116/storefront.sqlite\"}]"
+          }
+        ],
+        "isError": false
+      }
+    }
+  },
+  {
+    "tool": "list_tables",
+    "arguments": {
+      "connection_id": "12f06dd5-047c-4fe3-b41b-56b1878e7dee"
+    },
+    "response": {
+      "jsonrpc": "2.0",
+      "id": 4,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "[{\"schema\":\"main\",\"name\":\"customers\",\"kind\":\"Table\"},{\"schema\":\"main\",\"name\":\"orders\",\"kind\":\"Table\"},{\"schema\":\"main\",\"name\":\"payments\",\"kind\":\"Table\"},{\"schema\":\"main\",\"name\":\"shipments\",\"kind\":\"Table\"}]"
+          }
+        ],
+        "isError": false
+      }
+    }
+  },
+  {
+    "tool": "describe_table",
+    "arguments": {
+      "connection_id": "12f06dd5-047c-4fe3-b41b-56b1878e7dee",
+      "schema": "main",
+      "table": "orders"
+    },
+    "response": {
+      "jsonrpc": "2.0",
+      "id": 5,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"columns\":[{\"name\":\"id\",\"data_type\":\"INTEGER\",\"nullable\":true,\"default\":null,\"is_pk\":true,\"comment\":null},{\"name\":\"customer_id\",\"data_type\":\"INTEGER\",\"nullable\":false,\"default\":null,\"is_pk\":false,\"comment\":null},{\"name\":\"ordered_at\",\"data_type\":\"TEXT\",\"nullable\":false,\"default\":null,\"is_pk\":false,\"comment\":null},{\"name\":\"total_cents\",\"data_type\":\"INTEGER\",\"nullable\":false,\"default\":null,\"is_pk\":false,\"comment\":null}],\"indexes\":[],\"triggers\":[]}"
+          }
+        ],
+        "isError": false
+      }
+    }
+  },
+  {
+    "tool": "run_query",
+    "arguments": {
+      "connection_id": "12f06dd5-047c-4fe3-b41b-56b1878e7dee",
+      "sql": "SELECT o.id, c.name AS customer_name, o.total_cents FROM main.orders AS o JOIN main.customers AS c   ON c.id = o.customer_id WHERE EXISTS (     SELECT 1     FROM main.payments AS p     WHERE p.order_id = o.id       AND p.status = 'paid'   )   AND NOT EXISTS (     SELECT 1     FROM main.shipments AS s     WHERE s.order_id = o.id       AND s.status = 'shipped'   ) ORDER BY o.id;\n"
+    },
+    "response": {
+      "jsonrpc": "2.0",
+      "id": 6,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"columns\":[\"id\",\"customer_name\",\"total_cents\"],\"rows\":[[\"102\",\"Northstar Demo\",\"4200\"],[\"104\",\"Acme Demo\",\"3100\"]],\"truncated\":false}"
+          }
+        ],
+        "isError": false
+      }
+    }
+  }
+]

@@ -1,0 +1,16 @@
+node_modules/
+.hyperframes/
+.thumbnails/
+boards/.film.html
+boards/.posed.html
+*.mp4
+*.wav
+__pycache__/
+**/review/**/*.png
+**/review/*.png
+**/.waveform-cache/
+**/.transcode-cache/
+**/node_modules
+renders/
+walkthrough/videos/
+walkthrough/argo-placements.json

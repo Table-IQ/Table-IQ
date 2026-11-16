@@ -1,0 +1,200 @@
+{
+  "ok": true,
+  "strict": false,
+  "browserSkipped": false,
+  "lint": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": [],
+    "filesScanned": 10
+  },
+  "runtime": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": []
+  },
+  "layout": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 2,
+    "findings": [
+      {
+        "code": "container_overflow",
+        "severity": "info",
+        "time": 3.111,
+        "selector": "#motion-room-heading",
+        "message": "Element extends outside a clipping layout container.",
+        "rect": {
+          "left": 228.44,
+          "top": 100,
+          "right": 1764.44,
+          "bottom": 192.39,
+          "width": 1536,
+          "height": 92.39
+        },
+        "containerSelector": "div.scene.tabs > div:nth-of-type(1)",
+        "fixHint": "Resize/reposition the child or container, or mark intentional overflow with data-layout-allow-overflow.",
+        "containerRect": {
+          "left": 192,
+          "top": 94,
+          "right": 1728,
+          "bottom": 198.39,
+          "width": 1536,
+          "height": 104.39
+        },
+        "overflow": {
+          "right": 36.44
+        },
+        "dataAttributes": {},
+        "sourceFile": "compositions/room.html",
+        "bbox": {
+          "x": 228.44,
+          "y": 100,
+          "width": 1536,
+          "height": 92.39
+        },
+        "firstSeen": 3.111,
+        "lastSeen": 3.111,
+        "occurrences": 1,
+        "heldMs": 0,
+        "times": [
+          3.111
+        ]
+      },
+      {
+        "code": "container_overflow",
+        "severity": "info",
+        "time": 15.556,
+        "selector": "#motion-workflow-camera",
+        "message": "Element extends outside a clipping layout container.",
+        "rect": {
+          "left": 61.44,
+          "top": 274,
+          "right": 1858.56,
+          "bottom": 1010.56,
+          "width": 1797.12,
+          "height": 736.56
+        },
+        "containerSelector": "#motion-workflow-panel",
+        "fixHint": "Resize/reposition the child or container, or mark intentional overflow with data-layout-allow-overflow.",
+        "containerRect": {
+          "left": 128,
+          "top": 274,
+          "right": 1792,
+          "bottom": 956,
+          "width": 1664,
+          "height": 682
+        },
+        "overflow": {
+          "left": 66.56,
+          "right": 66.56,
+          "bottom": 54.56
+        },
+        "dataAttributes": {},
+        "sourceFile": "compositions/workflow.html",
+        "bbox": {
+          "x": 61.44,
+          "y": 274,
+          "width": 1797.12,
+          "height": 736.56
+        },
+        "firstSeen": 15.556,
+        "lastSeen": 15.556,
+        "occurrences": 1,
+        "heldMs": 0,
+        "times": [
+          15.556
+        ]
+      }
+    ],
+    "duration": 56,
+    "samples": [
+      3.111,
+      9.333,
+      15.556,
+      21.778,
+      28,
+      34.222,
+      40.444,
+      46.667,
+      52.889
+    ],
+    "transitionSamples": [],
+    "transitionSamplesDropped": 0,
+    "tolerance": 2,
+    "totalIssueCount": 2,
+    "truncated": false
+  },
+  "motion": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": [],
+    "enabled": false,
+    "samples": 0
+  },
+  "contrast": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": [],
+    "enabled": true,
+    "samples": [
+      3.111,
+      15.556,
+      28,
+      40.444,
+      52.889
+    ],
+    "checked": 21,
+    "passed": 21
+  },
+  "craft": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": [],
+    "enabled": true,
+    "step": 0.125,
+    "samples": 448
+  },
+  "audio": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": []
+  },
+  "hdr": {
+    "autoPromotion": null,
+    "inspection": "available"
+  },
+  "snapshots": {
+    "enabled": false,
+    "files": [],
+    "times": [],
+    "findingFiles": []
+  },
+  "saved": {
+    "id": "2a886693-a9f4-4fa4-8228-4dc2fc2410eb",
+    "revision": "110a183c-a61d-49c4-976d-98805791c7d9",
+    "report": "/Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/.hyperframes/artifacts/checks/2a886693-a9f4-4fa4-8228-4dc2fc2410eb.json",
+    "attribution": "recorded-revision"
+  },
+  "_meta": {
+    "version": "0.9.56",
+    "latestVersion": "0.9.56",
+    "updateAvailable": false,
+    "checkedAt": "2026-11-16T05:22:14.500Z",
+    "skillsOutdated": 6,
+    "skillsMissing": 0
+  }
+}
