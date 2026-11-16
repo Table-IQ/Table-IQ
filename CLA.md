@@ -63,3 +63,14 @@ repository's `cla-signatures` branch. Do not include your address or other priva
 information in the comment. Signing covers the contributions in the pull request where you sign and your
 subsequent contributions under this version; it does not cover previously merged
 contributions. A materially changed agreement requires fresh acceptance.
+
+## 7. Governing law and jurisdiction
+
+This agreement is governed by the laws of India, as applicable in Haryana,
+without regard to conflict-of-laws rules. Subject to mandatory applicable law,
+the courts of competent jurisdiction at Gurugram, Haryana, India shall have
+exclusive jurisdiction over disputes arising out of or relating to this
+agreement. This clause selects Gurugram courts only to the extent they otherwise
+have jurisdiction under applicable law; it does not confer jurisdiction on a
+court that lacks it or exclude any mandatory statutory forum or the jurisdiction
+of competent appellate courts.
