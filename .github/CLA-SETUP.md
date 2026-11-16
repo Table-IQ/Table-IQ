@@ -8,8 +8,12 @@ mandatory statutory and appellate jurisdiction.
 ## Configuration
 
 - Repository: `Table-IQ/Table-IQ` (configure this repository, not the whole org).
-- GitHub App: [CLA Assistant](https://github.com/apps/cla-assistant), installed on
-  the Table-IQ organization with access to only `Table-IQ/Table-IQ`.
+- Active connection: hosted CLA Assistant linked through the owner-authorized
+  GitHub OAuth/dashboard flow and a repository webhook for `pull_request` and
+  `merge_group`. The GitHub App installation was not completed.
+- Recommended optional upgrade: install the [CLA Assistant GitHub App](https://github.com/apps/cla-assistant)
+  on only `Table-IQ/Table-IQ`, verify checks use it, and follow the upstream
+  migration guidance before revoking legacy OAuth access.
 - Agreement: [TableIQ CLA v1.1 Gist](https://gist.github.com/RudreshNarwal/c4cee646f72e85967cd74a7194c0299a).
   Its Markdown content must match [CLA.md](../CLA.md).
 - Required commit status: **`license/cla`**, supplied by hosted CLA Assistant.
@@ -24,18 +28,20 @@ mandatory statutory and appellate jurisdiction.
 The repository changes alone do not connect the hosted service. Complete the
 following before removing the old required check:
 
-1. Complete GitHub owner verification and install the App on the selected repo.
+1. Authorize the hosted service and connect the selected repository, using the
+   GitHub App where available or the supported OAuth/webhook flow.
 2. Sign in to the service dashboard, link the repository to the exact Gist above,
    and configure the explicit owner/bot exemptions.
-3. Verify an unsigned author's PR gets a failing `license/cla` status and a bot
+3. Verify an unsigned author's PR gets a non-passing `license/cla` status and a bot
    comment with a working signing link. Confirm that the page displays this
    agreement and offers GitHub authentication and explicit acceptance.
 4. Verify `RudreshNarwal` passes as exempt, without creating a signature record.
    A temporary test without the owner exemption may check the unsigned path;
    restore the exemption immediately afterward.
-5. Have a real external contributor accept for themselves to prove signature
-   persistence and automatic success on later PRs. Never invent a signature to
-   complete a test. Owner-exemption success does not prove external signing.
+5. Check signed-record persistence and success on later PRs when a real external
+   contributor accepts for themselves. This remains a follow-up test until a
+   contributor signs; never invent a signature to complete it. Owner-exemption
+   success alone does not prove external signing.
 6. Replace only `CLA signature` with `license/cla` in Protect main. Preserve all
    four existing CI requirements and the other branch protections. Bind the new
    check to the actual App when supported by the status GitHub reports.
@@ -63,7 +69,7 @@ recheck link/dashboard; a maintainer must not sign for the contributor.
 
 Export hosted signatures periodically and before changing services or agreements.
 Do not delete either the historical branch or exported evidence. Keep the previous
-Gist revisions available. Restrict App installation to the intended repository.
+Gist revisions available. Keep repository links scoped to the intended project.
 
 Before migration completion, retain the existing required Action check. If hosted
 verification fails, leave the old requirement active and keep this PR unmerged.
@@ -73,3 +79,16 @@ workflow from Git history in a reviewed PR and restore its required status only
 when the old path works. Account for the changed agreement version and hosted
 acceptance records; do not reuse empty historical records as proof of acceptance.
 Keep at least one working, verified CLA enforcement path required throughout.
+
+## Live verification — November 17, 2026 (IST)
+
+- Linked repository and Gist verified in the hosted dashboard; the repository
+  webhook is active and reports HTTP 200.
+- Before exemptions, PR #45 received a non-passing `license/cla` status and a
+  `CLAassistant` comment linking to the hosted signing page.
+- The signing page displayed version 1.1, Rudresh Narwal, the Gurugram clause and
+  **Sign in with GitHub to agree**. No agreement was accepted by the agent.
+- After saving the exact owner/bot allowlist, the service rechecked PRs #45 and
+  #46 and returned **All CLA requirements met**. The dashboard still showed zero
+  signatures: exemption success did not manufacture acceptance.
+- Actual external signature persistence and reuse have not been exercised yet.
