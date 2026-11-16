@@ -60,22 +60,18 @@ def build(name, shots=SHOTS):
     assets.mkdir(exist_ok=True)
     compositions.mkdir(exist_ok=True)
     (assets / 'fonts').mkdir(exist_ok=True)
-    archive = project / 'review' / 'v3-source'
-    # Preserve the last delivered source once; active compositions contain only v4.
-    if not archive.exists():
-        archive.mkdir(parents=True)
-        for f in ['index.html', 'film-plan.json', 'SPEC.md', 'STORYBOARD.md', 'REVIEW.md']:
-            if (project / f).exists(): shutil.copy2(project / f, archive / f)
-        shutil.copytree(compositions, archive / 'compositions', dirs_exist_ok=True)
+    # Historical sources live in release archives and Git history, not duplicate
+    # source trees inside every active project.
     active = {x[0] + '.html' for x in shots}
     for f in compositions.glob('*.html'):
         if f.name not in active: f.unlink()
     for f in (ROOT / 'assets/fonts').iterdir(): shutil.copy2(f, assets / 'fonts' / f.name)
     shutil.copy2(ROOT / 'assets/tableiq-logo-horizontal-light.svg', assets / 'wordmark.svg')
     pending = []
-    for f in ['tabs.mp4', 'browse.mp4', 'manual-query.mp4', 'ask.mp4', 'mcp.mp4', 'launch-score-v4.wav']:
+    for f in ['tabs.mp4', 'browse.mp4', 'manual-query.mp4', 'ask.mp4', 'mcp.mp4']:
         if (MEDIA / f).exists(): shutil.copy2(MEDIA / f, assets / f)
         else: pending.append(f)
+    shutil.copy2(MEDIA / 'audio-v5' / ('motion-bed.wav' if name=='motion' else 'narrated-bed.wav'), assets / 'music-v5.wav')
     captures = json.loads((MEDIA / 'manifest.json').read_text())
     lengths = {v['id']: v['duration'] for v in json.loads((MEDIA / 'voices/durations.json').read_text())}
     hosts, audio, plan = [], [], []
@@ -167,7 +163,7 @@ def build(name, shots=SHOTS):
         scene = f'<template><div id="{p}" class="scene {name} {sid}" data-composition-id="{p}" data-width="1920" data-height="1080" data-duration="{duration}"><div class="stage">{body}</div></div><script>{"".join(tl)}</script></template>'
         (compositions / f'{sid}.html').write_text(scene)
         hosts.append(f'<div id="{p}" class="clip" data-composition-id="{p}" data-composition-src="compositions/{sid}.html" data-start="{offset}" data-duration="{duration}" data-track-index="0" data-track-kind="graphics" data-beat="{sid}"></div>')
-        voice = None if name=='motion' else 'v4-'+sid
+        voice = None if name=='motion' else 'v5-'+sid
         if voice:
             source = MEDIA / 'voices' / f'{voice}.wav'
             if source.exists() and voice in lengths:
@@ -179,18 +175,18 @@ def build(name, shots=SHOTS):
         plan.append(dict(id=sid,start=offset,duration=duration,title=lines,capture=capture,voice=voice,environment=note))
         offset += duration
     assert offset == 75
-    audio.append(f'<audio id="{name}-music" class="clip" src="assets/launch-score-v4.wav" data-start="0" data-duration="75" data-track-index="12" data-volume="{.7 if name=="motion" else .14}"></audio>')
+    audio.append(f'<audio id="{name}-music" class="clip" src="assets/music-v5.wav" data-start="0" data-duration="75" data-track-index="12" data-volume="1"></audio>')
     variables = html.escape(json.dumps([dict(id='ground',type='color',label='Pearl',default='#F1F6FB'),dict(id='ink',type='color',label='Ledger Ink',default='#0C1A2B'),dict(id='signal',type='color',label='Lumen Deep',default='#0B7480')]),quote=True)
     doc = f'<!doctype html><html lang="en" data-composition-variables="{variables}"><head><meta charset="utf-8"><meta name="viewport" content="width=1920,height=1080"><title>TableIQ {name} — 75-second launch film</title><script src="https://cdn.jsdelivr.net/npm/gsap@3.15.0/dist/gsap.min.js"></script><style>{CSS}</style></head><body><div id="root" data-composition-id="main" data-width="1920" data-height="1080" data-duration="75" data-fps="30" data-start="0">{"".join(hosts)}{"".join(audio)}</div><script>window.__timelines["main"]=gsap.timeline({{paused:true}});</script></body></html>'
     (project / 'index.html').write_text(doc)
-    (project / 'film-plan.json').write_text(json.dumps(dict(revision='v4-approved',treatment=name,duration=75,shots=plan),indent=2,ensure_ascii=False)+'\n')
+    (project / 'film-plan.json').write_text(json.dumps(dict(revision='v5-audio',treatment=name,duration=75,shots=plan),indent=2,ensure_ascii=False)+'\n')
     treatment = {'motion':'Music-only kinetic display: large semantic type, directional title handoffs, concise evidence labels.','story':'Narrated editorial: numbered chapters, measured headline scale, real evidence presented as an investigation.','walkthrough':'Narrated guided app: largest app viewport, compact headlines and task guidance; official Argo finishing is a separate delivery step.'}[name]
     spec = f'''# {name.title()} — approved 75-second film\n\nAudience: Mac backend and full-stack developers considering TableIQ for ordinary database work.\n\n{treatment}\n\n1920 × 1080, 30 fps, exactly 2,250 frames. Pearl #F1F6FB, Ledger Ink #0C1A2B, Lumen Deep #0B7480. Instrument Sans 500/600 and IBM Plex Mono, bundled locally. Key type 68–156 px, body 30–58 px, source notes 28 px. Titles inside 192 px side margins. Real app crops use 96 px or 192 px side margins and hold long enough to read.\n\nApproved timing: hook 0–8; offer 8–18; client 18–27; investigation 27–43; AI 43–56; activity 56–65; download 65–75.\n\nOrdinary client work occupies the first 43 seconds. The investigation shows manually written SQL and a real Run before the two-row result. AI is optional, BYOK, with provider charges disclosed. The native AI evidence is expressly a still, not a fabricated continuous generation. MCP is an optional separate sample session.\n\nCamera changes only accompany measured source state changes. Browse: table 0, Structure 1.8, ERD 3.4 seconds. MCP: expanded SQL 1.6 seconds. Camera returns to context before each cut. No invented typing, cursor, response, or result. No drift on readable holds.\n\nMotion uses masked editorial title replacement and finite GSAP transforms; 0.36–0.55 second entrances, 0.55–0.65 second camera changes, power3.out/power3.inOut. Source video playback remains entirely framework owned. Every shot is an editable sub-composition.\n\nNo blanket faster/better/RAM claim; DBeaver is not portrayed as paid. TablePlus claim is limited to the free version’s two-tab limit. CTA states Mac Apple silicon, unsigned/not notarized preview, Windows/Linux coming soon.\n\nDelivery gates: complete HyperFrames check, seven scene midpoints, hook handoff, manual Run/result transition, native AI still label, and full CTA hold. Narrated captions and final audio are prepared separately by the delivery pipeline.\n'''
     (project / 'SPEC.md').write_text(spec)
-    board = [f'# {name.title()} v4 storyboard', '', treatment, '', '| Time | Shot | Visible evidence |', '|---|---|---|']
+    board = [f'# {name.title()} v5 storyboard', '', treatment, '', '| Time | Shot | Visible evidence |', '|---|---|---|']
     for s in plan:
         board.append(f'| {s["start"]}–{s["start"]+s["duration"]} s | {" ".join(s["title"])} | {s["capture"] or "Editorial typography / supplied wordmark"} |')
-    board += ['', 'All media remains truthful: continuous wide browse and MCP sources, actual manual SQL Run, and a separately labelled verified native AI still. Final source frames may hold; clips never loop. Historical v3 source is retained in review/v3-source/.', '']
+    board += ['', 'All media remains truthful: continuous wide browse and MCP sources, actual manual SQL Run, and a separately labelled verified native AI still. Final source frames may hold; clips never loop. Earlier sources are archived in the GitHub release and Git history.', '']
     (project / 'STORYBOARD.md').write_text('\n'.join(board))
     print(name, '75s', 'pending: '+', '.join(pending) if pending else 'all assets present')
 

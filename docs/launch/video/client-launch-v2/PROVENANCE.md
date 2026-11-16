@@ -1,42 +1,19 @@
-# Delivery provenance — visual revision v3, November 16, 2026
+# Current launch-film provenance
 
-## Current visual revision
+The [approved 75-second script](APPROVED-SCRIPT-v4.md) targets Mac backend/full-stack developers doing ordinary database work. It opens on TablePlus’s documented free-tab limit, invites DBeaver users to try a familiar workflow, then covers optional BYOK AI and MCP. Neither AI/MCP nor free/open-source licensing is presented as unique against every competitor. No speed, memory or general accuracy comparison is claimed.
 
-V3 replaces hook, problem, brand and BYOK screenshot scenes with editorial typography. Only workflow, result and MCP scenes contain screens; AI query excerpts remain plainly editorial. The curated browse/MCP assets are continuous selected source ranges with consistent framing. Camera focus/hold/return is keyed to recorded UI control/state changes, not fabricated subframe click telemetry. Exact source ranges, observed event windows and SHA-256 hashes are in the updated manifest. V2 assets remain historical and keep their public URLs.
+## Product footage
 
-## Real product material
+Argo recordings show the actual TableIQ 0.8.17 development interface talking to real Rust command handlers and a disposable synthetic SQLite database. The manual investigation enters the SQL in `production-media/manual-query.sql`, clicks the real Run button, and verifies the actual Arrow result: 102/Northstar Demo/4200 and 104/Acme Demo/3100. Input starts 0.806s, query ready 1.780s, Run 5.105s, result ready 5.734s relative to that capture. The continuous source range 0–6.066667s is cropped and its genuine final result frame held to 16s. Later reload frames are excluded. The development capture and edited time are labelled. `manual-query-proof.json` records the decoded result and source hash.
 
-- `production-media/manifest.json` records selected source ranges, framing crops, output dimensions, durations, actual/still classification and SHA-256 hashes.
-- Client/settings recordings use TableIQ source at the then-current public main, real Rust IPC handlers and local synthetic SQLite data. Argo 0.42.1 records real interactions in the development webview. No UI/backend response is mocked. The selected client range ends before the blocked new AI request.
-- MCP Activity records `list_connections`, `list_tables`, `describe_table` and a bounded `run_query` from a local protocol client against a read-only connection. It returns synthetic orders 102/104. `mcp-calls.json` excludes credentials/headers. A local protocol client is not evidence of a newly recorded LLM conversation.
-- `assets/ai-generated.png` and `assets/ai-result.png` are genuine native v0.8.17 before/after images from the passed Gemini case. The SQL excerpts in the films match `production-media/native-generated.sql`. The source preserves the original stills. Result 102/Northstar Demo/4200 and 104/Acme Demo/3100 totals 7,300 cents. No production/customer data.
-- A new native AI recording attempt blocked at macOS Keychain access. Its spinner/failure is excluded. These films do not assert a new successful live generation, continuous recording, general accuracy, latency or comparative performance.
-- No Keychain ACL bypass, copied private credential, fabricated refusal row or fake agent activity is part of this delivery. Visible provider configuration has an empty stored-key placeholder. MCP tokens/AI keys are absent from the portable source.
+The optional AI segment is a labelled native 0.8.17 still from [one passed Gemini example](../../research/2026-11-16-native-ai-acceptance.md). It is not a new live model call or a general accuracy rate. The MCP footage shows real local-protocol-client calls in a separate sample session; it does not invent a coding-agent conversation or blocked-write event. `production-media/manifest.json` and `mcp-calls.json` preserve the capture references.
 
-## Tools and audio
+## v5 sound
 
-- Motion/story: HyperFrames 0.9.56, editable HTML/GSAP sub-compositions. Actual Huashu Motion and Take One generators were unavailable; these are corresponding creative treatments made with HyperFrames.
-- Walkthrough: official `@argo-video/cli` 0.42.1, source [shreyaskarnik/argo](https://github.com/shreyaskarnik/argo), inspected commit `5f715496522c4e682f4dc4aeffae5528e866ad5e`. Actual recording/import/cache/align/export APIs are used. Its lockfile pins the exact dependencies. Narration overflow is zero.
-- Narration: locally generated Kokoro82M q8 CPU, `af_heart`, speed 1.05, through `kokoro-js` 1.2.1. No voice cloning, paid voice service or account signup. [Model card](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX) identifies Apache-2.0. Measured local Whisper word times inform captions; brand/acronym spelling and homophones are corrected against the script.
-- Score: reused original local TableIQ launch score from the previously delivered 56-second motion film. Its local speech transcription contains only “upbeat music”; no old spoken narration is layered into the new films. Beat analysis indicates 120 BPM. No LinkedIn reference video/music is redistributed. Fade at 53–56 seconds with a silent CTA tail on the longer versions.
-- Sound is measured and locally transcribed, not independently heard or human-rated. Exact current encoded levels are recorded in `delivery/technical-verification-v3.json`; the original v2 report is retained separately.
+The founder chose soft, very quiet music with clear narration. Original local Kokoro af_heart narration and approved words are preserved, processed with pitch-preserving0.96 tempo and gentle tonal softening. Current utterances target−17 LUFS. The original TableIQ instrumental is filtered and separately levelled to −36 LUFS, with 6 dB additional attenuation around speech; the motion-only cut targets−30 LUFS. No reference-video soundtrack is used. `prepare-audio-v5.py` is the reproducible recipe and `production-media/audio-v5/mix-plan.json` records settings. Captions follow the original measured word times scaled for the new pace. Audio is measured and compared, not independently listened to.
 
-## Brand and notices
+## Composition and delivery
 
-TableIQ wordmark/colors are supplied project assets. Instrument Sans and IBM Plex Mono include their SIL OFL notices. Relevant project/Argo license texts accompany the source package. The product stays AGPL-3.0-only; media production does not change app licensing. No new endorsement, comparative benchmark or user-count claim is implied.
+The approved v4 picture payload is preserved exactly in all three v5 files. HyperFrames supplies the editable visual compositions. The guided film also uses official Argo 0.42.1 recording/import/alignment/export; alignment must report zero overflow. The final picture stream is retained after Argo export to avoid an intermediate color shift. Argo’s aligned sound is muxed without a final loudness boost. Huashu Motion and Take One remain creative references; those services were not connected.
 
-## v4 audience-focused production — 16 November 2026
-
-The [approved seven-slot, 75-second script](APPROVED-SCRIPT-v4.md) supersedes the earlier narration. Its primary audience is Mac developers blocked by TablePlus’s two-tab free limit, with an invitation to DBeaver users to compare an ordinary task. Neither competitor is presented as universally worse. No comparative speed, RAM, accuracy or unique-AI claim is made.
-
-New `capture-manual-v4` footage uses the actual TableIQ0.8.17 development interface, the existing Rust IPC harness and a disposable synthetic SQLite database. SQL is inserted through real browser keyboard input, then the actual Run button is clicked. Marks: input0.806s, queryready1.780s, Run5.105s, resultready5.734s. The actual Rust `run_query` metadata reports two rows and no error; the `get_result_window` Arrow response decodes exactly to `(102, Northstar Demo,4200)` and `(104, Acme Demo,3100)`. The footage is labelled development capture. It is not a native-window recording and does not imply a new AI request.
-
-The source range0–6.066667s is retained with one continuous crop `[430,110,2110,800]`, resized to1920×728. Its genuine final two-row frame holds to16s. Later navigation/reload frames are excluded. `prepare-manual-capture.py` makes this derivative; `manual-query.sql` is the formatted manual input, separate from the preserved native AI output. No placeholder result is composited over the app.
-
-The optional AI segment uses the existing labelled still from the single passed native0.8.17 case. The MCP segment remains the genuine, separately recorded local-protocol-client session. New native-window attempts exposed no usable automation window; no failed attempt is substituted as successful proof.
-
-Narration uses the pinned local Argo/Kokoro q8 CPU engine, af_heart at1.05, with phonetic brand/acronym inputs. Local Whisper word timings are saved in `production-media/voices/transcripts-v4.json`; captions use the approved spelling. The original TableIQ instrumental is extended to75s from source0–48s plus16–45s with a2s crossfade and final71–75s fade. The reference film's audio is not reused. Audio is measured and transcribed, not independently listened to.
-
-All three treatments retain editable HyperFrames scenes. Motion is music-only; story has narration; walkthrough passes through official Argo0.42.1 import, alignment and export with an overflow assertion. These are implementations of the requested creative treatments, not claims that Huashu Motion or Take One services were connected.
-
-The final walkthrough preserves the reviewed HyperFrames picture stream after official Argo import/alignment/export. A decoded-frame comparison caught a color shift in Argo’s intermediate picture transcode; retaining the original picture restores the same brand colours as the other cuts while keeping Argo’s aligned/exported sound. This final remux does not invent product frames or change timing.
+Historical drafts, duplicate backups and old review renders were removed from the active repository. Earlier source packages remain on the GitHub release and in Git history. Older public media URLs redirect to archived originals, preserving their bytes. Current evidence is in [technical-verification-v5.json](delivery/technical-verification-v5.json).

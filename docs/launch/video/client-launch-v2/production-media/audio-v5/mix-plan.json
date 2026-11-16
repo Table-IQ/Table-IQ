@@ -1,0 +1,41 @@
+{
+  "choice": "Soft, very quiet background music with clear narration",
+  "pace_multiplier": 0.96,
+  "voice_target_lufs": -17,
+  "music_base_target_lufs": -36,
+  "music_duck_db": -6.02,
+  "motion_music_target_lufs": -30,
+  "duration_seconds": 75,
+  "voices": [
+    {
+      "id": "v5-hook",
+      "duration": 4.546125
+    },
+    {
+      "id": "v5-offer",
+      "duration": 7.614583
+    },
+    {
+      "id": "v5-client",
+      "duration": 8.05875
+    },
+    {
+      "id": "v5-investigation",
+      "duration": 8.338708
+    },
+    {
+      "id": "v5-ai",
+      "duration": 7.381167
+    },
+    {
+      "id": "v5-activity",
+      "duration": 6.058625
+    },
+    {
+      "id": "v5-download",
+      "duration": 5.401458
+    }
+  ],
+  "no_final_loudness_boost": true,
+  "review_limit": "Measured and compared; no independent human listening assessment."
+}

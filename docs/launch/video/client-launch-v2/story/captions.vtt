@@ -1,73 +1,93 @@
 WEBVTT
 
 1
-00:00:00.200 --> 00:00:01.350
-A customer has paid.
+00:00:00.471 --> 00:00:02.752
+Hitting TablePlus’s two-tab free limit?
 
 2
-00:00:01.350 --> 00:00:03.250
-Their order still has not shipped.
+00:00:03.117 --> 00:00:04.471
+Meet TableIQ.
 
 3
-00:00:03.500 --> 00:00:04.150
-Which one?
+00:00:08.200 --> 00:00:11.273
+A free, open-source database client for Mac.
 
 4
-00:00:05.700 --> 00:00:08.600
-Keep the investigation together in TableIQ,
+00:00:11.794 --> 00:00:13.825
+Open another table, another query,
 
 5
-00:00:08.950 --> 00:00:11.900
-a free, open-source database client for Mac.
+00:00:13.981 --> 00:00:15.544
+and keep your work in view.
 
 6
-00:00:13.200 --> 00:00:15.500
-Browse your tables, inspect your schema,
+00:00:18.200 --> 00:00:19.554
+Coming from DBeaver?
 
 7
-00:00:15.800 --> 00:00:17.300
-and keep your SQL together.
+00:00:19.710 --> 00:00:21.690
+Try the same everyday task here.
 
 8
-00:00:20.200 --> 00:00:22.450
-Bring your own AI key when you want help.
+00:00:22.054 --> 00:00:24.294
+Browse your data, inspect relationships,
 
 9
-00:00:22.950 --> 00:00:25.150
-Review the generated query before running it.
+00:00:24.502 --> 00:00:25.752
+and write your SQL.
 
 10
-00:00:27.300 --> 00:00:29.600
-Ask which paid orders have no shipped shipment.
+00:00:27.200 --> 00:00:29.179
+Which paid orders haven’t shipped?
 
 11
-00:00:30.300 --> 00:00:31.700
-Review the generated SQL.
+00:00:29.492 --> 00:00:30.846
+Follow payments to shipments,
 
 12
-00:00:35.200 --> 00:00:37.450
-Two orders match in this sample database.
+00:00:31.002 --> 00:00:32.721
+review the query, and run it.
 
 13
-00:00:38.150 --> 00:00:38.800
-Check the rows.
+00:00:32.929 --> 00:00:34.023
+Two matching orders.
 
 14
-00:00:39.050 --> 00:00:40.350
-Keep control of the query.
+00:00:34.231 --> 00:00:35.325
+There’s your answer.
 
 15
-00:00:43.200 --> 00:00:46.250
-Inspect your coding agent’s database queries, too.
+00:00:43.200 --> 00:00:44.867
+Want help writing SQL?
 
 16
-00:00:49.200 --> 00:00:50.200
-Built with Rust.
+00:00:45.283 --> 00:00:47.158
+Use your own AI key for a draft.
 
 17
-00:00:50.500 --> 00:00:52.050
-Get the Mac developer preview.
+00:00:47.419 --> 00:00:48.877
+Review it before you run it.
 
 18
-00:00:52.400 --> 00:00:54.450
-No TableIQ account required.
+00:00:49.033 --> 00:00:50.283
+AI is optional.
+
+19
+00:00:56.200 --> 00:00:57.919
+Using a coding agent?
+
+20
+00:00:58.335 --> 00:00:59.898
+Inspect the database queries
+
+21
+00:00:59.898 --> 00:01:01.773
+it sends through TableIQ.
+
+22
+00:01:05.304 --> 00:01:07.127
+Get the free Mac developer preview
+
+23
+00:01:07.127 --> 00:01:10.356
+at tableiq.ideolyst.com.

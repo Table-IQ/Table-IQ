@@ -1,5 +1,7 @@
 # TableIQ launch and business decision
 
+Current operating plan: [next seven-day GTM cycle](launch/NEXT-GTM.md). The guided75-second film now leads, with the selected quiet v5 audio mix. Earlier delivery snapshots below are historical.
+
 Research expanded November 15, 2026 after independent research beyond Rerun/OpenCode. [Broader comparison study](launch/research/2026-11-15-broader-cases.md). Owner: Rudresh Narwal. This combines the operating plan with the November 15 delivery record; completed publication and source checks do not establish customer validation. [Evidence and sources](launch/research/2026-11-15-market-evidence.md) · [Launch assets](launch/ASSETS.md) · [Release checks](launch/RELEASE-VALIDATION.md).
 
 ## Current launch authorization

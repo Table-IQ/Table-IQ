@@ -1,0 +1,240 @@
+{
+  "audio": {
+    "choice": "Soft, very quiet background music with clear narration",
+    "pace_multiplier": 0.96,
+    "voice_target_lufs": -17,
+    "music_base_target_lufs": -36,
+    "music_duck_db": -6.02,
+    "motion_music_target_lufs": -30,
+    "duration_seconds": 75,
+    "voices": [
+      {
+        "id": "v5-hook",
+        "duration": 4.546125
+      },
+      {
+        "id": "v5-offer",
+        "duration": 7.614583
+      },
+      {
+        "id": "v5-client",
+        "duration": 8.05875
+      },
+      {
+        "id": "v5-investigation",
+        "duration": 8.338708
+      },
+      {
+        "id": "v5-ai",
+        "duration": 7.381167
+      },
+      {
+        "id": "v5-activity",
+        "duration": 6.058625
+      },
+      {
+        "id": "v5-download",
+        "duration": 5.401458
+      }
+    ],
+    "no_final_loudness_boost": true,
+    "review_limit": "Measured and compared; no independent human listening assessment."
+  },
+  "rendered": [
+    {
+      "name": "motion",
+      "bytes": 9274415,
+      "sha256": "5c0d2d39a46d8b4a5d4cf806f3411bdc7b211adf172171bc59495bc257689901",
+      "ffprobe": {
+        "programs": [],
+        "stream_groups": [],
+        "streams": [
+          {
+            "codec_name": "h264",
+            "width": 1920,
+            "height": 1080,
+            "r_frame_rate": "30/1"
+          },
+          {
+            "codec_name": "aac",
+            "sample_rate": "48000",
+            "channels": 2,
+            "r_frame_rate": "0/0"
+          }
+        ],
+        "format": {
+          "duration": "75.000000",
+          "size": "9274415"
+        }
+      },
+      "loudness": {
+        "input_i": "-30.00",
+        "input_tp": "-18.10",
+        "input_lra": "5.50",
+        "input_thresh": "-40.38",
+        "output_i": "-16.39",
+        "output_tp": "-3.53",
+        "output_lra": "5.10",
+        "output_thresh": "-26.69",
+        "normalization_type": "dynamic",
+        "target_offset": "-0.61"
+      },
+      "video_payload": "Identical to approved v4"
+    },
+    {
+      "name": "story",
+      "bytes": 8812772,
+      "sha256": "77ba52940f46634f3e6115861f2463e22cfa516995029f9f77b1a46535950d73",
+      "ffprobe": {
+        "programs": [],
+        "stream_groups": [],
+        "streams": [
+          {
+            "codec_name": "h264",
+            "width": 1920,
+            "height": 1080,
+            "r_frame_rate": "30/1"
+          },
+          {
+            "codec_name": "aac",
+            "sample_rate": "48000",
+            "channels": 2,
+            "r_frame_rate": "0/0"
+          }
+        ],
+        "format": {
+          "duration": "75.000000",
+          "size": "8812772"
+        }
+      },
+      "loudness": {
+        "input_i": "-17.57",
+        "input_tp": "-6.18",
+        "input_lra": "17.80",
+        "input_thresh": "-30.23",
+        "output_i": "-17.45",
+        "output_tp": "-5.31",
+        "output_lra": "14.50",
+        "output_thresh": "-29.50",
+        "normalization_type": "dynamic",
+        "target_offset": "0.45"
+      },
+      "video_payload": "Identical to approved v4"
+    },
+    {
+      "name": "walkthrough",
+      "bytes": 9458030,
+      "sha256": "db9869092673e1543c1b6539b6cbdc6598d2d800f807d7a473d2aae903b66bcf",
+      "ffprobe": {
+        "programs": [],
+        "stream_groups": [],
+        "streams": [
+          {
+            "codec_name": "h264",
+            "width": 1920,
+            "height": 1080,
+            "r_frame_rate": "30/1"
+          },
+          {
+            "codec_name": "aac",
+            "sample_rate": "48000",
+            "channels": 2,
+            "r_frame_rate": "0/0"
+          }
+        ],
+        "format": {
+          "duration": "75.000000",
+          "size": "9458030"
+        }
+      },
+      "loudness": {
+        "input_i": "-17.58",
+        "input_tp": "-6.70",
+        "input_lra": "18.20",
+        "input_thresh": "-30.23",
+        "output_i": "-17.39",
+        "output_tp": "-5.31",
+        "output_lra": "14.70",
+        "output_thresh": "-29.51",
+        "normalization_type": "dynamic",
+        "target_offset": "0.39"
+      },
+      "video_payload": "Identical to approved v4"
+    }
+  ],
+  "speech_music_separation_db": 24.77,
+  "voice_rms_active_dbfs": -17.0,
+  "music_rms_under_speech_dbfs": -41.78,
+  "visual_changes": false,
+  "argo_overflow_ms": 0,
+  "listening_limit": "Measured and derived from approved voice; user listening feedback remains authoritative.",
+  "cleanup": {
+    "removed_tracked_files": 366,
+    "removed_bytes": 88298325,
+    "legacy_redirects": 30,
+    "new_archive_assets": 9
+  },
+  "hyperframes_checks": {
+    "motion": true,
+    "story": true,
+    "walkthrough": true
+  },
+  "local_browser": {
+    "order": [
+      "walkthrough",
+      "story",
+      "motion"
+    ],
+    "overflow": false,
+    "videos": [
+      {
+        "cues": 23,
+        "duration": 75,
+        "error": null,
+        "height": 1080,
+        "played": true,
+        "seek": 37,
+        "src": "http://127.0.0.1:4178/video/tableiq-launch-walkthrough-v5.mp4",
+        "width": 1920
+      },
+      {
+        "cues": 23,
+        "duration": 75,
+        "error": null,
+        "height": 1080,
+        "played": true,
+        "seek": 37,
+        "src": "http://127.0.0.1:4178/video/tableiq-launch-story-v5.mp4",
+        "width": 1920
+      },
+      {
+        "cues": 7,
+        "duration": 75,
+        "error": null,
+        "height": 1080,
+        "played": true,
+        "seek": 37,
+        "src": "http://127.0.0.1:4178/video/tableiq-launch-motion-v5.mp4",
+        "width": 1920
+      }
+    ],
+    "width": 1079
+  },
+  "legacy_redirect_checks": [
+    {
+      "name": "tableiq-launch-motion-v2.mp4",
+      "status": 302,
+      "location": "https://github.com/Table-IQ/Table-IQ/releases/download/preview-v0.8.17/tableiq-launch-motion-v2.mp4"
+    },
+    {
+      "name": "tableiq-launch-story-v4.vtt",
+      "status": 302,
+      "location": "https://github.com/Table-IQ/Table-IQ/releases/download/preview-v0.8.17/tableiq-launch-story-v4.vtt"
+    },
+    {
+      "name": "tableiq-client-poster.png",
+      "status": 302,
+      "location": "https://github.com/Table-IQ/Table-IQ/releases/download/preview-v0.8.17/tableiq-client-poster.png"
+    }
+  ]
+}

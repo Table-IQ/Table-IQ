@@ -3,7 +3,7 @@ import { Film } from "@/components/sections/demo";
 import { pageMeta } from "@/lib/meta";
 import { APP_ID, GITHUB, SITE, graph } from "@/lib/site";
 
-const DESCRIPTION = "Watch three TableIQ launch films: a motion introduction, a story and a guided walkthrough of the same sample investigation.";
+const DESCRIPTION = "Watch three TableIQ launch films: a guided walkthrough, a story and a motion introduction of the same sample investigation.";
 export const metadata = pageMeta("/launch-films", "TableIQ launch films", DESCRIPTION);
 const schema = graph({
   "@type": "WebPage", name: "TableIQ launch films", url: `${SITE}/launch-films`,
@@ -12,14 +12,14 @@ const schema = graph({
 
 const FILMS = [
   {
-    id: "motion",
-    title: "The motion introduction",
+    id: "walkthrough",
+    title: "The guided walkthrough",
     duration: "75 seconds",
-    description: "A focused introduction for Mac developers: room for more tabs, familiar database work, then optional AI and agent visibility.",
-    maker: "HyperFrames composition",
-    src: "/video/tableiq-launch-motion-v4.mp4",
-    poster: "/video/tableiq-launch-motion-v4-poster.jpg",
-    captions: "/video/tableiq-launch-motion-v4.vtt",
+    description: "Follow real table and schema navigation, SQL entry and manual Run. Then explore optional AI and actual MCP Activity.",
+    maker: "HyperFrames picture with Argo alignment and export",
+    src: "/video/tableiq-launch-walkthrough-v5.mp4",
+    poster: "/video/tableiq-launch-walkthrough-v5-poster.jpg",
+    captions: "/video/tableiq-launch-walkthrough-v5.vtt",
   },
   {
     id: "story",
@@ -27,19 +27,19 @@ const FILMS = [
     duration: "75 seconds",
     description: "A narrated switching story follows everyday client work into a real SQL investigation and its two matching orders.",
     maker: "HyperFrames composition with local narration",
-    src: "/video/tableiq-launch-story-v4.mp4",
-    poster: "/video/tableiq-launch-story-v4-poster.jpg",
-    captions: "/video/tableiq-launch-story-v4.vtt",
+    src: "/video/tableiq-launch-story-v5.mp4",
+    poster: "/video/tableiq-launch-story-v5-poster.jpg",
+    captions: "/video/tableiq-launch-story-v5.vtt",
   },
   {
-    id: "walkthrough",
-    title: "The guided walkthrough",
+    id: "motion",
+    title: "The motion introduction",
     duration: "75 seconds",
-    description: "Follow real table and schema navigation, SQL entry and manual Run. Then explore optional AI and actual MCP Activity.",
-    maker: "HyperFrames picture with Argo alignment and export",
-    src: "/video/tableiq-launch-walkthrough-v4.mp4",
-    poster: "/video/tableiq-launch-walkthrough-v4-poster.jpg",
-    captions: "/video/tableiq-launch-walkthrough-v4.vtt",
+    description: "A focused introduction for Mac developers: room for more tabs, familiar database work, then optional AI and agent visibility.",
+    maker: "HyperFrames composition",
+    src: "/video/tableiq-launch-motion-v5.mp4",
+    poster: "/video/tableiq-launch-motion-v5-poster.jpg",
+    captions: "/video/tableiq-launch-motion-v5.vtt",
   },
 ];
 
@@ -50,12 +50,12 @@ export default function LaunchFilmsPage() {
       <div className="max-w-3xl">
         <a href="/" className="text-sm text-muted underline underline-offset-4">TableIQ home</a>
         <h1 className="mt-6 text-section font-medium text-balance">Three ways to show TableIQ.</h1>
-        <p className="mt-6 text-lead text-ink-2">Watch the motion introduction, story and guided walkthrough. Each follows the same sample database investigation.</p>
+        <p className="mt-6 text-lead text-ink-2">Start with the guided walkthrough, then compare the story and motion introduction. Each follows the same sample database investigation.</p>
         <p className="mt-5 text-sm text-muted">The films combine real development build recordings with a previously verified native AI example. SQL excerpts and native result stills are identified on screen. The MCP calls come from a real local protocol client in a separate sample session.</p>
         <nav aria-label="Choose a launch film" className="mt-8 flex flex-wrap gap-x-6 gap-y-3 text-sm">
-          <a href="#motion" className="underline underline-offset-4">Motion</a>
+          <a href="#walkthrough" className="underline underline-offset-4">Guided walkthrough</a>
           <a href="#story" className="underline underline-offset-4">Story</a>
-          <a href="#walkthrough" className="underline underline-offset-4">Walkthrough</a>
+          <a href="#motion" className="underline underline-offset-4">Motion</a>
         </nav>
       </div>
       <div className="mt-14 space-y-16">
