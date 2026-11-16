@@ -1,67 +1,7 @@
 [
   [
-    "hook",
-    "Still counting query tabs?"
-  ],
-  [
-    "room",
-    "When one investigation needs another query, a tab limit breaks the flow."
-  ],
-  [
-    "client",
-    "Table eye cue is a free, open source database client for Mac."
-  ],
-  [
-    "workflow",
-    "Browse your tables, inspect your schema, and keep your S Q L together."
-  ],
-  [
-    "byok",
-    "When you want help, use your own A I provider key."
-  ],
-  [
-    "ask",
-    "Ask which paid orders have no shipped shipment. Review the generated S Q L."
-  ],
-  [
-    "result",
-    "You decide when to run it. Two matching orders, totaling seven thousand, three hundred cents."
-  ],
-  [
-    "activity",
-    "Working with a coding agent? Open M C P Activity to inspect its calls and queries."
-  ],
-  [
-    "download",
-    "Built with Rust. Get the Mac developer preview. No Table eye cue account required."
-  ],
-  [
-    "story-hook",
-    "A customer has paid. Their order still has not shipped. Which one?"
-  ],
-  [
-    "story-client",
-    "Keep the investigation together in Table eye cue, a free, open source database client for Mac."
-  ],
-  [
-    "story-ai",
-    "Bring your own A I key when you want help. Review the generated query before running it."
-  ],
-  [
-    "story-result",
-    "Two orders match in this sample database. Check the rows. Keep control of the query."
-  ],
-  [
-    "story-end",
-    "See your coding agent’s queries too. Download the Mac developer preview at table eye cue dot ideolyst dot com."
-  ],
-  [
-    "story-mcp",
-    "Inspect your coding agent’s database queries, too."
-  ],
-  [
     "v4-hook",
-    "Hitting Table Plus’s two-tab free limit? Meet Table eye cue."
+    "Hitting Table Plus\u2019s two-tab free limit? Meet Table eye cue."
   ],
   [
     "v4-offer",
@@ -73,7 +13,7 @@
   ],
   [
     "v4-investigation",
-    "Which paid orders haven’t shipped? Follow payments to shipments, review the query, and run it. Two matching orders. There’s your answer."
+    "Which paid orders haven\u2019t shipped? Follow payments to shipments, review the query, and run it. Two matching orders. There\u2019s your answer."
   ],
   [
     "v4-ai",
@@ -85,6 +25,34 @@
   ],
   [
     "v4-download",
+    "Get the free Mac developer preview at Table eye cue dot Ideolyst dot com."
+  ],
+  [
+    "v5-hook",
+    "Hitting Table Plus\u2019s two-tab free limit? Meet Table eye cue."
+  ],
+  [
+    "v5-offer",
+    "A free, open-source database client for Mac. Open another table, another query, and keep your work in view."
+  ],
+  [
+    "v5-client",
+    "Coming from D Beaver? Try the same everyday task here. Browse your data, inspect relationships, and write your S Q L."
+  ],
+  [
+    "v5-investigation",
+    "Which paid orders haven\u2019t shipped? Follow payments to shipments, review the query, and run it. Two matching orders. There\u2019s your answer."
+  ],
+  [
+    "v5-ai",
+    "Want help writing S Q L? Use your own A I key for a draft. Review it before you run it. A I is optional."
+  ],
+  [
+    "v5-activity",
+    "Using a coding agent? Inspect the database queries it sends through Table eye cue."
+  ],
+  [
+    "v5-download",
     "Get the free Mac developer preview at Table eye cue dot Ideolyst dot com."
   ]
 ]

@@ -10,7 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 parser=argparse.ArgumentParser()
-parser.add_argument("--version",default="v3",choices=["v2","v3","v4"])
+parser.add_argument("--version",default="v5",choices=["v2","v3","v4","v5"])
 args=parser.parse_args()
 CUES = {
     # v4 intervals checked against local Whisper word times; spelling follows the approved script.
@@ -45,12 +45,14 @@ for name in ["motion","story","walkthrough"]:
     plan=json.loads((ROOT/name/"film-plan.json").read_text())
     cues=[]
     if name=="motion":
-        cues.append((0,7.8,"[Music] Hitting TablePlus’s two-tab free limit? Meet TableIQ.") if args.version=="v4" else (0,2.8,"[Music] Still counting query tabs?"))
+        cues.append((0,7.8,"[Music] Hitting TablePlus’s two-tab free limit? Meet TableIQ.") if args.version in ["v4","v5"] else (0,2.8,"[Music] Still counting query tabs?"))
         for shot in plan["shots"][1:]:
             cues.append((shot["start"]+.25,shot["start"]+shot["duration"]-.15," ".join(shot["title"])))
     else:
         for shot in plan["shots"]:
-            for start,end,text in CUES.get(shot["voice"],[]):
+            key=shot["voice"].replace("v5-","v4-")
+            for start,end,text in CUES.get(key,[]):
+                if args.version=="v5":start,end=start/.96,end/.96
                 assert end+.2<=shot["duration"], (name,shot["id"],end)
                 cues.append((shot["start"]+.2+start,shot["start"]+.2+end,text))
     out=["WEBVTT",""]
@@ -60,4 +62,5 @@ for name in ["motion","story","walkthrough"]:
     dest=ROOT/"renders"/f"tableiq-launch-{name}-{args.version}.vtt"
     dest.parent.mkdir(exist_ok=True)
     dest.write_text("\n".join(out),encoding="utf-8")
+    if args.version=="v5": (ROOT/name/"captions.vtt").write_text("\n".join(out),encoding="utf-8")
     print(dest.name,len(cues))

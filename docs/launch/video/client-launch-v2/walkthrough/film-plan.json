@@ -1,5 +1,5 @@
 {
-  "revision": "v4-approved",
+  "revision": "v5-audio",
   "treatment": "walkthrough",
   "duration": 75,
   "shots": [
@@ -12,7 +12,7 @@
         "two-tab free limit?"
       ],
       "capture": null,
-      "voice": "v4-hook",
+      "voice": "v5-hook",
       "environment": ""
     },
     {
@@ -24,7 +24,7 @@
         "A database client for Mac."
       ],
       "capture": "tabs",
-      "voice": "v4-offer",
+      "voice": "v5-offer",
       "environment": "Real TableIQ development capture · Synthetic data · Edited time"
     },
     {
@@ -35,7 +35,7 @@
         "Coming from DBeaver?"
       ],
       "capture": "browse",
-      "voice": "v4-client",
+      "voice": "v5-client",
       "environment": "Browse data · Inspect relationships · Write SQL"
     },
     {
@@ -46,7 +46,7 @@
         "Which paid orders haven’t shipped?"
       ],
       "capture": "manual-query",
-      "voice": "v4-investigation",
+      "voice": "v5-investigation",
       "environment": "Real TableIQ development capture · Synthetic data · Manual SQL and Run"
     },
     {
@@ -57,7 +57,7 @@
         "Want help writing SQL?"
       ],
       "capture": "ask",
-      "voice": "v4-ai",
+      "voice": "v5-ai",
       "environment": ""
     },
     {
@@ -68,7 +68,7 @@
         "See your coding agent’s queries."
       ],
       "capture": "mcp",
-      "voice": "v4-activity",
+      "voice": "v5-activity",
       "environment": "Development capture · Local MCP client · Separate sample session"
     },
     {
@@ -80,7 +80,7 @@
         "developer preview."
       ],
       "capture": null,
-      "voice": "v4-download",
+      "voice": "v5-download",
       "environment": ""
     }
   ]

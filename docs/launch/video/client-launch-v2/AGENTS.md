@@ -1,6 +1,8 @@
-# HyperFrames Composition Project
+# HyperFrames Composition Collection
 
-This folder is a [HyperFrames](https://hyperframes.heygen.com) video: HTML, CSS and seekable
+Run project commands from `walkthrough/`, `story/`, or `motion/`; this parent holds shared production tools.
+
+Each child is a [HyperFrames](https://hyperframes.heygen.com) video: HTML, CSS and seekable
 animations (GSAP by default) that the `hyperframes` CLI previews in the browser and renders to
 MP4.
 

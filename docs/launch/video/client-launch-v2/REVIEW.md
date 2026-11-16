@@ -1,21 +1,11 @@
-# v4 delivery review
+# v5 audio review
 
-Three 75-second, 1920×1080 / 30fps treatments implement the [approved script](APPROVED-SCRIPT-v4.md). Everyday database work precedes optional AI and MCP. The motion treatment uses music and concise headings, story uses an editorial chapter structure, and the walkthrough uses broad app framing plus actual official Argo finishing. Light brand scenes preserve the real app's dark appearance. Reference-film music and fabricated UI were not used.
+The founder selected soft, very quiet background music with clear narration. The approved picture and script are preserved. Each v5 H.264 picture payload matches its v4 master exactly; all three remain 75s/1080p/30fps. The guided walkthrough is first on the site.
 
-## Evidence and visual review
+The original raw voice was around−22.9dBFS RMS while the music, after its 0.14 gain, was around−32.9dBFS: only about 10 dB separation. The new prepared stems measure approximately 25 dB separation during active speech. Narration uses the same speaker and words, 4% slower pitch-preserving delivery, gentle tonal softening, and−17 LUFS utterance levelling. Music uses a filtered, compressed−36 LUFS base and another 6 dB reduction around utterances, with smooth ramps. The motion-only score is−30 LUFS. Final muxing preserves these relationships; there is no global gain boost.
 
-All three full HyperFrames checks pass with zero errors and warnings. The independent reviewer received only current storyboards and beat, phone and seam images. Motion and walkthrough passed. One P1 at story60–60.5s cut the left MCP tool labels; the story-only camera offset changed from−660 to−600. Root inspected the corrected full-resolution image and confirmed tool names, SQL, rows, status, headline and disclosure fit. The focused story check also passes. No unresolved P0/P1 remains in the sampled visual review.
+The words and pronunciation inputs are unchanged. Caption times are scaled to the retimed audio. The query/Run/result timings still fit the original evidence sequence. Official Argo alignment reports zero overflow. Film-specific checks and encoded media measurements are in `delivery/technical-verification-v5.json`.
 
-The real SQL capture was checked before and after Run, including the actual Rust metadata and decoded Arrow result. Two expected orders appear. Review caught a later source reload despite passing layout checks; the derivative now ends the continuous source at6.066667s and holds its genuine final result frame to16s. Camera focus returns wide before the actual Run, then moves to the returned rows after they arrive. Edited time and development capture are disclosed.
+Audio has been measured and compared, not independently listened to. The founder’s listening feedback is the final judgment of tone. The backing remains the same original TableIQ score, softened; a different melody or recorded narrator would require a separate creative choice.
 
-The optional AI proof is the labelled still from the previously verified native0.8.17 case. A new native window was unavailable to automation. No new live AI success or broad accuracy claim is made. MCP remains a real local-client call in a separate recorded session. No DBeaver speed/RAM or universal-superiority claim appears. TablePlus's documented two-tab free limit is the narrow opening proposition.
-
-## Practical limits
-
-A landscape film cannot make every full SQL statement readable at phone width; the main question, action, result heading and URL carry the mobile story, while focused full-resolution views expose the evidence. The AI proof remains a still and is the weakest continuity beat; a future genuine native generation recording could replace it after a new passed case. Its current label stays visible.
-
-Audio is generated locally, measured and transcribed, not independently listened to. Captions correct brand/acronym spelling against the approved script. The encoded-file checks and hashes are recorded in `delivery/technical-verification-v4.json`. The earlier review is retained at `delivery/REVIEW-v3.md`; original published v2/v3 files remain available.
-
-The sources can be edited in the HyperFrames desktop app. Delivery exports retain the same seek-safe scene files that passed review.
-
-The final walkthrough preserves the reviewed HyperFrames picture stream after official Argo import/alignment/export. A decoded-frame comparison caught a color shift in Argo’s intermediate picture transcode; retaining the original picture restores the same brand colours as the other cuts while keeping Argo’s aligned/exported sound. This final remux does not invent product frames or change timing.
+Historical reviews, failed iterations and redundant rendered screenshots were removed from the current source tree. Previous source packages remain available on the GitHub release and in Git history. Current native AI and MCP provenance is retained.

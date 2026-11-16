@@ -1,0 +1,44 @@
+[
+  {
+    "scene": "hook",
+    "text": "Hitting Table Plus’s two-tab free limit? Meet Table eye cue.",
+    "voice": "af_heart",
+    "speed": 1.008
+  },
+  {
+    "scene": "offer",
+    "text": "A free, open-source database client for Mac. Open another table, another query, and keep your work in view.",
+    "voice": "af_heart",
+    "speed": 1.008
+  },
+  {
+    "scene": "client",
+    "text": "Coming from D Beaver? Try the same everyday task here. Browse your data, inspect relationships, and write your S Q L.",
+    "voice": "af_heart",
+    "speed": 1.008
+  },
+  {
+    "scene": "investigation",
+    "text": "Which paid orders haven’t shipped? Follow payments to shipments, review the query, and run it. Two matching orders. There’s your answer.",
+    "voice": "af_heart",
+    "speed": 1.008
+  },
+  {
+    "scene": "ai",
+    "text": "Want help writing S Q L? Use your own A I key for a draft. Review it before you run it. A I is optional.",
+    "voice": "af_heart",
+    "speed": 1.008
+  },
+  {
+    "scene": "activity",
+    "text": "Using a coding agent? Inspect the database queries it sends through Table eye cue.",
+    "voice": "af_heart",
+    "speed": 1.008
+  },
+  {
+    "scene": "download",
+    "text": "Get the free Mac developer preview at Table eye cue dot Ideolyst dot com.",
+    "voice": "af_heart",
+    "speed": 1.008
+  }
+]
