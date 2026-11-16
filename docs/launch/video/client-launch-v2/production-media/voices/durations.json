@@ -58,5 +58,33 @@
   {
     "id": "story-mcp",
     "duration": 3.45
+  },
+  {
+    "id": "v4-hook",
+    "duration": 4.375
+  },
+  {
+    "id": "v4-offer",
+    "duration": 7.325
+  },
+  {
+    "id": "v4-client",
+    "duration": 7.75
+  },
+  {
+    "id": "v4-investigation",
+    "duration": 8.025
+  },
+  {
+    "id": "v4-ai",
+    "duration": 7.1
+  },
+  {
+    "id": "v4-activity",
+    "duration": 5.825
+  },
+  {
+    "id": "v4-download",
+    "duration": 5.2
   }
 ]

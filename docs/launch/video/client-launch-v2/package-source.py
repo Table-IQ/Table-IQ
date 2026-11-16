@@ -8,7 +8,7 @@ import zipfile
 ROOT=Path(__file__).resolve().parent
 parser=argparse.ArgumentParser()
 parser.add_argument("output",type=Path)
-parser.add_argument("--version",default="v3",choices=["v2","v3"])
+parser.add_argument("--version",default="v3",choices=["v2","v3","v4"])
 args=parser.parse_args()
 excluded={"node_modules",".hyperframes",".thumbnails",".argo",".waveform-cache",".transcode-cache","__pycache__","renders","videos"}
 files=[]

@@ -58,5 +58,33 @@
   [
     "story-mcp",
     "Inspect your coding agent’s database queries, too."
+  ],
+  [
+    "v4-hook",
+    "Hitting Table Plus’s two-tab free limit? Meet Table eye cue."
+  ],
+  [
+    "v4-offer",
+    "A free, open-source database client for Mac. Open another table, another query, and keep your work in view."
+  ],
+  [
+    "v4-client",
+    "Coming from D Beaver? Try the same everyday task here. Browse your data, inspect relationships, and write your S Q L."
+  ],
+  [
+    "v4-investigation",
+    "Which paid orders haven’t shipped? Follow payments to shipments, review the query, and run it. Two matching orders. There’s your answer."
+  ],
+  [
+    "v4-ai",
+    "Want help writing S Q L? Use your own A I key for a draft. Review it before you run it. A I is optional."
+  ],
+  [
+    "v4-activity",
+    "Using a coding agent? Inspect the database queries it sends through Table eye cue."
+  ],
+  [
+    "v4-download",
+    "Get the free Mac developer preview at Table eye cue dot Ideolyst dot com."
   ]
 ]

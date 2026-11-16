@@ -1,0 +1,9 @@
+SELECT o.id, c.name AS customer_name, o.total_cents
+FROM main.orders AS o JOIN main.customers AS c ON c.id = o.customer_id
+WHERE EXISTS (
+  SELECT 1 FROM main.payments AS p
+  WHERE p.order_id = o.id AND p.status = 'paid')
+AND NOT EXISTS (
+  SELECT 1 FROM main.shipments AS s
+  WHERE s.order_id = o.id AND s.status = 'shipped')
+ORDER BY o.id;

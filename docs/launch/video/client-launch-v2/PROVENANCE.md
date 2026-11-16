@@ -24,3 +24,17 @@ V3 replaces hook, problem, brand and BYOK screenshot scenes with editorial typog
 ## Brand and notices
 
 TableIQ wordmark/colors are supplied project assets. Instrument Sans and IBM Plex Mono include their SIL OFL notices. Relevant project/Argo license texts accompany the source package. The product stays AGPL-3.0-only; media production does not change app licensing. No new endorsement, comparative benchmark or user-count claim is implied.
+
+## v4 audience-focused production — 16 November 2026
+
+The [approved seven-slot, 75-second script](APPROVED-SCRIPT-v4.md) supersedes the earlier narration. Its primary audience is Mac developers blocked by TablePlus’s two-tab free limit, with an invitation to DBeaver users to compare an ordinary task. Neither competitor is presented as universally worse. No comparative speed, RAM, accuracy or unique-AI claim is made.
+
+New `capture-manual-v4` footage uses the actual TableIQ0.8.17 development interface, the existing Rust IPC harness and a disposable synthetic SQLite database. SQL is inserted through real browser keyboard input, then the actual Run button is clicked. Marks: input0.806s, queryready1.780s, Run5.105s, resultready5.734s. The actual Rust `run_query` metadata reports two rows and no error; the `get_result_window` Arrow response decodes exactly to `(102, Northstar Demo,4200)` and `(104, Acme Demo,3100)`. The footage is labelled development capture. It is not a native-window recording and does not imply a new AI request.
+
+The source range0–6.066667s is retained with one continuous crop `[430,110,2110,800]`, resized to1920×728. Its genuine final two-row frame holds to16s. Later navigation/reload frames are excluded. `prepare-manual-capture.py` makes this derivative; `manual-query.sql` is the formatted manual input, separate from the preserved native AI output. No placeholder result is composited over the app.
+
+The optional AI segment uses the existing labelled still from the single passed native0.8.17 case. The MCP segment remains the genuine, separately recorded local-protocol-client session. New native-window attempts exposed no usable automation window; no failed attempt is substituted as successful proof.
+
+Narration uses the pinned local Argo/Kokoro q8 CPU engine, af_heart at1.05, with phonetic brand/acronym inputs. Local Whisper word timings are saved in `production-media/voices/transcripts-v4.json`; captions use the approved spelling. The original TableIQ instrumental is extended to75s from source0–48s plus16–45s with a2s crossfade and final71–75s fade. The reference film's audio is not reused. Audio is measured and transcribed, not independently listened to.
+
+All three treatments retain editable HyperFrames scenes. Motion is music-only; story has narration; walkthrough passes through official Argo0.42.1 import, alignment and export with an overflow assertion. These are implementations of the requested creative treatments, not claims that Huashu Motion or Take One services were connected.

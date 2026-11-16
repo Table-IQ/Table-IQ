@@ -1,0 +1,40 @@
+{
+  "sql": "SELECT o.id, c.name AS customer_name, o.total_cents\nFROM main.orders AS o JOIN main.customers AS c ON c.id = o.customer_id\nWHERE EXISTS (\n  SELECT 1 FROM main.payments AS p\n  WHERE p.order_id = o.id AND p.status = 'paid')\nAND NOT EXISTS (\n  SELECT 1 FROM main.shipments AS s\n  WHERE s.order_id = o.id AND s.status = 'shipped')\nORDER BY o.id;",
+  "rows": [
+    [
+      102,
+      "Northstar Demo",
+      4200
+    ],
+    [
+      104,
+      "Acme Demo",
+      3100
+    ]
+  ],
+  "manualRun": true,
+  "backend": "Real TableIQ Rust IPC bridge, SQLite fixture",
+  "frontend": "Actual TableIQ development UI 0.8.17",
+  "mockResponses": false,
+  "marks": {
+    "start": 0.001,
+    "typing": 0.806,
+    "query-ready": 1.78,
+    "run-click": 5.105,
+    "result-ready": 5.734
+  },
+  "decodedArrowRows": [
+    [
+      "102",
+      "Northstar Demo",
+      "4200"
+    ],
+    [
+      "104",
+      "Acme Demo",
+      "3100"
+    ]
+  ],
+  "arrowResultSha256": "c7ca52d078b2ce87bbb42aa2945592fc9f72ceaeac0f828303377f8521047dc4",
+  "verification": "Actual Arrow IPC decoded with apache-arrow tableFromIPC and compared exactly; SQL editor and real Run response verified; final picture inspected."
+}

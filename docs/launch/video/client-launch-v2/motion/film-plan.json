@@ -1,93 +1,71 @@
 {
+  "revision": "v4-approved",
   "treatment": "motion",
-  "duration": 56.0,
+  "duration": 75,
   "shots": [
     {
       "id": "hook",
-      "start": 0.0,
-      "duration": 3,
+      "start": 0,
+      "duration": 8,
       "title": [
-        "Still counting",
-        "query tabs?"
+        "Hitting TablePlus’s",
+        "two-tab free limit?"
       ],
       "capture": null,
       "voice": null,
       "environment": ""
     },
     {
-      "id": "room",
-      "start": 3.0,
-      "duration": 4,
-      "title": [
-        "Keep your investigation",
-        "together."
-      ],
-      "capture": null,
-      "voice": null,
-      "environment": ""
-    },
-    {
-      "id": "client",
-      "start": 7.0,
-      "duration": 5,
+      "id": "offer",
+      "start": 8,
+      "duration": 10,
       "title": [
         "Free. Open source.",
-        "Local first."
+        "A database client for Mac."
       ],
-      "capture": null,
-      "voice": null,
-      "environment": ""
-    },
-    {
-      "id": "workflow",
-      "start": 12.0,
-      "duration": 9,
-      "title": [
-        "Browse. Query. Review."
-      ],
-      "capture": "browse",
+      "capture": "tabs",
       "voice": null,
       "environment": "Real TableIQ development capture · Synthetic data · Edited time"
     },
     {
-      "id": "byok",
-      "start": 21.0,
-      "duration": 6,
+      "id": "client",
+      "start": 18,
+      "duration": 9,
       "title": [
-        "AI, with your own key"
+        "Coming from DBeaver?"
       ],
-      "capture": null,
+      "capture": "browse",
+      "voice": null,
+      "environment": "Browse data · Inspect relationships · Write SQL"
+    },
+    {
+      "id": "investigation",
+      "start": 27,
+      "duration": 16,
+      "title": [
+        "Which paid orders haven’t shipped?"
+      ],
+      "capture": "manual-query",
+      "voice": null,
+      "environment": "Real TableIQ development capture · Synthetic data · Manual SQL and Run"
+    },
+    {
+      "id": "ai",
+      "start": 43,
+      "duration": 13,
+      "title": [
+        "Want help writing SQL?"
+      ],
+      "capture": "ask",
       "voice": null,
       "environment": ""
     },
     {
-      "id": "ask",
-      "start": 27.0,
-      "duration": 10,
-      "title": [
-        "Ask. Review the SQL."
-      ],
-      "capture": "ask",
-      "voice": null,
-      "environment": "Verified native v0.8.17 SQL excerpts · Full SQL in source"
-    },
-    {
-      "id": "result",
-      "start": 37.0,
-      "duration": 7,
-      "title": [
-        "You choose when to run"
-      ],
-      "capture": "result",
-      "voice": null,
-      "environment": "Verified native AI example · After manual Run · Still"
-    },
-    {
       "id": "activity",
-      "start": 44.0,
-      "duration": 6,
+      "start": 56,
+      "duration": 9,
       "title": [
-        "See your agent’s queries"
+        "See your coding agent’s queries."
       ],
       "capture": "mcp",
       "voice": null,
@@ -95,11 +73,11 @@
     },
     {
       "id": "download",
-      "start": 50.0,
-      "duration": 6,
+      "start": 65,
+      "duration": 10,
       "title": [
-        "Get the Mac",
-        "developer preview"
+        "Get the free Mac",
+        "developer preview."
       ],
       "capture": null,
       "voice": null,

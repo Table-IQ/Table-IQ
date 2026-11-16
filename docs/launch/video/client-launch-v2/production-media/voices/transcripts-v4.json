@@ -1,0 +1,587 @@
+[
+  {
+    "id": "v4-activity",
+    "words": [
+      {
+        "text": "Using",
+        "start": 0,
+        "end": 0.56
+      },
+      {
+        "text": "a",
+        "start": 0.56,
+        "end": 0.7
+      },
+      {
+        "text": "coding",
+        "start": 0.7,
+        "end": 0.92
+      },
+      {
+        "text": "agent,",
+        "start": 0.92,
+        "end": 1.36
+      },
+      {
+        "text": "inspect",
+        "start": 2.26,
+        "end": 2.26
+      },
+      {
+        "text": "the",
+        "start": 2.26,
+        "end": 2.54
+      },
+      {
+        "text": "database",
+        "start": 2.54,
+        "end": 2.8
+      },
+      {
+        "text": "queries",
+        "start": 2.8,
+        "end": 3.3
+      },
+      {
+        "text": "it",
+        "start": 3.3,
+        "end": 3.7
+      },
+      {
+        "text": "sends",
+        "start": 3.7,
+        "end": 3.88
+      },
+      {
+        "text": "through",
+        "start": 3.88,
+        "end": 4.24
+      },
+      {
+        "text": "Table",
+        "start": 4.24,
+        "end": 4.52
+      },
+      {
+        "text": "IQ.",
+        "start": 4.52,
+        "end": 4.96
+      }
+    ]
+  },
+  {
+    "id": "v4-ai",
+    "words": [
+      {
+        "text": "Want",
+        "start": 0,
+        "end": 0.4
+      },
+      {
+        "text": "help",
+        "start": 0.4,
+        "end": 0.58
+      },
+      {
+        "text": "writing",
+        "start": 0.58,
+        "end": 0.92
+      },
+      {
+        "text": "SQL?",
+        "start": 0.92,
+        "end": 1.3
+      },
+      {
+        "text": "Use",
+        "start": 2.22,
+        "end": 2.26
+      },
+      {
+        "text": "your",
+        "start": 2.26,
+        "end": 2.42
+      },
+      {
+        "text": "own",
+        "start": 2.42,
+        "end": 2.66
+      },
+      {
+        "text": "iKey",
+        "start": 2.66,
+        "end": 3.12
+      },
+      {
+        "text": "for",
+        "start": 3.12,
+        "end": 3.34
+      },
+      {
+        "text": "draft.",
+        "start": 3.34,
+        "end": 3.56
+      },
+      {
+        "text": "Review",
+        "start": 4.22,
+        "end": 4.32
+      },
+      {
+        "text": "it",
+        "start": 4.32,
+        "end": 4.52
+      },
+      {
+        "text": "before",
+        "start": 4.52,
+        "end": 4.66
+      },
+      {
+        "text": "you",
+        "start": 4.66,
+        "end": 4.88
+      },
+      {
+        "text": "run",
+        "start": 4.88,
+        "end": 5.04
+      },
+      {
+        "text": "it.",
+        "start": 5.04,
+        "end": 5.22
+      },
+      {
+        "text": "i",
+        "start": 5.72,
+        "end": 5.8
+      },
+      {
+        "text": "is",
+        "start": 5.8,
+        "end": 6.08
+      },
+      {
+        "text": "optional.",
+        "start": 6.08,
+        "end": 6.4
+      }
+    ]
+  },
+  {
+    "id": "v4-client",
+    "words": [
+      {
+        "text": "Coming",
+        "start": 0,
+        "end": 0.44
+      },
+      {
+        "text": "from",
+        "start": 0.44,
+        "end": 0.7
+      },
+      {
+        "text": "DBaver,",
+        "start": 0.7,
+        "end": 1.2
+      },
+      {
+        "text": "try",
+        "start": 1.48,
+        "end": 1.74
+      },
+      {
+        "text": "the",
+        "start": 1.74,
+        "end": 1.92
+      },
+      {
+        "text": "same",
+        "start": 1.92,
+        "end": 2.14
+      },
+      {
+        "text": "everyday",
+        "start": 2.14,
+        "end": 2.46
+      },
+      {
+        "text": "task",
+        "start": 2.46,
+        "end": 2.94
+      },
+      {
+        "text": "here.",
+        "start": 2.94,
+        "end": 3.2
+      },
+      {
+        "text": "Browse",
+        "start": 3.88,
+        "end": 3.88
+      },
+      {
+        "text": "your",
+        "start": 3.88,
+        "end": 4.12
+      },
+      {
+        "text": "data,",
+        "start": 4.12,
+        "end": 4.38
+      },
+      {
+        "text": "inspect",
+        "start": 4.76,
+        "end": 5.02
+      },
+      {
+        "text": "relationships,",
+        "start": 5.02,
+        "end": 5.72
+      },
+      {
+        "text": "and",
+        "start": 6.16,
+        "end": 6.22
+      },
+      {
+        "text": "write",
+        "start": 6.22,
+        "end": 6.4
+      },
+      {
+        "text": "your",
+        "start": 6.4,
+        "end": 6.56
+      },
+      {
+        "text": "SQL.",
+        "start": 6.56,
+        "end": 6.84
+      }
+    ]
+  },
+  {
+    "id": "v4-download",
+    "words": [
+      {
+        "text": "Get",
+        "start": 0.12,
+        "end": 0.38
+      },
+      {
+        "text": "the",
+        "start": 0.38,
+        "end": 0.48
+      },
+      {
+        "text": "free",
+        "start": 0.48,
+        "end": 0.66
+      },
+      {
+        "text": "Mac",
+        "start": 0.66,
+        "end": 0.88
+      },
+      {
+        "text": "developer",
+        "start": 0.88,
+        "end": 1.2
+      },
+      {
+        "text": "preview",
+        "start": 1.2,
+        "end": 1.74
+      },
+      {
+        "text": "at",
+        "start": 1.74,
+        "end": 2.16
+      },
+      {
+        "text": "TableIQ",
+        "start": 2.16,
+        "end": 2.82
+      },
+      {
+        "text": ".idiolis",
+        "start": 2.82,
+        "end": 4
+      },
+      {
+        "text": ".com.",
+        "start": 4,
+        "end": 4.6
+      }
+    ]
+  },
+  {
+    "id": "v4-hook",
+    "words": [
+      {
+        "text": "Hitting",
+        "start": 0.26,
+        "end": 0.48
+      },
+      {
+        "text": "table",
+        "start": 0.48,
+        "end": 0.76
+      },
+      {
+        "text": "pluses",
+        "start": 0.76,
+        "end": 1.28
+      },
+      {
+        "text": "2",
+        "start": 1.28,
+        "end": 1.5
+      },
+      {
+        "text": "-tab",
+        "start": 1.5,
+        "end": 1.72
+      },
+      {
+        "text": "-free",
+        "start": 1.72,
+        "end": 1.94
+      },
+      {
+        "text": "limit.",
+        "start": 1.94,
+        "end": 2.14
+      },
+      {
+        "text": "Meet",
+        "start": 2.8,
+        "end": 2.84
+      },
+      {
+        "text": "table",
+        "start": 2.84,
+        "end": 3.26
+      },
+      {
+        "text": "IQ.",
+        "start": 3.26,
+        "end": 3.52
+      }
+    ]
+  },
+  {
+    "id": "v4-investigation",
+    "words": [
+      {
+        "text": "Which",
+        "start": 0,
+        "end": 0.38
+      },
+      {
+        "text": "paid",
+        "start": 0.38,
+        "end": 0.56
+      },
+      {
+        "text": "orders",
+        "start": 0.56,
+        "end": 0.88
+      },
+      {
+        "text": "haven't",
+        "start": 0.88,
+        "end": 1.36
+      },
+      {
+        "text": "shipped?",
+        "start": 1.36,
+        "end": 1.58
+      },
+      {
+        "text": "Follow",
+        "start": 2.42,
+        "end": 2.42
+      },
+      {
+        "text": "payments",
+        "start": 2.42,
+        "end": 2.76
+      },
+      {
+        "text": "to",
+        "start": 2.76,
+        "end": 3.02
+      },
+      {
+        "text": "shipments,",
+        "start": 3.02,
+        "end": 3.26
+      },
+      {
+        "text": "review",
+        "start": 3.76,
+        "end": 3.92
+      },
+      {
+        "text": "the",
+        "start": 3.92,
+        "end": 4.08
+      },
+      {
+        "text": "query,",
+        "start": 4.08,
+        "end": 4.28
+      },
+      {
+        "text": "and",
+        "start": 4.62,
+        "end": 4.66
+      },
+      {
+        "text": "run",
+        "start": 4.66,
+        "end": 4.86
+      },
+      {
+        "text": "it.",
+        "start": 4.86,
+        "end": 5.04
+      },
+      {
+        "text": "Two",
+        "start": 5.62,
+        "end": 5.64
+      },
+      {
+        "text": "matching",
+        "start": 5.64,
+        "end": 5.84
+      },
+      {
+        "text": "orders.",
+        "start": 5.84,
+        "end": 6.32
+      },
+      {
+        "text": "There's",
+        "start": 6.86,
+        "end": 6.98
+      },
+      {
+        "text": "your",
+        "start": 6.98,
+        "end": 7.06
+      },
+      {
+        "text": "answer.",
+        "start": 7.06,
+        "end": 7.38
+      }
+    ]
+  },
+  {
+    "id": "v4-offer",
+    "words": [
+      {
+        "text": "a",
+        "start": 0,
+        "end": 0.32
+      },
+      {
+        "text": "free",
+        "start": 0.32,
+        "end": 0.6
+      },
+      {
+        "text": "open",
+        "start": 0.6,
+        "end": 1.08
+      },
+      {
+        "text": "source",
+        "start": 1.08,
+        "end": 1.4
+      },
+      {
+        "text": "database",
+        "start": 1.4,
+        "end": 1.72
+      },
+      {
+        "text": "client",
+        "start": 1.72,
+        "end": 2.28
+      },
+      {
+        "text": "for",
+        "start": 2.28,
+        "end": 2.52
+      },
+      {
+        "text": "Mac.",
+        "start": 2.52,
+        "end": 2.72
+      },
+      {
+        "text": "Open",
+        "start": 3.66,
+        "end": 3.66
+      },
+      {
+        "text": "another",
+        "start": 3.66,
+        "end": 3.88
+      },
+      {
+        "text": "table,",
+        "start": 3.88,
+        "end": 4.3
+      },
+      {
+        "text": "another",
+        "start": 4.64,
+        "end": 4.9
+      },
+      {
+        "text": "query,",
+        "start": 4.9,
+        "end": 5.22
+      },
+      {
+        "text": "and",
+        "start": 5.68,
+        "end": 5.78
+      },
+      {
+        "text": "keep",
+        "start": 5.78,
+        "end": 5.94
+      },
+      {
+        "text": "your",
+        "start": 5.94,
+        "end": 6.1
+      },
+      {
+        "text": "work",
+        "start": 6.1,
+        "end": 6.28
+      },
+      {
+        "text": "in",
+        "start": 6.28,
+        "end": 6.46
+      },
+      {
+        "text": "view.",
+        "start": 6.46,
+        "end": 6.7
+      }
+    ]
+  }
+]

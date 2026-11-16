@@ -1,0 +1,29 @@
+{
+  "ok": true,
+  "outputDir": "/Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/story/review/v4-mcp-corrected",
+  "frames": [
+    {
+      "path": "/Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/story/review/v4-mcp-corrected/frame-00-at-60s.png",
+      "time": 60
+    },
+    {
+      "path": "/Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/story/review/v4-mcp-corrected/frame-01-at-60.5s.png",
+      "time": 60.5
+    },
+    {
+      "path": "/Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/story/review/v4-mcp-corrected/frame-02-at-61s.png",
+      "time": 61
+    }
+  ],
+  "contactSheets": [
+    "/Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/story/review/v4-mcp-corrected/contact-sheet.jpg"
+  ],
+  "_meta": {
+    "version": "0.9.56",
+    "latestVersion": "0.9.56",
+    "updateAvailable": false,
+    "checkedAt": "2026-11-16T10:47:35.970Z",
+    "skillsOutdated": 6,
+    "skillsMissing": 0
+  }
+}

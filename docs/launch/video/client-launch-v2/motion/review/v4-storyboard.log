@@ -1,0 +1,106 @@
+◆  Capturing review frames (beats, seams, phone) from motion
+[hyperframes] browserGpuMode probe → hardware (WebGL renderer vendor="Google Inc. (Apple)" renderer="ANGLE (Apple, ANGLE Metal Renderer: Apple M4, Unspecified Version)")
+
+   Fonts: 3 loaded
+   Review: 14 beat(s) and 6 seam(s) within 0–75s
+[hyperframes] snapshot: frame 1/44 at 0.3s
+[hyperframes] snapshot: frame 2/44 at 4s
+[hyperframes] snapshot: frame 3/44 at 8.3s
+[hyperframes] snapshot: frame 4/44 at 13s
+[hyperframes] snapshot: frame 5/44 at 18.3s
+[hyperframes] snapshot: frame 6/44 at 22.5s
+[hyperframes] snapshot: frame 7/44 at 27.3s
+[hyperframes] snapshot: frame 8/44 at 35s
+[hyperframes] snapshot: frame 9/44 at 43.3s
+[hyperframes] snapshot: frame 10/44 at 49.5s
+[hyperframes] snapshot: frame 11/44 at 56.3s
+[hyperframes] snapshot: frame 12/44 at 60.5s
+[hyperframes] snapshot: frame 13/44 at 65.3s
+[hyperframes] snapshot: frame 14/44 at 70s
+[hyperframes] snapshot: frame 15/44 at 7.8s
+[hyperframes] snapshot: frame 16/44 at 7.9s
+[hyperframes] snapshot: frame 17/44 at 8s
+[hyperframes] snapshot: frame 18/44 at 8.1s
+[hyperframes] snapshot: frame 19/44 at 8.2s
+[hyperframes] snapshot: frame 20/44 at 17.8s
+[hyperframes] snapshot: frame 21/44 at 17.9s
+[hyperframes] snapshot: frame 22/44 at 18s
+[hyperframes] snapshot: frame 23/44 at 18.1s
+[hyperframes] snapshot: frame 24/44 at 18.2s
+[hyperframes] snapshot: frame 25/44 at 26.8s
+[hyperframes] snapshot: frame 26/44 at 26.9s
+[hyperframes] snapshot: frame 27/44 at 27s
+[hyperframes] snapshot: frame 28/44 at 27.1s
+[hyperframes] snapshot: frame 29/44 at 27.2s
+[hyperframes] snapshot: frame 30/44 at 42.8s
+[hyperframes] snapshot: frame 31/44 at 42.9s
+[hyperframes] snapshot: frame 32/44 at 43s
+[hyperframes] snapshot: frame 33/44 at 43.1s
+[hyperframes] snapshot: frame 34/44 at 43.2s
+[hyperframes] snapshot: frame 35/44 at 55.8s
+[hyperframes] snapshot: frame 36/44 at 55.9s
+[hyperframes] snapshot: frame 37/44 at 56s
+[hyperframes] snapshot: frame 38/44 at 56.1s
+[hyperframes] snapshot: frame 39/44 at 56.2s
+[hyperframes] snapshot: frame 40/44 at 64.8s
+[hyperframes] snapshot: frame 41/44 at 64.9s
+[hyperframes] snapshot: frame 42/44 at 65s
+[hyperframes] snapshot: frame 43/44 at 65.1s
+[hyperframes] snapshot: frame 44/44 at 65.2s
+   Revision: none (inputs-changed)
+   State: /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/.hyperframes/video-state.json
+
+◇  44 snapshots saved to /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/beat-01-at-0.3s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/beat-02-at-4s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/beat-03-at-8.3s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/beat-04-at-13s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/beat-05-at-18.3s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/beat-06-at-22.5s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/beat-07-at-27.3s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/beat-08-at-35s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/beat-09-at-43.3s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/beat-10-at-49.5s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/beat-11-at-56.3s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/beat-12-at-60.5s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/beat-13-at-65.3s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/beat-14-at-70s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/seam-01-1-at-7.8s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/seam-01-2-at-7.9s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/seam-01-3-at-8s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/seam-01-4-at-8.1s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/seam-01-5-at-8.2s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/seam-02-1-at-17.8s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/seam-02-2-at-17.9s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/seam-02-3-at-18s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/seam-02-4-at-18.1s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/seam-02-5-at-18.2s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/seam-03-1-at-26.8s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/seam-03-2-at-26.9s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/seam-03-3-at-27s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/seam-03-4-at-27.1s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/seam-03-5-at-27.2s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/seam-04-1-at-42.8s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/seam-04-2-at-42.9s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/seam-04-3-at-43s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/seam-04-4-at-43.1s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/seam-04-5-at-43.2s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/seam-05-1-at-55.8s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/seam-05-2-at-55.9s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/seam-05-3-at-56s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/seam-05-4-at-56.1s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/seam-05-5-at-56.2s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/seam-06-1-at-64.8s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/seam-06-2-at-64.9s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/seam-06-3-at-65s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/seam-06-4-at-65.1s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/seam-06-5-at-65.2s.png
+   Beat sheet (settled frame per scene): /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/review-beats.jpg
+     0.3s motion-hook + beat:hook · 4s motion-hook mid · 8.3s motion-offer + beat:offer · 13s motion-offer mid · 18.3s motion-client + beat:client · 22.5s motion-client mid · 27.3s motion-investigation + beat:investigation · 35s motion-investigation mid · 43.3s motion-ai + beat:ai · 49.5s motion-ai mid · 56.3s motion-activity + beat:activity · 60.5s motion-activity mid · 65.3s motion-download + beat:download · 70s motion-download mid
+   Seam 1 at 8s (motion-hook -> motion-offer): /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/review-seam-01.jpg
+   Seam 2 at 18s (motion-offer -> motion-client): /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/review-seam-02.jpg
+   Seam 3 at 27s (motion-client -> motion-investigation): /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/review-seam-03.jpg
+   Seam 4 at 43s (motion-investigation -> motion-ai): /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/review-seam-04.jpg
+   Seam 5 at 56s (motion-ai -> motion-activity): /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/review-seam-05.jpg
+   Seam 6 at 65s (motion-activity -> motion-download): /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/review-seam-06.jpg
+   Phone sheet (beats at 360 px wide): /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/motion/review/v4-storyboard/review-phone.jpg

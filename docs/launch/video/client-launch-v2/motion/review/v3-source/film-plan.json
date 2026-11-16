@@ -1,0 +1,109 @@
+{
+  "treatment": "motion",
+  "duration": 56.0,
+  "shots": [
+    {
+      "id": "hook",
+      "start": 0.0,
+      "duration": 3,
+      "title": [
+        "Still counting",
+        "query tabs?"
+      ],
+      "capture": null,
+      "voice": null,
+      "environment": ""
+    },
+    {
+      "id": "room",
+      "start": 3.0,
+      "duration": 4,
+      "title": [
+        "Keep your investigation",
+        "together."
+      ],
+      "capture": null,
+      "voice": null,
+      "environment": ""
+    },
+    {
+      "id": "client",
+      "start": 7.0,
+      "duration": 5,
+      "title": [
+        "Free. Open source.",
+        "Local first."
+      ],
+      "capture": null,
+      "voice": null,
+      "environment": ""
+    },
+    {
+      "id": "workflow",
+      "start": 12.0,
+      "duration": 9,
+      "title": [
+        "Browse. Query. Review."
+      ],
+      "capture": "browse",
+      "voice": null,
+      "environment": "Real TableIQ development capture · Synthetic data · Edited time"
+    },
+    {
+      "id": "byok",
+      "start": 21.0,
+      "duration": 6,
+      "title": [
+        "AI, with your own key"
+      ],
+      "capture": null,
+      "voice": null,
+      "environment": ""
+    },
+    {
+      "id": "ask",
+      "start": 27.0,
+      "duration": 10,
+      "title": [
+        "Ask. Review the SQL."
+      ],
+      "capture": "ask",
+      "voice": null,
+      "environment": "Verified native v0.8.17 SQL excerpts · Full SQL in source"
+    },
+    {
+      "id": "result",
+      "start": 37.0,
+      "duration": 7,
+      "title": [
+        "You choose when to run"
+      ],
+      "capture": "result",
+      "voice": null,
+      "environment": "Verified native AI example · After manual Run · Still"
+    },
+    {
+      "id": "activity",
+      "start": 44.0,
+      "duration": 6,
+      "title": [
+        "See your agent’s queries"
+      ],
+      "capture": "mcp",
+      "voice": null,
+      "environment": "Development capture · Local MCP client · Separate sample session"
+    },
+    {
+      "id": "download",
+      "start": 50.0,
+      "duration": 6,
+      "title": [
+        "Get the Mac",
+        "developer preview"
+      ],
+      "capture": null,
+      "voice": null,
+      "environment": ""
+    }
+  ]
+}

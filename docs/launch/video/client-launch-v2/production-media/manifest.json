@@ -154,5 +154,33 @@
     "duration": 8,
     "caption": "Verified native AI example · After manual Run · Still",
     "sha256": "72a029a3035ff1bfa137eab438f173e36ecc2b7b5574829aed4c68b4f53d825f"
+  },
+  "manual-query": {
+    "kind": "real-app-recording",
+    "source_capture": "capture-manual-v4",
+    "source_range_seconds": [
+      0,
+      6.066667
+    ],
+    "crop": [
+      430,
+      110,
+      2110,
+      800
+    ],
+    "output_size": [
+      1920,
+      728
+    ],
+    "duration": 16,
+    "caption": "Real TableIQ development capture · Synthetic data · Manual SQL and Run",
+    "sha256": "c995e38968905408948257d7da1fdcacd5a9ec3da0e67ef53760fb9bad741914",
+    "action_reference": {
+      "input_start": 0.803,
+      "query_ready": 1.779,
+      "run": 5.102,
+      "result": 5.732
+    },
+    "framing": "One continuous source crop; genuine final result frame held to16s. Actual UI input and Run against the real Rust backend."
   }
 }

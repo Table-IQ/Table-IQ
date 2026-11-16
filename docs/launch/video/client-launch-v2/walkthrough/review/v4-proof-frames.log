@@ -1,0 +1,25 @@
+◆  Capturing 8 frames at [29s, 31s, 32.2s, 33.5s, 37s, 41.5s, 53s, 70s] from walkthrough
+[hyperframes] browserGpuMode probe → hardware (WebGL renderer vendor="Google Inc. (Apple)" renderer="ANGLE (Apple, ANGLE Metal Renderer: Apple M4, Unspecified Version)")
+
+   Fonts: 3 loaded
+[hyperframes] snapshot: frame 1/8 at 29s
+[hyperframes] snapshot: frame 2/8 at 31s
+[hyperframes] snapshot: frame 3/8 at 32.2s
+[hyperframes] snapshot: frame 4/8 at 33.5s
+[hyperframes] snapshot: frame 5/8 at 37s
+[hyperframes] snapshot: frame 6/8 at 41.5s
+[hyperframes] snapshot: frame 7/8 at 53s
+[hyperframes] snapshot: frame 8/8 at 70s
+   Revision: none (inputs-changed)
+   State: /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/walkthrough/.hyperframes/video-state.json
+
+◇  8 snapshots saved to /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/walkthrough/review/v4-proof-frames
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/walkthrough/review/v4-proof-frames/frame-00-at-29s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/walkthrough/review/v4-proof-frames/frame-01-at-31s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/walkthrough/review/v4-proof-frames/frame-02-at-32.2s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/walkthrough/review/v4-proof-frames/frame-03-at-33.5s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/walkthrough/review/v4-proof-frames/frame-04-at-37s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/walkthrough/review/v4-proof-frames/frame-05-at-41.5s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/walkthrough/review/v4-proof-frames/frame-06-at-53s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/walkthrough/review/v4-proof-frames/frame-07-at-70s.png
+   /Users/rudy/orca/workspaces/Table-IQ/rusalka/docs/launch/video/client-launch-v2/walkthrough/review/v4-proof-frames/contact-sheet.jpg (grid view for AI review)
