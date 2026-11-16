@@ -54,7 +54,9 @@ use the database client or built-in AI.
 
 ### Watch the everyday workflow
 
-[![Watch the 75-second TableIQ walkthrough](website/public/video/tableiq-launch-walkthrough-v5-poster.jpg)](https://tableiq.ideolyst.com/#demo)
+**75-second narrated walkthrough** — play below and unmute to hear the narration.
+
+https://github.com/user-attachments/assets/98294dd5-2227-401f-8d75-5b84bc928e89
 
 [Watch the 75-second walkthrough](https://tableiq.ideolyst.com/video/tableiq-launch-walkthrough-v5.mp4):
 open more tabs, inspect relationships, enter SQL, click Run and check two matching orders.
@@ -62,18 +64,25 @@ Optional BYOK AI follows, using a labelled previously verified native example; t
 
 Real development UI connected to the Rust backend, a labelled native v0.8.17 AI still,
 synthetic data and edited time; no speed benchmark or general AI accuracy claim.
-[Compare all three launch cuts](https://tableiq.ideolyst.com/launch-films/).
 [Try the same task without an AI key or agent](docs/launch/demo/README.md).
 
 <details>
-<summary>Optional coding-agent / MCP demonstrations</summary>
+<summary>Watch the other two versions: motion and story (75 seconds each)</summary>
 
-- [Huashu Motion · 56 seconds](https://tableiq.ideolyst.com/video/tableiq-huashu-motion-56s.mp4)
-- [Take One · 50 seconds](https://tableiq.ideolyst.com/video/tableiq-take-one-story-50s.mp4)
-- [Argo MCP walkthrough · 56 seconds](https://tableiq.ideolyst.com/video/tableiq-argo-mcp-56s.mp4)
+**Motion version · music and on-screen text**
 
-These advanced examples also use native v0.8.15 footage and synthetic data.
-[Dataset and expected answer](docs/launch/demo/README.md).
+https://github.com/user-attachments/assets/d656cbae-20ce-4627-b6d9-5ee7627645a9
+
+[Watch or download the motion version](https://tableiq.ideolyst.com/video/tableiq-launch-motion-v5.mp4)
+
+**Story version · narration**
+
+https://github.com/user-attachments/assets/adedfc18-bab7-419d-9d56-e24cfa40f68b
+
+[Watch or download the story version](https://tableiq.ideolyst.com/video/tableiq-launch-story-v5.mp4)
+
+Both use the same reviewed footage and synthetic data as the walkthrough.
+[Compare all three versions, with captions](https://tableiq.ideolyst.com/launch-films/).
 
 </details>
 
