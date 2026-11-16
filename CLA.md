@@ -1,6 +1,6 @@
 # TableIQ Contributor License Agreement
 
-Version 1.0
+Version 1.1
 
 This agreement is between you (the contributor) and **Rudresh Narwal**, the
 recipient of the licenses below, for contributions to
@@ -52,17 +52,23 @@ additional warranty.
 
 ## 6. Acceptance and public record
 
-Read this agreement before signing. Accept it by posting the following exact
-comment on your TableIQ pull request when prompted by CLA Assistant:
+Read this agreement before signing. On your TableIQ pull request, follow the
+signing link posted by **CLA Assistant**, authenticate with your own GitHub
+account and explicitly accept the displayed agreement. A maintainer's review or
+merge does not accept this agreement on your behalf.
 
-> I have read the CLA Document and I hereby sign the CLA
+The signing page displays the version of the agreement being accepted. Hosted
+CLA Assistant stores the acceptance record, associated GitHub identity and
+signing date; the repository owner can review and export those records. The
+pull request's signing prompt and status are public. See
+[CLA Assistant's terms and privacy information](https://gist.github.com/CLAassistant/3a73e4cd729c9d0a6e30).
+Do not post addresses, credentials or other private information on the pull request.
 
-Your GitHub identity, signing comment, date and associated pull request will form
-a public acceptance record. Signature metadata is stored in this public
-repository's `cla-signatures` branch. Do not include your address or other private
-information in the comment. Signing covers the contributions in the pull request where you sign and your
+Signing covers the contributions in the pull request where you sign and your
 subsequent contributions under this version; it does not cover previously merged
-contributions. A materially changed agreement requires fresh acceptance.
+contributions. A changed agreement requires fresh acceptance. The recipient's
+own GitHub account, `RudreshNarwal`, is exempt from signing; that exemption does
+not sign or accept an agreement for any other contributor.
 
 ## 7. Governing law and jurisdiction
 
