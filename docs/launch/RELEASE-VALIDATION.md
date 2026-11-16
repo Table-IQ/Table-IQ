@@ -4,6 +4,12 @@
 
 The October batch below predates the owner’s November public-preview authorization. Passing source tests does not establish that a signed release exists.
 
+## November 16 follow-up
+
+[Native Gemini acceptance](research/2026-11-16-native-ai-acceptance.md) passed one installed 0.8.17 workflow: natural-language request, actual generated SQL, review, manual Run and the exact two expected rows. The synthetic fixture includes a duplicate payment. A genuine result screenshot is published with the test. This establishes one outcome, not general model accuracy; other providers, manual Settings key entry and the original 401 cause retain their own limits. Existing films remain configuration-only for built-in AI.
+
+Production website deployment through GitHub Actions was also verified after adding a scoped Cloudflare API token and account variable. [Run 43732899954](https://github.com/Table-IQ/Table-IQ/actions/runs/43732899954) deployed `tableiq-website` successfully on November 16. The following November 15 records are historical.
+
 ## Keychain patch — 0.8.17
 
 Published [v0.8.17](https://github.com/Table-IQ/Table-IQ/releases/tag/preview-v0.8.17), app source `25bf8d31bb663dd7f6f85fe080ba5cb95c750e71`. The unsigned arm64 DMG is **27,385,007 bytes**, SHA-256 `b7cf66885a6b86216ef5f2dee059fa16404f3fc319100856dda779ddd93eca0a`; anonymous download returned HTTP 200 and matched that digest. The packaged binary matched the read-only mounted installer. Minimum macOS remains 11; tested OS remains 27.0.1 only.
@@ -37,7 +43,7 @@ The owner authorized an **unsigned public Apple silicon developer preview**, pub
 | SQL Open With | Native packaged v0.8.15 warm and cold `.sql` paths verified: a script opens in a query tab for review/manual Run, not automatic execution. This is prior-version evidence, not a completed v0.8.16 native rerun |
 | MCP packaged app | Native v0.8.15 actual local Codex discovery/schema/bounded SELECT against synthetic SQLite returned two rows totalling 7,300 cents. A separate manual Python probe received a read-only refusal. Neither is a production-database test or a claim that Codex issued that refusal probe |
 | AI context/provider source | Source checks cover engine/dialect/known and unknown relationships, provider response/error handling and editable model IDs. Generate inserts SQL for review; Run remains manual. No measured model-output accuracy improvement claimed |
-| Native Gemini | HTTP 401 remains unresolved pending credential comparison. Two of four tiny direct Google API probes completed; those are transport outcomes, not native-workflow acceptance or accuracy evaluation. Never include credentials or raw credential-bearing logs in this record |
+| Native Gemini | November 16: one installed 0.8.17 generation/review/manual-Run case passed; see the follow-up above. The earlier 401 cause remains unproven; two of four older direct probes do not establish a general accuracy rate. No credentials or raw credential-bearing logs are published |
 | Native v0.8.16 automation | Blocked awaiting the OS Accessibility permission change. Do not label attempted clicks/screenshots as completed acceptance; repeat the relevant checks after permission is granted |
 | Update notifications | Source checks cover release selection and opt-out; notifications are nonmodal and never install/restart the app. The v0.8.15 native manual check was verified. Packaged manual replacement/preservation is a separate open gate |
 | Website | Nine tests, typecheck and production build passed. Three real MP4s/posters/caption tracks deployed. Live browser checks verified native video controls, actual 55.9/56/50 s durations and seeking to 30 seconds for all three; `/video/*` advertises byte ranges and serves HTTP 206. At 390 px mobile width, scroll width is 390 px with no horizontal overflow; download links v0.8.16 |

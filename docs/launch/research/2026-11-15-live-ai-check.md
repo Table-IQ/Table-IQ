@@ -17,4 +17,6 @@ OpenAI, Claude and OpenRouter IDs/protocols were verified from current primary d
 
 ## Native verification status
 
+**November 16 follow-up:** [One genuine native 0.8.17 Gemini workflow passed](2026-11-16-native-ai-acceptance.md): generated SQL, manual review/Run and the expected two result rows. The known credential was installed exactly through OS secure storage after unreliable text-field automation. The old value was not read or compared, so the original 401 cause remains unproven. The paragraph below retains the earlier failed check; it is not the latest acceptance result.
+
 The supplied key still authenticated direct Google catalog requests, but the native saved-key request returned HTTP 401 (invalid API key). The cause is unproven: a safe equality check of the Keychain entry requires the owner to allow the macOS prompt. After installing 0.8.16, Orca reported Accessibility access blocked despite permissions showing granted. Native AI generation, manual execution and its success screenshot remain pending those operating-system access steps. Failed recordings are not release assets. The published films demonstrate actual external-agent MCP and manual SQL workflows, not built-in AI success.
