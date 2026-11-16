@@ -7,7 +7,8 @@ Shared system for the homepage, guides and licensing. Tokens live in `brand/toke
 - Genre: modern-minimal. Shape: product workbench, documentation as long documents.
 - Brand-derived Ledger Ink / Pearl. Supplied logo and product interface previews stay unchanged; captions distinguish illustrations from native recordings.
 - Dark default, explicit light/dark preference retained. Instrument Sans for display/body; IBM Plex Mono for code only.
-- Main page: split client-category hero, real workflow demo, feature tabs, connect/query/review steps, free-use band, sourced client comparison, optional BYOK configuration, toolkit, engine index, visible MCP Activity section with collapsed advanced-agent setup, FAQ and download instructions.
+- Main page: centered client-category hero above one wide product preview, real workflow demo, feature tabs, connect/query/review steps, free-use band, sourced client comparison, optional BYOK configuration, toolkit, engine index, visible MCP Activity section with collapsed advanced-agent setup, FAQ and download instructions.
+- The contained floating header shows four desktop section links; the mobile hamburger retains all destinations. Hero copy has one short paragraph, a primary Mac download action, a demo link and one consolidated platform/preview note.
 - One container: 1440px including 64px desktop gutters. Grids use minmax(0, 1fr). One 32px column gap outside hero.
 - Copy leads with the free, open-source Mac database client and the browse/query/review workflow. BYOK AI is secondary; external-agent setup is optional and lower on the page. No claim of faster queries, exclusive AI/MCP or proven AI accuracy.
 - Main headline: 500 weight, one color, no accented word. Section heads 40–56px. Body at least 16px.

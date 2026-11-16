@@ -1,6 +1,6 @@
 # TableIQ Roadmap
 
-_Last updated 2026-11-15 · published preview v0.8.17 · companion: [GTM.md](GTM.md)_
+_Last updated 2026-11-16 · published preview v0.8.17 · companion: [GTM.md](GTM.md)_
 
 The active priority is an everyday Mac database client for developers switching from TablePlus or DBeaver: browse data, run SQL and review edits, with optional AI using the developer's own key. MCP is an advanced integration. The free app has no paid SQL/table-tab limit, engine paywall or device-count paywall. DBeaver users' reports of heaviness are a research lead; a speed or memory advantage needs a matched measurement.
 
@@ -29,8 +29,10 @@ Prioritize first-run proof, three useful observations and the top blocker over e
 - [x] Public unsigned Apple silicon v0.8.17 DMG, matching source, notices and checksums. Declared minimum macOS 11; tested here only on macOS 27.0.1.
 - [x] Client-first website/README, a 55-second real client introduction, and three advanced MCP examples. Footage is v0.8.15; AI is configuration-only.
 - [x] .sql Open With, visible MCP Activity, Settings/update checks and compatible Keychain service rename. See the release record for exact native/source evidence.
+- [x] Production website deployment through GitHub Actions, verified November 16 using a scoped Cloudflare token. Main-branch protection and required CI remain enforced.
 - [ ] Clean/older-Mac acceptance, full packaged upgrade preservation, signing/notarization and remaining native checks.
-- [ ] Successful native AI generation, measured comparative performance and voluntary repeated use.
+- [x] One [native Gemini generation → review → manual Run task](launch/research/2026-11-16-native-ai-acceptance.md) passed in 0.8.17 on November 16: the expected orders 102/104 and 7,300 cents, including a duplicate-payment fixture.
+- [ ] Broader AI correctness evaluation, measured comparative performance and voluntary repeated use.
 - [ ] Owner-activated funding checkout and demonstrated willingness to pay.
 
 ## Operating decisions
