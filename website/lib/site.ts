@@ -3,9 +3,9 @@ export const SITE = "https://tableiq.ideolyst.com";
 export const GITHUB = "https://github.com/Table-IQ/Table-IQ";
 export const NAME = "TableIQ";
 
-// Update only after the release and exact asset are verified publicly accessible.
-// The release page remains the fallback until a DMG URL is confirmed.
-const PREVIEW_VERSION = "0.8.17";
+// The production deploy sets this to the release currently published as Latest, so the
+// links follow each release automatically. The literal is only for local and PR builds.
+const PREVIEW_VERSION = process.env.NEXT_PUBLIC_PREVIEW_VERSION || "0.8.17";
 export const PREVIEW = {
   version: PREVIEW_VERSION,
   tag: `preview-v${PREVIEW_VERSION}`,

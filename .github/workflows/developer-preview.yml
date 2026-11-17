@@ -1,18 +1,55 @@
 name: Mac developer preview
 
+# Publishes a release whenever main carries a version that has no release yet, i.e. after
+# merging a PR made with `scripts/bump-version.sh x.y.z`. Other merges build nothing, so
+# installed apps are only told about real version changes.
+# Order: build + publish -> redeploy the website (download link) -> delete older releases.
 on:
   push:
-    tags: ['preview-v*']
+    branches: [main]
+    paths: [package.json]
   workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: mac-preview
+  cancel-in-progress: false
+
 jobs:
-  mac-preview:
-    runs-on: macos-latest
+  check:
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      publish: ${{ steps.v.outputs.publish }}
     steps:
       - uses: actions/checkout@v4
+      - id: v
+        run: |
+          v=$(jq -r .version package.json)
+          [ "$(jq -r .version src-tauri/tauri.conf.json)" = "$v" ] &&
+            grep -q "^version = \"$v\"" src-tauri/Cargo.toml ||
+            { echo "Versions disagree with package.json ($v); use scripts/bump-version.sh" >&2; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/preview-v$v" >/dev/null; then
+            echo "preview-v$v already exists; nothing to publish."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.publish == 'true'
+    runs-on: macos-latest
+    env:
+      V: ${{ needs.check.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
@@ -32,12 +69,58 @@ jobs:
       - name: Build Apple silicon developer preview
         # This workflow intentionally has no Developer ID/notarization secrets.
         run: pnpm tauri build --target aarch64-apple-darwin --bundles app,dmg
-      - name: Package as build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: tableiq-mac-developer-preview
-          path: |
-            src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/TableIQ*.dmg
-          if-no-files-found: error
-      # Publication is deliberate: attach matching source, notices, checksums and
-      # preview limitations to a prerelease after reviewing this exact candidate.
+      - name: Package release files
+        run: |
+          bundle=src-tauri/target/aarch64-apple-darwin/release/bundle
+          app=$bundle/macos/TableIQ.app
+          mkdir dist
+          cp "$bundle/dmg/TableIQ_${V}_aarch64.dmg" dist/
+          scripts/release-notices.sh "dist/TableIQ-$V-notices.zip"
+          git archive --format=zip --prefix="TableIQ-$V/" -o "dist/TableIQ-$V-source.zip" HEAD
+          exe=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")
+          dmg="dist/TableIQ_${V}_aarch64.dmg"
+          jq -n --arg v "$V" --arg sha "$GITHUB_SHA" --arg run "$GITHUB_RUN_ID" \
+            --arg min "$(jq -r .bundle.macOS.minimumSystemVersion src-tauri/tauri.conf.json)" \
+            --argjson bytes "$(stat -f %z "$dmg")" \
+            --arg dmgSha "$(shasum -a 256 "$dmg" | cut -d' ' -f1)" \
+            --arg binSha "$(shasum -a 256 "$app/Contents/MacOS/$exe" | cut -d' ' -f1)" \
+            --arg os "$(sw_vers -productVersion)" \
+            '{version: $v, sourceCommit: $sha, architecture: "arm64", minimumMacOS: $min,
+              builtOn: "GitHub Actions macOS \($os)", dmgBytes: $bytes, dmgSha256: $dmgSha,
+              binarySha256: $binSha, signing: "Ad-hoc only; not Developer ID signed or notarized",
+              buildRun: $run}' > dist/BUILD-INFO.json
+          (cd dist && shasum -a 256 * > SHA256SUMS.txt)
+          ls -l dist
+      - name: Publish release
+        run: |
+          {
+            echo "## TableIQ $V — Mac developer preview"
+            echo
+            echo "Apple silicon only · **unsigned and not notarized** · manual installation. Quit TableIQ, open \`TableIQ_${V}_aarch64.dmg\` and replace the app in Applications. Start with local or disposable data."
+            echo
+            # The CHANGELOG entry for this version, if one was written.
+            awk -v v="$V" '/^## /{p = index($0, "## " v " ") == 1 || $0 == "## " v; next} p' CHANGELOG.md
+            echo
+            echo "Matching source, third-party notices, BUILD-INFO.json and SHA256SUMS.txt are attached."
+          } > notes.md
+          gh release create "preview-v$V" dist/* --target "$GITHUB_SHA" --latest \
+            --title "TableIQ $V — Mac developer preview (Apple silicon, unsigned)" \
+            --notes-file notes.md --generate-notes
+
+  website:
+    needs: build
+    uses: ./.github/workflows/deploy-website.yml
+    secrets: inherit
+
+  cleanup:
+    # Only after the website links the new DMG, so no public download link breaks.
+    needs: website
+    runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Delete older releases (their tags stay, for source provenance)
+        run: |
+          gh release list --repo "$GITHUB_REPOSITORY" --json tagName,isLatest,isDraft \
+            -q '.[] | select((.isLatest | not) and (.isDraft | not) and (.tagName | startswith("preview-v"))) | .tagName' |
+            xargs -r -n1 gh release delete --repo "$GITHUB_REPOSITORY" --yes
