@@ -15,6 +15,8 @@ on:
       - '.github/workflows/deploy-website.yml'
       - '.gitignore'
   workflow_dispatch:
+  # Called by developer-preview.yml right after it publishes a release.
+  workflow_call:
 
 permissions:
   contents: read
@@ -83,7 +85,12 @@ jobs:
           fi
       - name: Build static website
         working-directory: website
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          # Link whichever release is actually published as Latest (see lib/site.ts).
+          export NEXT_PUBLIC_PREVIEW_VERSION=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q '.tagName | ltrimstr("preview-v")')
+          echo "Linking release $NEXT_PUBLIC_PREVIEW_VERSION"
           npm ci
           npm run build
           python3 scripts/validate.py

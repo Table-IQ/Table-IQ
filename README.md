@@ -27,8 +27,8 @@
 
 ![TableIQ — Your databases. Your client. Open source.](docs/brand/readme-banner.png)
 
-[**Download for Mac · Apple silicon · v0.8.17**](https://github.com/Table-IQ/Table-IQ/releases/download/preview-v0.8.17/TableIQ_0.8.17_aarch64.dmg)
-— [Release notes and checksums](https://github.com/Table-IQ/Table-IQ/releases/tag/preview-v0.8.17)
+[**Download for Mac · Apple silicon**](https://github.com/Table-IQ/Table-IQ/releases/latest)
+— the latest release page has the DMG, release notes and checksums
 · [Website](https://tableiq.ideolyst.com)
 
 > **Developer preview:** the Mac build is unsigned and not notarized. Windows,
@@ -198,7 +198,7 @@ human staged-edit workflow. [Set up your first agent query](docs/launch/POSTGRES
 
 ## Get started
 
-1. [Download the v0.8.17 Apple silicon preview](https://github.com/Table-IQ/Table-IQ/releases/tag/preview-v0.8.17).
+1. [Download the latest Apple silicon preview](https://github.com/Table-IQ/Table-IQ/releases/latest).
    Quit an existing TableIQ instance, open the DMG and drag TableIQ into Applications.
 2. Open TableIQ. Because this preview is unsigned, macOS may require you to approve
    opening it. Check the release notes before installing.
