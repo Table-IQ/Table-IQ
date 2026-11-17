@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.8.18 — 2026-11-17 (developer preview)
+
+### Fixed
+- Editing an open connection's settings (host, port, database, user, password, SSL or SSH) now applies them right away. Previously the open tabs kept reading the old server until you disconnected or restarted. Connect, ⌘↵, Enter in a field and Save changes now save the settings and reconnect, and the open tables reload from the new server. If the database itself changed, its old tabs close; unsaved grid edits are confirmed first; a failed reconnect shows the error and the reconnect banner. Changing only the name, color or environment just saves. (#51, thanks @anshul89237)
+
+### Changed
+- Pressing Enter in a connection-sheet field now connects, like the Connect button.
+
 ## 0.8.17 — 2026-11-15 (developer preview)
 
 ### Changed
