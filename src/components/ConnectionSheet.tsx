@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type ClipboardEvent, type ReactNode } from "react";
+import { useEffect, useId, useState, type ClipboardEvent, type KeyboardEvent, type ReactNode } from "react";
 import type { ConnConfig, Engine } from "../lib/commands";
 import { defaultSshConfig, type SshConfig } from "../lib/ssh";
 import { CONN_ENVS, envTone, type ConnEnv } from "../lib/connEnv";
@@ -21,6 +21,9 @@ export interface ConnectionSheetProps {
   mode: "new" | "edit";
   /** Saved settings can change while connected; replacing/deleting a live session cannot. */
   inUse?: boolean;
+  /** An open connection whose form now differs in how it connects (host, port, …):
+   *  Connect then saves and reconnects it with the new settings. */
+  canReconnect?: boolean;
   form: ConnConfig;
   dirty: boolean;
   status: SheetStatus;
@@ -118,6 +121,9 @@ function Section({ children }: { children: ReactNode }) {
   return <div className="mt-3 mb-[7px] text-[10.5px] font-medium uppercase tracking-[0.06em] text-muted">{children}</div>;
 }
 
+/** Input types where Enter means "connect" (not checkboxes, radios, file pickers). */
+const ENTER_TYPES = new Set(["text", "password", "number", "search", "url", "email", "tel"]);
+
 export function ConnectionSheet(p: ConnectionSheetProps) {
   const { form, mode, status } = p;
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
@@ -154,6 +160,17 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
   const firstErr = (Object.keys(errs) as (keyof ConnFieldErrors)[])[0];
   const blockReason = firstErr ? `${ERR_LABEL[firstErr]}: ${errs[firstErr]}` : undefined;
   const busy = status.kind === "busy";
+  const connectDisabled = !!blockReason || busy || (!!p.inUse && !p.canReconnect);
+  /** Enter in a field connects (or, for an open connection with changed settings,
+   *  reconnects), like the Connect button. The URL field handles its own Enter. */
+  const onBodyKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== "Enter" || e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+    if (e.nativeEvent.isComposing) return;
+    const t = e.target as HTMLElement;
+    if (!(t instanceof HTMLInputElement) || !ENTER_TYPES.has(t.type)) return;
+    e.preventDefault();
+    if (!connectDisabled) p.onConnect();
+  };
   const isFile = form.engine === "sqlite" || form.engine === "duckdb";
   // The two engines other products speak the wire protocol of; both also take an SSL mode.
   const wireBase = form.engine === "postgres" || form.engine === "mysql" ? form.engine : null;
@@ -304,8 +321,8 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
       </div>
 
       {/* Body */}
-      <div className="min-w-0 flex-1 overflow-auto px-4 py-3">
-        {p.inUse && <p className="mb-3 text-[12px] text-muted">This connection is open. Save changes here, then disconnect and reconnect to apply them.</p>}
+      <div className="min-w-0 flex-1 overflow-auto px-4 py-3" onKeyDown={onBodyKeyDown}>
+        {p.inUse && <p className="mb-3 text-[12px] text-muted">This connection is open. Change its settings, then Connect (or press Enter) to reconnect with them.</p>}
         <label className="flex h-[32px] items-center gap-2 rounded-lg border border-dashed border-border bg-surface px-2.5 focus-within:border-primary">
           <IconLink size={13} className="shrink-0 text-muted" />
           <input
@@ -787,7 +804,7 @@ export function ConnectionSheet(p: ConnectionSheetProps) {
           <button type="button" onClick={p.onSave} disabled={!!blockReason || busy} title={blockReason} className={btn}>
             {mode === "edit" ? "Save changes" : "Save"} <kbd className={kbd}>⌘S</kbd>
           </button>
-          <button type="button" onClick={p.onConnect} disabled={!!blockReason || busy || p.inUse} title={p.inUse ? "Disconnect this connection before reconnecting with updated settings" : blockReason} className={btnPrimary}>
+          <button type="button" onClick={p.onConnect} disabled={connectDisabled} title={blockReason ?? (p.inUse ? (p.canReconnect ? "Save and reconnect with the new settings" : "Already connected — change a connection setting to reconnect") : undefined)} className={btnPrimary}>
             Connect <kbd className={kbd}>⌘↵</kbd>
           </button>
         </div>

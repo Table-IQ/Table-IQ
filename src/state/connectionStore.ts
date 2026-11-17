@@ -66,6 +66,9 @@ interface ConnectionState {
   fks: Record<string, ForeignKey[]>;
   /** Lazy cache: `${connId}.${schema}.${table}` → its unfiltered meta. */
   tableMeta: Record<string, TableMeta>;
+  /** Connection id → how many times its session was rebuilt with new settings. Part of
+   *  the shell's React key, so an applied edit remounts it and every view refetches. */
+  epochs: Record<string, number>;
   setSaved: (saved: ConnConfig[]) => void;
   /** Make a (new or re-opened) connection active; other open sessions stay open. */
   openSession: (info: ConnectedInfo, schema: SchemaModel | null) => void;
@@ -101,6 +104,7 @@ export const useConnections = create<ConnectionState>((set, get) => ({
   editsPending: false,
   fks: {},
   tableMeta: {},
+  epochs: {},
   setSaved: (saved) => set({ saved }),
   // A freshly active connection is, by definition, no longer disconnected.
   openSession: (info, schema) => {
@@ -364,6 +368,44 @@ export function cancelConnecting(): void {
   if (useConnections.getState().connecting?.stage === "switch") return;
   gen++;
   useConnections.setState({ connecting: null });
+}
+
+/** Rebuild an open session from its (just saved) config, so an edited host, port,
+ *  database, credentials, SSH tunnel, … take effect without a manual disconnect.
+ *  The old backend session (and any tunnel) is dropped first, then the connection is
+ *  reopened and its schema reloaded; bumping `epochs[id]` remounts the shell so the open
+ *  tabs refetch against the new server. When the database itself changed, the old
+ *  database's tabs are dropped (as a database switch does) so they never rebind.
+ *  Resolves `false` if the session was closed meanwhile. A failed reconnect leaves the
+ *  session open but flagged `disconnected` (the reconnect banner) and rethrows. */
+export async function reconnectSession(id: string, opts: { resetTabs?: boolean } = {}): Promise<boolean> {
+  const isOpen = () => useConnections.getState().open.some((o) => o.info.id === id);
+  if (!isOpen()) return false;
+  await disconnect(id).catch((e) => logError("disconnect before reconnect", e));
+  clearMetaCaches(id);
+  try {
+    const info = await connect(id);
+    if (!isOpen()) {
+      // Closed while reconnecting: the backend session we just rebuilt is an orphan.
+      await disconnect(id).catch(() => {});
+      return false;
+    }
+    const schema = hasSchema(info.engine) ? await listObjects(id) : null;
+    markConnected(id);
+    if (opts.resetTabs) {
+      if (useConnections.getState().active?.id === id) useTabs.getState().reset();
+      persistForConnection(id, { tabs: [], activeKey: null, queryCount: 0 }, null);
+    }
+    useConnections.getState().updateSession(id, { info, schema });
+    useConnections.setState((s) => ({
+      epochs: { ...s.epochs, [id]: (s.epochs[id] ?? 0) + 1 },
+      disconnected: s.active?.id === id ? false : s.disconnected,
+    }));
+    return true;
+  } catch (e) {
+    if (useConnections.getState().active?.id === id) useConnections.getState().setDisconnected(true);
+    throw e;
+  }
 }
 
 /** Switch connection `id` to database `db`, tracking `connecting` (stage
