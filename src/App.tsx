@@ -14,16 +14,19 @@ import { UpdateNotice } from "./components/UpdateSettings";
 
 function Root() {
   const active = useConnections((s) => s.active);
+  const epoch = useConnections((s) => (active ? s.epochs[active.id] ?? 0 : 0));
   // Keyed by connection so switching sessions (connection rail) remounts the shell
-  // cleanly; its tabs re-hydrate from the per-connection persisted slice.
+  // cleanly; its tabs re-hydrate from the per-connection persisted slice. The epoch
+  // remounts it too when saved settings rebuild the session (reconnectSession).
+  const key = `${active?.id}:${epoch}`;
   const shell = !active ? (
     <ConnectionManager />
   ) : active.engine === "redis" ? (
-    <KvShell key={active.id} />
+    <KvShell key={key} />
   ) : active.engine === "mongodb" || active.engine === "elasticsearch" || active.engine === "meilisearch" || active.engine === "qdrant" || active.engine === "chroma" || active.engine === "weaviate" ? (
-    <DocShell key={active.id} />
+    <DocShell key={key} />
   ) : (
-    <MainShell key={active.id} />
+    <MainShell key={key} />
   );
   return <div className="tiq-app h-screen w-screen overflow-hidden text-text">{shell}</div>;
 }
