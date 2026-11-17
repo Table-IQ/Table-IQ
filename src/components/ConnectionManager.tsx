@@ -29,7 +29,7 @@ import { defaultSshConfig, type SshConfig } from "../lib/ssh";
 import { connNameFor, isServerUrlEngine, isUrlHost, normalizeUrlSecrets, toConnUrl, validateConn, withName } from "../lib/connUrl";
 import { PROFILES, applyPreset, presetFor } from "../lib/profiles";
 import { confirmDialog } from "../lib/confirmDialog";
-import { cancelConnecting, canLeaveSession, openConnection, useConnections, type ConnectingState } from "../state/connectionStore";
+import { cancelConnecting, canLeaveSession, openConnection, reconnectSession, useConnections, type ConnectingState } from "../state/connectionStore";
 import { getLastConnected } from "../lib/lastConnected";
 import { version as APP_VERSION } from "../../package.json";
 
@@ -101,6 +101,19 @@ export function isDirty(
     secrets.sshPassword !== savedSecrets.sshPassword ||
     secrets.sshKeyPass !== savedSecrets.sshKeyPass
   );
+}
+
+/** A saved edit that changes how the connection is reached (host, port, database,
+ *  credentials, SSH, SSL, engine, profile, …). Name, color and environment are only
+ *  labels: saving those alone never needs the live session rebuilt. */
+export function needsReconnect(
+  initial: ConnConfig,
+  next: ConnConfig,
+  secrets: Secrets,
+  savedSecrets: Secrets = NO_SECRETS,
+): boolean {
+  const strip = (c: ConnConfig): ConnConfig => ({ ...c, name: "", color: "", env: null });
+  return isDirty(strip(initial), strip(next), secrets, savedSecrets);
 }
 
 /**
@@ -280,6 +293,7 @@ export function ConnectionManager({ editor }: {
   // A duplicate has a fresh id, so it opens as "new".
   const mode = saved.some((s) => s.id === form.id) ? "edit" : "new";
   const inUse = useConnections((s) => s.open.some((session) => session.info.id === form.id));
+  const canReconnect = inUse && needsReconnect(initial, form, { password, sshPassword, sshKeyPass }, savedSecrets);
   const okToDiscard = async () =>
     !dirty ||
     (await confirmDialog("Discard unsaved changes?", "Unsaved changes", {
@@ -332,13 +346,29 @@ export function ConnectionManager({ editor }: {
     setStatus({ kind: "busy", msg: "Saving…" });
     try {
       const { cfg, pw } = settle(withName(form), password);
+      const typed = { password: pw, sshPassword, sshKeyPass };
+      const apply = inUse && needsReconnect(initial, cfg, typed, savedSecrets);
       await saveConnection(cfg, pw || undefined, effectiveSshSecret || undefined);
       await refresh();
       // Keep the secrets typed: Test sends them and has no keychain fallback.
       setForm(cfg);
       setInitial(cfg);
-      setSavedSecrets({ password: pw, sshPassword, sshKeyPass });
-      setStatus({ kind: "ok", msg: inUse ? "Saved. Reconnect to apply connection changes." : "Saved" });
+      setSavedSecrets(typed);
+      if (!apply) {
+        setStatus({ kind: "ok", msg: "Saved" });
+        return;
+      }
+      // The connection is open: rebuild its session so the new settings take effect now,
+      // instead of the open tabs silently reading the old server until a restart.
+      const guarded = useConnections.getState().active?.id === cfg.id;
+      if (guarded && !(await canLeaveSession("This connection has unsaved changes. Discard them and reconnect with the new settings?"))) {
+        setStatus({ kind: "ok", msg: "Saved. Reconnect to apply connection changes." });
+        return;
+      }
+      setStatus({ kind: "busy", msg: "Reconnecting…" });
+      const ok = await reconnectSession(cfg.id, { resetTabs: cfg.database !== initial.database });
+      setStatus({ kind: "ok", msg: ok ? "Saved and reconnected" : "Saved" });
+      if (ok) editor?.onClose();
     } catch (e) {
       setStatus({ kind: "err", msg: String(e) });
     }
@@ -346,9 +376,13 @@ export function ConnectionManager({ editor }: {
 
   const doConnect = async (cfg0: ConnConfig, pw0?: string) => {
     if (connecting) return; // one connect at a time — ConnRow disables other rows too
-    // Replacing a live pool under open tabs could send their queries to a different database.
-    // Save remains available; disconnect first before applying changed connection settings.
-    if (useConnections.getState().open.some((session) => session.info.id === cfg0.id)) return;
+    // An open connection is never reopened blind (its tabs could end up on another database):
+    // from the sheet with changed settings, Connect saves them and reconnects (doSave →
+    // reconnectSession); otherwise there is nothing to do.
+    if (useConnections.getState().open.some((session) => session.info.id === cfg0.id)) {
+      if (pw0 !== undefined && needsReconnect(initial, cfg0, { password: pw0, sshPassword, sshKeyPass }, savedSecrets)) await doSave();
+      return;
+    }
     if (editor && !(await canLeaveSession())) return;
     setStatus({ kind: "busy", msg: "Connecting…" });
     try {
@@ -632,6 +666,7 @@ export function ConnectionManager({ editor }: {
             key={openSeq}
             mode={mode}
             inUse={inUse}
+            canReconnect={canReconnect}
             form={form}
             dirty={dirty}
             status={status}
