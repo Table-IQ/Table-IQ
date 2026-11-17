@@ -127,6 +127,10 @@ jobs:
       # Compose, not `services:` — CockroachDB needs a start command.
       - name: Start wire-compatible engines
         run: |
+          # The engine host ports (53306-56257) sit in Linux's ephemeral range, so an outgoing
+          # connection on the runner can take one first ("address already in use"). Move the
+          # ephemeral range above them.
+          sudo sysctl -w net.ipv4.ip_local_port_range="60000 65535"
           docker compose -f docker/profiles/docker-compose.yml up -d --wait
           for i in $(seq 60); do
             mysql -h 127.0.0.1 -P 54000 -uroot -e 'select 1' >/dev/null 2>&1 && exit 0
