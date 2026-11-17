@@ -12,6 +12,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    # The three live-database jobs take ~13 minutes; skip them on PRs that cannot affect
+    # the Rust backend. A skipped required check counts as passed, so those PRs merge on
+    # `web` alone. Pushes to main always run everything.
+    runs-on: ubuntu-22.04
+    outputs:
+      backend: ${{ steps.diff.outputs.backend }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2 # the PR merge commit and its base parent
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          # Everything the Rust build, tests or bundle reads: include_str!/include_bytes!
+          # sources, test seeds, tauri.conf.json resources, and this workflow itself.
+          backend='^(src-tauri/|docker/|plugins/|\.github/workflows/ci\.yml$|src/lib/(menuEvents\.ts|profiles\.json|agentAccessCases\.json)$|src/assets/engines/|docs/brand/licenses/|LICENSE|NOTICE$)'
+          if [ "$EVENT" != pull_request ] || git diff --name-only HEAD^1 HEAD | grep -qE "$backend"; then
+            echo backend=true >> "$GITHUB_OUTPUT"
+          else
+            echo backend=false >> "$GITHUB_OUTPUT"
+          fi
+          git diff --name-only HEAD^1 HEAD | sed 's/^/changed: /'
+
   web:
     runs-on: ubuntu-22.04
     steps:
@@ -26,6 +51,8 @@ jobs:
       - run: pnpm exec vite build
 
   rust:
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-22.04
     # The drivers are the product, so the suite runs against real servers. Same images,
     # ports and credentials as docker/*/docker-compose.yml, so a failure here reproduces
@@ -204,6 +231,8 @@ jobs:
   # ClickHouse, Turso (libSQL), Elasticsearch, rqlite, Meilisearch, Qdrant, ChromaDB, Weaviate and InfluxDB run in a job of their own: started next to the
   # ten servers of `rust` they take ~2 GB more of a 7 GB runner, which the DuckDB link also needs.
   http-engines:
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 75
     env:
@@ -275,6 +304,8 @@ jobs:
   # The other half of the HTTP engines, in a second job: all nine servers next to the DuckDB link
   # would leave a 7 GB runner too little memory for it.
   search-engines:
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 75
     env:
