@@ -15,11 +15,15 @@ const base: ConnectionSheetProps = {
 const html = (p: Partial<ConnectionSheetProps> = {}) => renderToStaticMarkup(<ConnectionSheet {...base} {...p} />);
 
 describe("ConnectionSheet", () => {
-  it("lets an open connection be saved but prevents replacing its live session", () => {
+  it("lets an open connection be saved but keeps Connect off until a connection setting changes", () => {
     const h = html({ mode: "edit", inUse: true, dirty: true });
-    expect(h).toContain("disconnect and reconnect to apply them");
+    expect(h).toContain("Connect (or press Enter) to reconnect");
     expect(h).toMatch(/<button(?![^>]* disabled=)[^>]*>Save changes /);
     expect(h).toMatch(/<button[^>]*disabled=""[^>]*>Connect /);
+  });
+  it("enables Connect on an open connection once a connection setting (e.g. the port) changed", () => {
+    const h = html({ mode: "edit", inUse: true, dirty: true, canReconnect: true });
+    expect(h).toMatch(/<button(?![^>]* disabled=)[^>]*title="Save and reconnect with the new settings"[^>]*>Connect /);
   });
   it("new mode: title, engine tiles, URL paste, password placeholder, no ⋯ menu", () => {
     const h = html();

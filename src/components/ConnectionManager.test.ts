@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ConnectionManager, isDirty, isFileEngine, sortByRecency } from "./ConnectionManager";
+import { ConnectionManager, isDirty, isFileEngine, needsReconnect, sortByRecency } from "./ConnectionManager";
 import type { ConnConfig } from "../lib/commands";
 import { defaultSshConfig } from "../lib/ssh";
 import { ThemeProvider } from "../theme/ThemeProvider";
@@ -81,4 +81,13 @@ describe("isDirty", () => {
     expect(isDirty(cfg, { ...cfg, profile: null }, none)).toBe(false);
     expect(isDirty(cfg, { ...cfg, profile: "cockroachdb" }, none)).toBe(true);
   });
+});
+
+describe("needsReconnect", () => {
+  const base: ConnConfig = { id: "x", name: "QMS", color: "#4f46e5", engine: "postgres", host: "localhost", port: 26844, database: "quote_iq", username: "postgres", sslmode: "prefer" };
+  const none = { password: "", sshPassword: "", sshKeyPass: "" };
+  it("is needed when the port changes", () => expect(needsReconnect(base, { ...base, port: 22652 }, none)).toBe(true));
+  it("is needed when the password changes", () => expect(needsReconnect(base, base, { ...none, password: "pw" })).toBe(true));
+  it("is not needed for label-only edits", () =>
+    expect(needsReconnect(base, { ...base, name: "Other", color: "#000000", env: "production" }, none)).toBe(false));
 });
